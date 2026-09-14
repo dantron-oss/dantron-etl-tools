@@ -86,16 +86,37 @@ class Window:
     offset: int
 
 
-def persist_ports(frames: dict[str, pl.DataFrame], directory: Path) -> dict[str, Any]:
+def persist_ports(
+    frames: dict[str, pl.DataFrame],
+    directory: Path,
+    *,
+    status: dict[str, pl.DataFrame] | None = None,
+) -> dict[str, Any]:
     """Write every retained port to Parquet under ``directory`` and return the manifest.
 
     Keyed by ``step.port``, the same spelling the page and the query string use, so no reader has to
     know how a :class:`~.pipeline.PortRef` is put together to ask for one.
+
+    A port's per-row status is written to a file of its own beside the port rather than as extra
+    columns inside it, for the same reason it is not a column in the frame: the port file is what a
+    reader is shown as the data, and somebody scrolling it must see what the step produced and
+    nothing the step said about it. Its own manifest entry, so the viewer can scan the two lazily
+    and side by side -- they are joined by row position and by nothing else, which is why the row
+    count is written down here where it can be checked against the port's own.
+
+    A port with nothing to say gets no file and no entry, and the absence is what a viewer reads to
+    decide whether the port has a status column to draw at all: an empty file per port would cost a
+    pointless read apiece to be told nothing. Having no status and saying so are the same run --
+    ``status={}`` is a complete run rather than a refusal, the ruling ``run_pipeline`` already takes
+    on an empty cache, because a caller assembling statuses from whatever its run produced should
+    not have to write the conditional itself.
     """
     directory.mkdir(parents=True, exist_ok=True)
+    marked = status or {}
     manifest: dict[str, Any] = {}
     for key, frame in frames.items():
-        name = key.replace(".", "__") + ".parquet"
+        stem = key.replace(".", "__")
+        name = stem + ".parquet"
         frame.write_parquet(directory / name)
         manifest[key] = {
             "file": name,
@@ -103,6 +124,11 @@ def persist_ports(frames: dict[str, pl.DataFrame], directory: Path) -> dict[str,
             "columns": list(frame.columns),
             "dtypes": [str(d) for d in frame.dtypes],
         }
+        marks = marked.get(key)
+        if marks is not None:
+            status_name = stem + "__status.parquet"
+            marks.write_parquet(directory / status_name)
+            manifest[key]["status"] = {"file": status_name, "rows": marks.height}
     (directory / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf8")
     return manifest
 

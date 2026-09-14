@@ -13,6 +13,16 @@ nobody declared, an output with no columns at all (which would make a downstream
 on the column existing fail for the wrong reason), a step that handed back something other than
 ports, and a step that wrote into one of its own inputs are all refused right there, by name.
 
+A step may also send back a **per-row status** beside a port: one row per row of that port, in the
+same order, saying which rows it degraded and why. That is the half a note cannot carry. A note says
+595 values would not read as a number, which is a quantity and nothing else -- it cannot say whether
+those were figures the run destroyed or text that was never a figure, and the output column cannot
+say either, because after the step every one of them is null. The status can, so the sentence and
+the rows behind it travel together. It rides in the envelope rather than in the frame for the same
+reason a note does: what a step did is not a fact about the data, and a column would flow into the
+next join and out into the published workbook. Almost every step reports none, and the boundary
+refuses one that says only that every row is fine.
+
 **A tool** is the unit that reads ports and writes ports: a machine name, a one-line description, a
 category drawn from a published set, detailed help carrying worked examples, a typed configuration
 template, a way to validate whatever a template alone cannot express, and the work itself. The
@@ -71,6 +81,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Protocol, runtime_checkable
 
 import polars as pl
@@ -85,6 +96,10 @@ __all__ = [
     "REGISTRY",
     "REPLACE_FIELD",
     "SCRATCH_TOKEN",
+    "STATUS_LEVELS",
+    "STATUS_REASON",
+    "STATUS_SCHEMA",
+    "STATUS_VALUE_CHARS",
     "YAML_UNSAFE_VALUES",
     "ConfigError",
     "ConfigField",
@@ -109,10 +124,13 @@ __all__ = [
     "expression_fields",
     "expression_values",
     "require_columns",
+    "row_status",
     "run_tool",
     "scratch_path",
     "temporary_environment",
+    "unreadable_report",
     "validate_against_template",
+    "value_caption",
 ]
 
 
@@ -268,6 +286,173 @@ _PHASE_VERBS: Final[dict[str, str]] = {
 # ---------------------------------------------------------------------------
 
 
+# What a status row may say about the row it describes. Published rather than left to each tool,
+# because the reader of a status is a renderer: a level it has no drawing for shows as neither a
+# tick nor a warning nor a cross, so the row shows nothing at all and reads as fine. Three words
+# only -- "this row came through", "something about it was degraded", "something about it failed" --
+# and the boundary refuses a fourth.
+STATUS_LEVELS: Final[tuple[str, ...]] = ("ok", "warning", "error")
+
+# One published shape for every status frame in the library, so nothing reading one has to work out
+# per port what it is looking at.
+#
+# ``reason`` is a *list* because one row can be degraded twice over -- two columns cast in the same
+# step, both unreadable on the same row -- and a single reason per row would drop the second in
+# silence, sending a reader to the wrong column. It holds structs rather than sentences because the
+# question asked of a status is "which rows does this warning cover", answered by matching
+# ``reason.column`` exactly; against prose that match is a substring search, which is a different
+# question wearing the same answer.
+STATUS_REASON: Final[pl.DataType] = pl.List(pl.Struct({"column": pl.String, "detail": pl.String}))
+STATUS_SCHEMA: Final[pl.Schema] = pl.Schema({"level": pl.String, "reason": STATUS_REASON})
+
+# How much of an offending value a reason quotes. A reason is read in a table cell beside the row it
+# marks, so it is a caption rather than a copy: this is about one line of one, which was enough to
+# recognise every value the run that prompted this had emptied. The rest is not lost -- it is on the
+# input port, one panel away -- and an uncapped quote would put a whole cell of free text into every
+# reason of every marked row, which on a column that failed six hundred times is the frame again.
+STATUS_VALUE_CHARS: Final[int] = 60
+
+
+def value_caption(column: str, *, limit: int = STATUS_VALUE_CHARS) -> pl.Expr:
+    """``column``'s value as short quoted text, for a reason that says what was there.
+
+    The whole of what a marked row is asked: *what did this hold before the step emptied it?* An
+    output column cannot answer -- every value that failed to read is null afterwards, which is the
+    defect this channel closes -- and sending the reader to the input port to find out costs them
+    the hunt, and for a step that reshapes rows (an unpivot melts one row into several) there is no
+    row to find. So the value is quoted here, where the two sides can be put together honestly.
+
+    Two properties, both load-bearing. It never answers null: a reason built with
+    :func:`polars.format` around a null propagates the null through the whole sentence, and a marked
+    row whose reason vanished is a row the status calls degraded and cannot say a thing about. And
+    it is capped at ``limit`` characters, saying so when it cuts, so the length of a reason does not
+    follow the length of whatever text was in the cell.
+
+    Both of those are about a *value*. A column whose type has no text form at all -- a list, a
+    struct -- refuses the cast outright rather than answering null, and this refuses with it, which
+    is the honest answer: what the reader would be shown is not one value. Nothing reaches here that
+    way in practice, because a column is captioned only where a cast to a scalar type has just read
+    it, and that cast refuses first.
+    """
+    text = pl.col(column).cast(pl.String, strict=False)
+    shortened = (
+        pl.when(text.str.len_chars() > limit)
+        .then(pl.format("{}... (shortened from {} characters)", text.str.slice(0, limit), text.str.len_chars()))
+        .otherwise(text)
+    )
+    return (
+        pl.when(text.is_null())
+        .then(pl.lit("a value that cannot be shown as text"))
+        .otherwise(pl.format("'{}'", shortened))
+    )
+
+
+def unreadable_report(
+    frame: pl.DataFrame,
+    column: str,
+    failed: pl.Series,
+    declared: str,
+) -> tuple[pl.Series, str]:
+    """One reason per row for the values of ``column`` that would not read as ``declared``, and the note counting them.
+
+    Written once for the two tools that read a column as a type the flow states. They already answer
+    that question in the same words down to the wording of their notes, deliberately, and a second
+    spelling of the same sentence is how a reader ends up trusting the rule they learned second.
+
+    The reasons and the note come back from one call because they are two accounts of one fact, and
+    the failure worth designing out is them drifting apart: an edit that changed how the rows are
+    marked while leaving the count to be worked out a few lines away would leave a reader looking at
+    595 marks under a sentence that says something else. Here the count, the share, the example and
+    the reasons are all read off ``failed``, so there is nothing left for them to disagree about.
+
+    ``failed`` is the step's own mask, taken before the values were replaced, so this never has to
+    re-derive which rows lost something -- afterwards it could not: a null that failed to read and a
+    null that was always there are the same null, which is the whole defect this channel closes. A
+    blank therefore gets no reason here, because it never failed.
+
+    The note quotes the first offending value, captioned exactly as the reasons caption it, for the
+    one sentence a reader sees without opening anything: "595 values failed" sends them looking,
+    "595 values like 'Canadian Business Growth Fund' failed" usually settles it where they stand.
+
+    Called with something marked. A mask with nothing set describes no rows, so the note it would
+    write counts nothing and quotes nothing, and the all-``ok`` status built beside it is refused at
+    the boundary as inert -- which is why both callers ask the mask before they ask for this.
+    """
+    captioned = frame.select(value_caption(column).alias("caption")).with_columns(failed.alias("failed"))
+    details = captioned.select(
+        pl.when(pl.col("failed")).then(
+            pl.format("held {}, which did not read as {}", pl.col("caption"), pl.lit(declared))
+        )
+    ).to_series()
+    example = captioned.filter(pl.col("failed")).get_column("caption").head(1).to_list()
+
+    lost, total = int(failed.sum()), failed.len()
+    # Two decimal places rather than two significant figures. `.2g` is a general format, and the
+    # share this sentence reaches most often is exactly the one it renders unreadably: a column that
+    # is text from top to bottom fails on every row, and 100 comes out as `1e+02`. A reader who has
+    # to decode the number in a warning is back to not trusting the warning.
+    share = lost / total * 100 if total else 0.0
+    note = (
+        f"{lost:,} of {total:,} values in {column!r} ({share:.2f}%) did not "
+        f"read as {declared} and are now empty (for example {example[0] if example else None})"
+    )
+    return details, note
+
+
+def row_status(marks: Sequence[tuple[str, pl.Series]], height: int) -> pl.DataFrame:
+    """A status frame of ``height`` rows, built from one detail column per thing that could degrade.
+
+    A mark is a column name and a series of reasons the same height as the port, holding the
+    sentence for a row that was degraded and null for a row that was not. One series rather than a
+    mask beside a sentence, because the two would be free to disagree: a row the mask called
+    degraded and the sentence had nothing to say about would be marked and unexplained, which is the
+    old count again with extra steps.
+
+    Marks are applied in the order they are given, which is the order the step did the work in, so a
+    row degraded by two columns reads in the order they were processed rather than in whatever order
+    a set iterated.
+
+    With no marks at all this hands back a frame of ``ok``. That is not a status worth publishing --
+    the boundary refuses an inert one -- and it is exactly what a caller stacking a status per block
+    needs for the blocks that came through clean.
+
+    Every mark is measured against ``height`` rather than taken on trust, and the check belongs here
+    rather than at the boundary: the boundary compares a finished status against the port it
+    describes, which catches a wrong total and nothing finer. A caller stacking one block per melted
+    column hands over several blocks, and a block one row short beside a block one row long adds up
+    to a total the boundary is happy with, having slid every mark between them onto the wrong row --
+    the exact failure this channel exists to make impossible, arriving inside the tool that builds
+    it.
+    """
+    misaligned = [column for column, detail in marks if detail.len() != height]
+    if misaligned:
+        raise PortError(
+            f"a per-row status of {height:,} row(s) cannot be built from mark(s) on "
+            f"{', '.join(misaligned)} of another length; a mark carries one reason per row of the "
+            f"port it describes, and one of another height marks the wrong rows rather than fewer"
+        )
+
+    if not marks:
+        return pl.DataFrame({"level": ["ok"] * height, "reason": [[]] * height}, schema=STATUS_SCHEMA)
+
+    # Keyed by position rather than by column name: two marks may name the same column -- a column
+    # read twice, a column melted alongside itself -- and a frame keyed by name would silently keep
+    # one of them.
+    details = pl.DataFrame({str(index): detail for index, (_, detail) in enumerate(marks)})
+    reason = pl.concat_list(
+        *(
+            pl.when(pl.col(str(index)).is_not_null())
+            .then(pl.concat_list(pl.struct(column=pl.lit(column, dtype=pl.String), detail=pl.col(str(index)))))
+            .otherwise(pl.lit([], dtype=STATUS_REASON))
+            for index, (column, _) in enumerate(marks)
+        )
+    )
+    return details.select(reason=reason).select(
+        level=pl.when(pl.col("reason").list.len() > 0).then(pl.lit("warning")).otherwise(pl.lit("ok")),
+        reason=pl.col("reason"),
+    )
+
+
 class Ports:
     """An ordered, read-only set of named frames -- a step's inputs, or its outputs.
 
@@ -283,20 +468,26 @@ class Ports:
     setter.
     """
 
-    __slots__ = ("_frames", "_notes")
+    __slots__ = ("_frames", "_notes", "_status")
 
     def __init__(
         self,
         frames: Mapping[str, pl.DataFrame] | None = None,
         *,
         notes: Sequence[str] = (),
+        status: Mapping[str, pl.DataFrame] | None = None,
     ) -> None:
         source = dict(frames) if frames is not None else {}
         for name, frame in source.items():
             if not isinstance(frame, pl.DataFrame):
                 raise PortError(f"port {name!r} must hold a DataFrame, got {type(frame).__name__} instead")
+        marked = dict(status) if status is not None else {}
+        for name, frame in marked.items():
+            if not isinstance(frame, pl.DataFrame):
+                raise PortError(f"the status for port {name!r} must be a DataFrame, got {type(frame).__name__} instead")
         self._frames: tuple[tuple[str, pl.DataFrame], ...] = tuple(source.items())
         self._notes: tuple[str, ...] = tuple(notes)
+        self._status: Mapping[str, pl.DataFrame] = MappingProxyType(marked)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -317,6 +508,29 @@ class Ports:
         downstream may read one.
         """
         return self._notes
+
+    @property
+    def status(self) -> Mapping[str, pl.DataFrame]:
+        """What the step did to each row of a port it degraded, keyed by port name.
+
+        Beside the frame and never inside it. A column named ``status`` would be a column: it flows
+        into the next join, survives a ``select_columns`` that never heard of it, turns up in a
+        schema comparison against somebody else's engine, and lands in the published workbook -- so
+        it would have to be carried and stripped at every one of those places, and the first place
+        that forgot would ship it. What a step did is not a fact about the data, so it travels where
+        ``notes`` travels.
+
+        The pair is the point: a note says *how many* values a step emptied, which is a quantity and
+        nothing more, and this says *which rows* -- one row per data row, in the same order, never
+        re-derived afterwards. A reader given only the count cannot tell a figure the run destroyed
+        from text that was never a figure, and that is the difference between a broken pipeline and
+        a correctly reported one.
+
+        Empty for almost every step, and deliberately so: a step that degraded nothing says nothing,
+        the boundary refuses an inert status, and the presence of a status on a port is itself the
+        signal.
+        """
+        return self._status
 
     def items(self) -> tuple[tuple[str, pl.DataFrame], ...]:
         """``(name, frame)`` pairs, in construction order."""
@@ -668,11 +882,74 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
                 f"after: {', '.join(frame.schema)})"
             )
 
+    _check_status(tool, result, declared_outputs)
+
     # Rebuilt so the ports come back in the tool's declared order whatever order it produced them
-    # in -- and carrying the notes across, which rebuilding would otherwise drop. A tool that
-    # reported something worth knowing and had it silently discarded at the boundary is the exact
-    # failure the boundary exists to prevent, one level up.
-    return Ports({name: result[name] for name in declared_outputs}, notes=result.notes)
+    # in -- and carrying the notes and the per-row status across, which rebuilding would otherwise
+    # drop. A tool that reported something worth knowing and had it silently discarded at the
+    # boundary is the exact failure the boundary exists to prevent, one level up, and it has
+    # happened here once already: the notes were dropped by this very rebuild.
+    return Ports(
+        {name: result[name] for name in declared_outputs},
+        notes=result.notes,
+        status=result.status,
+    )
+
+
+def _check_status(tool: Tool, result: Ports, declared_outputs: tuple[str, ...]) -> None:
+    """Refuse a per-row status that cannot mean what it says, before anything downstream reads it.
+
+    Checked on every call rather than trusted, because the correspondence between a status row and
+    a data row is positional and is never re-derived afterwards: a status one row short does not
+    report less, it reports the *wrong* rows, sliding every mark after the gap onto its neighbour,
+    and nothing built from it later could tell. Both directions are refused, since a check written
+    against the short case alone passes a status a tool built per *input* row after filtering.
+
+    The shape is refused too, and so is a level outside :data:`STATUS_LEVELS`: what reads a status
+    is a renderer, and a level it has no drawing for shows as neither a tick nor a warning nor a
+    cross, so the row shows nothing and reads as fine -- the same defect as a missing column,
+    arriving more quietly.
+
+    An all-``ok`` status is refused last and on sight. Seven million rows asserting that nothing
+    happened would make the presence of a status mean nothing, and a mark that is always there is a
+    mark nobody reads. This is the ruling this library already takes on a cast to the type a column
+    already holds: an inert declaration is refused rather than agreed with.
+    """
+    for name, status in result.status.items():
+        if name not in declared_outputs:
+            raise PortError(
+                f"{tool.name!r} reported a per-row status for {name!r}, which is not one of its "
+                f"output ports; it declares: {', '.join(declared_outputs)}"
+            )
+
+        if status.schema != STATUS_SCHEMA:
+            raise PortError(
+                f"{tool.name!r} reported a per-row status for port {name!r} in the wrong shape: "
+                f"expected {dict(STATUS_SCHEMA)}, got {dict(status.schema)}"
+            )
+
+        unknown = sorted(str(level) for level in status["level"].unique().to_list() if level not in STATUS_LEVELS)
+        if unknown:
+            raise PortError(
+                f"{tool.name!r} reported a per-row status for port {name!r} holding level(s) "
+                f"{', '.join(unknown)}, which nothing can draw; the published levels are: "
+                f"{', '.join(STATUS_LEVELS)}"
+            )
+
+        height = result[name].height
+        if status.height != height:
+            raise PortError(
+                f"{tool.name!r} reported a per-row status for port {name!r} of {status.height:,} "
+                f"row(s) against a port of {height:,}; the two line up row for row, and a status of "
+                f"another height marks the wrong rows rather than fewer of them"
+            )
+
+        if not (status["level"] != "ok").any():
+            raise PortError(
+                f"{tool.name!r} reported a per-row status for port {name!r} saying only that every "
+                f"row is fine; a status says what a step degraded, and one that degraded nothing "
+                f"reports no status at all"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -225,6 +225,16 @@ class PipelineTrace:
     as any other's -- so a report, a page or a scheduled job that must not publish a resumed run
     reads this field, and a caller who merely offered a cache the run never reached does not
     trip it.
+
+    ``status`` holds the per-row mark a step reported beside a port it degraded -- one row per row
+    of that port, in the same order -- and holds nothing for every port that degraded nothing, which
+    on a real flow is almost all of them. It does not travel downstream: a step handing on the very
+    rows an earlier step emptied reports nothing, because a status is a fact about what a step did
+    and that step did nothing to those values. Propagating it would turn one degradation into a mark
+    on every step after it and make the last step of a flow look like the culprit. It is released in
+    lockstep with the frame it describes, since a status kept after its rows were freed is a row
+    reference with nothing to point at -- ``shapes``, which is a summary rather than a reference,
+    survives as it always did.
     """
 
     pipeline: str
@@ -232,6 +242,7 @@ class PipelineTrace:
     events: tuple[StepEvent, ...]
     shapes: Mapping[PortRef, FrameShape]
     frames: Mapping[PortRef, pl.DataFrame]
+    status: Mapping[PortRef, pl.DataFrame] = MappingProxyType({})
     until: tuple[str, ...] = ()
     cached: tuple[PortRef, ...] = ()
     run_id: str | None = None
@@ -380,6 +391,7 @@ def run_pipeline(
 
     frames: dict[PortRef, pl.DataFrame] = {}
     shapes: dict[PortRef, FrameShape] = {}
+    statuses: dict[PortRef, pl.DataFrame] = {}
     events: list[StepEvent] = []
     resumed_from: list[PortRef] = []
     log = logging.getLogger(__name__)
@@ -399,6 +411,7 @@ def run_pipeline(
             events=tuple(events),
             shapes=MappingProxyType(dict(shapes)),
             frames=MappingProxyType(dict(frames)),
+            status=MappingProxyType(dict(statuses)),
             until=requested,
             cached=tuple(resumed_from),
             run_id=run_id,
@@ -505,6 +518,11 @@ def run_pipeline(
                 raise StepFailedError(step_id, event, snapshot()) from failure
             reported = result.notes
             output_frames = {port: result[port] for port in tool.output_ports}
+            # Only what this step itself marked. A cached or supplied port has no status because no
+            # step of this run produced it, and nothing is carried over from the step upstream:
+            # those rows are not this step's doing.
+            for port, marked in result.status.items():
+                statuses[PortRef(step_id, port)] = marked
 
         output_shapes: list[FrameShape] = []
         # What the step itself wants said, ahead of anything this runner noticed: a tool knows
@@ -536,6 +554,10 @@ def run_pipeline(
             due = schedule.get(step_id, ())
             for ref in due:
                 frames.pop(ref, None)
+                # With the frame, never after it: a status outliving its rows is a set of row
+                # references pointing at nothing, accumulating exactly where this mode exists to
+                # stop things accumulating.
+                statuses.pop(ref, None)
             released = due
 
         event = StepEvent(

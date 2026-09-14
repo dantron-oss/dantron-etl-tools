@@ -59,6 +59,13 @@ something: a clean column is not news, and here most of them are clean. ``on_inv
 ``values_type`` is refused -- nothing converts, so whichever word was written would do nothing at
 all, and a field that silently does nothing is worse than a missing one.
 
+**The rows a stated type emptied are marked as well as counted**, in the words ``cast_columns``
+settled: a status row per output row, naming the melted column it came from and quoting what the
+cell held, and a blank marked as nothing at all because a blank never failed to read. The marks
+follow the output, not the input -- three rows and two melted columns are six output rows -- so they
+are built one block per melted column and stacked in the same order the values are, which makes the
+alignment the same fact as the stacking rather than a second one to keep in step with it.
+
 **Row order is column-major**: all the rows of the first melted column, then all the rows of the
 second, in the frame's own column order. Not interleaved, which is what a naive reshape gives, and
 not sorted, which would order the output by something the author never wrote down. The melted
@@ -99,6 +106,8 @@ from ..tool import (
     ToolHelp,
     WorkedExample,
     require_columns,
+    row_status,
+    unreadable_report,
 )
 
 # The words `cast_columns` publishes for the same question, in the same spelling and the same order.
@@ -297,12 +306,17 @@ class Unpivot:
         if config["values_type"] is None:
             # Cast rather than take each column as it is: an all-null column takes the others' type
             # here, so the stacked result carries the type the data actually has instead of losing
-            # it to the one column that had none.
+            # it to the one column that had none. Nothing is read as anything the flow stated, so
+            # nothing could fail to read and there is no per-row status to report -- the path most
+            # of a real flow's unpivots take.
             settled = _settled_dtype(frame, melted)
             values = {column: frame[column].cast(settled) for column in melted}
             notes: list[str] = []
+            status: pl.DataFrame | None = None
         else:
-            values, notes = _stated_values(frame, melted, config["values_type"], config["on_invalid"] == "empty")
+            values, notes, status = _stated_values(
+                frame, melted, config["values_type"], config["on_invalid"] == "empty"
+            )
 
         # One frame per melted column, stacked in the frame's own column order. That is the
         # column-major ruling expressed directly rather than produced and then re-ordered: there is
@@ -315,7 +329,11 @@ class Unpivot:
             ).with_columns(values[column].alias(config["values"]))
             for column in melted
         ]
-        return Ports({"rows": pl.concat(parts, how="vertical")}, notes=notes)
+        return Ports(
+            {"rows": pl.concat(parts, how="vertical")},
+            notes=notes,
+            status={"rows": status} if status is not None else None,
+        )
 
 
 def _index_columns(config: Mapping[str, Any]) -> list[str]:
@@ -363,24 +381,35 @@ def _stated_values(
     melted: Sequence[str],
     declared: str,
     lenient: bool,
-) -> tuple[dict[str, pl.Series], list[str]]:
-    """Each melted column read as the stated type, and a note for each one that lost something.
+) -> tuple[dict[str, pl.Series], list[str], pl.DataFrame | None]:
+    """Each melted column read as the stated type, a note per column that lost something, and the rows.
 
     ``cast_columns``' answer to the same question, copied whole and down to the wording of the note:
     two tools answering one question similarly rather than identically is how a reader ends up
     trusting the rule they learned second. What differs is which columns are worth reporting. A
     column that converts cleanly says nothing here, because most of them do -- the melt set is
     everything the flow did not name, so a note apiece would bury the one that lost a value.
+
+    The status is built one block per melted column and stacked in the same order the values are,
+    which is the frame's own column order, because the output's rows are not the input's: an unpivot
+    of three rows and two columns produces six, and a status built against the input would be three
+    marks looking for six rows. A block per column also makes the alignment the same fact as the
+    stacking rather than a second one that has to be kept in step with it -- a clean column
+    contributes a block of ``ok`` exactly where its rows are. ``None`` when nothing was lost, since
+    a status that degraded nothing is refused at the boundary and rightly.
     """
     target = DECLARED_DTYPE[declared]
     values: dict[str, pl.Series] = {}
     notes: list[str] = []
+    blocks: list[pl.DataFrame] = []
+    degraded = False
 
     for column in melted:
         if lenient:
-            # Counted before the values are replaced, because afterwards the evidence is gone: a
+            # Taken before the values are replaced, because afterwards the evidence is gone: a
             # null that failed to convert and a null that was always there look identical, and the
-            # whole point of this mode is to say how many of the first there were.
+            # whole point of this mode is to say how many of the first there were. The sentence and
+            # the marks come from that one mask in one call, in `cast_columns`' own words.
             #
             # Unguarded, like `cast_columns`' lenient path, and with the same known hole: a pair the
             # engine refuses for the whole column rather than value by value -- a Date read as a
@@ -388,13 +417,14 @@ def _stated_values(
             # belongs to a change that closes it in `cast_columns` too, or the two tools answer one
             # question differently again.
             read = frame[column].cast(target, strict=False)
-            lost = int((frame[column].is_not_null() & read.is_null()).sum())
-            if lost:
-                share = lost / frame.height * 100 if frame.height else 0.0
-                notes.append(
-                    f"{lost:,} of {frame.height:,} values in {column!r} ({share:.2g}%) did not "
-                    f"read as {declared} and are now empty"
-                )
+            failed = frame[column].is_not_null() & read.is_null()
+            if failed.any():
+                reasons, note = unreadable_report(frame, column, failed, declared)
+                blocks.append(row_status([(column, reasons)], frame.height))
+                notes.append(note)
+                degraded = True
+            else:
+                blocks.append(row_status([], frame.height))
             values[column] = read
             continue
         try:
@@ -420,7 +450,7 @@ def _stated_values(
                 offending=offending,
                 total=frame.height,
             ) from error
-    return values, notes
+    return values, notes, (pl.concat(blocks, how="vertical") if degraded else None)
 
 
 def _periods_become_rows() -> WorkedExample:

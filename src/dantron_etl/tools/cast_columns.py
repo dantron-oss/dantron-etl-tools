@@ -23,6 +23,14 @@ warning, so the run carries on and the fact travels with it, into the log and on
 count is taken *before* the values are replaced, because afterwards the evidence is gone: a null
 that failed to convert and a null that was always there look identical.
 
+**It also marks the rows it emptied**, one status row per data row, each naming the column and
+quoting what the cell held. The count alone is not enough to act on: a reader told that 595 of 692
+values were emptied cannot tell a lost figure from a client name that was never a figure, and the
+column afterwards is 692 nulls either way. The marks are built from the same mask as the count, at
+the same moment, so the two cannot come to disagree. A blank gets no mark, because a blank never
+failed to read. The note carries the first offending value as an example, which is usually enough
+to settle the question without opening anything.
+
 **Casting a column to the type it already has is refused**, like every other declaration here that
 does nothing. The usual cause is a configuration edited halfway, and saying so beats agreeing.
 
@@ -46,6 +54,8 @@ from ..tool import (
     ToolHelp,
     WorkedExample,
     require_columns,
+    row_status,
+    unreadable_report,
 )
 
 # 'empty' rather than 'null': `null` unquoted in a definition file IS the null value, so an author
@@ -155,21 +165,25 @@ class CastColumns:
         frame = inputs["rows"]
         lenient = config["on_invalid"] == "empty"
         notes: list[str] = []
+        # One entry per column that emptied something, carrying a reason for each row it emptied.
+        # Gathered in the order the columns were cast, so a row degraded twice reads in the order
+        # the work was done rather than in whatever order a set iterated.
+        marks: list[tuple[str, pl.Series]] = []
 
         for entry in config["columns"]:
             column, declared = entry["column"], entry["type"]
             if lenient:
-                # Counted before the values are replaced, because afterwards the evidence is gone:
+                # Taken before the values are replaced, because afterwards the evidence is gone:
                 # a null that failed to convert and a null that was always there look identical, and
-                # the whole point of this mode is to say how many of the first there were.
+                # the whole point of this mode is to say how many of the first there were. The
+                # sentence and the marks are the same mask read once, in one call, so there is no
+                # second reading of the column for the two of them to disagree over.
                 read = frame.select(pl.col(column).cast(DECLARED_DTYPE[declared], strict=False)).to_series()
-                lost = int((frame[column].is_not_null() & read.is_null()).sum())
-                if lost:
-                    share = lost / frame.height * 100 if frame.height else 0.0
-                    notes.append(
-                        f"{lost:,} of {frame.height:,} values in {column!r} ({share:.2g}%) did not "
-                        f"read as {declared} and are now empty"
-                    )
+                failed = frame[column].is_not_null() & read.is_null()
+                if failed.any():
+                    reasons, note = unreadable_report(frame, column, failed, declared)
+                    marks.append((column, reasons))
+                    notes.append(note)
                 frame = frame.with_columns(read.alias(column))
                 continue
             try:
@@ -195,7 +209,8 @@ class CastColumns:
                     offending=offending,
                     total=inputs["rows"].height,
                 ) from error
-        return Ports({"rows": frame}, notes=notes)
+        status = {"rows": row_status(marks, frame.height)} if marks else None
+        return Ports({"rows": frame}, notes=notes, status=status)
 
 
 def _settles_a_text_number() -> WorkedExample:
