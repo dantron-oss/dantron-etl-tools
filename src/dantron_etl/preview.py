@@ -47,10 +47,15 @@ import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, urlparse
 
 import polars as pl
+
+from .tool import STATUS_LEVELS
+
+if TYPE_CHECKING:  # pragma: no cover -- the trace is a type here and never a runtime dependency
+    from .runner import PipelineTrace
 
 #: The most rows one request may ask for. A window is for looking at; a caller wanting everything
 #: wants the Parquet file, which is sitting right there.
@@ -70,13 +75,41 @@ PANEL_MANIFEST = "panels.json"
 PANEL_DIR = "panels"
 
 
+#: The name a port's marks travel under while they are being sliced beside its rows. A port is a
+#: client's data and may well carry a column called ``status`` of its own, so the name is checked
+#: against the port and lengthened until it is free rather than assumed to be: a collision here
+#: would silently overwrite one of the columns the reader came to read.
+STATUS_COLUMN = "status"
+
+
+def _beside(columns: list[str]) -> str:
+    """A name for the marks that no column of this port answers to."""
+    name = STATUS_COLUMN
+    while name in columns:
+        name = "_" + name
+    return name
+
+
 class PreviewError(ValueError):
     """A request this store cannot honour, named so a caller can tell it from a bug."""
 
 
 @dataclass(frozen=True)
 class Window:
-    """One answer: the rows asked for, and the two counts needed to say where they came from."""
+    """One answer: the rows asked for, the two counts needed to say where they came from, and what
+    the step that made them said about each one.
+
+    ``status`` is one mark per row of *this window*, in the same order, or ``None`` for a port no
+    step said anything about. ``None`` rather than a tuple of ``ok``s, because the absence is what a
+    viewer reads to decide whether the port has a status column to draw at all -- and almost every
+    port in a real flow degraded nothing, so a column of ticks on all of them is a column a reader
+    learns to skip, which costs the flagged ports the attention this channel exists to buy.
+
+    Sliced with the rows and never re-derived afterwards: the correspondence is positional, so a
+    window that took the first ``limit`` marks for the rows at some later offset would draw a status
+    column that is right on the first page and, on every page after it, puts a warning on a row that
+    never had one.
+    """
 
     columns: tuple[str, ...]
     dtypes: tuple[str, ...]
@@ -84,6 +117,7 @@ class Window:
     total: int
     matched: int
     offset: int
+    status: tuple[dict[str, Any], ...] | None = None
 
 
 def persist_ports(
@@ -131,6 +165,27 @@ def persist_ports(
             manifest[key]["status"] = {"file": status_name, "rows": marks.height}
     (directory / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf8")
     return manifest
+
+
+def persist_trace(trace: PipelineTrace, directory: Path) -> dict[str, Any]:
+    """Write one run to ``directory``: every port it retained, and every mark its steps made.
+
+    Both halves off the one object, because they are one run and the writer is where they come
+    apart. A caller assembling the frames by hand and calling :func:`persist_ports` has to remember
+    the statuses separately -- they sit on the same trace, one attribute away -- and a directory
+    written without them loads, serves and draws exactly like a run whose steps degraded nothing.
+    The difference is invisible until a reader asks which rows a warning covers and the run cannot
+    say. Taking the trace makes forgetting impossible rather than unlikely.
+
+    A status is written only for a port whose frame was retained, which falls out of ``persist_ports``
+    keying the two together: marks kept beside rows nobody can read are row references with nothing
+    to point at. A run that degraded nothing writes no status files at all.
+    """
+    return persist_ports(
+        {f"{ref.step}.{ref.port}": frame for ref, frame in trace.frames.items()},
+        directory,
+        status={f"{ref.step}.{ref.port}": marks for ref, marks in trace.status.items()},
+    )
 
 
 def persist_panels(panels: dict[str, str], directory: Path) -> dict[str, str]:
@@ -218,12 +273,34 @@ class PortStore:
             raise PreviewError(f"no panel for step {step!r} in this run; it has: {have}")
         return (self.directory / PANEL_DIR / name).read_text(encoding="utf-8")
 
-    def window(self, port: str, *, offset: int = 0, limit: int = 100, filters: dict[str, str] | None = None) -> Window:
+    def window(
+        self,
+        port: str,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        filters: dict[str, str] | None = None,
+        level: str | None = None,
+    ) -> Window:
         """``limit`` rows of ``port`` from ``offset``, after every filter has been applied.
 
         Refusals name what was asked for: a port that was never written, a column that port does not
         carry, a window that runs backwards. Each is a caller's mistake rather than an empty answer,
         and answering nothing would read exactly like a port that matched nothing.
+
+        ``level`` narrows to the rows a step marked at that level, and is its own parameter rather
+        than one more entry in ``filters``. The per-column filters are substring searches, which is
+        right for a value somebody half-remembers and wrong for a vocabulary of three: ``warn`` would
+        match ``warning``, and ``error`` would match every row of a client's own column holding the
+        word -- both reading as a filter that works. So a level is checked against what the library
+        publishes and refused when it is not one of them. A port with no marks is refused too rather
+        than answered plausibly: every row and no rows are both readings of the data, when what is
+        wrong is the question.
+
+        The two narrowings are applied to the same rows rather than one to what the other already
+        cut. A reader types a party into one box and picks a level in the other, and the answer they
+        expect is the intersection; either order of narrowing-then-narrowing gives a subset that
+        looks entirely plausible and is not it.
         """
         entry = self.manifest.get(port)
         if entry is None:
@@ -239,15 +316,56 @@ class PortStore:
         if unknown:
             raise PreviewError(f"port {port!r} carries no column {unknown[0]!r}; it has: {', '.join(columns)}")
 
+        marks = entry.get("status")
+        if level is not None:
+            if level not in STATUS_LEVELS:
+                raise PreviewError(f"{level!r} is not a level; a level is one of: {', '.join(STATUS_LEVELS)}")
+            if marks is None:
+                raise PreviewError(
+                    f"no step said anything about the rows of port {port!r}, so it cannot be narrowed to {level!r}"
+                )
+
         scan = pl.scan_parquet(self.directory / entry["file"])
+        beside = _beside(columns)
+        if marks is not None:
+            # A status is written row for row with the port it describes -- the tool boundary
+            # refuses one that is not -- so a pair that disagrees by the time it is read back is a
+            # directory that was assembled by hand rather than written, or truncated after it was.
+            # Worth refusing here because the disagreement is otherwise silent and then wrong: the
+            # concat below pads the shorter side with nulls rather than failing, which hands a reader
+            # a mark of ``null`` on every row past the end of the status and draws it as a level
+            # nobody published. This is the one place the count ``persist_ports`` writes down beside
+            # the file is ever read.
+            if int(marks["rows"]) != int(entry["rows"]):
+                raise PreviewError(
+                    f"port {port!r} holds {entry['rows']:,} row(s) and the status beside it {marks['rows']:,}; "
+                    "the two line up row for row, and position is the whole of what joins them"
+                )
+
+            # Carried alongside as one struct column so that the marks are sliced and filtered by
+            # exactly the operations that slice and filter the rows -- the correspondence is
+            # positional and is never re-derived, which is what stops a later window being given the
+            # marks of the first one. Concatenated by position for the same reason: there is no key
+            # joining a row to its mark, and a join on a column either side happens to carry would
+            # be a different question with a plausible answer.
+            scan = pl.concat(
+                [scan, pl.scan_parquet(self.directory / marks["file"]).select(pl.struct(pl.all()).alias(beside))],
+                how="horizontal",
+            )
+            if level is not None:
+                scan = scan.filter(pl.col(beside).struct.field("level") == level)
+
         for name, text in wanted.items():
             # Cast before matching so a filter reads the value the page shows: a reader typing 2026
             # into a date column means the text they are looking at, not an epoch.
             scan = scan.filter(pl.col(name).cast(pl.String, strict=False).str.contains(text, literal=True))
 
-        matched = int(scan.select(pl.len()).collect().item()) if wanted else int(entry["rows"])
+        narrowed = bool(wanted) or level is not None
+        matched = int(scan.select(pl.len()).collect().item()) if narrowed else int(entry["rows"])
         page = scan.slice(offset, limit).collect()
-        as_text = page.select(pl.all().cast(pl.String, strict=False))
+        # Named rather than `pl.all()`, so the marks travelling beside the rows cannot be handed back
+        # as one more column of them: what the port produced is what a reader is shown as the data.
+        as_text = page.select(pl.col(name).cast(pl.String, strict=False) for name in columns)
 
         return Window(
             columns=tuple(columns),
@@ -256,6 +374,7 @@ class PortStore:
             total=int(entry["rows"]),
             matched=matched,
             offset=offset,
+            status=tuple(page.get_column(beside).to_list()) if marks is not None else None,
         )
 
 
@@ -434,7 +553,13 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
                 for name, values in query.items()
                 if name.startswith(FILTER_PREFIX) and values
             }
-            found = PortStore(run.directory).window(port, offset=offset, limit=limit, filters=filters)
+            # Its own parameter, and deliberately not reachable through the ``f.`` channel: a port
+            # carrying a column called ``level`` is an ordinary thing for a client's data to have,
+            # and spelling the level filter as ``f.level`` would make one control mean two different
+            # things on two different ports with nothing to tell them apart. Asked for a column this
+            # port does not carry, ``f.`` goes on refusing.
+            level = (query.get("level") or [""])[0] or None
+            found = PortStore(run.directory).window(port, offset=offset, limit=limit, filters=filters, level=level)
             return {
                 "columns": list(found.columns),
                 "dtypes": list(found.dtypes),
@@ -442,6 +567,7 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
                 "total": found.total,
                 "matched": found.matched,
                 "offset": found.offset,
+                "status": list(found.status) if found.status is not None else None,
             }
 
     return Handler

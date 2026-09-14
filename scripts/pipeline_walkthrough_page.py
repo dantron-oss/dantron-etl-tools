@@ -24,6 +24,7 @@ from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_tr
 from dantron_etl.paths import project_root
 from dantron_etl.pipeline import PipelineSpec, read_pipeline_file
 from dantron_etl.runner import PipelineTrace, run_pipeline
+from dantron_etl.tool import STATUS_LEVELS
 
 # Resolved from this script's own location rather than from the library's -- see `dantron_etl.paths`.
 PROJECT_ROOT = project_root(__file__)
@@ -177,7 +178,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
     )
 
 
-def _table(frame: pl.DataFrame, port: str | None = None) -> str:
+def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -> str:
     """One port's rows, with a box under each column heading that narrows to matching rows.
 
     The search is per column rather than one box over the whole table, because the question a
@@ -185,13 +186,37 @@ def _table(frame: pl.DataFrame, port: str | None = None) -> str:
     carry this status -- and a single box would match that text anywhere in the row and answer a
     different question. Filtering is over the rows drawn, which the note beneath already says is a
     window onto a larger frame: this narrows what is on the page, it does not re-run the step.
+
+    ``marked`` draws the status column: one cell per row, first, saying what the step that made
+    these rows said about that row. First because that is where an eye picks a row up and because it
+    is what the reader asked for, and set apart in the markup rather than by its name -- a column
+    headed ``level`` sitting among a client's own columns reads as something the step computed, gets
+    searched with the box under it, and travels into whatever the reader copies out. It carries no
+    dtype, which every real column's header does, and it is drawn only for a port some step actually
+    marked: almost every port in a flow degraded nothing, and a column of ticks on all of them is a
+    column a reader stops looking at.
+
+    Its control is a choice rather than a box, because three words are a vocabulary and not a
+    search: typed, ``warn`` would narrow to warnings on the page and be refused by the service. The
+    options come from :data:`STATUS_LEVELS` itself, so a level added to the library cannot end up
+    with no way to filter to it.
     """
     if not frame.columns:
         return '<p class="more">no columns</p>'
 
-    head = "".join(f"<th>{_e(c)}<em>{_e(frame.schema[c])}</em></th>" for c in frame.columns)
-    boxes = "".join(
-        f'<th><input class="flt" data-c="{i}" data-col="{_e(c)}" type="search" placeholder="{_e(c)}" '
+    levels = "".join(f'<option value="{_e(v)}">{_e(v or "any level")}</option>' for v in ("", *STATUS_LEVELS))
+    head = ('<th class="lvl">status</th>' if marked else "") + "".join(
+        f"<th>{_e(c)}<em>{_e(frame.schema[c])}</em></th>" for c in frame.columns
+    )
+    # Every box says which cell of a row it narrows and the script reads that number straight off
+    # it, so inserting a column at the front moves all of them along: left alone, each box would
+    # narrow the column to its left and the reader would watch rows vanish for no reason they can
+    # see.
+    first = 1 if marked else 0
+    boxes = (
+        f'<th class="lvl"><select class="lvl" aria-label="narrow to a level">{levels}</select></th>' if marked else ""
+    ) + "".join(
+        f'<th><input class="flt" data-c="{i + first}" data-col="{_e(c)}" type="search" placeholder="{_e(c)}" '
         f'aria-label="filter {_e(c)}"></th>'
         for i, c in enumerate(frame.columns)
     )
@@ -378,7 +403,10 @@ def _step_data(
                 if view is None:
                     frame = trace.frames.get(ref)
                     body = (
-                        _table(frame, port=f"{ref.step}.{ref.port}")
+                        # Keyed off the port rather than off the step being read, so a marked port
+                        # drawn as the next step's input carries the same marks it carries as an
+                        # output: it is the same port and the same rows.
+                        _table(frame, port=f"{ref.step}.{ref.port}", marked=ref in trace.status)
                         if frame is not None
                         else '<p class="more">released &mdash; not retained</p>'
                     )
@@ -706,6 +734,20 @@ table.data input.flt {{ width:100%; min-width:5.5rem; box-sizing:border-box; fon
 table.data input.flt:focus {{ outline:2px solid var(--accent); outline-offset:-1px; }}
 table.data tr.flts th {{ padding:.2rem .5rem .4rem; border-bottom:1px solid var(--line); }}
 table.data tbody tr.hide {{ display:none; }}
+/* The status column. Narrow, because it is one mark per row and the data is what the reader came
+   for; centred, because a column of single marks read down the edge of a table is how a reader
+   finds the flagged rows without reading any of them. */
+table.data th.lvl, table.data td.lvl {{ width:1%; text-align:center; white-space:nowrap; }}
+table.data th.lvl select {{ font:400 .72rem var(--mono); color:var(--ink); background:var(--ground);
+  border:1px solid var(--line); border-radius:4px; padding:.12rem .3rem; }}
+/* Three levels, drawn three ways, and never by the glyph alone: a tick and a cross at 12px on a
+   dense table are two marks of the same weight in the same colour, and the row that matters is the
+   one a reader has to be able to pick out while scrolling. The cell also carries the level and its
+   reason as text a browser can announce, which is the same distinction made for a reader who is not
+   looking at the screen at all. */
+table.data td.lvl.ok {{ color:var(--muted); }}
+table.data td.lvl.warning {{ color:var(--warn); font-weight:700; background:var(--warn-soft); }}
+table.data td.lvl.error {{ color:var(--surface); font-weight:700; background:var(--warn); }}
 a.up {{ font:600 1.05rem var(--mono); color:var(--ink); text-decoration:none;
   border-bottom:2px solid var(--accent-soft); }}
 a.up::before {{ content:'↑'; color:var(--accent); font-size:.8rem; margin-right:.3rem;
@@ -1065,23 +1107,53 @@ let LIVE = false;
 
 function boxesOf(table) {{ return [...table.querySelectorAll('tr.flts input.flt')]; }}
 
+// Each box is asked which cell it narrows rather than being counted off in order, because on a
+// table with a status column the two differ by one: the boxes still stand one per data column, and
+// the cells they read have a mark in front of them. Counting held while the two were the same and
+// would have been the same off-by-one the boxes themselves were shifted to avoid -- the box for a
+// party narrowing the column to its left. Unreachable today, since a marked table is always a
+// served one and a served table carries no rows in the document for this to run over, and written
+// this way anyway: that is a fact about two other functions, it is nowhere near this one, and a
+// filter that is only correct because of it is a filter waiting for the day a marked table is drawn
+// with its rows in it.
 function drawnFilter(table) {{
-  const want = boxesOf(table).map(b => b.value.trim().toLowerCase());
-  const any = want.some(v => v);
+  const want = boxesOf(table)
+    .map(b => [Number(b.dataset.c), b.value.trim().toLowerCase()])
+    .filter(([, text]) => text);
   let hits = 0;
   for (const tr of table.tBodies[0].rows) {{
     let ok = true;
-    for (let c = 0; c < want.length; c++) {{
-      if (!want[c]) continue;
-      const cell = tr.cells[c];
-      if (!cell || !cell.textContent.toLowerCase().includes(want[c])) {{ ok = false; break; }}
+    for (const [at, text] of want) {{
+      const cell = tr.cells[at];
+      if (!cell || !cell.textContent.toLowerCase().includes(text)) {{ ok = false; break; }}
     }}
     tr.classList.toggle('hide', !ok);
     if (ok) hits++;
   }}
   const note = table.closest('.tbl').querySelector('.match');
-  note.hidden = !any;
-  note.textContent = any ? hits + ' of ' + table.dataset.drawn + ' rows on this page match' : '';
+  note.hidden = !want.length;
+  note.textContent = want.length ? hits + ' of ' + table.dataset.drawn + ' rows on this page match' : '';
+}}
+
+// What a step said about one row, as a cell the reader can see and a browser can read out.
+//
+// Both, deliberately. A tick, a warning mark and a cross tell somebody looking at the screen which
+// rows to open and tell a screen reader nothing at all, and a reader who cannot get from the mark
+// back to "held 'Canadian Business Growth Fund', which did not read as Float64" is back to
+// distrusting a count -- which is the whole of what this column exists to stop. So the level lands
+// as a class the sheet draws three ways, and the reason -- the column that degraded, and what that
+// cell held -- lands as the cell's own announced text.
+//
+// The drawings are written here, one per level, rather than being derived from the level's name: a
+// level with nothing drawn for it renders as an empty cell, which reads as a row that is fine.
+function mark(m) {{
+  const td = document.createElement('td');
+  td.className = 'lvl ' + m.level;
+  const drawn = {{ ok: '\u2713', warning: '\u25b2', error: '\u2715' }};
+  td.textContent = drawn[m.level] || '?';
+  td.title = m.level + (m.reason || []).map(r => ' \u2014 ' + r.column + ' ' + r.detail).join(' ');
+  td.setAttribute('aria-label', td.title);
+  return td;
 }}
 
 function cell(v) {{
@@ -1099,6 +1171,12 @@ async function live(table) {{
   const port = table.dataset.port;
   const qs = new URLSearchParams({{ port, offset: table.dataset.offset, limit: table.dataset.limit }});
   for (const b of boxesOf(table)) if (b.value.trim()) qs.set('f.' + b.dataset.col, b.value.trim());
+  // A parameter of its own, not one more `f.`: the boxes narrow a column by substring, and a level
+  // asked for that way would match `warning` from `warn` and would mean something else entirely on
+  // a port whose data has a column called level. The service answers to this name and refuses
+  // anything that is not a published level, which is why the control offers only those.
+  const levelPick = table.querySelector('tr.flts select.lvl');
+  if (levelPick && levelPick.value) qs.set('level', levelPick.value);
   const note = table.closest('.tbl').querySelector('.match');
   const pager = table.closest('.tbl').querySelector('.pager');
   let answer;
@@ -1106,8 +1184,14 @@ async function live(table) {{
   catch (err) {{ note.hidden = false; note.textContent = String(err.message || err); return; }}
 
   const body = table.tBodies[0];
-  body.replaceChildren(...answer.rows.map(row => {{
+  // The mark is taken at the row's own index in the window's marks, because the two sequences the
+  // service hands back line up by position and nothing else joins them: a running counter over a
+  // body that was not cleared, or a lookup by some value, draws a warning against a row that never
+  // had one. And it goes in before the cells, or the reader's first column is the data's first
+  // column and the status is somewhere in the middle of the table.
+  body.replaceChildren(...answer.rows.map((row, i) => {{
     const tr = document.createElement('tr');
+    if (answer.status) tr.append(mark(answer.status[i]));
     tr.append(...row.map(cell));
     return tr;
   }}));
@@ -1138,6 +1222,17 @@ wrap.addEventListener('input', e => {{
   table.dataset.offset = 0;
   clearTimeout(typing);
   typing = setTimeout(() => refresh(table), 180);
+}});
+
+// Picked rather than typed, so it asks at once: the delay above is there to let somebody finish a
+// word, and there is no half-finished choice. Back to the top of the port, like any other
+// narrowing -- page three of the whole port is not page three of the flagged rows.
+wrap.addEventListener('change', e => {{
+  const control = e.target.closest('tr.flts select.lvl');
+  if (!control) return;
+  const table = control.closest('table');
+  table.dataset.offset = 0;
+  refresh(table);
 }});
 
 wrap.addEventListener('click', e => {{
