@@ -1,0 +1,1286 @@
+"""Render one run of a pipeline as a page: the canvas, and the data at every port.
+
+The page exists because a figure that is wrong has to be traceable to the step that made it
+wrong. So it draws the flow as it is wired, and then shows, for every port, the rows that
+actually left it -- including the ports a step set aside, which is where a missing figure
+usually went.
+
+Everything here is read from the pipeline file and the trace of a run. Nothing is written down
+twice: the shape of the canvas comes from the edges, the panel under a step comes from that
+step's own configuration as authored, and the tables come from the frames the run produced.
+"""
+
+from __future__ import annotations
+
+import html
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+import polars as pl
+
+import dantron_etl
+from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_trace
+from dantron_etl.paths import project_root
+from dantron_etl.pipeline import PipelineSpec, read_pipeline_file
+from dantron_etl.runner import PipelineTrace, run_pipeline
+
+# Resolved from this script's own location rather than from the library's -- see `dantron_etl.paths`.
+PROJECT_ROOT = project_root(__file__)
+OUT_PATH = PROJECT_ROOT / "output_files" / "pipeline_walkthrough.html"
+# Rows drawn into the page for a slice of one entity, which the service cannot serve.
+MAX_ROWS = 25
+
+# Rows fetched when a reader opens a port. Bigger than MAX_ROWS because it costs the page nothing:
+# it arrives only for the port actually being looked at.
+WINDOW = 100
+
+# How many entities the picker may offer. Every one of them embeds a slice of every port, so this
+# multiplies the page; pagination and search are the real answer and are not built yet.
+MAX_ENTITIES = 3
+
+NODE_W, NODE_H, COL_W, PAD = 176, 62, 232, 28
+
+# Vertical breathing room: between two steps stacked in one lane cell, inside a lane band, and
+# between one lane band and the next.
+STACK_GAP, LANE_PAD, LANE_GAP = 18, 22, 26
+
+
+def _e(v: object) -> str:
+    return html.escape(str(v), quote=True)
+
+
+def _depths(spec: PipelineSpec) -> dict[str, int]:
+    """How far along the flow each step sits -- its longest path from a source."""
+    depth: dict[str, int] = {}
+    for step_id in spec.order():
+        feeders = [ref.step for ref in spec.step(step_id).inputs.values()]
+        depth[step_id] = 1 + max((depth[f] for f in feeders), default=-1)
+    return depth
+
+
+def _lane_index(spec: PipelineSpec) -> dict[str, int]:
+    ordered = sorted(spec.lanes, key=lambda lane: lane.order)
+    return {lane.id: i for i, lane in enumerate(ordered)}
+
+
+def _slots(spec: PipelineSpec, depth: dict[str, int], lanes: dict[str, int]) -> dict[str, int]:
+    """Where each step sits *within* its lane-and-depth cell, so two steps never share a spot.
+
+    Depth and lane alone do not place a step uniquely: two sources read at the same moment into the
+    same lane, which is the ordinary shape of a flow rather than an edge case. Drawing both at one
+    coordinate puts one exactly on top of the other, and the canvas then shows fewer tools than the
+    pipeline has -- with the hidden one's data still appearing below, which reads as data arriving
+    from nowhere.
+    """
+    slot: dict[str, int] = {}
+    taken: dict[tuple[int, int], int] = {}
+    for step in spec.steps:
+        cell = (depth[step.id], lanes.get(step.lane or "", 0))
+        slot[step.id] = taken.get(cell, 0)
+        taken[cell] = slot[step.id] + 1
+    return slot
+
+
+def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
+    """The flow as it is wired: a node per step, an edge per port-to-port connection."""
+    depth, lanes = _depths(spec), _lane_index(spec)
+    slot = _slots(spec, depth, lanes)
+
+    # A lane is as tall as the most crowded cell in it, so a lane holding one step stays slim and
+    # one holding four grows to fit rather than overflowing into its neighbour.
+    stacked: dict[int, int] = {}
+    for step in spec.steps:
+        row = lanes.get(step.lane or "", 0)
+        stacked[row] = max(stacked.get(row, 1), slot[step.id] + 1)
+
+    top: dict[int, float] = {}
+    tall: dict[int, float] = {}
+    y = PAD
+    for row in sorted(set(lanes.values()) | set(stacked)):
+        count = stacked.get(row, 1)
+        tall[row] = count * NODE_H + (count - 1) * STACK_GAP + 2 * LANE_PAD
+        top[row] = y
+        y += tall[row] + LANE_GAP
+
+    width = (max(depth.values()) + 1) * COL_W + PAD
+    height = y - LANE_GAP + PAD
+
+    def box(step_id: str) -> tuple[float, float]:
+        step = spec.step(step_id)
+        row = lanes.get(step.lane or "", 0)
+        x = PAD + depth[step_id] * COL_W
+        return x, top[row] + LANE_PAD + slot[step_id] * (NODE_H + STACK_GAP)
+
+    bands = "".join(
+        f'<rect class="band" x="0" y="{top[lanes[lane.id]]}" width="{width}" height="{tall[lanes[lane.id]]}"/>'
+        f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.label)}</text>'
+        for lane in spec.lanes
+    )
+
+    edges = []
+    for step in spec.steps:
+        tx, ty = box(step.id)
+        for ref in step.inputs.values():
+            sx, sy = box(ref.step)
+            x1, y1 = sx + NODE_W, sy + NODE_H / 2
+            x2, y2 = tx, ty + NODE_H / 2
+            mid = (x1 + x2) / 2
+            rows = trace.shapes[ref].rows if ref in trace.shapes else None
+            # Escape the data, never the markup: `_e` on a string that already holds an entity
+            # turns its `&` into `&amp;` and the reader is shown the entity's source text.
+            label = f"{_e(ref.port)} &middot; {rows:,}" if rows is not None else _e(ref.port)
+            curve = f"M{x1},{y1} C{mid},{y1} {mid},{y2} {x2},{y2}"
+            # One group per connection, naming its two ends as the ids the nodes answer to. A line
+            # drawn as two anonymous siblings is a line no script can ask a question about: to light
+            # what feeds a step you have to know which lines land on it, and the only place that can
+            # be read off is the drawing itself. Naming the ends here is what makes the canvas a
+            # graph rather than a picture of one.
+            #
+            # The second path is the same curve, fourteen pixels wide and transparent. A stroked
+            # path with no fill takes clicks on its stroke alone -- 1.4 pixels of it -- and picking
+            # one line out of six that cross is not something a hand can do at that width. The twin
+            # has to follow the same `d`: a target beside the line lights its neighbour, which is
+            # worse than no target at all.
+            edges.append(
+                f'<g class="edge" data-from="{_e(ref.step)}" data-to="{_e(step.id)}" data-port="{_e(ref.port)}">'
+                f'<path class="wire" d="{curve}"/><path class="hit" d="{curve}"/>'
+                f'<text class="elab" x="{(x1 + x2) / 2}" y="{(y1 + y2) / 2 - 6}">{label}</text>'
+                f"</g>"
+            )
+
+    nodes = []
+    for step in spec.steps:
+        x, y_node = box(step.id)
+        event = trace.event(step.id) if any(e.step_id == step.id for e in trace.events) else None
+        level = event.level if event else "info"
+        outs = "".join(
+            f'<circle class="anchor out" cx="{x + NODE_W}" cy="{y_node + 14 + n * 16}" r="4"/>'
+            for n in range(len(event.outputs) if event else 1)
+        )
+        ins = "".join(
+            f'<circle class="anchor in" cx="{x}" cy="{y_node + 14 + n * 16}" r="4"/>' for n in range(len(step.inputs))
+        )
+        nodes.append(
+            f'<a class="node {level}" id="node-{_e(step.id)}" href="#step-{_e(step.id)}">'
+            f'<rect x="{x}" y="{y_node}" width="{NODE_W}" height="{NODE_H}" rx="7"/>'
+            f'<text class="nid" x="{x + 12}" y="{y_node + 24}">{_e(step.id)}</text>'
+            f'<text class="ntool" x="{x + 12}" y="{y_node + 43}">{_e(step.tool)}</text>'
+            # The port dots sit inside the node rather than beside it, so a faded step fades whole:
+            # six hundred bright anchors over dimmed boxes is the noise the trace exists to remove.
+            f"{ins}{outs}</a>"
+        )
+    return (
+        f'<div class="scroll canvas" id="flow"><svg viewBox="0 0 {width} {height}" '
+        f'width="{width}" height="{height}" data-w="{width}" data-h="{height}">'
+        f"{bands}{''.join(edges)}{''.join(nodes)}</svg></div>"
+    )
+
+
+def _table(frame: pl.DataFrame, port: str | None = None) -> str:
+    """One port's rows, with a box under each column heading that narrows to matching rows.
+
+    The search is per column rather than one box over the whole table, because the question a
+    reader actually arrives with is about a column -- which rows carry this account code, which
+    carry this status -- and a single box would match that text anywhere in the row and answer a
+    different question. Filtering is over the rows drawn, which the note beneath already says is a
+    window onto a larger frame: this narrows what is on the page, it does not re-run the step.
+    """
+    if not frame.columns:
+        return '<p class="more">no columns</p>'
+
+    head = "".join(f"<th>{_e(c)}<em>{_e(frame.schema[c])}</em></th>" for c in frame.columns)
+    boxes = "".join(
+        f'<th><input class="flt" data-c="{i}" data-col="{_e(c)}" type="search" placeholder="{_e(c)}" '
+        f'aria-label="filter {_e(c)}"></th>'
+        for i, c in enumerate(frame.columns)
+    )
+    # A port the service can serve carries no rows in the page at all: the header and the search
+    # boxes are the whole of it until a reader opens it, and then a window is fetched. The page has
+    # to stay the same size as the flow grows, and a flow grows by steps -- every table embedded
+    # here is multiplied by however many steps the pipeline ends up having.
+    #
+    # A slice of one entity is not a port the service knows, so those still carry their rows.
+    lazy = port is not None
+    shown = frame.head(0) if lazy else frame.head(MAX_ROWS)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{'<span class=nul>null</span>' if v is None else _e(v)}</td>" for v in row) + "</tr>"
+        for row in shown.iter_rows()
+    )
+    drawn = 0 if lazy else min(frame.height, MAX_ROWS)
+    more = (
+        ""
+        if lazy
+        else (f'<p class="more">showing {drawn:,} of {frame.height:,} rows</p>' if frame.height > MAX_ROWS else "")
+    )
+    # A port names itself so the page can ask the service for another window of it. The rows written
+    # here are the first paint and the fallback: opened as a file with no service answering, the page
+    # still shows what it always showed.
+    names = f' data-port="{_e(port)}" data-offset="0" data-limit="{WINDOW}" data-lazy="1"' if port else ""
+    pager = (
+        '<p class="more pager" hidden><button data-page="prev">previous</button>'
+        '<button data-page="next">next</button><span class="at"></span></p>'
+        if port
+        else ""
+    )
+    return (
+        f'<div class="tbl"><div class="scroll"><table class="data" data-drawn="{drawn}"{names}>'
+        f'<thead><tr>{head}</tr><tr class="flts">{boxes}</tr></thead>'
+        f'<tbody>{body}</tbody></table></div>{more}<p class="more match" hidden></p>{pager}</div>'
+    )
+
+
+def _scalar(value: Any) -> str:
+    """One configured value, drawn so that what it *is* survives being read.
+
+    An empty string and an absent value are one character apart in JSON and look identical on a
+    page, so each says its own name; a boolean stays lower case, the way a definition file spells
+    it, rather than becoming Python's True.
+    """
+    if value is None:
+        return '<span class="nul">not set</span>'
+    if isinstance(value, bool):
+        return f"<code>{'true' if value else 'false'}</code>"
+    if value == "":
+        return '<span class="nul">empty</span>'
+    return f"<code>{_e(value)}</code>"
+
+
+def _value(value: Any) -> str:
+    """A configured value at any shape: a list of like objects becomes the table it already is."""
+    if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+        columns: list[str] = []
+        for item in value:
+            columns.extend(key for key in item if key not in columns)
+        head = "".join(f"<th>{_e(key)}</th>" for key in columns)
+        body = "".join(
+            "<tr>" + "".join(f"<td>{_value(item.get(key))}</td>" for key in columns) + "</tr>" for item in value
+        )
+        return (
+            f'<div class="scroll"><table class="cfgtable"><thead><tr>{head}</tr></thead>'
+            f"<tbody>{body}</tbody></table></div>"
+        )
+    if isinstance(value, list):
+        return " ".join(_scalar(item) for item in value) if value else '<span class="nul">none</span>'
+    if isinstance(value, dict):
+        return "".join(
+            f'<div class="cfg"><span class="ck">{_e(key)}</span><span>{_value(item)}</span></div>'
+            for key, item in value.items()
+        )
+    return _scalar(value)
+
+
+def _config(config: Mapping[str, Any]) -> str:
+    """A step's configuration as the fields it sets, rather than as the JSON it is stored in.
+
+    The JSON was honest and unreadable: a reader after "which column becomes which name" had to
+    parse punctuation to find two strings. Drawn from the value's own shape rather than from the
+    tool's template, so a tool this renderer has never heard of still draws, and a field the
+    template forgot is still shown rather than silently dropped.
+    """
+    if not config:
+        return '<p class="more">nothing to configure</p>'
+    return "".join(
+        f'<div class="cfg"><span class="ck">{_e(key)}</span><span>{_value(value)}</span></div>'
+        for key, value in config.items()
+    )
+
+
+def _slice_body(slice_: PortSlice, frame: pl.DataFrame | None) -> str:
+    """One port, for one reader's chosen entity -- or the reason there is nothing to draw."""
+    if slice_.status in {"no_grain", "not_retained"}:
+        return f'<p class="more">{_e(slice_.reason)}</p>'
+    if frame is None or frame.height == 0:
+        return '<p class="more">no rows here for this one &mdash; the port does carry the entity</p>'
+    return _table(frame)
+
+
+def _index(spec: PipelineSpec, trace: PipelineTrace) -> str:
+    """Every step as a line, grouped by lane, in the order the run took them.
+
+    Fifty-three nodes is more than a canvas can be scanned for, and a reader looking for one by name
+    should not have to pan a drawing to find it. Ordered by the run rather than by the file, because
+    that is the order a reader is thinking in when they are following a figure.
+    """
+    lanes: dict[str, list[str]] = {}
+    for step_id in spec.order():
+        step = spec.step(step_id)
+        event = trace.event(step_id)
+        mark = ' class="flag"' if event.level == "warning" else ""
+        lanes.setdefault(step.lane or "", []).append(
+            f'<li><button data-goto="{_e(step_id)}"{mark}>'
+            f"<span>{_e(step_id)}</span><em>{_e(step.tool)}</em></button></li>"
+        )
+
+    labels = {lane.id: lane.label for lane in spec.lanes}
+    groups = "".join(
+        f'<li class="lanehead">{_e(labels.get(lane, lane) or "elsewhere")}</li>{"".join(items)}'
+        for lane, items in lanes.items()
+    )
+    return (
+        '<nav class="index" aria-label="every step"><header><b>steps</b>'
+        f"<span>{sum(len(items) for items in lanes.values())}</span></header>"
+        f"<ul>{groups}</ul></nav>"
+    )
+
+
+def _step_detail(spec: PipelineSpec, trace: PipelineTrace, step_id: str) -> str:
+    """What this step is: why it exists, how it is configured, what feeds it, what it cost."""
+    step = spec.step(step_id)
+    event = trace.event(step_id)
+    notes = (
+        "<ul class=notes>" + "".join(f"<li>{_e(note)}</li>" for note in event.notes) + "</ul>" if event.notes else ""
+    )
+    feeds = "".join(
+        f"<li><code>{_e(name)}</code> &larr; <code>{_e(ref)}</code></li>" for name, ref in step.inputs.items()
+    )
+    return (
+        f'<section class="detail {event.level}" data-step="{_e(step_id)}" hidden>'
+        f'<header><h3><code>{_e(step_id)}</code><span class="tool">{_e(step.tool)}</span></h3>'
+        f'<p class="where">{_e(step.lane or "")} &middot; {_e(step.stage or "")} &middot; '
+        f"{event.duration_ms:.1f} ms</p>"
+        f"{f'<p class=why>{_e(step.why)}</p>' if step.why else ''}{notes}</header>"
+        f"<h5>configuration, as written</h5>{_config(step.config)}"
+        f"{f'<h5>fed by</h5><ul class=feeds>{feeds}</ul>' if feeds else ''}"
+        f"</section>"
+    )
+
+
+def _step_data(
+    spec: PipelineSpec,
+    trace: PipelineTrace,
+    step_id: str,
+    views: dict[str, Any],
+) -> str:
+    step = spec.step(step_id)
+    event = trace.event(step_id)
+    # What left, and what arrived. A step's inputs are upstream output ports, so both sides are
+    # frames this run already produced and the service already serves by name -- which is what makes
+    # searching and paging work on an input exactly as it does on an output.
+    #
+    # Reading a step used to mean holding its output in your head and scrolling to the step before it
+    # to see what went in. The comparison a reader actually wants -- what did this step DO -- is
+    # between two frames that were never on the screen together.
+    leaving = [(shape.port, shape.rows, _e(shape.port.port)) for shape in event.outputs]
+    arriving = [
+        (ref, trace.shapes[ref].rows if ref in trace.shapes else None, f"{_e(name)} &larr; {_e(ref.port)}")
+        for name, ref in step.inputs.items()
+    ]
+
+    sides = []
+    for side, entries in (("out", leaving), ("in", arriving)):
+        if not entries:
+            continue
+        ports = []
+        for ref, rows, label in entries:
+            panes = []
+            for key, view in views.items():
+                if view is None:
+                    frame = trace.frames.get(ref)
+                    body = (
+                        _table(frame, port=f"{ref.step}.{ref.port}")
+                        if frame is not None
+                        else '<p class="more">released &mdash; not retained</p>'
+                    )
+                    count = "&mdash;" if rows is None else f"{rows:,} rows"
+                else:
+                    sliced = view.slice(ref)
+                    body = _slice_body(sliced, sliced.frame)
+                    shown = "&mdash;" if sliced.rows_focused is None else f"{sliced.rows_focused:,}"
+                    count = f"{shown} of {rows:,} rows" if rows is not None else shown
+                # Shut by default, and `details` rather than a script: a closed one is not laid out,
+                # so a page of wide tables costs the browser almost nothing until a port is opened,
+                # and what a reader came to see -- which port carries how many rows -- stays readable
+                # without scrolling past the rows themselves.
+                panes.append(
+                    f'<div class="view" data-for="{_e(key)}" hidden><details>'
+                    f'<summary><span class="pill">{label}</span><span>{count}</span></summary>'
+                    f"{body}</details></div>"
+                )
+            ports.append(f'<div class="port">{"".join(panes)}</div>')
+        sides.append(f'<div class="side" data-side="{side}"{"" if side == "out" else " hidden"}>{"".join(ports)}</div>')
+
+    # No toggle on a source: there is no "in" to flip to, and a control that does nothing is worse
+    # than none.
+    flip = (
+        '<div class="flip"><button data-side="out" aria-pressed="true">out</button>'
+        '<button data-side="in" aria-pressed="false">in</button></div>'
+        if arriving
+        else ""
+    )
+    return f'<section class="stepdata" data-step="{_e(step_id)}" hidden>{flip}{"".join(sides)}</section>'
+
+
+def _views(trace: PipelineTrace, focus: FocusSpec) -> tuple[dict[str, Any], int, int]:
+    """The picker's entries -- everybody, then one per offered entity -- with how many of each there are.
+
+    Every entity carries a full slice of every port, so the page grows with the number of entities
+    multiplied by the number of ports. Three of them is nothing; 1,557 is a page no browser will
+    open. So the picker takes the first ``MAX_ENTITIES`` and says how many there were.
+
+    First, deliberately, rather than largest or busiest. Any ranking would need a port to rank at --
+    an entity's count means nothing except against one named port, since the same entity is one row
+    at a parent grain and several at a child -- and choosing that port is a judgement about one
+    flow's shape, which is not something a renderer shared by every flow should be making. Paging
+    and search are the real answer; this is the honest placeholder until they exist.
+
+    Derived here rather than inside the page, because the panels are now built separately and a
+    panel whose views were keyed differently from the picker's buttons would arrive with every one
+    of them hidden: the reader clicks a step and the pane fills with nothing.
+
+    Which means both :func:`build` and :func:`build_panels` run this, so writing one page slices the
+    trace twice. Left as it is, with no memo: at ``MAX_ENTITIES`` of three the work is three passes
+    over the ports a run retained, done once when the run is written, beside writing every one of
+    those ports to Parquet -- and a memo keyed on a trace, which is mutable and unhashable, is a
+    stale page waiting to happen. The day paging replaces the cap, this stops being small, and the
+    answer then is a caller that slices once and hands the views to both.
+    """
+    options = available_entities(trace, focus)
+    shown = options[:MAX_ENTITIES]
+    views: dict[str, Any] = {"all": None}
+    for option in shown:
+        views[str(option.value)] = slice_trace(trace, focus, option.value)
+    return views, len(shown), len(options)
+
+
+def build_panels(spec: PipelineSpec, trace: PipelineTrace, focus: FocusSpec) -> dict[str, str]:
+    """Every step's data panel, keyed by the step, ready to be written down and fetched one at a time.
+
+    The markup is exactly what the page used to carry: same tables, same headers, same per-column
+    search boxes, same in/out flip, same bodies left for the service. What changed is *when* it is
+    built -- on the real flow, 672 of these came to 7.76 MB of an 8.98 MB page, with 24,937 form
+    controls the browser laid out before it could paint, for the 671 steps nobody had opened.
+
+    Keyed off ``spec.order()`` rather than off the trace's events, so every step a reader can pick
+    -- a node on the canvas, a line in the step list -- has a panel behind it. A step the flow can
+    select and the service cannot answer for is a dead end found by clicking.
+    """
+    views, _, _ = _views(trace, focus)
+    return {step_id: _step_data(spec, trace, step_id, views) for step_id in spec.order()}
+
+
+def build(spec: PipelineSpec, trace: PipelineTrace, focus: FocusSpec) -> str:
+    """The run as a page: the flow, every step's configuration, and the data of the step being read.
+
+    The panels are no longer in here -- they are written beside the run's ports and fetched as they
+    are opened, which is what :func:`build_panels` is for. One exception, and it is the reason the
+    page opens on anything at all: the step named by ``data-first`` is chosen before any fetch can
+    have answered, so its panel ships in the document. Every other panel in here would be weight for
+    a step nobody has clicked.
+
+    What stays is everything a reader has without a service answering: the canvas, the step list and
+    each step's configuration as it was authored. Opened as a plain file the page still says what
+    every step does; it is the rows, and now the tables around them, that need something serving.
+    """
+    views, shown, offered = _views(trace, focus)
+
+    total_in = sum(s.rows for r, s in trace.shapes.items() if not spec.step(r.step).inputs)
+    published = [r for r in trace.shapes if not spec.consumers(r)]
+    order = spec.order()
+    details = "".join(_step_detail(spec, trace, step_id) for step_id in order)
+    # One name for the step the page opens on and the one panel it ships, because they have to be
+    # the same step: named without shipping, the page opens on an empty pane until a fetch answers,
+    # and shipped without naming, it carries a panel nothing ever shows.
+    opening = order[0] if order else ""
+    panel = _step_data(spec, trace, opening, views) if opening else ""
+    summary = (
+        f"<b>{len(trace.events)}</b> steps &middot; <b>{len(trace.shapes)}</b> ports &middot; "
+        f"<b>{total_in}</b> rows in &middot; <b>{len(published)}</b> ports nothing reads further"
+    )
+    buttons = "".join(f'<button data-pick="{_e(k)}">{_e("everyone" if k == "all" else k)}</button>' for k in views)
+    capped = "" if shown == offered else f'<span class="pmore">showing the first {shown} of {offered:,}</span>'
+    picker = f'<div class="picker"><span class="plabel">{_e(focus.label)}</span>{buttons}{capped}</div>'
+    return TEMPLATE.format(
+        name=_e(spec.name),
+        summary=summary,
+        canvas=_canvas(spec, trace),
+        picker=picker,
+        details=details,
+        panel=panel,
+        first=_e(opening),
+        index=_index(spec, trace),
+    )
+
+
+TEMPLATE = """<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{name}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {{
+  --ground:#f4f4f1; --surface:#fff; --ink:#16181b; --muted:#5c6470; --line:#dfdfd9;
+  --accent:#0d6e70; --accent-soft:#e5f0f0; --warn:#8a4b1f; --warn-soft:#f6ece3;
+  --sans:'Archivo','Segoe UI',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+}}
+@media (prefers-color-scheme:dark) {{ :root:not([data-theme="light"]) {{
+  --ground:#131618; --surface:#191d20; --ink:#e8eae6; --muted:#98a0a8; --line:#2a2f34;
+  --accent:#46b3b0; --accent-soft:#12312f; --warn:#c98a57; --warn-soft:#2a1f16; }} }}
+:root[data-theme="dark"] {{
+  --ground:#131618; --surface:#191d20; --ink:#e8eae6; --muted:#98a0a8; --line:#2a2f34;
+  --accent:#46b3b0; --accent-soft:#12312f; --warn:#c98a57; --warn-soft:#2a1f16; }}
+* {{ box-sizing:border-box; }}
+
+/* Scrollbars, in both spellings: the standard properties, which Firefox honours, and the WebKit
+   pseudo-elements, which Chromium and Safari honour. Neither alone covers a browser a reader might
+   actually be using, and the two cannot express quite the same thing -- so the colours are shared
+   through the same tokens as everything else, and the sizes are stated twice on purpose.
+
+   Deliberately quiet rather than invisible: a pane whose content runs past its edge has to say so,
+   and on a laptop screen with four scrollable regions on it at once, four loud bars are the loudest
+   thing on the page. They darken on hover, which is when a reader is looking for one. */
+* {{ scrollbar-width:thin; scrollbar-color:var(--line) transparent; }}
+*:hover {{ scrollbar-color:var(--muted) transparent; }}
+::-webkit-scrollbar {{ width:7px; height:7px; }}
+::-webkit-scrollbar-track {{ background:transparent; }}
+::-webkit-scrollbar-thumb {{ background:var(--line); border-radius:4px; }}
+::-webkit-scrollbar-thumb:hover {{ background:var(--muted); }}
+::-webkit-scrollbar-corner {{ background:transparent; }}
+body {{ background:var(--ground); color:var(--ink); font-family:var(--sans); line-height:1.55; }}
+code, pre, .data {{ font-family:var(--mono); }}
+html, body {{ height:100%; }}
+.wrap {{ height:100vh; display:flex; flex-direction:column; padding:0 .6rem .6rem;
+  --split-x:52%; --split-y:52%; }}
+
+.body {{ flex:1 1 auto; min-height:0; display:flex; gap:.6rem; }}
+.body > .panes {{ flex:1 1 auto; }}
+
+.index {{ flex:0 0 13rem; min-height:0; overflow:auto; background:var(--surface);
+  border:1px solid var(--line); border-radius:9px; }}
+.wrap.railed .index {{ display:none; }}
+.index header {{ position:sticky; top:0; background:var(--surface); display:flex;
+  justify-content:space-between; align-items:baseline; padding:.55rem .7rem;
+  border-bottom:1px solid var(--line); font:600 .68rem var(--sans);
+  text-transform:uppercase; letter-spacing:.11em; color:var(--muted); }}
+.index ul {{ list-style:none; margin:0; padding:.3rem 0 .6rem; }}
+.index .lanehead {{ font:600 .6rem var(--sans); text-transform:uppercase; letter-spacing:.1em;
+  color:var(--muted); padding:.7rem .7rem .25rem; }}
+.index button {{ width:100%; text-align:left; background:none; border:0; cursor:pointer;
+  padding:.24rem .7rem; display:flex; flex-direction:column; gap:.05rem; border-left:2px solid transparent; }}
+.index button span {{ font:500 .76rem var(--mono); color:var(--ink); }}
+.index button em {{ font:400 .66rem var(--sans); font-style:normal; color:var(--muted); }}
+.index button:hover {{ background:var(--accent-soft); }}
+.index button[aria-current="true"] {{ background:var(--accent-soft); border-left-color:var(--accent); }}
+.index button[aria-current="true"] span {{ color:var(--accent); font-weight:600; }}
+.index button.flag span::after {{ content:' !'; color:var(--warn); font-weight:700; }}
+.rail {{ background:none; border:1px solid var(--line); border-radius:6px; cursor:pointer;
+  font-size:.9rem; line-height:1; padding:.3rem .45rem; color:var(--muted); }}
+.rail:hover {{ border-color:var(--accent); color:var(--accent); }}
+
+.wrap.no-flow .flowpane, .wrap.no-flow .grip-v {{ display:none; }}
+.wrap.no-detail .detailpane, .wrap.no-detail .grip-v {{ display:none; }}
+.wrap.no-data .datapane, .wrap.no-data .grip-h {{ display:none; }}
+.wrap.no-flow .panes {{ grid-template-columns:0 0 minmax(0,1fr); }}
+.wrap.no-detail .panes {{ grid-template-columns:minmax(0,1fr) 0 0; }}
+.wrap.no-data .panes {{ grid-template-rows:minmax(0,1fr) 0 0; }}
+
+.folds {{ display:flex; gap:0; margin-left:auto; border:1px solid var(--line);
+  border-radius:6px; overflow:hidden; }}
+.folds button {{ font:600 .68rem var(--sans); color:var(--muted); background:var(--surface);
+  border:0; padding:.22rem .6rem; cursor:pointer; letter-spacing:.04em; }}
+.folds button + button {{ border-left:1px solid var(--line); }}
+.folds button[aria-pressed="true"] {{ background:var(--accent); color:var(--surface); }}
+.folds button:hover:not([aria-pressed="true"]) {{ background:var(--accent-soft); color:var(--accent); }}
+
+.panes {{ min-height:0; display:grid; gap:0;
+  grid-template-columns:var(--split-x) 7px minmax(0,1fr);
+  grid-template-rows:var(--split-y) 7px minmax(0,1fr); }}
+.pane {{ min-width:0; min-height:0; overflow:auto; background:var(--surface);
+  border:1px solid var(--line); border-radius:9px; }}
+.flowpane {{ grid-area:1 / 1; padding:.4rem; display:flex; flex-direction:column; overflow:hidden; }}
+.flowpane .canvas {{ flex:1 1 auto; min-height:0; overflow:auto; }}
+.bar {{ display:flex; align-items:center; gap:.25rem; padding:0 .2rem .35rem; flex:0 0 auto; }}
+.zoom {{ display:flex; align-items:center; gap:.25rem; }}
+.bar .tclear {{ font:600 .7rem var(--sans); color:var(--muted); background:var(--surface);
+  border:1px solid var(--line); border-radius:5px; padding:.1rem .42rem; cursor:pointer;
+  min-width:1.7rem; margin-left:.4rem; }}
+.bar .tclear:hover {{ border-color:var(--accent); color:var(--accent); }}
+.zoom button {{ font:600 .7rem var(--sans); color:var(--muted); background:var(--surface);
+  border:1px solid var(--line); border-radius:5px; padding:.1rem .42rem; cursor:pointer;
+  min-width:1.7rem; }}
+.zoom button:hover {{ border-color:var(--accent); color:var(--accent); }}
+.zoom .level {{ font:500 .68rem var(--mono); color:var(--muted); min-width:2.9rem;
+  text-align:center; font-variant-numeric:tabular-nums; }}
+.detailpane {{ grid-area:1 / 3; padding:.8rem 1rem; }}
+.datapane {{ grid-area:3 / 1 / 4 / 4; padding:.7rem .9rem; }}
+
+/* The grips. Wider than they look, because a 1px target is a target nobody hits. */
+.grip {{ position:relative; background:transparent; }}
+.grip::after {{ content:''; position:absolute; inset:0; margin:auto; background:var(--line);
+  border-radius:2px; }}
+.grip:hover::after, .grip.dragging::after {{ background:var(--accent); }}
+.grip-v {{ grid-area:1 / 2; cursor:col-resize; }}
+.grip-v::after {{ width:3px; height:38px; }}
+.grip-h {{ grid-area:2 / 1 / 3 / 4; cursor:row-resize; }}
+.grip-h::after {{ height:3px; width:38px; }}
+body.resizing {{ cursor:inherit; user-select:none; }}
+header.top {{ display:flex; align-items:baseline; gap:.8rem; flex-wrap:wrap;
+  padding:.45rem .2rem .45rem; flex:0 0 auto; }}
+header.top h1 {{ font-size:1.15rem; font-weight:700; letter-spacing:-.01em; margin:0; }}
+header.top p {{ margin:0; color:var(--muted); }}
+header.top b {{ color:var(--accent); }}
+
+.canvas {{ background:transparent; border:0; padding:0; margin:0; }}
+.band {{ fill:var(--accent-soft); opacity:.4; }}
+.lane {{ fill:var(--muted); font:600 9px var(--sans); letter-spacing:.11em; text-transform:uppercase; }}
+/* A connection is a group, and the group carries the line's colour and weight rather than the paths
+   doing it themselves: a state class on the group then restyles the curve, its hit target and its
+   caption in one place, and they can never light apart. `.wire` declares nothing of its own so that
+   stroke and width inherit -- a declaration on the path would beat anything inherited from the
+   group, and the highlight would silently do nothing. */
+.edge {{ fill:none; stroke:var(--muted); stroke-width:1.4; opacity:.75; }}
+.elab {{ fill:var(--muted); font:500 9px var(--mono); text-anchor:middle; }}
+.hit {{ fill:none; stroke:transparent; stroke-width:14; pointer-events:stroke; cursor:pointer; }}
+
+/* Four states, not two. At 672 steps, lighting the lines that touch the chosen tool answers "what
+   is it wired to" and leaves the actual question -- where does this run, three tools further on --
+   as unreadable as before. And the two directions are drawn differently because which way the data
+   runs is what a reader follows a line to find out; three states in one colour light the same
+   pixels as one state would. */
+.edge.direct {{ stroke:var(--ink); stroke-width:3.2; opacity:1; }}
+.edge.upstream {{ stroke:var(--accent); stroke-width:2.2; opacity:.95; }}
+.edge.downstream {{ stroke:var(--warn); stroke-width:2.2; opacity:.95; }}
+.edge.dim {{ opacity:.1; }}
+.edge.direct .elab, .edge.upstream .elab, .edge.downstream .elab {{ fill:var(--ink); font-weight:700; }}
+.node rect {{ fill:var(--surface); stroke:var(--accent); stroke-width:1.5; }}
+/* Faded, not hidden: the shape of the flow is the reader's map of where the lit chain sits in it. */
+.node.dim {{ opacity:.22; }}
+.node.direct rect {{ stroke:var(--ink); stroke-width:3; }}
+.node.upstream rect {{ stroke:var(--accent); stroke-width:2.4; }}
+.node.downstream rect {{ stroke:var(--warn); stroke-width:2.4; }}
+/* Warning and error are written last on purpose, so that at equal specificity they beat a trace
+   state: what the run had to say about a step is a fact about the data, and a highlight is a
+   question the reader asked a second ago. A warning hidden under a highlight is the swap in the
+   wrong direction, and the reader has no way of knowing anything was covered up.
+   The cost is that a warning node in the upstream chain wears the downstream colour, both being
+   --warn. That is a collision worth carrying rather than solving with a third hue: direction is
+   carried by the CONNECTIONS, which are what a reader follows to ask the question in the first
+   place -- every lit line around a node in the upstream chain is teal, every one around a node in
+   the downstream chain is rust -- and the node's own stroke only confirms what they already say.
+   The stroke width, which a warning leaves alone, still says the node is in the chain at all. */
+.node.warning rect {{ stroke:var(--warn); }}
+.node.error rect {{ stroke:var(--warn); stroke-width:2.5; }}
+.node:hover rect {{ fill:var(--accent-soft); }}
+.node.chosen rect {{ fill:var(--accent-soft); stroke-width:3; }}
+.node {{ cursor:pointer; }}
+.nid {{ fill:var(--ink); font:600 12px var(--mono); }}
+.ntool {{ fill:var(--muted); font:500 10px var(--sans); }}
+.anchor {{ stroke:var(--surface); stroke-width:1.5; }}
+.anchor.in {{ fill:var(--surface); stroke:var(--accent); }}
+.anchor.out {{ fill:var(--accent); }}
+
+.step {{ background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:1.2rem 1.4rem; margin-bottom:1.1rem; scroll-margin-top:1rem; }}
+.step.warning {{ border-left:3px solid var(--warn); }}
+.pmore {{ color:var(--muted); font-size:.8rem; margin-left:.5rem; }}
+.step h3 {{ margin:0; font-size:1.05rem; display:flex; align-items:baseline; gap:.6rem; flex-wrap:wrap; }}
+.tool {{ color:var(--accent); font:600 .72rem var(--mono); }}
+.where {{ color:var(--muted); font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; }}
+.why {{ margin:.5rem 0 0; color:var(--muted); max-width:70ch; }}
+.cols {{ display:grid; grid-template-columns:minmax(220px,300px) minmax(0,1fr); gap:1.4rem; margin-top:1rem; }}
+@media (max-width:820px) {{ .cols {{ grid-template-columns:1fr; }} }}
+.cols h5 {{ font-size:.62rem; text-transform:uppercase; letter-spacing:.11em; color:var(--muted);
+  margin:0 0 .35rem; font-weight:600; }}
+pre {{ background:var(--ground); border:1px solid var(--line); border-radius:6px; padding:.6rem .7rem;
+  font-size:.76rem; overflow-x:auto; margin:0 0 .9rem; }}
+ul.feeds {{ list-style:none; margin:0 0 .9rem; padding:0; font-size:.78rem; color:var(--muted); }}
+.timing {{ margin:0; color:var(--muted); font-size:.72rem; }}
+.picker {{ display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; margin:0 0 1.5rem; }}
+.plabel {{ font-size:.62rem; text-transform:uppercase; letter-spacing:.11em; color:var(--muted);
+  font-weight:600; margin-right:.3rem; }}
+.picker button {{ font:inherit; font-size:.8rem; padding:.3rem .7rem; border:1px solid var(--line);
+  background:var(--surface); color:var(--ink); border-radius:999px; cursor:pointer; }}
+.picker button:hover {{ border-color:var(--accent); }}
+.picker button[aria-pressed="true"] {{ background:var(--accent); border-color:var(--accent);
+  color:var(--surface); font-weight:600; }}
+.port {{ margin-bottom:1rem; }}
+.pager {{ display:flex; gap:.4rem; align-items:center; }}
+.pager button {{ font:500 .72rem var(--sans); color:var(--ink); background:var(--surface);
+  border:1px solid var(--line); border-radius:5px; padding:.14rem .55rem; cursor:pointer; }}
+.pager button:hover:not(:disabled) {{ border-color:var(--accent); color:var(--accent); }}
+.pager button:disabled {{ opacity:.4; cursor:default; }}
+table.data input.flt {{ width:100%; min-width:5.5rem; box-sizing:border-box; font:400 .72rem var(--mono);
+  color:var(--ink); background:var(--ground); border:1px solid var(--line); border-radius:4px;
+  padding:.12rem .3rem; }}
+table.data input.flt:focus {{ outline:2px solid var(--accent); outline-offset:-1px; }}
+table.data tr.flts th {{ padding:.2rem .5rem .4rem; border-bottom:1px solid var(--line); }}
+table.data tbody tr.hide {{ display:none; }}
+a.up {{ font:600 1.05rem var(--mono); color:var(--ink); text-decoration:none;
+  border-bottom:2px solid var(--accent-soft); }}
+a.up::before {{ content:'↑'; color:var(--accent); font-size:.8rem; margin-right:.3rem;
+  vertical-align:.06em; }}
+a.up:hover {{ border-bottom-color:var(--accent); }}
+a.up:hover::before {{ color:var(--accent); }}
+.canvas {{ scroll-margin-top:1rem; }}
+.node {{ scroll-margin-top:6rem; }}
+.flip {{ display:inline-flex; gap:0; margin-bottom:.6rem; border:1px solid var(--line);
+  border-radius:6px; overflow:hidden; }}
+.flip button {{ font:600 .72rem var(--sans); color:var(--muted); background:var(--surface);
+  border:0; padding:.2rem .7rem; cursor:pointer; letter-spacing:.04em; }}
+.flip button + button {{ border-left:1px solid var(--line); }}
+.flip button[aria-pressed="true"] {{ background:var(--accent); color:var(--surface); }}
+.flip button:hover:not([aria-pressed="true"]) {{ background:var(--accent-soft); color:var(--accent); }}
+ul.notes {{ list-style:none; margin:.55rem 0 0; padding:0; }}
+ul.notes li {{ background:var(--warn-soft); color:var(--warn); border-left:3px solid var(--warn);
+  padding:.3rem .6rem; border-radius:0 5px 5px 0; font-size:.82rem; margin-bottom:.3rem; }}
+ul.notes li::before {{ content:'! '; font-weight:700; }}
+.cols > * {{ min-width:0; }}
+.cfg > span:last-child {{ min-width:0; flex:1 1 auto; }}
+.cfg code, table.cfgtable code {{ overflow-wrap:anywhere; white-space:pre-wrap; }}
+.side {{ margin-top:.2rem; }}
+.cfg {{ display:flex; gap:.6rem; align-items:baseline; padding:.22rem 0;
+  border-bottom:1px dotted var(--line); }}
+.cfg:last-child {{ border-bottom:none; }}
+.ck {{ color:var(--muted); font:500 .72rem var(--sans); min-width:7.5rem; flex:0 0 auto;
+  letter-spacing:.03em; }}
+.cfg code {{ font-size:.78rem; color:var(--ink); background:var(--accent-soft);
+  padding:.06rem .3rem; border-radius:4px; }}
+table.cfgtable {{ border-collapse:collapse; font-size:.76rem; }}
+table.cfgtable th {{ text-align:left; font:600 .68rem var(--sans); color:var(--muted);
+  text-transform:uppercase; letter-spacing:.07em; padding:.2rem .6rem .2rem 0; }}
+table.cfgtable td {{ padding:.16rem .6rem .16rem 0; vertical-align:top; }}
+.port summary {{ margin:0; font-size:.8rem; font-weight:500; display:flex; gap:.5rem;
+  align-items:center; cursor:pointer; padding:.3rem .1rem; border-radius:5px; list-style:none; }}
+.port summary::-webkit-details-marker {{ display:none; }}
+.port summary::before {{ content:'▸'; color:var(--muted); font-size:.7rem;
+  transition:transform .12s ease; display:inline-block; }}
+.port details[open] > summary::before {{ transform:rotate(90deg); }}
+.port summary:hover {{ background:var(--accent-soft); }}
+.port details > *:not(summary) {{ margin-top:.4rem; }}
+.port h4 {{ margin:0 0 .35rem; font-size:.8rem; font-weight:500; display:flex; gap:.5rem;
+  align-items:center; color:var(--muted); }}
+.pill {{ background:var(--accent); color:var(--surface); font:600 .64rem var(--mono);
+  padding:.1rem .45rem; border-radius:3px; }}
+.scroll {{ overflow-x:auto; border:1px solid var(--line); border-radius:6px; }}
+table.data {{ border-collapse:collapse; font-size:.76rem; width:100%; font-variant-numeric:tabular-nums; }}
+table.data th {{ text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--line);
+  background:var(--ground); font-weight:600; white-space:nowrap; }}
+table.data th em {{ display:block; font-style:normal; font-weight:400; font-size:.85em; color:var(--muted); }}
+table.data td {{ padding:.26rem .5rem; border-bottom:1px solid var(--line); white-space:nowrap; }}
+table.data tr:last-child td {{ border-bottom:none; }}
+.nul {{ color:var(--muted); font-style:italic; }}
+.more {{ margin:.3rem 0 0; color:var(--muted); font-size:.74rem; font-style:italic; }}
+</style>
+<div class="wrap" data-first="{first}">
+  <header class="top"><button class="rail" title="show or hide the list of steps">&#9776;</button>
+    <h1>{name}</h1><p>{summary}</p>{picker}
+    <div class="folds"><button data-fold="flow" aria-pressed="true">flow</button>
+      <button data-fold="detail" aria-pressed="true">config</button>
+      <button data-fold="data" aria-pressed="true">data</button></div></header>
+  <div class="body">
+  {index}
+  <div class="panes">
+    <div class="pane flowpane">
+      <div class="bar"><div class="zoom"><button data-zoom="out" title="zoom out">&minus;</button>
+        <span class="level">100%</span>
+        <button data-zoom="in" title="zoom in">+</button>
+        <button data-zoom="fit" title="fit the whole flow">fit</button>
+        <button data-zoom="reset" title="back to actual size">1:1</button></div>
+        <button class="tclear" data-trace="clear"
+          title="clear the trace and light the whole flow again">&#9678;</button></div>
+      {canvas}</div>
+    <div class="grip grip-v" title="drag to widen either side"></div>
+    <div class="pane detailpane">{details}</div>
+    <div class="grip grip-h" title="drag to raise or lower the data"></div>
+    <div class="pane datapane">{panel}</div>
+  </div>
+  </div>
+</div>
+<script>
+const wrap = document.querySelector('.wrap');
+
+// The step being read, kept so that a panel landing after the reader has clicked elsewhere is not
+// drawn over the step they moved on to: a fetch outlives the click that started it, and one step's
+// rows under another step's name is the one failure here nobody can see.
+let chosen = null;
+
+// One step at a time. The flow is the index: click a node and that step's configuration and its
+// data arrive beside it, with nothing moving and nothing to scroll past. A page of fifty-three
+// cards is a page nobody reads.
+//
+// Asynchronous because only half of it is in the document. The configuration, the canvas and the
+// step list are here and move at once; the step's data panel is fetched, and what it needs doing to
+// it -- showing it, and putting it on the entity the picker is on -- can only be done once it has
+// landed, which is what the tail of this function is.
+async function choose(stepId, readerAsked = true) {{
+  chosen = stepId;
+  // .stepdata as well as .detail, and it is not the incoming panel this reaches -- that one is not
+  // here yet. It is the panel of the step the reader has just left, which goes at the same moment
+  // the rest of the selection moves. Narrow this to .detail alone and the previous step's rows stay
+  // on the screen under the new step's name for as long as the fetch takes.
+  for (const section of wrap.querySelectorAll('.detail, .stepdata'))
+    section.hidden = section.dataset.step !== stepId;
+  for (const node of wrap.querySelectorAll('.node'))
+    node.classList.toggle('chosen', node.id === 'node-' + stepId);
+  for (const line of wrap.querySelectorAll('.index button'))
+    line.setAttribute('aria-current', String(line.dataset.goto === stepId));
+  // The trace hangs off choosing rather than off clicking a node, because a node is only one of the
+  // two ways a step gets chosen -- the step list is the other, and is how a reader finds a step they
+  // could not pick out of six hundred in the first place. Bolted onto the node's handler, the list
+  // would quietly do less than the canvas.
+  //
+  // But only when a reader asked for it, which is what the parameter is for and the only reason it
+  // exists. The page opens by choosing its first step, and tracing on that call would fade most of
+  // the canvas before the reader has put any question to it. Measured on the real flow, choosing a
+  // late step lights 427 nodes of 672: the opening view would be two thirds lit and one third dark,
+  // which reads as a drawing that failed to finish rather than as an answer. A reader arriving at
+  // 672 tools needs the shape of the thing first; dimming it is an answer to a question nobody put.
+  //
+  // So the one call made at load passes false and every selection a reader makes -- a node, a line
+  // in the step list -- takes the default. Do not collapse this back to an unconditional
+  // traceFrom(): that parameter is the whole distinction between a selection the page made for the
+  // reader and one the reader made for themselves, and only the second is a question worth
+  // answering by putting six hundred tools in the dark.
+  if (readerAsked) traceFrom(stepId);
+
+  await ensurePanel(stepId);
+  // The panel arrives hidden, which is how it was rendered, and the pass above ran before it
+  // existed. So the showing is done again now that it is here -- awaited, because the same pass run
+  // before the panel lands finds nothing to show and leaves the reader in front of an empty pane
+  // with the data sitting in the document beside it.
+  //
+  // Unless the reader has chosen something else while this was in flight, in which case the newer
+  // selection is the one on the screen and re-running this one would put this step's rows under
+  // that step's name.
+  if (chosen !== stepId) return;
+  for (const section of wrap.querySelectorAll('.stepdata'))
+    section.hidden = section.dataset.step !== stepId;
+  // A panel is rendered with every one of its views hidden, and the picker's buttons are in the
+  // page while the views are in the panel: re-applying the entity the reader is on is the only
+  // thing that brings the two together, and without it the panel opens on nothing at all.
+  //
+  // By calling pick() rather than by showing this panel's view here, so that one function decides
+  // what a chosen entity looks like. A second copy of that rule is one that drifts, and the drift
+  // shows as an open panel with no rows in it, which reads as a step that produced none.
+  pick(picked);
+  const open = wrap.querySelector(`.stepdata[data-step="${{stepId}}"] details[open] table.data[data-lazy]`);
+  if (open) {{ delete open.dataset.lazy; live(open); }}
+}}
+
+// The one notice standing in for a panel that could not be had, made once and then moved: a reader
+// clicking through five steps with nothing serving them is told once, where they are looking,
+// rather than handed five copies of the same sentence down the pane.
+let notice = null;
+
+// The panel of the step being opened, fetched as it is opened and left in the page afterwards.
+// Measured on the real flow, carrying all 672 of them was 7.76 MB of an 8.98 MB page and 24,937
+// search boxes for the browser to lay out before it could paint -- for the 671 steps the reader was
+// not looking at. Named for what it guarantees rather than for what it hands back, which is
+// nothing at all: the caller waits for it and then finds the panel in the page for itself.
+async function ensurePanel(stepId) {{
+  const pane = wrap.querySelector('.datapane');
+  if (notice) notice.hidden = true;
+  // The page in the document is the cache: a section already answering to this step is the one the
+  // service would send back. Without the return, a reader clicking between two steps re-fetches
+  // both every time and the second copy lands beside the first, so the pane holds two panels for
+  // one step and shows whichever the selection above reaches first.
+  if (wrap.querySelector(`.stepdata[data-step="${{stepId}}"]`)) return;
+  try {{
+    const answer = await fetch('api/panel?step=' + encodeURIComponent(stepId));
+    if (!answer.ok) throw new Error('the service answered ' + answer.status);
+    const markup = await answer.text();
+    pane.insertAdjacentHTML('beforeend', markup);
+  }} catch (err) {{
+    // A refusal, a dead socket, or the page opened as a plain file with nothing serving it. Said
+    // once, where the panel would have been, because that is where the reader is looking -- a line
+    // in the console is a message to whoever wrote the page, and the reader is somebody looking at
+    // a figure.
+    //
+    // Deliberately NOT written as a .stepdata section: the cache above would then find it, this
+    // step would never be asked for again, and a reader coming back once the service is answering
+    // would be locked out of it with nothing on the page to say why.
+    if (!notice) {{
+      notice = document.createElement('p');
+      notice.className = 'more';
+      pane.append(notice);
+    }}
+    notice.hidden = false;
+    notice.textContent = 'this step is drawn by the preview service, which is not answering';
+  }}
+}}
+
+// Following one connection across a canvas nobody can read by eye.
+//
+// The flow this page is really for draws 672 steps and some 900 connections, and at that size the
+// canvas answers "what shape is this" and nothing else: a 1.4px line runs behind six other tools
+// and a reader cannot say where it comes out. Lighting only what touches the chosen step does not
+// fix that -- it shows what a reader could already see. So the chain is walked to its ends in both
+// directions, and everything else is faded, which is the half that makes the lit part visible.
+let WIRING = null;
+
+function paint(el, state) {{
+  el.classList.remove('direct', 'upstream', 'downstream', 'dim');
+  el.classList.add(state);
+}}
+
+function traceFrom(stepId) {{
+  if (!WIRING) {{
+    // Who feeds whom, read off the drawing once and then kept. A click touches every connection on
+    // the canvas; re-deriving the graph from the DOM each time would make a question about one step
+    // cost a pass over the whole flow, twice.
+    const groups = [...wrap.querySelectorAll('.edge')];
+    const feeds = new Map(), fedBy = new Map();
+    for (const edge of groups) {{
+      if (!feeds.has(edge.dataset.from)) feeds.set(edge.dataset.from, []);
+      if (!fedBy.has(edge.dataset.to)) fedBy.set(edge.dataset.to, []);
+      feeds.get(edge.dataset.from).push({{ edge: edge, other: edge.dataset.to }});
+      fedBy.get(edge.dataset.to).push({{ edge: edge, other: edge.dataset.from }});
+    }}
+    WIRING = {{ groups: groups, feeds: feeds, fedBy: fedBy }};
+  }}
+  const lit = new Map();
+  const marked = new Map([[stepId, 'direct']]);
+  for (const side of [['upstream', WIRING.fedBy], ['downstream', WIRING.feeds]]) {{
+    // A worklist rather than one hop. The visited set is not tidiness: a flow that splits and
+    // rejoins -- which every one of these does -- would otherwise be walked once per path back to
+    // the fork, and a diamond a few steps deep costs more than the canvas is worth.
+    const seen = new Set([stepId]);
+    const work = [stepId];
+    while (work.length) {{
+      const at = work.pop();
+      for (const link of side[1].get(at) || []) {{
+        // Touching the chosen step is a different fact from being three tools away in the same
+        // direction, so it gets its own state: `direct` says what this step is wired to, the two
+        // side states say which way the data runs through everything beyond it.
+        const state = at === stepId ? 'direct' : side[0];
+        lit.set(link.edge, state);
+        if (marked.get(link.other) !== 'direct') marked.set(link.other, state);
+        if (!seen.has(link.other)) {{ seen.add(link.other); work.push(link.other); }}
+      }}
+    }}
+  }}
+  for (const edge of WIRING.groups) paint(edge, lit.get(edge) || 'dim');
+  for (const node of wrap.querySelectorAll('.node'))
+    paint(node, marked.get(node.id.replace(/^node-/, '')) || 'dim');
+}}
+
+function clearTrace() {{
+  // Every state named out, rather than whichever ones this trace happened to set: a clear that
+  // misses one leaves part of the canvas dark with nothing on the page left to say why.
+  for (const el of wrap.querySelectorAll('.edge, .node'))
+    el.classList.remove('direct', 'upstream', 'downstream', 'dim');
+}}
+
+wrap.addEventListener('click', e => {{
+  const rail = e.target.closest('.rail');
+  if (rail) {{ wrap.classList.toggle('railed'); return; }}
+
+  const fold = e.target.closest('.folds button');
+  if (fold) {{
+    const hidden = 'no-' + fold.dataset.fold;
+    // The last visible pane will not fold: a window showing nothing has no control left on it that
+    // says which pane to bring back, so the reader is stuck with a blank screen and three buttons.
+    const showing = ['flow', 'detail', 'data'].filter(n => !wrap.classList.contains('no-' + n));
+    if (showing.length === 1 && !wrap.classList.contains(hidden)) return;
+    wrap.classList.toggle(hidden);
+    fold.setAttribute('aria-pressed', String(!wrap.classList.contains(hidden)));
+    // The drawing sizes itself against its pane, so a fold changes what "fit" means.
+    if (fold.dataset.fold !== 'flow' && Math.abs(zoom - 1) > 0.001) fitZoom();
+    return;
+  }}
+
+  // The way back. It sits beside the zoom buttons but outside `.zoom`, because that handler takes
+  // every button inside the bar and reads a `data-zoom` off it -- a clear control placed there
+  // would fall through to the else and zoom the canvas out on its way to clearing.
+  const back = e.target.closest('[data-trace]');
+  if (back) {{ clearTrace(); return; }}
+
+  const edge = e.target.closest('.edge');
+  if (edge) {{
+    // A reader picking one line out of a crowded area is asking where that line goes. Answering a
+    // different question -- swapping both panes, scrolling a node into view, re-fetching a port --
+    // takes their place away over a click they made to keep it. So this lights the line and its two
+    // ends, and the step being read does not move.
+    e.preventDefault();
+    for (const other of wrap.querySelectorAll('.edge')) paint(other, other === edge ? 'direct' : 'dim');
+    for (const node of wrap.querySelectorAll('.node')) paint(node, 'dim');
+    for (const end of [edge.dataset.from, edge.dataset.to]) {{
+      const at = wrap.querySelector('#node-' + end);
+      if (at) paint(at, 'direct');
+    }}
+    return;
+  }}
+
+  // A step chosen from the list is also brought into view on the flow: a reader who could not find
+  // it by scanning still needs to know where it sits, or the list answers only half the question.
+  const line = e.target.closest('.index button');
+  if (line) {{
+    choose(line.dataset.goto);
+    const found = wrap.querySelector('#node-' + line.dataset.goto);
+    if (found) found.scrollIntoView({{ behavior: 'smooth', block: 'center', inline: 'center' }});
+    return;
+  }}
+
+  const node = e.target.closest('.node');
+  if (!node) return;
+  e.preventDefault();
+  choose(node.id.replace(/^node-/, ''));
+}});
+
+// The two grips. Sizes live in CSS variables on the wrapper, so the layout is one grid and the
+// drag is two numbers -- nothing is measured, positioned or re-flowed by hand.
+for (const grip of wrap.querySelectorAll('.grip')) {{
+  grip.addEventListener('pointerdown', down => {{
+    const vertical = grip.classList.contains('grip-v');
+    grip.setPointerCapture(down.pointerId);
+    grip.classList.add('dragging');
+    document.body.classList.add('resizing');
+
+    const move = at => {{
+      const box = wrap.querySelector('.panes').getBoundingClientRect();
+      const share = vertical
+        ? (at.clientX - box.left) / box.width
+        : (at.clientY - box.top) / box.height;
+      // Kept away from both edges: a pane dragged to nothing is a pane nobody can drag back.
+      const bounded = Math.min(0.85, Math.max(0.15, share));
+      wrap.style.setProperty(vertical ? '--split-x' : '--split-y', (bounded * 100).toFixed(1) + '%');
+    }};
+    const up = () => {{
+      grip.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+    }};
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  }});
+}}
+// Which entity the picker is on, kept because a panel that arrives after it was chosen has to be
+// put on the same one: the buttons are in the page and the views are in the panel, so the two only
+// meet if the choice is remembered.
+let picked = 'all';
+
+function pick(key) {{
+  picked = key;
+  for (const b of wrap.querySelectorAll('.picker button'))
+    b.setAttribute('aria-pressed', String(b.dataset.pick === key));
+  for (const v of wrap.querySelectorAll('.view')) v.hidden = v.dataset.for !== key;
+}}
+// Two modes. With the service answering, a filter runs over the WHOLE port and a window of rows
+// is fetched; without it -- the page opened as a plain file -- the same boxes narrow the rows that
+// were written into the page. The note under each table says which of the two just happened, so a
+// count is never read as covering more than it did.
+let LIVE = false;
+
+function boxesOf(table) {{ return [...table.querySelectorAll('tr.flts input.flt')]; }}
+
+function drawnFilter(table) {{
+  const want = boxesOf(table).map(b => b.value.trim().toLowerCase());
+  const any = want.some(v => v);
+  let hits = 0;
+  for (const tr of table.tBodies[0].rows) {{
+    let ok = true;
+    for (let c = 0; c < want.length; c++) {{
+      if (!want[c]) continue;
+      const cell = tr.cells[c];
+      if (!cell || !cell.textContent.toLowerCase().includes(want[c])) {{ ok = false; break; }}
+    }}
+    tr.classList.toggle('hide', !ok);
+    if (ok) hits++;
+  }}
+  const note = table.closest('.tbl').querySelector('.match');
+  note.hidden = !any;
+  note.textContent = any ? hits + ' of ' + table.dataset.drawn + ' rows on this page match' : '';
+}}
+
+function cell(v) {{
+  const td = document.createElement('td');
+  if (v === null) {{
+    const s = document.createElement('span');
+    s.className = 'nul';
+    s.textContent = 'null';
+    td.append(s);
+  }} else td.textContent = v;
+  return td;
+}}
+
+async function live(table) {{
+  const port = table.dataset.port;
+  const qs = new URLSearchParams({{ port, offset: table.dataset.offset, limit: table.dataset.limit }});
+  for (const b of boxesOf(table)) if (b.value.trim()) qs.set('f.' + b.dataset.col, b.value.trim());
+  const note = table.closest('.tbl').querySelector('.match');
+  const pager = table.closest('.tbl').querySelector('.pager');
+  let answer;
+  try {{ const r = await fetch('api/rows?' + qs); answer = await r.json(); if (!r.ok) throw new Error(answer.error); }}
+  catch (err) {{ note.hidden = false; note.textContent = String(err.message || err); return; }}
+
+  const body = table.tBodies[0];
+  body.replaceChildren(...answer.rows.map(row => {{
+    const tr = document.createElement('tr');
+    tr.append(...row.map(cell));
+    return tr;
+  }}));
+
+  const from = answer.rows.length ? answer.offset + 1 : 0;
+  const to = answer.offset + answer.rows.length;
+  const filtered = answer.matched !== answer.total;
+  note.hidden = false;
+  const span = from + '-' + to + ' of ';
+  note.textContent = filtered
+    ? span + answer.matched.toLocaleString() + ' matching (of ' + answer.total.toLocaleString() + ')'
+    : span + answer.total.toLocaleString() + ' rows';
+  pager.hidden = false;
+  pager.querySelector('.at').textContent = '';
+  pager.querySelector('[data-page=prev]').disabled = answer.offset <= 0;
+  pager.querySelector('[data-page=next]').disabled = to >= answer.matched;
+}}
+
+function refresh(table) {{
+  if (LIVE && table.dataset.port) live(table); else drawnFilter(table);
+}}
+
+let typing;
+wrap.addEventListener('input', e => {{
+  const box = e.target.closest('input.flt');
+  if (!box) return;
+  const table = box.closest('table');
+  table.dataset.offset = 0;
+  clearTimeout(typing);
+  typing = setTimeout(() => refresh(table), 180);
+}});
+
+wrap.addEventListener('click', e => {{
+  const f = e.target.closest('.flip button');
+  if (f) {{
+    const card = f.closest('.stepdata');
+    for (const b of card.querySelectorAll('.flip button'))
+      b.setAttribute('aria-pressed', String(b === f));
+    for (const side of card.querySelectorAll('.side'))
+      side.hidden = side.dataset.side !== f.dataset.side;
+    return;
+  }}
+  const b = e.target.closest('.pager button');
+  if (!b) return;
+  const table = b.closest('.tbl').querySelector('table');
+  const step = parseInt(table.dataset.limit, 10);
+  const at = parseInt(table.dataset.offset, 10);
+  table.dataset.offset = Math.max(0, b.dataset.page === 'next' ? at + step : at - step);
+  refresh(table);
+}});
+
+// Zooming is a multiplication on the drawing's own stated size: the viewBox keeps the coordinate
+// system, so every node, edge and label scales together and nothing is laid out twice. Bounded at
+// both ends -- a flow zoomed to nothing cannot be zoomed back, and one zoomed to ten times its size
+// is a single node filling a pane.
+//
+// The lower bound is small because a real flow is wide: fifty-three steps draw nine thousand pixels
+// across, so fitting one into a pane is about eight per cent. Nothing is readable at that size and
+// nothing is meant to be -- fit answers "what shape is this", and reading is what the other end of
+// the range and the step list are for. A floor that stopped short of fitting would leave the one
+// control named after fitting unable to do it.
+//
+// It opens at actual size rather than fitted, though: a reader arrives to read a step, not to
+// survey the shape, and a flow that opens unreadably small has to be zoomed before it can be used
+// at all. Fit is one click away for the moment the shape IS the question.
+const flow = wrap.querySelector('.canvas svg');
+const level = wrap.querySelector('.zoom .level');
+let zoom = 1;
+
+function applyZoom(next) {{
+  zoom = Math.min(3, Math.max(0.04, next));
+  flow.style.width = (flow.dataset.w * zoom) + 'px';
+  flow.style.height = (flow.dataset.h * zoom) + 'px';
+  level.textContent = Math.round(zoom * 100) + '%';
+}}
+
+function fitZoom() {{
+  // The pane's own width, less the room a scrollbar takes, so "fit" does not leave one behind.
+  const room = flow.parentElement.clientWidth - 8;
+  applyZoom(room / flow.dataset.w);
+}}
+
+wrap.addEventListener('click', e => {{
+  const button = e.target.closest('.zoom button');
+  if (!button) return;
+  const how = button.dataset.zoom;
+  if (how === 'fit') fitZoom();
+  else if (how === 'reset') applyZoom(1);
+  else applyZoom(how === 'in' ? zoom * 1.25 : zoom / 1.25);
+}});
+
+// Ctrl or command with the wheel, which is what a hand already reaches for, and only over the
+// drawing -- taking the wheel anywhere else would break scrolling the page.
+wrap.querySelector('.canvas').addEventListener('wheel', e => {{
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  applyZoom(zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+}}, {{ passive: false }});
+
+// A port is fetched the first time it is opened, and not before: a page of closed ports costs
+// nothing at all, which is what keeps it the same size however many steps the flow grows to.
+wrap.addEventListener('toggle', e => {{
+  const details = e.target;
+  if (!details.open || !LIVE) return;
+  const table = details.querySelector('table.data[data-lazy]');
+  if (!table) return;
+  delete table.dataset.lazy;
+  live(table);
+}}, true);
+
+fetch('api/ports')
+  .then(r => {{ LIVE = r.ok; }})
+  .catch(() => {{ LIVE = false; }})
+  .finally(() => {{
+    if (LIVE) return;
+    // Opened as a plain file with nothing serving it: say so once, where the rows would have been,
+    // rather than leaving every port looking empty.
+    for (const table of wrap.querySelectorAll('table.data[data-lazy]')) {{
+      const note = table.closest('.tbl').querySelector('.match');
+      note.hidden = false;
+      note.textContent = 'rows are served by the preview service, which is not answering';
+    }}
+  }});
+wrap.addEventListener('click', e => {{
+  const b = e.target.closest('.picker button');
+  if (b) pick(b.dataset.pick);
+}});
+pick('all');
+// Opened on a step, but NOT traced -- the false is load-time and is argued at choose(). The page
+// arrives showing the whole flow lit, with one step chosen in the panes beside it; the trace starts
+// when the reader points at something.
+choose(wrap.dataset.first, false);
+applyZoom(1);
+</script>
+"""
+
+
+def _refuse_a_borrowed_checkout() -> None:
+    """Stop before rendering a page out of some other copy of this repository.
+
+    This repository is worked on in git worktrees against one editable install that points at the
+    main checkout. Run a script from a worktree without ``PYTHONPATH=<worktree>/src`` and
+    ``dantron_etl`` resolves there instead: the page is then built by the main checkout's tools, and
+    nothing in it says so. That has happened here once already -- a run that read a pipeline file the
+    author had never touched and looked entirely ordinary on the way past. The project root is now
+    resolved from this file rather than from an imported package, so it can only disagree with this
+    checkout when ``ETL_PROJECT_ROOT`` points elsewhere -- which is the same mistake, spelled out.
+
+    A page is a statement about one flow, so it has to be a statement about *this* one. The check is
+    cheap, it names the fix, and it is worth more than trusting every future caller to remember.
+    """
+    here = Path(__file__).resolve().parents[1]
+    # dantron_etl/__init__.py -> dantron_etl -> src -> the checkout it was installed from.
+    resolved = {"the project root": PROJECT_ROOT, "dantron_etl": Path(dantron_etl.__file__).parents[2]}
+    borrowed = {name: root for name, root in resolved.items() if root.resolve() != here}
+    if borrowed:
+        named = ", and ".join(f"{name} is {root}" for name, root in borrowed.items())
+        raise SystemExit(
+            f"refusing to run: this script is in {here}, {named}.\n"
+            f"The page would be built from another checkout's pipelines and tools. Run it as:\n"
+            f"  PYTHONPATH={here / 'src'} .venv/bin/python {Path(__file__).resolve().relative_to(here)}"
+        )
+
+
+def main() -> None:
+    _refuse_a_borrowed_checkout()
+    spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+    trace = run_pipeline(spec)
+    focus = FocusSpec(label="party", identity=("party",))
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUT_PATH.write_text(build(spec, trace, focus), encoding="utf-8")
+    print(f"{len(trace.events)} steps, {len(trace.shapes)} ports -> {OUT_PATH} ({OUT_PATH.stat().st_size:,} bytes)")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,117 @@
+# dantron-etl-tools
+
+Configurable data transformation tools. A pipeline is a **data file**, not code, and a run leaves
+evidence of what it did to every row.
+
+```yaml
+steps:
+  - id: receivable_lines
+    tool: filter
+    config:
+      predicate: "[type] = 'ACCREC' and [amount] > 0"
+    inputs: {rows: source_lines.rows}
+```
+
+```python
+from dantron_etl.pipeline import read_pipeline_file
+from dantron_etl.runner import run_pipeline
+
+spec = read_pipeline_file("pipelines/mine.yaml")
+trace = run_pipeline(spec)
+trace.frame(PortRef("receivable_lines", "true"))
+```
+
+## Why it exists
+
+A transformation written as a script is answerable only by reading the script. When somebody asks
+"why is this number what it is", the honest answer has to name a step, show the rows going in and
+the rows coming out, and let them look. That is what this is for: every step is a configured
+instance of a general tool, every step's output is inspectable, and the definition of a run is one
+file a non-developer can read.
+
+## The 28 tools
+
+| category | tools |
+|---|---|
+| **input** | `read_csv`, `read_excel`, `read_table` |
+| **preparation** | `cast_columns`, `filter`, `limit_rows`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
+| **transform** | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
+| **combine** | `join`, `union` |
+| **text** | `normalize_text`, `regex_extract_groups` |
+| **assert** | `assert_rows` |
+| **output** | `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+
+Every tool carries executable worked examples, and a conformance test runs each example on its
+stated input and compares it to its stated output. The catalog is generated from the registry, so a
+tool's page cannot drift from the tool.
+
+## Ideas worth knowing before you use it
+
+**Ports, not steps.** A step's inputs and outputs are *named* frames. `filter` has `true` and
+`false`; `join` has `matched`, `left_only` and `right_only`. Rows a step sets aside are a first-class
+output you can route somewhere, not a number reconstructed later.
+
+**One small expression language.** `[column]` references, a fixed set of operators and a whitelist of
+functions, compiled through `ast` to a polars expression — never `eval`. The same text compiles to
+parameterised SQL for a database read, and the two targets are pinned to agree on null handling,
+case and date literals.
+
+**A tool mirrors the SQL operation it is named after.** That is why `join` says two nulls are not
+equal and `group_by` says they are: each follows `=` and `GROUP BY` respectively. It is one rule with
+three instances rather than three exceptions.
+
+**A run is evidence.** `run_pipeline` returns a trace: one event per step, the shape of every port,
+and the frames themselves. `until=` runs part of a flow and stops; `cached=` resumes from a previous
+run's frames and refuses a cache whose configuration has since changed.
+
+## Install
+
+```bash
+uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools
+uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/DanTron-Inc/dantron-etl-tools"
+```
+
+Postgres drivers are an extra, deliberately: `read_table` and `write_table` import theirs lazily by
+URI scheme and name the package to install when it is missing, and SQLite needs nothing at all —
+which is what lets every worked example in the catalog execute with no server.
+
+## Paths
+
+Nothing here infers your project's root from its own location. An installed package lives in
+site-packages, so walking up from its own file finds the virtualenv, not your project — silently,
+which is worse than failing. Callers say where they are:
+
+```python
+from dantron_etl.paths import project_root
+ROOT = project_root(__file__)          # $ETL_PROJECT_ROOT, else the nearest pyproject.toml or .git
+```
+
+## Looking at a run
+
+```bash
+python scripts/pipeline_walkthrough_page.py    # render a flow and its data as a page
+python scripts/serve_runs.py                   # serve what has been written, on :8899
+python scripts/tool_catalog_page.py            # the catalog, from the registry
+```
+
+The walkthrough draws the flow as wired, follows one entity through it, and shows each step's rows
+beside its configuration. Selecting a step lights its whole upstream and downstream chain.
+
+## For agents
+
+`src/dantron_etl/MANUAL.md` is written for LLM agents building pipelines with these tools. It leads
+with the rule that matters most — **a new tool is a last resort** — and documents the expression
+language, the YAML traps that bite, and how to know your pipeline is right. A test asserts the
+manual describes the library that actually exists: every registered tool named, no invented ones,
+the count correct.
+
+## Development
+
+```bash
+uv sync --extra dev
+PYTHONPATH=src pytest tests/ -q      # 3,594 tests
+ruff check src tests scripts
+```
+
+The suite includes a boundary test that imports every shipped file in an interpreter where client
+packages do not exist, which is the world this library lives in once installed.

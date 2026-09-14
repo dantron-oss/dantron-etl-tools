@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# What a run writes. A run's output is evidence of one run over one day's data, not a thing to
+# version: the pages are megabytes, the ports are Parquet, and neither means anything without the
+# data that produced them. The directory itself is kept -- see output_files/.gitkeep -- because a
+# sink names a path under it and reports a missing parent as a bare FileNotFoundError.
+output_files/*
+!output_files/.gitkeep
+
+# Anything a consumer's own data lands in. Never version data.
+data/
+*.xlsx
+!tests/fixtures/*.xlsx
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store

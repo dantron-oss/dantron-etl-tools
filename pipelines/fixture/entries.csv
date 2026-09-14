@@ -1,0 +1,8 @@
+entry_id,party,type,amount,months,note
+E-1001,Northwind Supply,REVENUE,1200.00,12,annual plan
+E-1002,Northwind Supply,REVENUE,600.00,6,half year
+E-1003,Borealis Freight,REVENUE,900.00,9,three quarters
+E-1004,Borealis Freight,EXPENSE,50.00,1,"a cost, not revenue"
+E-1005,Cirrus Analytics,REVENUE,2400.00,12,annual plan
+E-1006,Cirrus Analytics,,300.00,12,type missing
+E-1007,Delta Works,REVENUE,480.00,4,

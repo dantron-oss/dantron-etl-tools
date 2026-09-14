@@ -1,0 +1,73 @@
+# A small, client-neutral flow, used to prove that a pipeline written as data
+# loads, runs, slices to one party and renders. Every step is a registered
+# generic tool; nothing here is specific to any client's data.
+name: Monthly totals by party
+
+lanes:
+  - {id: source,  label: Source,   order: 1}
+  - {id: shaping, label: Shaping,  order: 2}
+  - {id: figures, label: Figures,  order: 3}
+
+steps:
+  - id: entries
+    tool: read_csv
+    lane: source
+    stage: read
+    why: The extract as it arrived, before anything has been decided about it.
+    config:
+      path: pipelines/fixture/entries.csv
+
+  - id: receivable
+    tool: filter
+    lane: shaping
+    stage: classify
+    why: >
+      Only one entry type is revenue. A row whose type is missing does not
+      match, and leaves on the other port rather than disappearing.
+    config:
+      predicate: "[type] = '${rules.revenue_type}'"
+    inputs: {rows: entries.rows}
+
+  - id: set_aside
+    tool: write_csv
+    lane: shaping
+    stage: classify
+    why: What the classification declined, kept so a reader can see it.
+    config:
+      path: output_files/fixture_set_aside.csv
+      replace: true
+    inputs: {rows: receivable.false}
+
+  - id: monthly
+    tool: formula
+    lane: figures
+    stage: compute
+    why: >
+      The figure the whole flow exists to produce: an amount spread evenly
+      across the months it covers.
+    config:
+      columns:
+        - {name: monthly, value: "[amount] / [months]"}
+    inputs: {rows: receivable.true}
+
+  - id: totals
+    tool: group_by
+    lane: figures
+    stage: compute
+    why: One row per party, so a reader can compare parties rather than rows.
+    config:
+      by: [party]
+      aggregations:
+        - {name: monthly_total, function: sum,   value: "[monthly]"}
+        - {name: entries,       function: count}
+    inputs: {rows: monthly.rows}
+
+  - id: published
+    tool: write_csv
+    lane: figures
+    stage: publish
+    why: The figures as published.
+    config:
+      path: output_files/fixture_totals.csv
+      replace: true
+    inputs: {rows: totals.rows}

@@ -1,0 +1,3 @@
+# Kept so a fresh clone has somewhere to write: the fixture pipeline's sinks name paths under
+# this directory, and write_csv reports a missing parent as a bare FileNotFoundError rather than
+# as 'make this directory first'. Everything written here is ignored.

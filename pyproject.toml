@@ -1,0 +1,58 @@
+[project]
+name = "dantron-etl-tools"
+version = "0.1.0"
+description = "Generic, configurable data transformation tools: a pipeline is a data file, and a run leaves evidence."
+requires-python = ">=3.13"
+readme = "README.md"
+
+# Declared from measurement, not from habit. polars is the library. xlsxwriter and fastexcel are
+# here because `read_excel` and `write_excel` import them at module level, and importing this
+# package registers every tool -- so without them `import dantron_etl` itself fails, which is a
+# worse error than a missing feature. openpyxl and PyYAML are imported inside the one function that
+# needs each, so they would fail later and more precisely; they are declared anyway because writing
+# a workbook and loading a pipeline file are what most consumers came for.
+dependencies = [
+    # 1.38 is the verified floor, not the theoretical one: the join parameters these tools rely on
+    # (nulls_equal, maintain_order) arrived well after 1.0, and nulls_equal was spelled join_nulls
+    # before that. A floor we have run beats a lower one we have only reasoned about.
+    "polars>=1.38",
+    "xlsxwriter>=3.2.0",
+    "fastexcel>=0.21.0",
+    # Writing a workbook without flattening it: openpyxl loads an existing file and saves it back,
+    # which xlsxwriter cannot do, and which is the whole promise of write_workbook.
+    "openpyxl>=3.1.0",
+    "PyYAML>=6.0.0",
+]
+
+# No database driver in the core set, deliberately. A driver is the heavy, platform-specific
+# dependency, and a project using these tools for files and frames should not be made to build one.
+# `read_table` and `write_table` import theirs lazily by URI scheme and name the package to install
+# when it is missing; SQLite needs nothing at all, which is what lets every worked example in the
+# catalog execute with no server.
+[project.optional-dependencies]
+postgres = [
+    "psycopg[binary]>=3.1.0",
+    "adbc-driver-postgresql>=1.0.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+]
+
+[project.urls]
+Source = "https://github.com/DanTron-Inc/dantron-etl-tools"
+Issues = "https://github.com/DanTron-Inc/dantron-etl-tools/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dantron_etl"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
