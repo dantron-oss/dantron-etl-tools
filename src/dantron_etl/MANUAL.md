@@ -234,6 +234,66 @@ no field that only applies when another field holds a particular value.
 
 ---
 
+## 4b. How to write a `why`
+
+A finance person reads these on a page while tracing what happened to a number. They are not
+comments for whoever edits the file.
+
+The first version of one real pipeline had 672 of them and the reader's verdict was:
+
+> I can see that this is so obviously AI-generated that it's really hard for the average human to
+> follow.
+
+Here is what he was reading. It is accurate, and it is bad:
+
+> One row per client and column. The melt is told what it is melting, because the columns to the
+> right of the months genuinely are not figures and cannot be named here to keep them out. Those
+> come back empty and are dropped by the join below, which keeps only the columns whose header
+> stated a date -- so an empty cell here never reaches a published figure, and the count of them is
+> reported rather than swallowed.
+
+And the same step, rewritten:
+
+> Turns the workbook's wide layout into one row per client per column, so each monthly figure sits
+> on its own row.
+>
+> The melt is told which columns hold figures. The columns to the right of the months hold notes and
+> client names, so they come back empty here and are dropped by the join below, which keeps only
+> columns whose header is a date. The count of emptied cells is reported rather than hidden.
+
+### The rules
+
+- **Say what the step does first.** Then say *why* only where a reader would otherwise ask "why is
+  this here?" -- a rule somebody chose, a trap being avoided, a figure that would be wrong
+  otherwise.
+- **One plain sentence is a complete description** for a step that sorts, renames, or narrows to
+  the columns the next step needs. Most steps are these. Do not write a paragraph about a rename.
+- **Short sentences, one idea each.** Two or three of them is a good length.
+- **Everyday words** wherever they mean the same thing.
+- **Be concrete.** Name the actual column, file or figure rather than speaking abstractly.
+- **Keep the reader's own vocabulary.** The words their business already uses -- order, payment,
+  period, exchange rate, account code -- are theirs, not jargon.
+- **Cut the library's vocabulary.** A reader does not know or care about the envelope, the port, the
+  seam, what is anchored or pinned, what something is measured against, or what "reaches", "lands",
+  "carries" or "is swallowed". These read as technical decoration and are the main thing that makes
+  a description hard going.
+- **No ceremony.** Not "it is important to note", "notably", "crucially".
+- **No inflated words.** Not leverage, facilitate, utilise, robust, holistic, paradigm.
+- **Do not compress several complicated ideas into one sentence** to be brief. If it needs two
+  sentences, write two.
+
+### What not to do
+
+Do not restate the configuration. The configuration is already shown beside the description on the
+page, so `"Filters where [type] = 'SALE'"` tells the reader nothing they cannot see. Say what that
+filter is *for* -- "Only what the business sold. Money it spent is counted elsewhere."
+
+Do not describe how the step is assembled. A reader tracing a figure wants to know what happened to
+it, not which tool was configured how.
+
+Do not claim a check always passes, or that a figure is always present. Descriptions outlive the
+data they were written against.
+
 ## 5. Rules that bite
 
 Every one of these was measured, most of them the hard way.
