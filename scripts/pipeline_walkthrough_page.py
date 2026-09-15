@@ -658,7 +658,11 @@ header.top b {{ color:var(--accent); }}
    stroke and width inherit -- a declaration on the path would beat anything inherited from the
    group, and the highlight would silently do nothing. */
 .edge {{ fill:none; stroke:var(--muted); stroke-width:1.4; opacity:.75; }}
-.elab {{ fill:var(--muted); font:500 9px var(--mono); text-anchor:middle; }}
+/* Hidden until its connection is lit. 765 captions at rest is a canvas nobody can read, and
+   most of them answer a question nobody is asking; the row count matters at the moment a
+   reader is following one line, and then it matters a lot. */
+.elab {{ fill:var(--muted); font:500 9px var(--mono); text-anchor:middle; visibility:hidden; }}
+.edge.direct .elab, .edge.upstream .elab, .edge.downstream .elab {{ visibility:visible; }}
 .hit {{ fill:none; stroke:transparent; stroke-width:14; pointer-events:stroke; cursor:pointer; }}
 
 /* Four states, not two. At 672 steps, lighting the lines that touch the chosen tool answers "what
@@ -959,9 +963,30 @@ async function ensurePanel(stepId) {{
 // directions, and everything else is faded, which is the half that makes the lit part visible.
 let WIRING = null;
 
+// Where the drawing puts a connection back when it stops being lit: before the first step box,
+// which is where every connection starts out. Found on first use rather than at load, because
+// `flow` is declared further down and reading it here would be reading it before it exists.
+let FIRST_NODE;
+function firstNode() {{
+  if (FIRST_NODE === undefined) FIRST_NODE = flow ? flow.querySelector('.node') : null;
+  return FIRST_NODE;
+}}
+
 function paint(el, state) {{
   el.classList.remove('direct', 'upstream', 'downstream', 'dim');
   el.classList.add(state);
+  // A lit connection is lifted above the steps, because its caption sits at the midpoint and a long
+  // connection's midpoint lands on whatever step happens to sit between its two ends -- which draws
+  // after it and covers it. Lifting the whole group keeps the line and its caption together, and
+  // only ever applies to the handful a reader is actually following.
+  if (el.classList.contains('edge') && flow) {{
+    if (state === 'dim') {{
+      const at = firstNode();
+      if (at && el.nextElementSibling !== at) flow.insertBefore(el, at);
+    }} else {{
+      flow.appendChild(el);
+    }}
+  }}
 }}
 
 function traceFrom(stepId) {{
@@ -1010,6 +1035,12 @@ function clearTrace() {{
   // misses one leaves part of the canvas dark with nothing on the page left to say why.
   for (const el of wrap.querySelectorAll('.edge, .node'))
     el.classList.remove('direct', 'upstream', 'downstream', 'dim');
+  // And back under the steps, in one pass rather than per connection: a lifted connection left
+  // above them would draw over a step box for the rest of the session with nothing lit to explain
+  // why. Order among the connections themselves does not matter -- they never overlap meaningfully.
+  const at = firstNode();
+  if (flow && at)
+    for (const edge of wrap.querySelectorAll('.edge')) flow.insertBefore(edge, at);
 }}
 
 wrap.addEventListener('click', e => {{
