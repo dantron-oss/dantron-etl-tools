@@ -670,7 +670,15 @@ header.top b {{ color:var(--accent); }}
 .edge.upstream {{ stroke:var(--accent); stroke-width:2.2; opacity:.95; }}
 .edge.downstream {{ stroke:var(--warn); stroke-width:2.2; opacity:.95; }}
 .edge.dim {{ opacity:.1; }}
-.edge.direct .elab, .edge.upstream .elab, .edge.downstream .elab {{ fill:var(--ink); font-weight:700; }}
+/* A lit line is drawn thick and in the same ink the caption is written in, so a caption sitting
+   on top of it disappears into it -- reported from the real canvas as numbers that could not be
+   made out. The fix is contrast, not weight: the caption keeps its ordinary weight and is given
+   a halo of the surface colour, painted UNDER the glyphs (paint-order), so it punches out of
+   whatever runs beneath it. Bolding it made it heavier against a line of the same colour, which
+   is the one change that could not help. */
+.edge.direct .elab, .edge.upstream .elab, .edge.downstream .elab {{
+  fill:var(--ink); paint-order:stroke; stroke:var(--surface); stroke-width:3.5px;
+  stroke-linejoin:round; }}
 .node rect {{ fill:var(--surface); stroke:var(--accent); stroke-width:1.5; }}
 /* Faded, not hidden: the shape of the flow is the reader's map of where the lit chain sits in it. */
 .node.dim {{ opacity:.22; }}
