@@ -1053,8 +1053,13 @@ header.top b {{ color:var(--accent); }}
    that. A rectangle would have to be measured in the browser and would still have to be told where
    the sentence ends. Nothing here restates the font or moves the text: a title that changed size or
    jumped a pixel on its way forward would read as a different title. */
-.gtitle.lifted {{ paint-order:stroke; stroke:var(--surface); stroke-width:4px;
-  stroke-linejoin:round; }}
+.gtitle.lifted {{ paint-order:stroke; stroke:var(--surface); stroke-width:10px;
+  stroke-linejoin:round; stroke-linecap:round; }}
+/* The container being read. Its outline goes solid and full strength while every other one stays
+   dashed and faint, so the box the raised sentence belongs to is obvious -- a title lifted clear of
+   a crowded canvas otherwise floats with nothing saying which box it came off. No fill: a filled
+   container would sit over every connection crossing it and take the clicks that light those. */
+.group.reading .gbox {{ stroke-width:2.4; stroke-dasharray:none; opacity:1; }}
 .gcount {{ fill:var(--muted); font:500 10px var(--mono); }}
 .gctl {{ cursor:pointer; }}
 .gctl rect {{ fill:var(--surface); stroke:var(--accent); stroke-width:1.2; }}
@@ -1364,6 +1369,7 @@ function putTitleBack() {{
     title.classList.remove('lifted');
     LIFTED.insertBefore(title, LIFTED_HOME);
   }}
+  LIFTED.classList.remove('reading');
   LIFTED = null;
   LIFTED_HOME = null;
 }}
@@ -1600,6 +1606,7 @@ wrap.addEventListener('click', e => {{
       if (title && layer) {{
         LIFTED = box;
         LIFTED_HOME = title.nextSibling;
+        box.classList.add('reading');
         title.classList.add('lifted');
         layer.appendChild(title);
       }}
