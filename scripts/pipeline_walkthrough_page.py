@@ -311,8 +311,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
     # halo, both read, and the name wins the few characters they share. The name is the one label
     # on the canvas a reader cannot recover from anything else on screen, so it is the one to keep.
     lane_names = "".join(
-        f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.label)}</text>'
-        for lane in spec.lanes
+        f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.label)}</text>' for lane in spec.lanes
     )
 
     edges = []
@@ -401,7 +400,12 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
     return (
         f'<div class="scroll canvas" id="flow"><svg viewBox="0 0 {width} {height}" '
         f'width="{width}" height="{height}" data-w="{width}" data-h="{height}">'
-        f"{bands}{''.join(edges)}{containers}{loose}{lane_names}</svg></div>"
+        # A layer with nothing in it, last of everything, for the one title a reader has clicked
+        # into. It has to be a place in the document rather than a class on the title, because SVG
+        # has no z-index: what is written last is drawn on top, and nothing a stylesheet says will
+        # move a title written above the lane names to below them on the screen.
+        f"{bands}{''.join(edges)}{containers}{loose}{lane_names}"
+        f'<g class="front"></g></svg></div>'
     )
 
 
@@ -1024,6 +1028,15 @@ header.top b {{ color:var(--accent); }}
 .gbox {{ fill:none; stroke:var(--accent); stroke-width:1.2; stroke-dasharray:5 4; opacity:.7; }}
 .gpill {{ fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.2; }}
 .gtitle {{ fill:var(--ink); font:600 12px var(--sans); }}
+/* The title of the container a reader has clicked into. The backing is a halo on the glyphs
+   themselves -- the same one the lane names and the connection captions already earn -- so it
+   covers the sentence for its whole length, including the part that runs past the container's own
+   box, which most titles do: a one-column container is 200px wide and its title is routinely twice
+   that. A rectangle would have to be measured in the browser and would still have to be told where
+   the sentence ends. Nothing here restates the font or moves the text: a title that changed size or
+   jumped a pixel on its way forward would read as a different title. */
+.gtitle.lifted {{ paint-order:stroke; stroke:var(--surface); stroke-width:4px;
+  stroke-linejoin:round; }}
 .gcount {{ fill:var(--muted); font:500 10px var(--mono); }}
 .gctl {{ cursor:pointer; }}
 .gctl rect {{ fill:var(--surface); stroke:var(--accent); stroke-width:1.2; }}
@@ -1310,6 +1323,33 @@ function firstNode() {{
   return FIRST_NODE;
 }}
 
+// The layer that holds whatever must be above everything, found once. Memoised for the same
+// reason `firstNode` is: `paint` asks for it per element, and the layer is the last child of a
+// drawing with thousands of them, so a fresh lookup each time is the whole tree each time.
+let FRONT;
+function front() {{
+  if (FRONT === undefined) FRONT = flow ? flow.querySelector('.front') : null;
+  return FRONT;
+}}
+
+// Which container's title is forward, and the sibling it sits before when it is not. The title is a
+// direct child of its container, so those two are the whole of where it came from -- and remembering
+// where rather than re-deriving it is what keeps a put-back exact if the container's parts are ever
+// drawn in a different order.
+let LIFTED = null;
+let LIFTED_HOME = null;
+
+function putTitleBack() {{
+  if (!LIFTED) return;
+  const title = wrap.querySelector('text.gtitle.lifted');
+  if (title) {{
+    title.classList.remove('lifted');
+    LIFTED.insertBefore(title, LIFTED_HOME);
+  }}
+  LIFTED = null;
+  LIFTED_HOME = null;
+}}
+
 function paint(el, state) {{
   el.classList.remove('direct', 'upstream', 'downstream', 'dim');
   el.classList.add(state);
@@ -1322,7 +1362,12 @@ function paint(el, state) {{
       const at = firstNode();
       if (at && el.nextElementSibling !== at) flow.insertBefore(el, at);
     }} else {{
-      flow.appendChild(el);
+      // Above the steps but below the front layer: appending to the end of the drawing would put a
+      // lit line over the one title a reader has brought forward, which is the thing on this canvas
+      // that is meant to be above everything.
+      const layer = front();
+      if (layer) flow.insertBefore(el, layer);
+      else flow.appendChild(el);
     }}
   }}
 }}
@@ -1512,12 +1557,44 @@ wrap.addEventListener('click', e => {{
     else {{ choose(node.id.replace(/^node-/, '')); }}
     return;
   }}
+  // The container itself -- its outline, its header, the space inside it. Last of the three,
+  // because a step and the collapse control are both drawn INSIDE the container element, so a click
+  // on either is also a click on the container; both branches above answer first and return.
+  //
+  // What it does is bring that container's title forward. Titles are longer than the boxes they
+  // belong to and the canvas is crowded, so the title a reader is actually reading is the one that
+  // has to win -- and clicking the thing you are reading is how you say which one that is.
+  const box = e.target.closest('.group');
+  if (box) {{
+    e.preventDefault();
+    // Clicking the container already forward puts it back, the same way clicking a lit step puts
+    // its chain away. Clicking a different one moves the title on, so only ever one is raised.
+    if (LIFTED === box) putTitleBack();
+    else {{
+      putTitleBack();
+      const title = box.querySelector('text.gtitle');
+      // Read off the drawing here rather than through the memo above: that memo exists because
+      // `paint` asks per element, and this asks once per click.
+      const layer = flow.querySelector('.front');
+      if (title && layer) {{
+        LIFTED = box;
+        LIFTED_HOME = title.nextSibling;
+        title.classList.add('lifted');
+        layer.appendChild(title);
+      }}
+    }}
+    return;
+  }}
+
   // The canvas itself, between the steps. Nothing there is a thing to select, so a click on it can
   // only mean "put this away" -- which is where a reader's hand goes first, ahead of finding a
-  // control. Only when something is lit, so an idle click does not fight the pan.
-  if (TRACED !== null && e.target.closest('.canvas') && !e.target.closest('.group')) {{
+  // control. Only when something is showing, so an idle click does not fight the pan; and both
+  // things that can be showing are named, because a title raised over a canvas with nothing lit
+  // would otherwise have no way down.
+  if ((TRACED !== null || LIFTED !== null) && e.target.closest('.canvas') && !e.target.closest('.group')) {{
     clearTrace();
     TRACED = null;
+    putTitleBack();
   }}
 }});
 

@@ -2441,6 +2441,435 @@ class TestAClosedContainerStillJoinsUpToTheFlow:
 
 
 # ---------------------------------------------------------------------------
+# Clicking into a container brings its title forward
+# ---------------------------------------------------------------------------
+#
+# A container's title is written at the top left of its own band, and a lane writes its name at x=6
+# in the gap above its stripe. On the fixture flow these cases are drawn over, those two baselines
+# land a pixel apart -- the lane names at y=21, 153 and 285, the two container titles at y=154 and
+# y=286 -- and on a dense flow a container whose topmost step is in the first column starts its
+# title at x=28, across the first twenty-odd characters of the lane's name. The lane name wins, on
+# purpose: it is painted last of everything, over a halo, because it is the one label on the canvas
+# a reader cannot recover from anything else on screen.
+#
+# So the title loses, and the reader who wants to read it has nothing to do about it. This is what
+# they do about it: clicking into a container brings THAT container's title forward over a backing
+# for as long as they are reading it, and clicking it again, or clicking blank canvas, puts it back.
+#
+# Two facts make this harder than a class. SVG has no z-index -- paint order is document order --
+# so a rule alone cannot put a title over a name drawn after it; something has to change what is
+# drawn after what. And a title routinely runs past the right edge of its own box: a one-column
+# container is 200px wide and a sixty-five character title at 12px is far wider than that, so a
+# backing that is the box, or anything that clips the title to the box, covers the wrong half of
+# the sentence.
+
+
+def _click_listener(code: str, at: int) -> tuple[int, int]:
+    """Where the click listener containing ``at`` begins and ends.
+
+    Two branches of one listener are settled by which is written first, because the first to answer
+    returns. Two separate listeners are not: both run, whatever order they were registered in. So
+    the ordering arguments below are only worth making inside one listener, and this is what says
+    whether they are in one.
+    """
+    start = code.rindex("addEventListener('click'", 0, at)
+    return start, start + len(_block(code[start:], "{"))
+
+
+def _container_click(page: str) -> tuple[int, str, str]:
+    """A click on a container itself, as (where it is answered, what picks it out, what it reaches).
+
+    Found by `e.target.closest(...)` naming a container, because that is the idiom every other
+    branch of this handler is already written in -- a step, a connection and the collapse control
+    are each picked out of a click that way -- and a container has to be told apart from all three
+    by the same means.
+
+    The negated form is passed over: the canvas clause asks `!e.target.closest('.group')` to tell
+    blank canvas from a container, and that is not a branch answering a container.
+    """
+    code = _js(page)
+    for hit in re.finditer(r"e\.target\.closest\(\s*'(?:g\.group|\.group|\[data-group\])'\s*\)", code):
+        if code[: hit.start()].rstrip().endswith("!"):
+            continue
+        body = _block(code[hit.start() :], "{")
+        opened = code.index(body, hit.start())
+        bound = max(code.rfind(mark, 0, hit.start()) for mark in (";", "{", "}"))
+        return hit.start(), code[bound + 1 : opened], _with_callees(code, body)
+    raise AssertionError(
+        "nothing in the script answers a click on a container itself, so clicking into one cannot bring anything "
+        "forward"
+    )
+
+
+def _lift_names(page: str, branch: str) -> set[str]:
+    """Every name the lift works in: classes it sets, selectors it looks up, and the selectors
+    behind whatever element it was handed at the top of the script."""
+    code = _js(page)
+    names = {"." + name for name in re.findall(r"classList\.(?:add|remove|toggle|contains)\(\s*'([\w-]+)'", branch)}
+    names |= set(re.findall(r"querySelector(?:All)?\(\s*'([^']+)'\s*\)", branch))
+    names |= {"#" + name for name in re.findall(r"getElementById\(\s*'([^']+)'\s*\)", branch)}
+    for word in set(re.findall(r"\b[A-Za-z_]\w*\b", branch)):
+        handed = re.search(
+            rf"\b(?:const|let|var)\s+{word}\s*=\s*[\w.]*\.?querySelector(?:All)?\(\s*'([^']+)'\s*\)", code
+        )
+        if handed:
+            names.add(handed.group(1))
+    return names
+
+
+def _drawn_at(svg: str, selector: str) -> list[int]:
+    """Where every element the selector's last part names begins in the drawing."""
+    last = re.split(r"[\s>+~,]+", selector.strip())[-1]
+    places: list[int] = []
+    for name in re.findall(r"\.([\w-]+)", last):
+        places += [hit.start() for hit in re.finditer(rf'<[^>]*class="[^"]*\b{re.escape(name)}\b[^"]*"', svg)]
+    for name in re.findall(r"#([\w-]+)", last):
+        places += [hit.start() for hit in re.finditer(rf'<[^>]*id="{re.escape(name)}"', svg)]
+    return places
+
+
+def _title_classes(page: str) -> set[str]:
+    """What a container's title wears as the page ships it -- the state a resting title is in."""
+    import html
+
+    worn: set[str] = set()
+    for group_id, (_, body) in _containers(page).items():
+        title = html.escape(GROUP_TITLES[group_id], quote=True)
+        found = re.search(rf"<text([^>]*)>{re.escape(title)}</text>", body)
+        assert found is not None, f"{group_id}: no text element carries the title"
+        worn |= set(" ".join(re.findall(r'class="([^"]*)"', found.group(1))).split())
+    assert worn, "no container's title is drawn at all"
+    return worn
+
+
+def _lift_style(page: str, branch: str, resting: set[str]) -> str:
+    """What the sheet draws for a lifted title that it does not draw for a resting one.
+
+    Only the names the lift *puts a title into* count: the state it sets on one, and whatever it
+    draws into that is painted after the lane names. A name it merely reads on the way past -- the
+    row counts it inserts a title back above, say -- describes a resting container and has nothing
+    to say about a lifted title.
+
+    A rule whose names are all worn at rest is what a title looks like anyway, so it is not the
+    lift saying anything -- counting it would let a page that styles every title identically claim
+    to have brought one forward.
+    """
+    svg = _svg(page)
+    last_name = svg.rindex('<text class="lane"')
+    wanted = set(re.findall(r"classList\.(?:add|toggle)\(\s*'([\w-]+)'", branch))
+    for selector in _lift_names(page, branch):
+        if any(place > last_name for place in _drawn_at(svg, selector)):
+            wanted |= set(re.findall(r"[.#]([\w-]+)", selector))
+    said = []
+    for selector, declarations in _css_rules(page):
+        for one in selector.split(","):
+            worn = set(re.findall(r"[.#]([\w-]+)", one))
+            if _reaches_a_title(one) and worn & wanted and not worn <= resting:
+                said.append(declarations)
+    return " ".join(said)
+
+
+def _reaches_a_title(selector: str) -> bool:
+    """Whether a rule could be about a drawn title at all.
+
+    A class name is not owned by the canvas -- the page already styles `a.up` in the prose beside
+    it -- so a rule naming a tag the drawing does not write a title as is somebody else's.
+    """
+    last = re.split(r"[\s>+~]+", selector.strip())[-1]
+    tag = re.match(r"^([a-zA-Z][\w-]*)", last)
+    return not tag or tag.group(1) in {"text", "tspan", "g", "svg", "rect"}
+
+
+def _resting_style(page: str, resting: set[str]) -> str:
+    """Everything the sheet says about a title that has not been clicked into."""
+    return " ".join(
+        declarations
+        for selector, declarations in _css_rules(page)
+        for one in selector.split(",")
+        if _reaches_a_title(one)
+        and re.findall(r"[.#]([\w-]+)", one)
+        and set(re.findall(r"[.#]([\w-]+)", one)) <= resting
+    )
+
+
+def _remembered(code: str, branch: str) -> str | None:
+    """The variable the page keeps the lifted container in, if it keeps one.
+
+    Read off the script rather than named here, the way the traced step is: which container is
+    forward is a fact about what the reader last asked for, and a class on an element answers a
+    different question.
+    """
+    traced = set(re.findall(r"(\w+)\s*=", _block(code, "function traceFrom(")))
+    for name in re.findall(r"let\s+(\w+)\s*=\s*null", code):
+        if name not in traced and re.search(rf"\b{name}\b\s*=[^=]", branch):
+            return name
+    return None
+
+
+def _aliases(branch: str, name: str) -> set[str]:
+    """``name`` and whatever the branch copied it into.
+
+    The state has to be read before it is overwritten, so a branch that keeps the old value in a
+    local and compares that is doing the same thing by another name.
+    """
+    found = {name}
+    for other in re.findall(rf"\b(?:const|let|var)\s+(\w+)\s*=\s*{name}\s*[;\n]", branch):
+        found.add(other)
+    return found
+
+
+def _puts_back(branch: str, added: set[str], remembered: str | None) -> bool:
+    """Whether a piece of script takes a lifted title back down again."""
+    if any(re.search(rf"classList\.(?:remove|toggle)\(\s*'{name}'", branch) for name in added):
+        return True
+    if re.search(r"replaceChildren\(\s*\)|innerHTML\s*=\s*''|\.remove\(\)|removeChild\(", branch):
+        return True
+    return bool(remembered and re.search(rf"\b{remembered}\b", branch))
+
+
+def _blank_canvas(page: str) -> tuple[str, str]:
+    """The clause that answers a click on the canvas between the steps, as (its test, its body)."""
+    code = _js(page)
+    found = re.search(r"if\s*\(([^{]*closest\('\.canvas'\)[^{]*)\)\s*\{", code)
+    assert found is not None, "nothing answers a click on the canvas itself, which is where a reader's hand goes first"
+    return found.group(1), _with_callees(code, _block(code[found.end() - 1 :], "{"))
+
+
+class TestClickingIntoAContainerBringsItsTitleForward:
+    """The title is the feature, and on the flow this page is for it is drawn under a lane's name."""
+
+    def test_a_lifted_title_ends_up_drawn_after_every_lane_name(self, boxed_page: str) -> None:
+        """The whole point, and the one an implementation can look like it has and not have.
+
+        SVG paints in document order. The lane names are written after every container and every
+        step on purpose -- that ordering is what keeps them legible where a container's header
+        reaches the first column -- so a class that puts a halo behind a title sitting where it
+        sits changes nothing about which of the two the reader can read. The markup of that page
+        and the markup of a page that works are all but identical, and only this says which is
+        which: whatever the click produces has to END UP after the lane names, by being moved
+        there, or by being drawn into something that already is.
+        """
+        svg = _svg(boxed_page)
+        last_name = svg.rindex('<text class="lane"')
+
+        assert last_name > svg.rindex('<g class="group"'), (
+            "the lane names are no longer painted after the containers, so the fact this case exists for has been "
+            "changed rather than answered -- and the name that was kept legible on purpose is now the one underneath"
+        )
+
+        at, head, branch = _container_click(boxed_page)
+        moved = re.findall(r"([\w.$()'\[\]-]+)\.(?:appendChild|append|prepend|insertBefore|replaceChildren)\(", branch)
+        to_the_root = [where for where in moved if re.search(r"\b(svg|flow|canvas|root|drawing)\b", where)]
+        after = sorted(
+            name for name in _lift_names(boxed_page, branch) if any(place > last_name for place in _drawn_at(svg, name))
+        )
+
+        assert to_the_root or after, (
+            "clicking a container reaches nothing that is painted after the lane names: it moves nothing to the root "
+            f"of the drawing and every name it works in ({sorted(_lift_names(boxed_page, branch))}) belongs to an "
+            "element drawn before them. A halo on a title left where it is is drawn under the lane name exactly as "
+            "the title was, so the reader sees the same collision with a heavier smudge behind it"
+        )
+
+    def test_the_backing_covers_the_whole_title_rather_than_the_box_it_belongs_to(self, boxed_page: str) -> None:
+        """A one-column container is 200px wide and its title is routinely twice that.
+
+        So the two ways to get this wrong are a backing drawn at the width of the box, which leaves
+        the back half of the sentence over whatever it was already over, and anything that clips
+        the title to the box, which cuts the sentence off instead of lifting it. What is left is a
+        backing that comes from the text: the glyphs' own halo, as the lane names already earn
+        theirs, or a rectangle measured off the text in the browser -- the only place the width of
+        a run of text is known.
+        """
+        at, head, branch = _container_click(boxed_page)
+        resting = _title_classes(boxed_page)
+        style = _lift_style(boxed_page, branch, resting)
+
+        haloed = "paint-order" in style and "stroke" in style
+        widths = re.findall(r"setAttribute\(\s*'width'[^;]*|\.width\s*=[^;]*", branch)
+        for said in widths:
+            assert re.search(r"getBBox|getComputedTextLength|getExtentOfChar|getBoundingClientRect", said), (
+                f"the backing is sized by {said.strip()!r}, which does not measure the title. A width the page "
+                "worked out from anything but the text ends where the text does not"
+            )
+        assert haloed or widths, (
+            f"nothing draws a backing over the whole title: the sheet says {style.strip()!r} for a lifted one, which "
+            "carries no halo of its own, and the script measures no text to size one"
+        )
+        assert not re.search(r"(gbox|gpill)[^;]{0,160}width|width[^;]{0,160}(gbox|gpill)", branch), (
+            "the backing takes its width from the container's own rectangle, so it stops at the right edge of the box "
+            "and the rest of the title is left exactly where it was"
+        )
+        assert "clip" not in branch and "clip-path" not in _svg(boxed_page) and "clipPath" not in boxed_page, (
+            "something clips the lifted title, which is the same defect the other way round: the part of the sentence "
+            "that runs past the box is cut off rather than brought forward"
+        )
+
+    def test_a_title_at_rest_carries_no_backing(self, boxed_page: str) -> None:
+        """A page where every title wears the halo has a hundred and twenty-nine lifted titles.
+
+        Which is a page that says nothing: the reader clicks a container and cannot tell that
+        anything answered. The lift is only a lift if a title that has not been clicked into looks
+        different from one that has -- so nothing arrives already lifted, and the sheet has
+        something to say about the lifted state that it does not say about the resting one.
+        """
+        at, head, branch = _container_click(boxed_page)
+        resting = _title_classes(boxed_page)
+        added = set(re.findall(r"classList\.(?:add|toggle)\(\s*'([\w-]+)'", branch))
+        lifted = _lift_style(boxed_page, branch, resting)
+
+        assert not (added & resting), (
+            f"a container's title is drawn already wearing {sorted(added & resting)}, so every one of them is lifted "
+            "before anything is clicked"
+        )
+        said_at_rest = _resting_style(boxed_page, resting)
+        assert "paint-order" not in said_at_rest and "stroke" not in said_at_rest, (
+            f"a resting title already carries the backing ({said_at_rest.strip()!r}), so clicking into a container "
+            "changes nothing a reader can see"
+        )
+        assert lifted.strip(), (
+            "the sheet says nothing about a lifted title that it does not say about every other one, so the two are "
+            "drawn identically"
+        )
+
+    def test_lifting_one_container_puts_any_other_back(self, boxed_page: str) -> None:
+        """Two titles forward is the collision this exists to settle, drawn twice.
+
+        A lift that only adds to the container clicked leaves the last one where it was, and after
+        a few clicks the canvas carries a row of haloed sentences over each other with nothing
+        saying which the reader asked for. So the click has to put back whatever is forward before
+        it brings anything else forward -- either by sweeping the state off the drawing, or by
+        holding the one that is up and taking it down.
+        """
+        code = _js(boxed_page)
+        at, head, branch = _container_click(boxed_page)
+        added = set(re.findall(r"classList\.(?:add|toggle)\(\s*'([\w-]+)'", branch))
+        remembered = _remembered(code, branch)
+
+        swept = [
+            selector
+            for selector in re.findall(r"querySelectorAll\(\s*'([^']+)'\s*\)", branch)
+            if set(re.findall(r"[.#]([\w-]+)", selector)) & added
+        ]
+        emptied = re.search(r"replaceChildren\(\s*\)|innerHTML\s*=\s*''|removeChild\(|\.remove\(\)", branch)
+        held = remembered is not None and bool(re.search(rf"\b{remembered}\b(?!\s*=[^=])", branch))
+
+        assert swept or emptied or held, (
+            "clicking a container never reaches the one already forward: nothing sweeps the lifted state off the "
+            "drawing, nothing empties whatever the lifted title is drawn into, and nothing is remembered from the "
+            "last click -- so a second click lifts a second title and leaves the first one up"
+        )
+
+    def test_clicking_the_lifted_container_again_or_the_canvas_puts_it_back(self, boxed_page: str) -> None:
+        """The way back, which has to be the one already on this canvas.
+
+        A reader who has finished with a title puts it away by clicking it again or by clicking the
+        canvas beside it -- the same two gestures that already put a traced chain away, and the
+        hand goes to them before it goes looking for a control. The canvas clause is the one that
+        can quietly fail: it is written today behind a test for a lit chain, and a title lifted
+        over nothing else would be left up by a clause that returns before it looks.
+        """
+        code = _js(boxed_page)
+        at, head, branch = _container_click(boxed_page)
+        added = set(re.findall(r"classList\.(?:add|toggle)\(\s*'([\w-]+)'", branch))
+        remembered = _remembered(code, branch)
+
+        compared = "|".join(sorted(_aliases(branch, remembered))) if remembered else ""
+        asked = re.search(r"classList\.(?:contains|toggle)\(", branch) or (
+            compared and re.search(rf"\b(?:{compared})\b\s*[!=]==|[!=]==\s*(?:{compared})\b", branch)
+        )
+        assert asked, (
+            "the branch never asks whether the container clicked is the one already forward, so clicking it a second "
+            "time lifts it again and the reader has no way back through the thing they clicked"
+        )
+
+        test, body = _blank_canvas(boxed_page)
+        assert _puts_back(body, added, remembered), (
+            "a click on blank canvas does not take a lifted title back down, so the one gesture a reader makes "
+            "without looking leaves the halo on the canvas"
+        )
+        blocking = [
+            one.strip()
+            for one in test.split("&&")
+            if re.fullmatch(r"[(\s]*\w+\s*!==\s*null[)\s]*", one)
+            and not any(name in one for name in {remembered} | added if name)
+        ]
+        assert not blocking, (
+            f"the canvas clause is reached only when {blocking} says something else is lit, so a title lifted on its "
+            "own is not put back by clicking beside it"
+        )
+
+    def test_a_lifted_title_is_drawn_where_the_resting_one_was(self, boxed_page: str) -> None:
+        """A title that jumps as it comes forward is a defect a reader sees every time.
+
+        Two ways for it to move. A title drawn out of its container and into something else lands
+        somewhere else the moment anything between it and the root carries a transform, so nothing
+        may. And the lift may not restate where or how the text is drawn: a place or a size written
+        a second time is the geometry of this page said in two languages, and the two drift.
+        """
+        svg = _svg(boxed_page)
+        at, head, branch = _container_click(boxed_page)
+        resting = _title_classes(boxed_page)
+
+        for attrs, _ in _elements(svg, '<g class="group"'):
+            assert "transform" not in attrs, (
+                f"a container is drawn under a transform ({attrs.get('transform')}), so a title taken out of it is "
+                "drawn somewhere other than where it was"
+            )
+        for name in _lift_names(boxed_page, branch):
+            for place in _drawn_at(svg, name):
+                tag = svg[place : svg.index(">", place)]
+                assert "transform" not in tag, f"a lifted title is drawn into {tag!r}, which moves whatever is in it"
+
+        for said in re.findall(r"setAttribute\(\s*'(?:x|y|dx|dy|transform)'[^;]*", branch):
+            assert re.search(r"getAttribute\(|getBBox", said), (
+                f"the lift writes the title's place itself ({said.strip()!r}) rather than keeping the one it was "
+                "drawn at, so the sentence moves as it comes forward"
+            )
+        style = _lift_style(boxed_page, branch, resting)
+        for property_ in ("font:", "font-size", "font-weight", "letter-spacing", "transform"):
+            assert property_ not in style, (
+                f"a lifted title is drawn with a different {property_.rstrip(':')} ({style.strip()!r}), so bringing "
+                "it forward re-sets the text and it moves under the reader"
+            )
+
+    def test_clicking_a_container_does_not_take_a_click_meant_for_a_step_or_the_control(self, boxed_page: str) -> None:
+        """A step is drawn INSIDE its container, and so is the control that closes it.
+
+        `closest('.group')` is therefore true of a click on either of them. A branch that answers a
+        container and is reached before the step's is a canvas where no step can be chosen any
+        more, and one reached before the collapse control's is a container that lifts its title
+        every time a reader closes it. Either is settled by being written after the branch that
+        returns, or by saying out loud that it is not those.
+        """
+        code = _js(boxed_page)
+        at, head, branch = _container_click(boxed_page)
+        flat = head.replace(" ", "")
+        assert "addEventListener('click'" in code[:at], (
+            "a container is answered outside any click listener, so nothing about it can be settled by what a click "
+            "reaches first"
+        )
+        start, end = _click_listener(code, at)
+
+        for what, selector in (("a step", ".node"), ("the collapse control", "[data-collapse]")):
+            assert re.search(rf"closest\(\s*'{re.escape(selector)}'\s*\)", code), (
+                f"nothing picks {what} out of a click any more"
+            )
+            # Looked for inside the listener the container is answered in, because that is the only
+            # place being written first settles anything: a branch in another listener runs whether
+            # this one returned or not.
+            hit = re.search(rf"closest\(\s*'{re.escape(selector)}'\s*\)", code[start:end])
+            says_not = re.search(rf"!\s*[\w.]*closest\(\s*'({re.escape(selector)}|\.gctl)'\s*\)", flat)
+            ordered = bool(hit and start + hit.start() < at and "return" in _block(code[start + hit.start() :], "{"))
+            assert ordered or says_not, (
+                f"a click on {what} is inside a container, so it reaches the container branch as well: that branch is "
+                f"written before the one answering {what} (or in another listener, where returning settles nothing) "
+                f"and does not exclude it. Clicking {what} would lift a title instead of, or as well as, doing what "
+                "it has always done"
+            )
+
+
+# ---------------------------------------------------------------------------
 # The layout, at the density a real flow has
 #
 # The cases above box two stages of a six-step fixture, and every one of them passes. The same rule
