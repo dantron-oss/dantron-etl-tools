@@ -473,6 +473,17 @@ def _group_box(
         # those, which is the one thing on this canvas that already worked well.
         f'<rect class="ghit" x="{left}" y="{top}" width="{12 + len(group.title) * 7.0 + 8}"'
         f' height="{GROUP_HEAD}"/>'
+        # The plate the raised title sits on. Drawn here, hidden, rather than built when a reader
+        # clicks: a rectangle sized to a run of text can only be measured in a browser, and this
+        # page is written on a machine with none -- but the same character-count estimate that
+        # places the hit area above places this, and it is the same sentence in the same face. The
+        # estimate is safe for both because a few pixels either way moves an edge nobody measures.
+        #
+        # A rectangle rather than a heavier halo on the glyphs, because a border is what was asked
+        # for and a border around a halo follows the outline of the letters -- which reads as a
+        # smudge round the words rather than as a label the sentence is printed on.
+        f'<rect class="gplate" x="{left + 5}" y="{top + 4}"'
+        f' width="{len(group.title) * 7.0 + 14}" height="22" rx="4"/>'
         f'<text class="gtitle" x="{left + 12}" y="{top + 18}">{_e(group.title)}</text>'
         # Grouped digits, because the figure is read at a glance and `11834 in` is not read at a
         # glance -- it is counted, a digit at a time, which is exactly the work this feature exists
@@ -1053,7 +1064,14 @@ header.top b {{ color:var(--accent); }}
    that. A rectangle would have to be measured in the browser and would still have to be told where
    the sentence ends. Nothing here restates the font or moves the text: a title that changed size or
    jumped a pixel on its way forward would read as a different title. */
-.gtitle.lifted {{ paint-order:stroke; stroke:var(--surface); stroke-width:10px;
+/* Nothing until a reader clicks into the container. `display` rather than an opacity, so a hidden
+   plate is not a target sitting over the connections that pass behind it. */
+.gplate {{ display:none; }}
+.gplate.lifted {{ display:block; fill:var(--surface); stroke:var(--accent); stroke-width:1.3; }}
+/* A halo as well as the plate, kept small. The plate is the block; this only covers the few pixels
+   where the estimate that sized it might fall short of a wide letter, and being the plate's own
+   fill colour it disappears into it rather than reading as a second edge. */
+.gtitle.lifted {{ paint-order:stroke; stroke:var(--surface); stroke-width:5px;
   stroke-linejoin:round; stroke-linecap:round; }}
 /* The container being read. Its outline goes solid and full strength while every other one stays
    dashed and faint, so the box the raised sentence belongs to is obvious -- a title lifted clear of
@@ -1365,6 +1383,14 @@ let LIFTED_HOME = null;
 function putTitleBack() {{
   if (!LIFTED) return;
   const title = wrap.querySelector('text.gtitle.lifted');
+  const plate = wrap.querySelector('rect.gplate.lifted');
+  // Back in the order they were written in -- the plate, then the sentence printed on it -- which
+  // putting both in front of the title's old next sibling restores without remembering a second
+  // position: they were adjacent when they left.
+  if (plate) {{
+    plate.classList.remove('lifted');
+    LIFTED.insertBefore(plate, LIFTED_HOME);
+  }}
   if (title) {{
     title.classList.remove('lifted');
     LIFTED.insertBefore(title, LIFTED_HOME);
@@ -1607,6 +1633,11 @@ wrap.addEventListener('click', e => {{
         LIFTED = box;
         LIFTED_HOME = title.nextSibling;
         box.classList.add('reading');
+        const plate = box.querySelector('rect.gplate');
+        if (plate) {{
+          plate.classList.add('lifted');
+          layer.appendChild(plate);
+        }}
         title.classList.add('lifted');
         layer.appendChild(title);
       }}
