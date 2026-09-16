@@ -458,6 +458,21 @@ def _group_box(
         f'data-rows-in="{rows_in}" data-rows-out="{rows_out}">'
         f'<rect class="gbox" x="{left}" y="{top}" width="{width}" height="{height}" rx="10"/>'
         f'<rect class="gpill" x="{left}" y="{top}" width="{width}" height="{GROUP_HEAD}" rx="10"/>'
+        # Something to click. The outline is `fill:none`, and an SVG shape is a target only where
+        # it is actually painted, so until this rect existed a container's inside was not a target
+        # at all -- a click there went through it to the lane stripe behind, and the one part a
+        # reader could actually hit was 1.2 pixels of dashed line. This covers the header strip: the
+        # bar the title is written on, which the layout already keeps clear of steps.
+        #
+        # Its width is the title's, estimated from the character count rather than measured, because
+        # the width of a run of text is only known in a browser and this is written on a machine
+        # with none. An estimate is the right tool for a hit area and would be the wrong one for
+        # anything drawn -- a few pixels either way moves where a click stops working, and nothing
+        # a reader can see. It is deliberately not the whole box: a target that covered a container
+        # end to end would sit over every connection that crosses it and take the clicks that light
+        # those, which is the one thing on this canvas that already worked well.
+        f'<rect class="ghit" x="{left}" y="{top}" width="{12 + len(group.title) * 7.0 + 8}"'
+        f' height="{GROUP_HEAD}"/>'
         f'<text class="gtitle" x="{left + 12}" y="{top + 18}">{_e(group.title)}</text>'
         # Grouped digits, because the figure is read at a glance and `11834 in` is not read at a
         # glance -- it is counted, a digit at a time, which is exactly the work this feature exists
@@ -1027,7 +1042,10 @@ header.top b {{ color:var(--accent); }}
    the flow that has become unreadable, and that is the failure this arrangement exists to avoid. */
 .gbox {{ fill:none; stroke:var(--accent); stroke-width:1.2; stroke-dasharray:5 4; opacity:.7; }}
 .gpill {{ fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.2; }}
-.gtitle {{ fill:var(--ink); font:600 12px var(--sans); }}
+.gtitle {{ fill:var(--ink); font:600 12px var(--sans); cursor:pointer; }}
+/* Painted, therefore clickable, and transparent, therefore invisible. `fill:none` would look
+   identical and take no clicks at all, which is what the container's own outline does. */
+.ghit {{ fill:transparent; cursor:pointer; }}
 /* The title of the container a reader has clicked into. The backing is a halo on the glyphs
    themselves -- the same one the lane names and the connection captions already earn -- so it
    covers the sentence for its whole length, including the part that runs past the container's own
@@ -1564,7 +1582,10 @@ wrap.addEventListener('click', e => {{
   // What it does is bring that container's title forward. Titles are longer than the boxes they
   // belong to and the canvas is crowded, so the title a reader is actually reading is the one that
   // has to win -- and clicking the thing you are reading is how you say which one that is.
-  const box = e.target.closest('.group');
+  // The raised title is the second way in, because raising it moves it out of its container: a
+  // reader who clicks the sentence they are reading to put it down again is clicking something that
+  // is no longer inside the box it belongs to, and `closest` would answer nothing.
+  const box = e.target.closest('.group') || (e.target.closest('.lifted') && LIFTED);
   if (box) {{
     e.preventDefault();
     // Clicking the container already forward puts it back, the same way clicking a lit step puts
