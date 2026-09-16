@@ -22,7 +22,7 @@ import polars as pl
 import dantron_etl
 from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_trace
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import Group, PipelineSpec, read_pipeline_file
+from dantron_etl.pipeline import Group, PipelineSpec, StepSpec, read_pipeline_file
 from dantron_etl.runner import PipelineTrace, run_pipeline
 from dantron_etl.tool import STATUS_LEVELS
 
@@ -52,33 +52,49 @@ STACK_GAP, LANE_PAD, LANE_GAP = 18, 22, 26
 # steps of neighbouring lanes, which a box drawn tight to its members does not.
 GROUP_PAD, GROUP_HEAD = 12, 46
 
-# KNOWN LIMIT, measured rather than feared: the header is drawn in space nothing reserved for it,
-# and on the real flow that space is usually already occupied.
+# The three margins above are what make a container's rectangle derivable from its members' slots
+# rather than measured off the drawing, which is what `_slots` relies on. Two of them are load
+# bearing beyond their own box:
 #
-# The header sits GROUP_HEAD above the topmost member. That fits when the topmost member is the top
-# step of its lane cell -- LANE_PAD 22 plus LANE_GAP 26 is 48px of nothing above it, and 46 goes in.
-# A container whose topmost member is stacked lower has no such gap: its header is drawn straight
-# over the step in the slot above, and its title and counts are written across that step's own box.
+#   GROUP_PAD 12 < (COL_W - NODE_W) / 2 = 28, so an outline never reaches out of its own columns
+#   into the one beside it. Column-disjoint containers therefore cannot touch, whatever their rows.
 #
-# Measured against pipelines/mrr.yaml in the flow this page was built for -- 672 steps, 3 lanes, 152
-# columns, a canvas 35,292px wide -- with its steps boxed the size the request asked for ("fetch the
-# crm accounts and put the header row back", six-ish tools): 143 containers, of which 74 draw
-# their header over a step above them. Only 69 of the 143 begin at slot 0; the rest begin as deep as
-# slot 11. So this is not a corner -- it is the common case there, and the fixture is quiet about it
-# only because six steps in two lanes stack no deeper than one.
+#   GROUP_PAD + GROUP_HEAD = 58 < 2 * LANE_PAD + LANE_GAP = 70, so a container at the bottom of one
+#   lane and one at the top of the next cannot touch either, and the header of a container in the
+#   first slot of a lane fits in the gap above that lane without reaching the lane before it.
 #
-# The header is also the smaller half. A container's outline is the bounding box of its members, and
-# nothing keeps a non-member out of it: on the same 143, 109 enclose at least one step that is not
-# theirs, the worst swallowing 294. That is the box making a false claim rather than an ugly one --
-# `test_a_container_encloses_its_own_steps_and_no_others` already pins that it must not, and on this
-# flow today it would fail.
+# Change either margin past those bounds and containers start colliding across a boundary `_slots`
+# never looks at, because `_slots` reasons in whole grid cells and these are what make a cell's
+# worth of separation enough.
+
+
+# WHERE THE CONTAINERS COST SOMETHING. A container is drawn round its members, so the layout has to
+# put the members somewhere a box can be drawn round without the box also reaching round a step that
+# is not its own. `_slots` does that by handing each container a rectangle of its lane's grid and
+# letting nothing else into it. What that costs is height: on the flow this page was built for --
+# 672 steps, 150 containers, 152 columns -- the canvas goes from 3,146px unboxed to 8,346px boxed,
+# 2.65x. A flow that declares no container reserves nothing and is laid out to the pixel where it
+# always was.
 #
-# Both have one cause and one fix, and the fix is not here: the layout places steps and the container
-# is drawn round wherever they landed. What is owed is a layout that knows about containers -- giving
-# a container's members adjacent slots, reserving a row for its header, and keeping non-members out
-# of the columns it spans. Widening the gap, shrinking the header or drawing it inside the outline
-# all move the collision rather than remove it, so none of them is done here. Until that lands,
-# containers read correctly on flows whose lanes stack one or two deep, which is what ships today.
+# Two things spend that height, and anyone tuning it should know which is which before touching
+# `_slots`. Measured by re-running the same flow with one of them turned off at a time:
+#
+#   The header row costs the most: 2,240px of the 5,200px added. Stop reserving a slot for a header
+#   and the canvas is 6,106px. A header needs GROUP_HEAD 46 of a slot's 80 and takes the whole slot
+#   because slots are what the grid is made of, so the 34px left over is what a finer grid would win
+#   back -- most of it, not all.
+#
+#   The claims' column spans cost 1,840px. Let a claim reserve only the columns its members are
+#   actually in and the canvas is 6,506px -- but the outline is the bounding box of the members, so
+#   the columns in between are inside the box whether they were reserved or not, and a step there is
+#   a step inside a container that does not own it. That height is not paid for the layout's
+#   convenience; it is paid for the rectangle. Winning it back means a container that is not drawn
+#   as one rectangle.
+#
+# The order the containers are placed in is not where the height is. Widest-first lands at 8,346px
+# against 8,826 left to right and 8,666 in declaration order, and the busiest column of the busiest
+# lane needs 52 rows on its own, so the shipped layout is one row off what any order could do. There
+# is nothing left in the packing; the two figures above are the whole bill.
 
 
 def _e(v: object) -> str:
@@ -99,6 +115,73 @@ def _lane_index(spec: PipelineSpec) -> dict[str, int]:
     return {lane.id: i for i, lane in enumerate(ordered)}
 
 
+def _lane_row(step: StepSpec, lanes: dict[str, int]) -> int:
+    """Which band a step is drawn in. A step naming no lane, or a lane the page never heard of,
+    goes in the first band rather than nowhere -- the layout is not the place a bad lane is reported,
+    and `_refuse_undeclared_lanes` has already refused one that came out of a file."""
+    return lanes.get(step.lane or "", 0)
+
+
+def _group_parts(spec: PipelineSpec, lanes: dict[str, int]) -> list[tuple[int, tuple[str, ...]]]:
+    """Each container's members, split by the lane they are in, as (lane row, members).
+
+    Split rather than taken whole because `_slots` reserves cells of one lane's grid, and a lane is
+    the only thing that grid is indexed by. A container declared over two lanes is not a shape this
+    page has a drawing for -- its outline would have to reach across the band between them, over
+    every step of both lanes in its columns -- so the honest thing is to place each half properly in
+    its own lane and let the outline be the bounding box of the two, which is what it is today. The
+    guarantees below are per lane and so is the claim they support.
+
+    No flow read from a file can get here with one, though: `_refuse_bad_groups` refuses a group
+    whose steps sit in two lanes when the document is loaded, and says to move the step or split the
+    container. What reaches this split is a `PipelineSpec` built in Python, which is how the layout's
+    own cases are written. It stays because it is what makes "a claim is a rectangle of one lane's
+    grid" true of every input rather than of the ones the loader happens to allow -- take it out and
+    a two-lane container silently has half its members placed against the wrong lane's occupancy,
+    which is two steps drawn at one coordinate, the defect this whole function exists under.
+    """
+    split: list[tuple[int, tuple[str, ...]]] = []
+    for group in spec.groups:
+        mine: dict[int, list[str]] = {}
+        for member in spec.group_members(group.id):
+            mine.setdefault(_lane_row(spec.step(member), lanes), []).append(member)
+        split.extend((row, tuple(members)) for row, members in mine.items())
+    return split
+
+
+def _claimed_slots(base: int, deep: int) -> int:
+    """The slots a container claims outright, as a bit per slot: its own ``deep`` rows from ``base``,
+    and the empty row above them that its header is written in.
+
+    Named for the slots rather than for the band it is drawn as, because a *band* on this page is
+    already the horizontal stripe a lane is drawn as -- `<rect class="band">` -- and these are slots
+    of one column inside one of those, the same slots `_slots` hands out.
+
+    The header row is the whole reason a container claims more than its members. `GROUP_HEAD` is 46
+    and a slot's pitch is `NODE_H + STACK_GAP` = 80, so the band the title is written in reaches 46px
+    up into a slot 80px tall -- past the bottom 18px of gap and 28px into the box of whatever sits in
+    the slot above. There is no arrangement in which a header shares a slot with a step; it either
+    has the slot or is written across a step's own box.
+
+    Except at the top of a lane, where the room is already there and reserving a slot for it would
+    waste a row on every container that starts at slot 0. Above slot 0 sits LANE_PAD and then either
+    the page's own PAD (28 + 22 = 50) or LANE_GAP and the lane before's LANE_PAD (22 + 26 + 22 = 70),
+    and both are more than GROUP_HEAD. That space holds no step by construction, so a header at slot
+    0 is drawn in a gap that was already empty.
+
+    Empty of *steps*, which is not the same as empty. The lane writes its own label in that gap, at
+    x=6 above the band, so a container that both starts at slot 0 and reaches column 0 writes its
+    title across the lane's name. That is an older and smaller thing than the three this layout was
+    built for: on the dense flow it happens to 1 container of 150, where the layout this replaced --
+    which drew a header GROUP_HEAD above whatever its topmost member was -- did it to 4. It is also
+    not a layout fault and has no layout fix: the header is where it has to be, and what is wrong is
+    that the label shares the space. Moving the label, or drawing it over the containers with
+    something behind it, is a change to the drawing order and belongs with whoever next touches the
+    lane bands.
+    """
+    return (1 << (base + deep)) - (1 << (base - 1 if base else 0))
+
+
 def _slots(spec: PipelineSpec, depth: dict[str, int], lanes: dict[str, int]) -> dict[str, int]:
     """Where each step sits *within* its lane-and-depth cell, so two steps never share a spot.
 
@@ -107,14 +190,84 @@ def _slots(spec: PipelineSpec, depth: dict[str, int], lanes: dict[str, int]) -> 
     coordinate puts one exactly on top of the other, and the canvas then shows fewer tools than the
     pipeline has -- with the hidden one's data still appearing below, which reads as data arriving
     from nowhere.
+
+    Containers are placed first, and they are placed by claiming grid cells rather than by being
+    drawn round wherever their members landed. A container spanning columns c0..c1 whose busiest
+    column holds ``deep`` of its members takes the rectangle c0..c1 x base..base+deep-1, plus the
+    slot above for its header, and nothing else is ever put in it. That rectangle *is* the outline
+    `_group_box` draws: the topmost member is at ``base`` in every column that has one, the lowest is
+    at ``base + deep - 1``, so the bounding box of the members is the bounding box of the claim. So
+    "no stranger inside the outline" and "no two outlines crossing" both reduce to "no two claims
+    share a cell", which is the one thing the loop below has to get right.
+
+    That the outline stops at the claim, rather than spilling into the cells beside it, is what the
+    two margin bounds above pay for: GROUP_PAD keeps it inside its own columns and GROUP_PAD +
+    GROUP_HEAD keeps it inside its own lane. The one direction with no margin at all is downwards
+    into the next slot -- an outline ends GROUP_PAD = 12 below its last member, and the next slot
+    starts 18px below that -- so a step directly under a container is fine and needs no reservation.
+
+    Widest first, because a container's claim is a horizontal interval and the wide ones are what
+    every later interval has to fit around. Left to right instead costs six rows on the flow this
+    page is for: a container spanning seventy columns placed last has to clear seventy columns'
+    worth of whatever has already been put down, and it ends up alone at the top of the lane. The
+    order is a tie-broken total order rather than a sort by width alone, so that two renders of one
+    file draw the same page.
+
+    Then the ungrouped steps, each into the lowest slot of its own cell that no container claimed.
+    On a flow with no containers nothing is claimed and this is exactly the sequential fill it has
+    always been -- same steps, same declaration order, same slots, which is why a page that declares
+    no group does not move.
     """
     slot: dict[str, int] = {}
-    taken: dict[tuple[int, int], int] = {}
+    # Which slots of each (lane, column) cell are taken, as one integer per cell with a bit per
+    # slot. Both loops below read it and the first one reads whole rectangles of it at a time.
+    used: dict[tuple[int, int], int] = {}
+
+    widest_first = sorted(_group_parts(spec, lanes), key=lambda part: (-_width(part[1], depth), part[1]))
+    for row, members in widest_first:
+        # The members of one container, gathered into the columns they sit in. One pass, because the
+        # claim is measured off these columns and the members are then placed down them.
+        held: dict[int, list[str]] = {}
+        for member in members:
+            held.setdefault(depth[member], []).append(member)
+        first, last, deep = min(held), max(held), max(len(at_column) for at_column in held.values())
+
+        # Asking whether a whole rectangle is free is then one AND against the columns it spans,
+        # rather than a sweep over its cells. It is the difference between a page that renders and
+        # one that does not: 150 containers over 152 columns is a few million cell questions.
+        wall = 0
+        for column in range(first, last + 1):
+            wall |= used.get((row, column), 0)
+        base = 0
+        while wall & _claimed_slots(base, deep):
+            base += 1
+        for column in range(first, last + 1):
+            used[(row, column)] = used.get((row, column), 0) | _claimed_slots(base, deep)
+
+        # Members fill their own column downwards from the top of the claim, so every column that
+        # holds one puts it at `base`. That is what makes the claim and the outline the same
+        # rectangle: a column whose members started lower would leave the top row of the claim empty
+        # in every column, and the outline would sit a slot below the room reserved for its header.
+        for at_column in held.values():
+            for n, member in enumerate(at_column):
+                slot[member] = base + n
+
     for step in spec.steps:
-        cell = (depth[step.id], lanes.get(step.lane or "", 0))
-        slot[step.id] = taken.get(cell, 0)
-        taken[cell] = slot[step.id] + 1
+        if step.id in slot:
+            continue
+        cell = (_lane_row(step, lanes), depth[step.id])
+        free = 0
+        while used.get(cell, 0) >> free & 1:
+            free += 1
+        used[cell] = used.get(cell, 0) | 1 << free
+        slot[step.id] = free
     return slot
+
+
+def _width(members: tuple[str, ...], depth: dict[str, int]) -> int:
+    """How many columns a container's members span, which is how hard it is to place."""
+    columns = [depth[member] for member in members]
+    return max(columns) - min(columns) + 1
 
 
 def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
@@ -126,7 +279,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
     # one holding four grows to fit rather than overflowing into its neighbour.
     stacked: dict[int, int] = {}
     for step in spec.steps:
-        row = lanes.get(step.lane or "", 0)
+        row = _lane_row(step, lanes)
         stacked[row] = max(stacked.get(row, 1), slot[step.id] + 1)
 
     top: dict[int, float] = {}
@@ -143,7 +296,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
 
     def box(step_id: str) -> tuple[float, float]:
         step = spec.step(step_id)
-        row = lanes.get(step.lane or "", 0)
+        row = _lane_row(step, lanes)
         x = PAD + depth[step_id] * COL_W
         return x, top[row] + LANE_PAD + slot[step_id] * (NODE_H + STACK_GAP)
 

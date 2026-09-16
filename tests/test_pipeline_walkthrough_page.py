@@ -12,6 +12,9 @@ than about how it looks.
 Built over the neutral fixture pipeline, which needs no database and no client data.
 """
 
+import hashlib
+import itertools
+import random
 import re
 from collections import Counter
 from pathlib import Path
@@ -20,12 +23,17 @@ import pytest
 
 from dantron_etl.focus import FocusSpec
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import PipelineSpec, PortRef, read_pipeline_file
+from dantron_etl.pipeline import REGISTRY, Group, Lane, PipelineSpec, PortRef, StepSpec, read_pipeline_file
 from dantron_etl.runner import PipelineTrace, run_pipeline
 
 PROJECT_ROOT = project_root(__file__)
 
-from scripts.pipeline_walkthrough_page import build  # noqa: E402 -- needs PROJECT_ROOT first
+# `_canvas` is the layout itself, and the cases at the foot of this file are about the layout. The
+# whole page cannot stand in for it on the real flow: `build` wants the frames a run produced, and
+# the real flow reads a database this suite has no access to. Where the layout *is* reachable
+# through the page -- the fixture flow -- the cases above go through `build`, and this is the seam
+# for the one flow that cannot.
+from scripts.pipeline_walkthrough_page import _canvas, build  # noqa: E402 -- needs PROJECT_ROOT first
 
 
 @pytest.fixture(scope="module")
@@ -2430,3 +2438,564 @@ class TestAClosedContainerStillJoinsUpToTheFlow:
         assert re.search(
             r"'\.wire'[^;]{0,120}'\.hit'|'\.hit'[^;]{0,120}'\.wire'|querySelectorAll\('path'\)", handler
         ), "only one of a connection's two paths is reached, so the line moves and its click target stays behind"
+
+
+# ---------------------------------------------------------------------------
+# The layout, at the density a real flow has
+#
+# The cases above box two stages of a six-step fixture, and every one of them passes. The same rule
+# applied to a flow of the size this page was built for -- 672 steps, three lanes, 152 columns --
+# breaks: most boxes enclose steps that are not theirs, a third write their title across the step
+# stacked above, and outlines cross each other in their hundreds. None of that is reachable at six
+# steps in two lanes, because a lane that stacks one deep puts a container's members next to each
+# other whatever the layout does. Density is the whole test.
+#
+# So the flow is generated rather than written out: `_dense_flow` builds a spec in memory with the
+# shape a real one has and neutral names throughout. Generated rather than copied from a real
+# pipeline for a plain reason -- this library is extracted and shipped, and one client's vocabulary
+# has no business in it -- and the value that was wanted from a real flow is its shape, which is
+# what is reproduced:
+#
+#   672 steps, 3 lanes, 152 columns, lanes stacking 4, 16 and 17 deep, 222 of the 672 at slot 0
+#
+# and, deliberately, the awkward parts of that shape rather than a tidy grid:
+#
+#   * cell sizes that are skewed rather than even -- a few columns where sixteen steps sit at one
+#     depth, and many holding one or two. A container inside a deep cell is one whose header has
+#     nothing above it but another step.
+#   * a declaration order that only loosely tracks depth. A person writes a file in the order the
+#     work makes sense in, not in the order the dependency graph sorts it, so steps declared next to
+#     each other land columns apart -- which is what makes a container's members scatter, and a
+#     scattered container is what encloses a stranger.
+#   * connections that skip columns and branches that rejoin, through the two-input tools. A flow
+#     wired strictly column to column has no long edges, and a layout can satisfy every rule below
+#     on one.
+#
+# A tidy synthetic grid would pass every case here while the real thing failed, which is exactly the
+# trap the fixture already fell into once. The measured figures on the generated flow are in the
+# docstrings below; they are of the same order as the ones measured on the flow this page is for.
+# ---------------------------------------------------------------------------
+
+#: The shape the generated flow is built to, which is a real flow's shape: lanes carrying 148, 450
+#: and 74 steps, occupying 70, 120 and 32 of the 152 columns, and stacking at most 16, 17 and 4 deep
+#: where they are busiest. The names are the flow's own and mean nothing.
+LANE_SHAPE: tuple[tuple[str, int, int, int], ...] = (
+    ("alpha", 148, 70, 16),
+    ("beta", 450, 120, 17),
+    ("gamma", 74, 32, 4),
+)
+
+#: Which lane owns each column before the spare cells are handed out, as a pattern of 19 that
+#: divides the 152 columns exactly. Every column gets one lane this way, which is what lets a step
+#: at column c always find something to be wired to at column c-1.
+COLUMN_OWNER: tuple[str, ...] = (
+    "beta",
+    "beta",
+    "alpha",
+    "beta",
+    "beta",
+    "beta",
+    "gamma",
+    "beta",
+    "beta",
+    "alpha",
+    "beta",
+    "beta",
+    "beta",
+    "beta",
+    "alpha",
+    "beta",
+    "beta",
+    "beta",
+    "beta",
+)
+
+COLUMNS = 152
+
+#: Fixed, because a layout test that draws a different flow on every run reports a different defect
+#: on every run, and the golden below would be meaningless.
+SEED = 20260916
+
+#: How far a step's place in the file may drift from its place in the flow. Just over half of them
+#: do not drift at all, most of the rest by up to a dozen columns, and a few by up to sixty -- which
+#: is a person writing the steps of one job together even though the flow reaches them at very
+#: different depths. This is the single knob that decides whether a container's members are adjacent
+#: for free, so it is the one thing a synthetic flow must not be tidy about.
+NEARBY, FAR = 14, 60
+STAYS_PUT, DRIFTS = 0.55, 0.94
+
+#: How many steps take two inputs, which is where a connection that skips columns and a branch that
+#: rejoins both come from. At this rate the generated flow carries 824 connections over its 672
+#: steps, against the 765 over 672 a real one of this size carries.
+REJOINING = 0.26
+
+#: The longest run of steps boxed together, and how many consecutive steps share a stage. Six is the
+#: size the feature was asked for -- one sentence over the handful of tools that carry out one job --
+#: the two together yield 150 containers over the 672 steps, against 143 on a real flow of this size.
+RUN_LENGTH, STAGE_LENGTH = 6, 9
+
+#: Tools by how many inputs they take, drawn from the shipped catalog so the flow is wired out of
+#: real ports -- `filter` branching to `true` and `false`, `join` rejoining two of them. No
+#: configuration is generated with them: nothing in the layout reads a step's configuration, and a
+#: generator that had to produce 672 valid configurations would be testing the loader instead.
+SOURCE_TOOLS = ("read_table", "read_csv", "read_excel")
+ONE_INPUT_TOOLS = (
+    "filter",
+    "sort",
+    "select_columns",
+    "record_id",
+    "limit_rows",
+    "group_by",
+    "remove_duplicates",
+    "normalize_text",
+    "cast_columns",
+    "formula",
+    "rename_columns",
+)
+TWO_INPUT_TOOLS = ("join", "union")
+
+#: The canvas the generated flow draws today with no containers declared over it, and a digest of
+#: where every one of its 672 steps sits. Recorded rather than derived because it is the thing that
+#: must not move: a layout that learns about containers and shifts a flow that has none is a silent
+#: regression on every page shipped so far, and nothing but yesterday's numbers can catch that.
+#:
+#: The digest is over the coordinates rather than over the markup. A page whose node markup changes
+#: for a reason that has nothing to do with the layout -- another attribute, another anchor -- has
+#: not moved a step, and a golden that failed on that would be re-blessed without being read, which
+#: is a golden that has stopped guarding anything.
+UNBOXED_CANVAS = (35292.0, 3146.0)
+UNBOXED_PLACES = "a55d4909b0c581ae37759edcc4ab9637ee73b89577bd4cac53ede41d383401a0"
+
+#: How much taller the same flow may get once it is boxed. Members have to become adjacent and every
+#: container needs a band for its header, so the canvas cannot stay the height it is. Packing the
+#: containers into their lanes as tightly as their column spans allow needs 2.49x on this flow, and
+#: a greedy pass over the same intervals lands at 2.69x -- measured on a real flow of the same size
+#: the two figures are 2.07x and 2.10x -- so anything under 2.7 is a bound no correct layout can
+#: meet. 3.5 leaves a working margin over the harder of the two and still refuses the layout that
+#: satisfies every rule below by giving each container a row of its own, which is 11.6x here.
+#:
+#: Width has no allowance at all. A column is a step's distance along the flow, and containers do
+#: not change how far along the flow anything is; a layout that widens a 35,292px canvas has moved a
+#: step into a column it does not belong in, which is the drawing lying about the order of the work.
+MAX_TALLER = 3.5
+
+
+def _cell_sizes(cells: int, total: int, cap: int, rng: random.Random) -> list[int]:
+    """How many steps sit in each of one lane's cells: skewed, not spread evenly.
+
+    Preferential attachment -- a cell already holding many is the likeliest to take the next -- so
+    the lane ends up with a few columns where a dozen steps sit at one depth and many holding one or
+    two, which is how a real flow looks and is not how `total // cells` looks. It matters here
+    because a container drawn inside a deep cell is one whose header has another step directly above
+    it, and an evenly spread lane has almost none of those.
+    """
+    sizes = [1] * cells
+    sizes[0] = cap
+    left = total - sum(sizes)
+    assert left >= 0, f"{cells} cells cannot hold {total} steps"
+    while left:
+        room = [n for n in range(1, cells) if sizes[n] < cap]
+        sizes[rng.choices(room, weights=[sizes[n] ** 2 for n in room])[0]] += 1
+        left -= 1
+    return sizes
+
+
+def _drift(rng: random.Random) -> int:
+    """How far this step's place in the file sits from its place in the flow. See :data:`NEARBY`."""
+    roll = rng.random()
+    if roll < STAYS_PUT:
+        return 0
+    if roll < DRIFTS:
+        return rng.randrange(-NEARBY, NEARBY + 1)
+    return rng.randrange(-FAR, FAR + 1)
+
+
+def _dense_flow(*, boxed: bool) -> PipelineSpec:
+    """A flow with a real one's shape and no client's vocabulary, optionally boxed into containers.
+
+    Built as a spec rather than as a document, because the loader is not what is under test: the
+    layout is handed a :class:`PipelineSpec` and reads its wiring, its lanes and its groups. The
+    registry is the real one, so every tool named here has the ports it is wired through.
+
+    A step's column is its longest path from a source, which the layout works out from the wiring
+    rather than being told. So the wiring is built to produce the intended columns: every step at
+    column c takes an input from some step at column c-1, which fixes its depth at c, and a step
+    with a second input takes it from further back still, which is a connection that skips columns
+    and leaves the depth alone.
+    """
+    rng = random.Random(SEED)
+
+    # Which (lane, column) cells hold steps: one lane owns each column outright, then the lanes that
+    # are owed more cells than the pattern gave them take spare columns elsewhere.
+    cells: dict[str, list[int]] = {lane: [] for lane, *_ in LANE_SHAPE}
+    for column in range(COLUMNS):
+        cells[COLUMN_OWNER[column % len(COLUMN_OWNER)]].append(column)
+    for lane, _, wanted, _ in LANE_SHAPE:
+        spare = [column for column in range(COLUMNS) if column not in cells[lane]]
+        rng.shuffle(spare)
+        cells[lane].extend(spare[: wanted - len(cells[lane])])
+        cells[lane].sort()
+
+    held: dict[tuple[str, int], int] = {}
+    for lane, total, wanted, cap in LANE_SHAPE:
+        assert len(cells[lane]) == wanted, f"lane {lane} took {len(cells[lane])} cells, not {wanted}"
+        for column, size in zip(cells[lane], _cell_sizes(wanted, total, cap, rng), strict=True):
+            held[(lane, column)] = size
+
+    # The order the steps are written down in: by lane, and within a lane by where the flow reaches
+    # them plus however far this one drifted.
+    written: list[tuple[str, int]] = []
+    for lane, *_ in LANE_SHAPE:
+        mine = [(column, column + _drift(rng)) for column in cells[lane] for _ in range(held[(lane, column)])]
+        written.extend((lane, column) for column, _ in sorted(mine, key=lambda place: (place[1], place[0])))
+
+    ids = [f"step_{n:03d}" for n in range(len(written))]
+    lane_of = {step_id: written[n][0] for n, step_id in enumerate(ids)}
+    column_of = {step_id: written[n][1] for n, step_id in enumerate(ids)}
+    at_column: dict[int, list[str]] = {column: [] for column in range(COLUMNS)}
+    for step_id in ids:
+        at_column[column_of[step_id]].append(step_id)
+
+    # Every tool is settled before anything is wired, because a step is wired to steps written down
+    # after it as well as before it, and what it can be wired to is a question about their ports.
+    tool_of: dict[str, str] = {}
+    for step_id in ids:
+        column = column_of[step_id]
+        if column == 0:
+            tool_of[step_id] = rng.choice(SOURCE_TOOLS)
+        elif column >= 3 and rng.random() < REJOINING:
+            tool_of[step_id] = rng.choice(TWO_INPUT_TOOLS)
+        else:
+            tool_of[step_id] = rng.choice(ONE_INPUT_TOOLS)
+
+    def some_port(step_id: str) -> PortRef:
+        return PortRef(step_id, rng.choice(REGISTRY.get(tool_of[step_id]).output_ports))
+
+    steps: list[StepSpec] = []
+    written_in_lane: Counter[str] = Counter()
+    for step_id in ids:
+        lane, column = lane_of[step_id], column_of[step_id]
+        stage = f"{lane}_{written_in_lane[lane] // STAGE_LENGTH:02d}"
+        written_in_lane[lane] += 1
+        ports = REGISTRY.get(tool_of[step_id]).input_ports
+        inputs: dict[str, PortRef] = {}
+        if ports:
+            inputs[ports[0]] = some_port(rng.choice(at_column[column - 1]))
+        if len(ports) > 1:
+            inputs[ports[1]] = some_port(rng.choice(at_column[rng.randrange(0, column - 1)]))
+        steps.append(StepSpec(id=step_id, tool=tool_of[step_id], config={}, inputs=inputs, lane=lane, stage=stage))
+
+    groups: tuple[Group, ...] = ()
+    if boxed:
+        runs = _runs(steps)
+        owner = {step_id: f"box_{n:03d}" for n, run in enumerate(runs) for step_id in run}
+        groups = tuple(
+            Group(id=f"box_{n:03d}", title=f"Step {n}: what {len(run)} tools do between them")
+            for n, run in enumerate(runs)
+        )
+        steps = [
+            StepSpec(
+                id=step.id,
+                tool=step.tool,
+                config=step.config,
+                inputs=step.inputs,
+                lane=step.lane,
+                stage=step.stage,
+                group=owner[step.id],
+            )
+            for step in steps
+        ]
+    lanes = tuple(Lane(id=lane, label=f"Lane {lane}", order=n) for n, (lane, *_) in enumerate(LANE_SHAPE))
+    return PipelineSpec(name="dense", steps=tuple(steps), lanes=lanes, groups=groups, registry=REGISTRY)
+
+
+def _runs(steps: list[StepSpec]) -> list[list[str]]:
+    """Consecutive steps sharing a lane and a stage, cut into runs of at most :data:`RUN_LENGTH`."""
+    runs: list[list[str]] = []
+    key: tuple[str | None, str | None] | None = None
+    for step in steps:
+        here = (step.lane, step.stage)
+        if runs and here == key and len(runs[-1]) < RUN_LENGTH:
+            runs[-1].append(step.id)
+        else:
+            runs.append([step.id])
+        key = here
+    return runs
+
+
+def _no_run(spec: PipelineSpec) -> PipelineTrace:
+    """A trace of nothing, which is all the layout needs.
+
+    Nothing in the placing of a step consults the trace -- it supplies the figures written onto the
+    boxes and the labels on the connections, and a container with no rows is drawn in exactly the
+    place a container with rows is. Asserting geometry against an empty run is asserting it against
+    the wiring, which is what decides the geometry. It is also what makes 672 steps cost a test
+    fraction of a second rather than a run of a flow this size.
+    """
+    return PipelineTrace(pipeline=spec.name, retain="live", events=(), shapes={}, frames={})
+
+
+@pytest.fixture(scope="module")
+def dense_unboxed() -> str:
+    """The dense flow drawn with no containers declared over it."""
+    spec = _dense_flow(boxed=False)
+    return _canvas(spec, _no_run(spec))
+
+
+@pytest.fixture(scope="module")
+def dense_boxed() -> tuple[PipelineSpec, str]:
+    """The dense flow with a container round every run of steps doing one job, and its canvas."""
+    spec = _dense_flow(boxed=True)
+    return spec, _canvas(spec, _no_run(spec))
+
+
+def _canvas_size(canvas: str) -> tuple[float, float]:
+    found = re.search(r'data-w="([\d.]+)"\s+data-h="([\d.]+)"', canvas)
+    assert found is not None, "the drawing does not state its own size"
+    return float(found.group(1)), float(found.group(2))
+
+
+def _places(canvas: str) -> str:
+    """Every step's top-left corner, as one sorted text, so one layout can be compared to another."""
+    return "\n".join(sorted(f"{step} {at[0]:g},{at[1]:g}" for step, at in _node_boxes(canvas).items()))
+
+
+def _columns(spec: PipelineSpec) -> dict[str, int]:
+    """How far along the flow each step sits, worked out here from the wiring rather than taken
+    from the page, so the shape case is checking the flow and not the drawing of it."""
+    column: dict[str, int] = {}
+    for step_id in spec.order():
+        column[step_id] = 1 + max((column[ref.step] for ref in spec.step(step_id).inputs.values()), default=-1)
+    return column
+
+
+def _outline_and_header(body: str) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """A container's two rectangles: the one it draws round its steps, and the band it writes in.
+
+    Told apart by size rather than by class name, so this says nothing about how the markup spells
+    them. A container draws the outline it keeps while it is open and the bar it shrinks to when it
+    is closed, and that bar *is* the header: the two share a corner and a width, and the bar is the
+    shorter. A step's own box and the collapse control are not the container drawing itself, and
+    `_own_rects` has already taken those out.
+    """
+    own = _own_rects(body)
+    assert own, "the container draws no rectangle of its own"
+    return max(own, key=lambda drawn: drawn[2] * drawn[3]), min(own, key=lambda drawn: drawn[2] * drawn[3])
+
+
+class TestTheLayoutHoldsAtTheDensityARealFlowHas:
+    """The same containers the cases above draw over six steps, drawn over six hundred and seventy-two."""
+
+    def test_the_generated_flow_is_the_shape_these_cases_were_measured_against(
+        self, dense_boxed: tuple[PipelineSpec, str]
+    ) -> None:
+        """The figures the rest of the class argues from, stated once and checked.
+
+        Every bound below -- 3.5x the height, no extra width -- was worked out against a flow of
+        this shape, and the whole reason the flow is generated is that the shape is the point. If
+        the generator is ever tuned and the shape goes with it, those bounds stop meaning what they
+        were chosen to mean and this class goes quiet in exactly the way the six-step fixture went
+        quiet.
+
+        The stacking is the load-bearing figure and the slot-0 count is beside it: a container's
+        members are adjacent whatever the layout does in a lane one step deep, and a flow where
+        every step is the top of its cell is a flow where every header has room for free.
+        """
+        spec, _ = dense_boxed
+        column = _columns(spec)
+        deepest: Counter[str] = Counter()
+        cell: Counter[tuple[str, int]] = Counter()
+        for step in spec.steps:
+            cell[(step.lane or "", column[step.id])] += 1
+            deepest[step.lane or ""] = max(deepest[step.lane or ""], cell[(step.lane or "", column[step.id])])
+
+        assert len(spec.steps) == 672, f"the flow now has {len(spec.steps)} steps"
+        assert len(spec.lanes) == 3 and max(column.values()) + 1 == COLUMNS
+        assert sorted(deepest.values()) == [4, 16, 17], (
+            f"the lanes now stack {sorted(deepest.values())} deep; a lane that stacks one deep cannot tell a "
+            "layout that places containers from one that draws a box round wherever they landed"
+        )
+        assert len(cell) == 222, f"{len(cell)} of the 672 steps are at slot 0, not 222"
+        assert len(spec.groups) == 150, f"boxing runs of {RUN_LENGTH} now yields {len(spec.groups)} containers"
+        assert sum(len(step.inputs) for step in spec.steps) == 824, "the flow is not wired as it was measured"
+        skipping = [
+            (step.id, ref.step)
+            for step in spec.steps
+            for ref in step.inputs.values()
+            if column[step.id] - column[ref.step] > 1
+        ]
+        assert len(skipping) > 150, (
+            f"only {len(skipping)} connections skip a column; a flow wired strictly column to column has no long "
+            "edges, and a layout can satisfy every case below on one"
+        )
+
+    def test_every_container_on_a_dense_flow_encloses_its_own_steps_and_no_others(
+        self, dense_boxed: tuple[PipelineSpec, str]
+    ) -> None:
+        """The fatal one: a box is a claim about what is inside it, and today 145 of 150 are false.
+
+        Two halves, and both have to hold at once. A box that does not reach round one of its own
+        steps says that step is no part of the job it is captioned with. A box drawn over a step
+        that is not its own says that step *is* part of it -- and at this density that is not a
+        pixel of untidiness, it is a box titled with one job drawn round as many as 218 steps doing
+        others. Neither announces itself: the drawing looks finished either way and a reader
+        believes the line.
+
+        Held against every step on the canvas rather than against the container's neighbours,
+        because a stranger arrives from anywhere -- a step in the same lane forty columns along, a
+        step in the next lane whose slot the box grew past.
+        """
+        spec, canvas = dense_boxed
+        boxes = _node_boxes(canvas)
+        containers = _containers(canvas)
+
+        assert set(containers) == {group.id for group in spec.groups}, "not every declared container is drawn"
+        assert len(boxes) == len(spec.steps), f"{len(boxes)} steps are drawn, not {len(spec.steps)}"
+
+        missing: dict[str, list[str]] = {}
+        swallowed: dict[str, list[str]] = {}
+        for group_id, (_, body) in containers.items():
+            held = set(spec.group_members(group_id))
+            drawn = {attrs.get("id", "").removeprefix("node-") for attrs, _ in _elements(body, '<a class="node')}
+            assert drawn == held, f"{group_id} draws {sorted(drawn)}, which is not {sorted(held)}"
+
+            outline, _ = _outline_and_header(body)
+            loose = sorted(member for member in held if not _encloses(outline, boxes[member]))
+            if loose:
+                missing[group_id] = loose
+            strangers = sorted(at for at, box in boxes.items() if at not in held and _overlaps(outline, box))
+            if strangers:
+                swallowed[group_id] = strangers
+
+        worst = max(swallowed.values(), key=len, default=[])
+        assert not missing, (
+            f"{len(missing)} of {len(containers)} containers do not reach round their own steps, "
+            f"for example {sorted(missing)[0]}: {missing[sorted(missing)[0]][:6]}"
+        )
+        assert not swallowed, (
+            f"{len(swallowed)} of {len(containers)} containers are drawn over a step that is not theirs; "
+            f"the worst swallows {len(worst)} of them, for example {worst[:6]}"
+        )
+
+    def test_every_containers_header_has_room_of_its_own_on_a_dense_flow(
+        self, dense_boxed: tuple[PipelineSpec, str]
+    ) -> None:
+        """The title and the counts are the feature; drawn over a step, neither can be read.
+
+        The header is the band a closed container shrinks to, so it is the one part of a container
+        that has to be legible in both states, and it is where the sentence a reader came for is
+        written. Today it is drawn in space nothing reserved for it: it fits above a container whose
+        topmost step is the top of its lane, and on 47 of 150 it is written straight across the box
+        of the step stacked above -- two sentences and a row count over one another.
+
+        Asked of every step on the canvas including the container's own. A header overlapping a
+        member is the same unreadable band, and is what a layout that reserves room everywhere
+        except inside the box produces.
+        """
+        spec, canvas = dense_boxed
+        boxes = _node_boxes(canvas)
+        containers = _containers(canvas)
+
+        assert set(containers) == {group.id for group in spec.groups}, "not every declared container is drawn"
+        written_over: dict[str, list[str]] = {}
+        for group_id, (_, body) in containers.items():
+            outline, header = _outline_and_header(body)
+            assert header[3] < outline[3], (
+                f"{group_id}: the container draws one rectangle at one size, so nothing here is a header band"
+            )
+            over = sorted(at for at, box in boxes.items() if _overlaps(header, box))
+            if over:
+                written_over[group_id] = over
+
+        assert not written_over, (
+            f"{len(written_over)} of {len(containers)} containers write their title and counts across a step: "
+            f"for example {sorted(written_over)[0]} over {written_over[sorted(written_over)[0]]}"
+        )
+
+    def test_two_containers_are_never_drawn_over_each_other_on_a_dense_flow(
+        self, dense_boxed: tuple[PipelineSpec, str]
+    ) -> None:
+        """A step belongs to at most one container, so two outlines crossing is a drawing of a lie.
+
+        Distinct from the stranger case and not implied by it. Two boxes can cross in space that
+        holds no step at all -- one reaching up for its header through the width of another -- and
+        the reader is then shown two captions over one region with nothing saying which of them owns
+        it. Today 1,089 of the 11,175 pairs cross.
+        """
+        spec, canvas = dense_boxed
+        containers = _containers(canvas)
+
+        assert set(containers) == {group.id for group in spec.groups}, "not every declared container is drawn"
+        outlines = {group_id: _outline_and_header(body)[0] for group_id, (_, body) in containers.items()}
+        crossing = [
+            (one, other)
+            for one, other in itertools.combinations(sorted(outlines), 2)
+            if _overlaps(outlines[one], outlines[other])
+        ]
+
+        assert not crossing, (
+            f"{len(crossing)} pairs of containers are drawn over each other, for example "
+            f"{crossing[0]} at {outlines[crossing[0][0]]} and {outlines[crossing[0][1]]}"
+        )
+
+    def test_a_flow_with_no_containers_is_laid_out_exactly_as_it_is_today(self, dense_unboxed: str) -> None:
+        """What stops a layout that learns about containers being a regression for every other page.
+
+        Every page shipped so far declares no containers, and most of a 672-step flow will be in
+        none for a long while. Those steps have to land where they land now -- not near it, on it.
+        A layout rewritten to make members adjacent has every opportunity to shift a flow that has
+        no members to make adjacent, and the shift would be invisible: the canvas is still a canvas,
+        every step is still drawn, and nothing is wrong except that the page a reader knows has
+        moved under them.
+
+        Compared against yesterday's numbers because nothing else can catch it, and the flow is
+        generated from a fixed seed so that yesterday's numbers are a fact about the layout rather
+        than about which flow happened to be drawn.
+        """
+        places = _places(dense_unboxed)
+
+        assert len(places.splitlines()) == 672, f"{len(places.splitlines())} steps are drawn, not 672"
+        assert _canvas_size(dense_unboxed) == UNBOXED_CANVAS, (
+            f"the canvas is {_canvas_size(dense_unboxed)}, not the {UNBOXED_CANVAS} it is today"
+        )
+        assert hashlib.sha256(places.encode("utf8")).hexdigest() == UNBOXED_PLACES, (
+            "a flow with no containers is no longer laid out where it is laid out today, so every page that "
+            "declares no group has moved"
+        )
+
+    def test_boxing_a_dense_flow_does_not_make_the_canvas_absurd(
+        self, dense_unboxed: str, dense_boxed: tuple[PipelineSpec, str]
+    ) -> None:
+        """Every rule above is satisfied by a layout nobody could use, so the cost is pinned too.
+
+        Give each of the 150 containers a row of its own and no box encloses a stranger, no header
+        is written over anything and no two boxes cross -- on a canvas 11.6 times taller than the
+        one it replaced, which is a page a reader scrolls past rather than reads. The feature exists
+        to make a 672-step flow followable; a layout that makes it less followable has failed at the
+        thing it was for.
+
+        Width carries no allowance at all: a column is how far along the flow a step is, containers
+        change nothing about that, and a wider canvas means a step was moved into a column it does
+        not belong in.
+
+        The last assertion catches the cheap way to keep a stranger out -- stop drawing it. A box
+        with nothing else in it encloses nothing else.
+
+        This is a ceiling rather than a defect report, and it holds today for the reason the three
+        cases above fail: nothing about the layout moves when a container is declared, so the boxed
+        canvas is the unboxed one to the pixel. It starts meaning something the moment members are
+        actually made adjacent, which is the change that has to pay for itself.
+        """
+        _, canvas = dense_boxed
+        was, now = _canvas_size(dense_unboxed), _canvas_size(canvas)
+
+        assert now[0] <= was[0], (
+            f"boxing widened the canvas from {was[0]:,.0f} to {now[0]:,.0f}px, so a step has been moved along the flow"
+        )
+        assert now[1] <= was[1] * MAX_TALLER, (
+            f"boxing made the canvas {now[1] / was[1]:.2f}x taller ({was[1]:,.0f} -> {now[1]:,.0f}px), over the "
+            f"{MAX_TALLER}x a layout that packs its containers needs"
+        )
+        assert len(_node_boxes(canvas)) == 672, (
+            f"{len(_node_boxes(canvas))} steps are drawn once the flow is boxed, not 672"
+        )
