@@ -8,7 +8,7 @@ this only hands out what is already on disk.
 """
 
 import sys
-import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -26,17 +26,28 @@ HOST_PORT = 8899
 def main() -> None:
     # The source root is the repository, so a page can show the code behind a step. Read-only, and
     # every path is resolved and checked to have landed inside it -- see `preview.serve`.
-    serve(RUNS_ROOT, port=HOST_PORT, source_root=PROJECT_ROOT)
+    server = serve(RUNS_ROOT, port=HOST_PORT, source_root=PROJECT_ROOT)
 
     runs = sorted(p.name for p in RUNS_ROOT.iterdir() if (p / "ports.json").is_file()) if RUNS_ROOT.is_dir() else []
     print(f"serving {len(runs)} run(s) on http://localhost:{HOST_PORT}/")
     for name in runs:
         print(f"    http://localhost:{HOST_PORT}/{name}/")
     print("\n  ctrl-c to stop")
+    # Parked on a sleeping loop rather than on Event().wait(). A wait() blocks the main thread
+    # inside a C-level lock, and CPython can only run the handler that raises KeyboardInterrupt
+    # when the main thread comes back up into the interpreter -- which it never does. So ctrl-c is
+    # ignored and the only way out is to close the terminal, which is exactly what was reported.
+    # Waking twice a second costs nothing and gives the signal somewhere to land.
     try:
-        threading.Event().wait()
+        while True:
+            time.sleep(0.5)
     except KeyboardInterrupt:
-        print("stopped")
+        pass
+    # Said before the shutdown rather than after, because shutdown takes a moment and a reader who
+    # pressed ctrl-c wants to see that it was heard.
+    print("\nstopping")
+    server.shutdown()
+    server.server_close()
 
 
 if __name__ == "__main__":
