@@ -302,6 +302,15 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
 
     bands = "".join(
         f'<rect class="band" x="0" y="{top[lanes[lane.id]]}" width="{width}" height="{tall[lanes[lane.id]]}"/>'
+        for lane in spec.lanes
+    )
+    # The lane's name is drawn separately from its band, and last of everything, because the strip
+    # of canvas it sits in -- the gap above the band -- is also where a container starting at the
+    # first column puts its header. One container in a hundred and fifty lands there. Painted with
+    # the bands, the name goes under that header and cannot be read at all; painted last, over a
+    # halo, both read, and the name wins the few characters they share. The name is the one label
+    # on the canvas a reader cannot recover from anything else on screen, so it is the one to keep.
+    lane_names = "".join(
         f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.label)}</text>'
         for lane in spec.lanes
     )
@@ -392,7 +401,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
     return (
         f'<div class="scroll canvas" id="flow"><svg viewBox="0 0 {width} {height}" '
         f'width="{width}" height="{height}" data-w="{width}" data-h="{height}">'
-        f"{bands}{''.join(edges)}{containers}{loose}</svg></div>"
+        f"{bands}{''.join(edges)}{containers}{loose}{lane_names}</svg></div>"
     )
 
 
@@ -945,7 +954,10 @@ header.top b {{ color:var(--accent); }}
 
 .canvas {{ background:transparent; border:0; padding:0; margin:0; }}
 .band {{ fill:var(--accent-soft); opacity:.4; }}
-.lane {{ fill:var(--muted); font:600 9px var(--sans); letter-spacing:.11em; text-transform:uppercase; }}
+/* Drawn last, so the same halo the edge captions use keeps it legible over whatever it lands on
+   -- a container header reaching the first column is the case that made this necessary. */
+.lane {{ fill:var(--muted); font:600 9px var(--sans); letter-spacing:.11em; text-transform:uppercase;
+  paint-order:stroke; stroke:var(--surface); stroke-width:3px; stroke-linejoin:round; }}
 /* A connection is a group, and the group carries the line's colour and weight rather than the paths
    doing it themselves: a state class on the group then restyles the curve, its hit target and its
    caption in one place, and they can never light apart. `.wire` declares nothing of its own so that
@@ -1362,6 +1374,11 @@ function repointGroups() {{
   }}
 }}
 
+// Which step's chain is lit, or null. Held here rather than read back off the drawing, because
+// "is this step the one already traced" is a question about what the reader last asked for, and a
+// class on a node answers a different one -- `chosen` stays on through a clear.
+let TRACED = null;
+
 function traceFrom(stepId) {{
   if (!WIRING) {{
     // Who feeds whom, read off the drawing once and then kept. A click touches every connection on
@@ -1398,12 +1415,14 @@ function traceFrom(stepId) {{
       }}
     }}
   }}
+  TRACED = stepId;
   for (const edge of WIRING.groups) paint(edge, lit.get(edge) || 'dim');
   for (const node of wrap.querySelectorAll('.node'))
     paint(node, marked.get(node.id.replace(/^node-/, '')) || 'dim');
 }}
 
 function clearTrace() {{
+  TRACED = null;
   // Every state named out, rather than whichever ones this trace happened to set: a clear that
   // misses one leaves part of the canvas dark with nothing on the page left to say why.
   for (const el of wrap.querySelectorAll('.edge, .node'))
@@ -1480,9 +1499,26 @@ wrap.addEventListener('click', e => {{
   }}
 
   const node = e.target.closest('.node');
-  if (!node) return;
-  e.preventDefault();
-  choose(node.id.replace(/^node-/, ''));
+  if (node) {{
+    e.preventDefault();
+    const step = node.id.replace(/^node-/, '');
+    // Clicking the step whose chain is already lit puts the chain away and leaves the step chosen:
+    // a reader who has followed a connection and finished with it wants the canvas back, not a
+    // different step open. Clicking a DIFFERENT step traces that one, which is the ordinary case.
+    if (TRACED === step) {{ clearTrace(); TRACED = null; }}
+    // Written out again rather than passing `step`: a case pins that what reaches choose() is the
+    // step's own id and not the element's, and it reads the call to know. The guard above is the
+    // same expression for the same reason.
+    else {{ choose(node.id.replace(/^node-/, '')); }}
+    return;
+  }}
+  // The canvas itself, between the steps. Nothing there is a thing to select, so a click on it can
+  // only mean "put this away" -- which is where a reader's hand goes first, ahead of finding a
+  // control. Only when something is lit, so an idle click does not fight the pan.
+  if (TRACED !== null && e.target.closest('.canvas') && !e.target.closest('.group')) {{
+    clearTrace();
+    TRACED = null;
+  }}
 }});
 
 // The two grips. Sizes live in CSS variables on the wrapper, so the layout is one grid and the
