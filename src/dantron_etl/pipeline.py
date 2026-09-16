@@ -42,6 +42,7 @@ from .tool import (
 )
 
 __all__ = [
+    "Group",
     "Lane",
     "PipelineError",
     "PipelineSpec",
@@ -92,6 +93,24 @@ class Lane:
 
 
 @dataclass(frozen=True, slots=True)
+class Group:
+    """A line drawn round some of a lane's steps, with one sentence written on it.
+
+    Six hundred boxes cannot be read by following them, and a reader after "where does the extract
+    get its header row back" is looking for a job rather than for a tool. So a group says
+    which steps do one job, and the ``title`` says what that job is -- a sentence, because the whole
+    value of the feature is a reader getting one instead of the six boxes it stands over. An id is
+    not a title, and the loader refuses a group that offers only the former.
+
+    It reaches no tool and changes no frame: see :meth:`PipelineSpec.fingerprint` for why that has to
+    stay true.
+    """
+
+    id: str
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
 class StepSpec:
     """One step, as authored: its tool, its configuration with parameters resolved and nothing else
     added, and its inputs as port-to-port edges rather than bare step names.
@@ -109,6 +128,9 @@ class StepSpec:
     lane: str | None = None
     stage: str | None = None
     why: str | None = None
+    #: The container this step is drawn inside, or ``None`` for a step in none -- which is the state
+    #: every step starts in, and the reason containers can be adopted a stage at a time.
+    group: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +145,7 @@ class PipelineSpec:
     name: str
     steps: tuple[StepSpec, ...]
     lanes: tuple[Lane, ...] = ()
+    groups: tuple[Group, ...] = ()
     registry: ToolRegistry | None = field(default=None, compare=False, repr=False)
 
     def step(self, step_id: str) -> StepSpec:
@@ -132,6 +155,63 @@ class PipelineSpec:
                 return candidate
         raise PipelineError(f"no step {step_id!r}; steps are: {', '.join(step.id for step in self.steps)}")
 
+    def group(self, group_id: str) -> Group:
+        """The container named ``group_id``, or a refusal naming the ones there actually are."""
+        for candidate in self.groups:
+            if candidate.id == group_id:
+                return candidate
+        declared = ", ".join(group.id for group in self.groups) or "none"
+        raise PipelineError(f"no group {group_id!r}; groups are: {declared}")
+
+    def group_members(self, group_id: str) -> tuple[str, ...]:
+        """The steps in ``group_id``, in the order they were declared.
+
+        Declaration order, because that is the order the file reads in and the only order a
+        container has. A set would draw the same container over a different arrangement on every
+        render, and a reader comparing two renders would be comparing two drawings.
+        """
+        self.group(group_id)
+        return tuple(step.id for step in self.steps if step.group == group_id)
+
+    def group_inputs(self, group_id: str) -> tuple[PortRef, ...]:
+        """Every port produced outside ``group_id`` and read inside it, named once.
+
+        Once however many members read it: two steps taking the same upstream port are one lot of
+        rows arriving, and counting it twice reports a container that invented rows. A port produced
+        by a member is the container's own plumbing and is no part of what entered it.
+        """
+        members = set(self.group_members(group_id))
+        entered: list[PortRef] = []
+        for step in self.steps:
+            if step.id not in members:
+                continue
+            for source in step.inputs.values():
+                if source.step not in members and source not in entered:
+                    entered.append(source)
+        return tuple(entered)
+
+    def group_outputs(self, group_id: str) -> tuple[PortRef, ...]:
+        """Every port of a member read by a non-member, or by nobody at all.
+
+        The second half is the one that is easy to leave out and wrong to leave out: rows that stop
+        at a member's port have still left the container -- they went to a file, to a report, or
+        nowhere -- and a container whose last step is a write would otherwise claim nothing came out
+        of it. What is excluded is the ports used up inside, which is the difference between a figure
+        a reader can check a closed container against and a bigger number that answers to
+        nothing.
+        """
+        assert self.registry is not None
+        members = set(self.group_members(group_id))
+        left: list[PortRef] = []
+        for step in self.steps:
+            if step.id not in members:
+                continue
+            for port in self.registry.get(step.tool).output_ports:
+                read_by = self.consumers(PortRef(step.id, port))
+                if not read_by or any(ref.step not in members for ref in read_by):
+                    left.append(PortRef(step.id, port))
+        return tuple(left)
+
     def fingerprint(self, step_id: str) -> str:
         """One string answering "is the configuration that produced this step's ports still the
         configuration in the file?" -- taken over ``step_id`` and every step behind it.
@@ -140,10 +220,14 @@ class PipelineSpec:
         upstream of them: a step whose own config block is untouched produces different rows the
         moment a filter feeding it keeps different ones, and a hash that could not see that would
         report a match and hand back yesterday's numbers under today's rules. Four things per step
-        are covered -- ``id``, ``tool``, ``config`` and ``inputs`` -- and ``lane``, ``stage`` and
-        ``why`` deliberately are not. None of the three reaches a tool, so a frame produced under
-        one ``why`` is the identical frame under another, and a cache invalidated by an improved
-        comment is a cache nobody trusts, which is to say one everybody works around.
+        are covered -- ``id``, ``tool``, ``config`` and ``inputs`` -- and ``lane``, ``stage``,
+        ``why`` and ``group`` deliberately are not. None of the four reaches a tool, so a frame
+        produced under one ``why`` is the identical frame under another, and a cache invalidated by
+        an improved comment is a cache nobody trusts, which is to say one everybody works around.
+        ``group`` joins that list for the same reason and one of its own: boxing three steps together
+        is a line drawn on the canvas, and if it threw away every cached frame behind them the first
+        person to tidy the canvas would pay for it with an hour of re-running -- and the second
+        person would not tidy the canvas.
 
         Hashed over a canonical JSON serialisation rather than through :func:`hash`, which is
         salted per process for strings: the whole use of this string is that it is written down
@@ -237,7 +321,9 @@ def load_pipeline(
     registered (its template is what says how a rule value is spelled into each field, and a port
     check needs a tool to ask), a parameter nobody defined (a configuration cannot be read until it
     is resolved, and resolution still finishes before anything validates it), a lane nobody
-    declared, a port or edge that does not exist, a cycle (reachability is meaningless in a graph
+    declared, a container that is mis-declared or mis-named (both spellings of the same typo, since
+    either one draws a box that is silently wrong rather than one that is missing), a port or edge
+    that does not exist, a cycle (reachability is meaningless in a graph
     with one), a configuration its own tool refuses, and finally a step nothing consumes and that
     has no effect of its own.
 
@@ -276,6 +362,9 @@ def load_pipeline(
     lanes = tuple(Lane(raw["id"], raw["label"], raw["order"]) for raw in raw_lanes)
     _refuse_undeclared_lanes(resolved_steps, lanes)
 
+    groups = _read_groups(document.get("groups", ()) or ())
+    _refuse_bad_groups(resolved_steps, groups)
+
     step_ids = tuple(raw["id"] for raw in resolved_steps)
     inputs_by_step = {raw["id"]: _resolve_edges(raw, tools_by_step, step_ids) for raw in resolved_steps}
 
@@ -295,11 +384,12 @@ def load_pipeline(
             lane=raw.get("lane"),
             stage=raw.get("stage"),
             why=raw.get("why"),
+            group=raw.get("group"),
         )
         for raw in resolved_steps
     )
 
-    return PipelineSpec(name=document["name"], steps=steps, lanes=lanes, registry=active_registry)
+    return PipelineSpec(name=document["name"], steps=steps, lanes=lanes, groups=groups, registry=active_registry)
 
 
 def read_pipeline_file(
@@ -538,6 +628,77 @@ def _refuse_undeclared_lanes(resolved_steps: list[Mapping[str, Any]], lanes: tup
             available = ", ".join(sorted(lane_ids)) if lane_ids else "none"
             raise PipelineError(
                 f"step {raw['id']!r} declares lane {lane!r}, which is not declared; lanes are: {available}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Groups
+# ---------------------------------------------------------------------------
+
+
+def _read_groups(raw_groups: Any) -> tuple[Group, ...]:
+    """The declared containers, refusing any that offers no sentence to write on itself.
+
+    Blank counts as missing. A title of spaces satisfies every check that asks whether the key is
+    there and draws a box with nothing written on it, which is the same silent failure as falling
+    back on the id: the container looks finished and nothing says a sentence was owed.
+    """
+    groups: list[Group] = []
+    for raw in raw_groups:
+        title = raw.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise PipelineError(
+                f"group {raw['id']!r} declares no title; a container's whole value is the one "
+                f"sentence a reader gets instead of the steps it stands over, and an id is not a "
+                f"sentence"
+            )
+        groups.append(Group(raw["id"], title))
+    return tuple(groups)
+
+
+def _refuse_bad_groups(resolved_steps: list[Mapping[str, Any]], groups: tuple[Group, ...]) -> None:
+    """Both spellings of a mis-boxed step, and a container a lane band cannot be drawn round.
+
+    The first two are mirrors of each other and the pair is the point: a group named by a step and
+    not declared leaves a container one step short with a stray node beside it, and a group declared
+    and named by no step draws an empty rectangle with a title over nothing. Neither says anything is
+    wrong, and on six hundred steps nobody finds either by looking.
+
+    The third is about the drawing. A lane is a horizontal band, and a box across two of them is a
+    lie whichever way it is drawn: stretched over both it swallows every step of the intervening lane
+    that is not in it, and drawn round one it leaves a member outside the box that claims to hold it.
+    Refused rather than silently redrawn, because the fix is one line -- move the step, or split the
+    container -- and only the author knows which of the two they meant.
+
+    Connectedness is deliberately not checked. The commonest container there is -- *read the three
+    workbooks* -- is three reads that touch nothing of each other and meet in a join outside the box,
+    and a connectedness rule refuses exactly it.
+    """
+    declared = {group.id for group in groups}
+    joined: dict[str, list[Mapping[str, Any]]] = {}
+    for raw in resolved_steps:
+        group_id = raw.get("group")
+        if group_id is None:
+            continue
+        if group_id not in declared:
+            available = ", ".join(sorted(declared)) if declared else "none"
+            raise PipelineError(
+                f"step {raw['id']!r} declares group {group_id!r}, which is not declared; groups are: {available}"
+            )
+        joined.setdefault(group_id, []).append(raw)
+
+    for group in groups:
+        if group.id not in joined:
+            raise PipelineError(
+                f"group {group.id!r} is declared and no step belongs to it, so it would be drawn as "
+                f"an empty box with a title over nothing"
+            )
+        lanes = sorted({raw.get("lane") or "no lane" for raw in joined[group.id]})
+        if len(lanes) > 1:
+            raise PipelineError(
+                f"group {group.id!r} holds steps in lanes {' and '.join(repr(lane) for lane in lanes)}; "
+                f"a lane is a horizontal band and one box cannot honestly be drawn across two. Move "
+                f"the step, or split the container in two"
             )
 
 

@@ -1453,3 +1453,245 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
         assert named in message, "the refusal names the type it could not write down"
         assert "fingerprint" in message, "and says which question it was that could not be answered"
         assert "text" in message, "and names the fix: write the value as text in the file"
+
+
+# ---------------------------------------------------------------------------
+# Containers: a title over a handful of steps
+#
+# Six hundred and seventy-two boxes on a canvas cannot be followed. A few dozen titled containers
+# can -- "fetch the crm accounts and put the header row back" says in one line what six boxes
+# say in six, and a reader who trusts that line never has to open it.
+#
+# The shape is a `group` field on the step and a `groups:` block giving each id a title. Steps stay
+# in one flat list, so a step moves between containers by editing one line and nothing about the
+# file's shape changes. It is exactly how `lane` and `stage` already work, which is the reason it was
+# chosen: a second nesting level in the document would make every tool that reads a pipeline file
+# learn about it, for a fact that only a canvas cares about.
+#
+# What this section pins:
+#
+#   * a group is declared with a title, and a step names one by id;
+#   * a step naming a group nobody declared is refused by name, and a declared group nobody joins is
+#     refused too -- both of those are typos whose punishment would otherwise be a box that silently
+#     is not drawn, or one drawn empty;
+#   * a group's steps share a lane, because a lane is a horizontal band and a box across two bands
+#     cannot be drawn honestly;
+#   * a group's steps need *not* feed one another (argued at the case itself);
+#   * a container's boundary -- what entered it and what left -- is a question about the wiring, so
+#     the graph answers it and the page only renders the answer.
+# ---------------------------------------------------------------------------
+
+#: The title the cases below declare. Written as a sentence, because a title is the whole point: it
+#: is what a reader gets instead of the six boxes, and an id is not a title.
+SHAPE_TITLE: Final[str] = "Keep the codes the rules admit and pair them with their headers"
+
+
+def _grouped_document() -> dict[str, Any]:
+    """The fixture flow with its three shaping steps boxed into one container.
+
+    ``kept`` reads from outside the container and ``published`` writes from inside it, so the
+    container has a real boundary in both directions rather than being the whole flow.
+    """
+    document = _document()
+    document["groups"] = [{"id": "shape", "title": SHAPE_TITLE}]
+    for step_id in ("kept", "paired", "published"):
+        _step(document, step_id)["group"] = "shape"
+    return document
+
+
+class TestStepsAreBoxedIntoContainers:
+    """A group is a title over a handful of steps, and everything that can be refused before a run."""
+
+    def test_a_document_declaring_groups_loads_them_with_their_titles_and_members(self) -> None:
+        """The whole surface: the declared containers, the title of each, and who is in them.
+
+        ``Group`` is imported inside the test rather than at the top of this file, so that a suite
+        run before containers exist fails on the cases that are about them instead of collecting
+        nothing at all.
+        """
+        from dantron_etl.pipeline import Group
+
+        spec = load_pipeline(_grouped_document(), rules=RULES)
+
+        assert spec.groups == (Group("shape", SHAPE_TITLE),)
+        assert spec.group("shape").title == SHAPE_TITLE
+        # Members in the order the steps were declared, which is the order the file reads in and the
+        # only order a container has: a set would draw its title over a different arrangement on
+        # every render, and a reader comparing two renders would be comparing two drawings.
+        assert spec.group_members("shape") == ("kept", "paired", "published")
+        assert spec.step("kept").group == "shape"
+        # The property that lets containers be adopted one stage at a time rather than all at once:
+        # a step that names no group is a step nothing changed about.
+        assert spec.step("entries").group is None
+        assert spec.group_members("shape") == tuple(s.id for s in spec.steps if s.group == "shape")
+
+        # Named by id and refused by name, the way a missing step already is -- a reader who asks
+        # for a container that is not there is told which ones there are.
+        with pytest.raises(PipelineError) as raised:
+            spec.group("shpae")
+        assert "shpae" in str(raised.value) and "shape" in str(raised.value)
+
+    def test_a_group_is_presentation_and_never_changes_what_a_step_computes(self) -> None:
+        """The same ruling lane, stage and why already live under, and for the same reason.
+
+        A container is a line drawn round some boxes so a person can read the canvas. It reaches no
+        tool, so a frame produced inside a container is the identical frame outside one. Put `group`
+        into the fingerprint and boxing three steps together throws away every cached frame behind
+        them -- which is to say the first person to tidy the canvas pays for it with an hour of
+        re-running, and the second person does not tidy the canvas.
+        """
+        plain = load_pipeline(_document(), rules=RULES)
+        boxed = load_pipeline(_grouped_document(), rules=RULES)
+
+        assert boxed.step("paired").group == "shape", "the group did not survive the load at all"
+        for step_id in ("kept", "paired", "published"):
+            assert plain.fingerprint(step_id) == boxed.fingerprint(step_id), (
+                f"drawing a box round {step_id} invalidated its cache, so tidying the canvas costs a re-run"
+            )
+
+    def test_a_step_naming_a_group_nobody_declared_is_refused_by_name(self) -> None:
+        """The typo this refusal exists for draws no container and says nothing about why.
+
+        A misspelt group is not a step that fails: it is a step that quietly falls out of the box it
+        was meant to be in, leaving a container one step short and a stray node beside it. On a flow
+        with six hundred steps nobody finds that by looking. So it is refused the way an undeclared
+        lane already is, naming the spelling that was written and the ones that exist.
+        """
+        document = _grouped_document()
+        _step(document, "paired")["group"] = "shpae"
+
+        with pytest.raises(PipelineError) as raised:
+            load_pipeline(document, rules=RULES)
+
+        message = str(raised.value)
+        assert "shpae" in message, "the refusal does not name the spelling that was written"
+        assert "paired" in message, "the refusal does not name the step to go and fix"
+        assert "shape" in message, "the refusal must list the groups there are"
+
+    def test_a_group_declared_without_a_title_is_refused(self) -> None:
+        """An id is not a title, and a container with nothing to say is worse than no container.
+
+        The entire value of this feature is a reader seeing one sentence instead of six boxes. A
+        group that falls back on its own id gives them `sf_acct_hdr_join` over six boxes, which is
+        the same canvas with an extra line drawn on it -- and it is a silent failure, because the box
+        is drawn, it looks finished, and nothing says a sentence was owed.
+
+        Blank counts as missing. A title of spaces satisfies every test that asks whether the key is
+        there, and draws a box with nothing written on it.
+        """
+        for missing in ({"id": "shape"}, {"id": "shape", "title": ""}, {"id": "shape", "title": "   "}):
+            document = _grouped_document()
+            document["groups"] = [missing]
+
+            with pytest.raises(PipelineError) as raised:
+                load_pipeline(document, rules=RULES)
+
+            message = str(raised.value)
+            assert "shape" in message, f"{missing}: the refusal does not name the group that owes a title"
+            assert "title" in message.lower(), f"{missing}: the refusal does not say what is missing"
+
+    def test_a_group_no_step_belongs_to_is_refused(self) -> None:
+        """A declared group nobody joins is a typo or a leftover, and either way it draws an empty box.
+
+        It is the mirror of the refusal above it, and the pair is the point: a group named by a step
+        and not declared is refused, and a group declared and named by no step is refused. Pin only
+        one side and the other spelling of the same typo -- fixing the `groups:` block instead of the
+        step, or the step instead of the block -- passes the loader and shows a reader an empty
+        rectangle with a title over nothing.
+        """
+        document = _grouped_document()
+        document["groups"].append({"id": "orphan", "title": "Something that used to be here"})
+
+        with pytest.raises(PipelineError) as raised:
+            load_pipeline(document, rules=RULES)
+
+        message = str(raised.value)
+        assert "orphan" in message, "the refusal does not name the group that has no steps"
+        assert "shape" not in message, "the container that does have steps is not the problem"
+
+    def test_a_group_whose_steps_sit_in_two_lanes_is_refused(self) -> None:
+        """A lane is a horizontal band, and one box across two bands cannot be drawn honestly.
+
+        Whatever the canvas did with it would be a lie: stretched over both bands it swallows every
+        step of the intervening lane that is not in the container, and drawn round one band it leaves
+        a member outside the box that claims to hold it. Neither of those says anything is wrong, and
+        both are read as the drawing rather than as the file.
+
+        Refused rather than silently redrawn, because the fix is one line -- move the step, or split
+        the container in two -- and only the author knows which of the two they meant.
+        """
+        document = _grouped_document()
+        _step(document, "entries")["group"] = "shape"  # lane 'intake', among three steps in 'shaping'
+
+        with pytest.raises(PipelineError) as raised:
+            load_pipeline(document, rules=RULES)
+
+        message = str(raised.value)
+        assert "shape" in message, "the refusal does not name the container that spans two lanes"
+        assert "intake" in message and "shaping" in message, "the refusal names neither of the lanes it spans"
+
+    def test_a_groups_steps_need_not_feed_one_another(self) -> None:
+        """Any set of steps in one lane may be boxed together; connectedness is not required.
+
+        The tempting rule is the opposite one -- a container should be a connected piece of the flow,
+        since that is what "one job" looks like. It is the wrong rule, and the counter-example is the
+        commonest container there is: *read the three workbooks*. Three reads that touch nothing of
+        each other and meet for the first time in a join outside the box are a container a reader
+        wants, and a connectedness rule refuses exactly it.
+
+        What connectedness was really protecting is a different property, and it belongs to the
+        canvas rather than to the loader: a box must enclose its own steps and nothing else. That is
+        a question about where things are drawn -- a *connected* group can enclose a stranger just as
+        easily -- so it is pinned where it can actually be checked, over the rendered markup.
+        """
+        document = _grouped_document()
+        document["groups"] = [{"id": "sources", "title": "Read both extracts as they arrived"}]
+        for step_id in ("kept", "paired", "published"):
+            _step(document, step_id).pop("group")
+        for step_id in ("entries", "headers"):  # two sources, one lane, no edge between them
+            _step(document, step_id)["group"] = "sources"
+
+        spec = load_pipeline(document, rules=RULES)
+
+        assert spec.group_members("sources") == ("entries", "headers")
+
+    def test_a_container_names_what_entered_it_and_what_left_it(self) -> None:
+        """The boundary, which is a question about the wiring and so is answered by the graph.
+
+        *In* is every port produced outside the container and read inside it, each named once however
+        many members read it: two steps taking the same upstream port are one lot of rows arriving,
+        and counting it twice would report a container that invented rows.
+
+        *Out* is every port of a member that is read by a non-member **or by nobody at all**. The
+        second half is the part that is easy to leave out and wrong to leave out: rows that stop at a
+        member's port have still left the container -- they went to a file, to a report, or nowhere
+        -- and a container whose last step is a write would otherwise claim nothing came out of it.
+
+        What is excluded is the ports that are used up inside: `kept.true` goes to `paired`, which is
+        in the same box, so it is the container's own plumbing and no part of what it published. An
+        implementation that simply sums every member's ports gets a bigger number that looks
+        perfectly plausible, which is why this is pinned port by port rather than as a total.
+        """
+        spec = load_pipeline(_grouped_document(), rules=RULES)
+
+        assert spec.group_inputs("shape") == (PortRef("entries", "rows"), PortRef("headers", "rows"))
+        assert spec.group_outputs("shape") == (
+            PortRef("kept", "false"),  # read by nobody: the rows the container set aside
+            PortRef("paired", "left_only"),
+            PortRef("paired", "right_only"),
+            PortRef("published", "rows"),
+        )
+
+        # Named once, not twice: `kept` and `also` both read the same upstream port, and that is one
+        # lot of rows entering the container.
+        shared = _grouped_document()
+        shared["steps"].append({**_filter_step("also", "entries.rows"), "group": "shape"})
+        shared["steps"].append({**_writer_step("also_out", "also.true"), "group": "shape"})
+
+        widened = load_pipeline(shared, rules=RULES)
+
+        assert widened.group_inputs("shape").count(PortRef("entries", "rows")) == 1
+        assert PortRef("also", "true") not in widened.group_outputs("shape"), (
+            "a port read by another member of the same container is the container's own plumbing"
+        )
+        assert PortRef("also", "false") in widened.group_outputs("shape")

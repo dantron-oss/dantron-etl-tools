@@ -13,7 +13,7 @@ step's own configuration as authored, and the tables come from the frames the ru
 from __future__ import annotations
 
 import html
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ import polars as pl
 import dantron_etl
 from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_trace
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import PipelineSpec, read_pipeline_file
+from dantron_etl.pipeline import Group, PipelineSpec, read_pipeline_file
 from dantron_etl.runner import PipelineTrace, run_pipeline
 from dantron_etl.tool import STATUS_LEVELS
 
@@ -45,6 +45,40 @@ NODE_W, NODE_H, COL_W, PAD = 176, 62, 232, 28
 # Vertical breathing room: between two steps stacked in one lane cell, inside a lane band, and
 # between one lane band and the next.
 STACK_GAP, LANE_PAD, LANE_GAP = 18, 22, 26
+
+# A container's own margins: the room its outline keeps round the steps it holds, and the band above
+# them its sentence and its counts are written in. The band is what a closed container shrinks to,
+# so it has to be tall enough to be read on its own -- and the outline has to stay clear of the
+# steps of neighbouring lanes, which a box drawn tight to its members does not.
+GROUP_PAD, GROUP_HEAD = 12, 46
+
+# KNOWN LIMIT, measured rather than feared: the header is drawn in space nothing reserved for it,
+# and on the real flow that space is usually already occupied.
+#
+# The header sits GROUP_HEAD above the topmost member. That fits when the topmost member is the top
+# step of its lane cell -- LANE_PAD 22 plus LANE_GAP 26 is 48px of nothing above it, and 46 goes in.
+# A container whose topmost member is stacked lower has no such gap: its header is drawn straight
+# over the step in the slot above, and its title and counts are written across that step's own box.
+#
+# Measured against pipelines/mrr.yaml in the flow this page was built for -- 672 steps, 3 lanes, 152
+# columns, a canvas 35,292px wide -- with its steps boxed the size the request asked for ("fetch the
+# crm accounts and put the header row back", six-ish tools): 143 containers, of which 74 draw
+# their header over a step above them. Only 69 of the 143 begin at slot 0; the rest begin as deep as
+# slot 11. So this is not a corner -- it is the common case there, and the fixture is quiet about it
+# only because six steps in two lanes stack no deeper than one.
+#
+# The header is also the smaller half. A container's outline is the bounding box of its members, and
+# nothing keeps a non-member out of it: on the same 143, 109 enclose at least one step that is not
+# theirs, the worst swallowing 294. That is the box making a false claim rather than an ugly one --
+# `test_a_container_encloses_its_own_steps_and_no_others` already pins that it must not, and on this
+# flow today it would fail.
+#
+# Both have one cause and one fix, and the fix is not here: the layout places steps and the container
+# is drawn round wherever they landed. What is owed is a layout that knows about containers -- giving
+# a container's members adjacent slots, reserving a row for its header, and keeping non-members out
+# of the columns it spans. Widening the gap, shrinking the header or drawing it inside the outline
+# all move the collision rather than remove it, so none of them is done here. Until that lands,
+# containers read correctly on flows whose lanes stack one or two deep, which is what ships today.
 
 
 def _e(v: object) -> str:
@@ -143,14 +177,37 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
             # one line out of six that cross is not something a hand can do at that width. The twin
             # has to follow the same `d`: a target beside the line lights its neighbour, which is
             # worse than no target at all.
+            #
+            # Each end also names the container it sits in, as the empty string where there is
+            # none. Stated at both ends rather than worked out when a container closes, because that
+            # is the fact a closed container re-wires itself from: one end inside and one outside is
+            # a connection that has to land on the box, both ends inside is the box's own plumbing.
+            # Written as "" rather than left off, because `undefined === undefined` is true in a
+            # browser -- two ungrouped ends would compare equal, every connection between two
+            # ordinary steps would read as the internals of a container that does not exist, and all
+            # of them would go out the moment any container was closed.
+            #
+            # And the two ends' own coordinates, so that re-opening a container puts its connections
+            # back where they were drawn. Re-deriving them in the browser means going two ways, and
+            # both are worse than four numbers. Measuring the node is out on its face: while a
+            # container is shut its steps are display:none, and a display:none node measures as
+            # nothing. Reading the node's rectangle off its attributes does survive being hidden --
+            # but the point a connection leaves from is not the rectangle, it is `x + NODE_W` and
+            # `y + NODE_H / 2`, so that route restates this file's geometry in a second language and
+            # every future change to a node's shape has to be made in both. Four numbers per
+            # connection is 765 of them on the real flow and a few tens of KB on a page that already
+            # embeds its own data; the arithmetic staying in one language is worth that.
             edges.append(
-                f'<g class="edge" data-from="{_e(ref.step)}" data-to="{_e(step.id)}" data-port="{_e(ref.port)}">'
+                f'<g class="edge" data-from="{_e(ref.step)}" data-to="{_e(step.id)}" data-port="{_e(ref.port)}"'
+                f' data-from-group="{_e(spec.step(ref.step).group or "")}"'
+                f' data-to-group="{_e(step.group or "")}"'
+                f' data-sx="{x1}" data-sy="{y1}" data-tx="{x2}" data-ty="{y2}">'
                 f'<path class="wire" d="{curve}"/><path class="hit" d="{curve}"/>'
                 f'<text class="elab" x="{(x1 + x2) / 2}" y="{(y1 + y2) / 2 - 6}">{label}</text>'
                 f"</g>"
             )
 
-    nodes = []
+    nodes: dict[str, str] = {}
     for step in spec.steps:
         x, y_node = box(step.id)
         event = trace.event(step.id) if any(e.step_id == step.id for e in trace.events) else None
@@ -162,7 +219,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
         ins = "".join(
             f'<circle class="anchor in" cx="{x}" cy="{y_node + 14 + n * 16}" r="4"/>' for n in range(len(step.inputs))
         )
-        nodes.append(
+        nodes[step.id] = (
             f'<a class="node {level}" id="node-{_e(step.id)}" href="#step-{_e(step.id)}">'
             f'<rect x="{x}" y="{y_node}" width="{NODE_W}" height="{NODE_H}" rx="7"/>'
             f'<text class="nid" x="{x + 12}" y="{y_node + 24}">{_e(step.id)}</text>'
@@ -171,10 +228,94 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
             # six hundred bright anchors over dimmed boxes is the noise the trace exists to remove.
             f"{ins}{outs}</a>"
         )
+
+    # The containers, each holding the steps it was declared over. A step in no container is written
+    # out exactly as it always was: most of a 672-step flow will be in none for a long while, and a
+    # canvas that indented those, or reserved space for a box round them, would make the first person
+    # who tries this feature undo it.
+    boxed = {member for group in spec.groups for member in spec.group_members(group.id)}
+    containers = "".join(_group_box(spec, trace, group, box, nodes) for group in spec.groups)
+    loose = "".join(nodes[step.id] for step in spec.steps if step.id not in boxed)
     return (
         f'<div class="scroll canvas" id="flow"><svg viewBox="0 0 {width} {height}" '
         f'width="{width}" height="{height}" data-w="{width}" data-h="{height}">'
-        f"{bands}{''.join(edges)}{''.join(nodes)}</svg></div>"
+        f"{bands}{''.join(edges)}{containers}{loose}</svg></div>"
+    )
+
+
+def _group_box(
+    spec: PipelineSpec,
+    trace: PipelineTrace,
+    group: Group,
+    box: Callable[[str], tuple[float, float]],
+    nodes: Mapping[str, str],
+) -> str:
+    """One container: the outline round its steps, the bar it becomes when closed, and its steps.
+
+    The steps are written *inside* the container element rather than beside it, and the rest follows
+    from that. Enclosure becomes something the document states rather than something the coordinates
+    imply, and closing a container becomes one class on one element instead of a pass over six
+    hundred nodes asking each whether it belongs to the box being closed.
+
+    Two rectangles, because a container makes the same claim in two states and they are different
+    shapes. ``gbox`` is the outline round exactly its own steps, drawn while it is open. ``gpill`` is
+    the bar it shrinks to when it is closed -- the header alone, which is the whole point: a
+    container that kept its expanded footprint when shut would free no space, and space is the only
+    reason a reader shuts one. Both start at the same corner, so the sentence written in the header
+    sits on whichever of the two is being drawn.
+
+    It shrinks in one direction only. The bar keeps the container's full width, because the width is
+    what the sentence is written across -- a bar one node wide would truncate every title, which is
+    to say it would put away the only thing a closed container has to say. So what closing actually
+    gives back, measured on the real flow with its steps boxed six at a time, is 154px of height at
+    the median against a width of 1,360px that does not move. The reader's real gain is the steps and
+    their internal connections going away in a section they have finished with -- 483 of that flow's
+    765 connections, 63%, are internal to a six-step container and go out with it -- and the height is
+    a bonus; a closed container is not a way to make a 35,292px canvas narrower.
+
+    The connections are *not* in here. They stay at the root of the drawing, because a lit connection
+    is lifted above the steps with ``appendChild`` -- a connection living inside a container would be
+    lifted out of its box the first time a reader followed it, and never come back. Each names its
+    container at each end instead, which is what the collapse handler re-points from.
+    """
+    members = spec.group_members(group.id)
+    corners = [box(member) for member in members]
+    left = min(x for x, _ in corners) - GROUP_PAD
+    top = min(y for _, y in corners) - GROUP_HEAD
+    width = max(x for x, _ in corners) + NODE_W + GROUP_PAD - left
+    height = max(y for _, y in corners) + NODE_H + GROUP_PAD - top
+
+    rows_in = sum(trace.shapes[port].rows for port in spec.group_inputs(group.id) if port in trace.shapes)
+    rows_out = sum(trace.shapes[port].rows for port in spec.group_outputs(group.id) if port in trace.shapes)
+    return (
+        f'<g class="group" id="group-{_e(group.id)}" data-group="{_e(group.id)}" '
+        f'data-rows-in="{rows_in}" data-rows-out="{rows_out}">'
+        f'<rect class="gbox" x="{left}" y="{top}" width="{width}" height="{height}" rx="10"/>'
+        f'<rect class="gpill" x="{left}" y="{top}" width="{width}" height="{GROUP_HEAD}" rx="10"/>'
+        f'<text class="gtitle" x="{left + 12}" y="{top + 18}">{_e(group.title)}</text>'
+        # Grouped digits, because the figure is read at a glance and `11834 in` is not read at a
+        # glance -- it is counted, a digit at a time, which is exactly the work this feature exists
+        # to spare a reader. Grouped is also what the rest of the page already does: every edge
+        # label, every "N rows" under a port and every "showing N of M" is written `{n:,}`, and a
+        # container reporting its rows in the one unpunctuated style on the page would read as a
+        # different kind of number rather than as the same rows counted at a different place.
+        #
+        # The plain figure is not thrown away -- it is put where the reader who wants it goes. The
+        # tooltip is the container's accessible name and the string a reader copies, so it carries
+        # the two figures unpunctuated and says which of them is which, which `in &middot; out` in a
+        # 10px header has no room to. The two are the same rows said twice, once to be read and once
+        # to be taken, and `data-rows-in`/`data-rows-out` above are the same figures again for the
+        # script -- three spellings, one sum each, all computed in one place a line above.
+        f'<text class="gcount" x="{left + 12}" y="{top + 34}">'
+        f"<title>{rows_in} rows came in from outside this container, {rows_out} rows left it</title>"
+        f"{rows_in:,} in &middot; {rows_out:,} out</text>"
+        f'<g class="gctl" data-collapse="{_e(group.id)}">'
+        f'<rect x="{left + width - 26}" y="{top + 8}" width="18" height="18" rx="4"/>'
+        f'<text class="gopen" x="{left + width - 17}" y="{top + 21}">&minus;</text>'
+        f'<text class="gshut" x="{left + width - 17}" y="{top + 21}">+</text>'
+        f"</g>"
+        f"{''.join(nodes[member] for member in members)}"
+        f"</g>"
     )
 
 
@@ -704,6 +845,33 @@ header.top b {{ color:var(--accent); }}
 .node:hover rect {{ fill:var(--accent-soft); }}
 .node.chosen rect {{ fill:var(--accent-soft); stroke-width:3; }}
 .node {{ cursor:pointer; }}
+
+/* Containers. Open, the outline is a dashed hint round steps a reader is still reading one at a
+   time -- a solid box at the weight of a node would read as another tool. It draws no fill at all,
+   because the connections are written before it and a filled rectangle would paint over every line
+   that crosses the section.
+
+   Closed, the same container is the header bar alone: its steps are put away, the outline goes with
+   them, and the bar takes a fill because it now stands for what is underneath it rather than round
+   it. The sentence and the counts are drawn in the header, which is inside both rectangles, so they
+   survive whichever state the container is in -- a box with nothing written on it is a section of
+   the flow that has become unreadable, and that is the failure this arrangement exists to avoid. */
+.gbox {{ fill:none; stroke:var(--accent); stroke-width:1.2; stroke-dasharray:5 4; opacity:.7; }}
+.gpill {{ fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.2; }}
+.gtitle {{ fill:var(--ink); font:600 12px var(--sans); }}
+.gcount {{ fill:var(--muted); font:500 10px var(--mono); }}
+.gctl {{ cursor:pointer; }}
+.gctl rect {{ fill:var(--surface); stroke:var(--accent); stroke-width:1.2; }}
+.gctl text {{ fill:var(--accent); font:700 13px var(--sans); text-anchor:middle; }}
+/* Which of the two states is drawn, said in the sheet rather than by moving anything on the canvas:
+   the steps are children of the container, so closing one is a single class on a single element. */
+.group .gpill, .group .gshut {{ display:none; }}
+.group.collapsed .gbox, .group.collapsed .node, .group.collapsed .gopen {{ display:none; }}
+.group.collapsed .gpill, .group.collapsed .gshut {{ display:block; }}
+/* A connection with both ends inside a closed container is that container's own plumbing, and goes
+   away with it. One with an end outside is how the rest of the flow reaches the section: it stays,
+   re-pointed at the bar. */
+.edge.gone {{ display:none; }}
 .nid {{ fill:var(--ink); font:600 12px var(--mono); }}
 .ntool {{ fill:var(--muted); font:500 10px var(--sans); }}
 .anchor {{ stroke:var(--surface); stroke-width:1.5; }}
@@ -966,9 +1134,14 @@ let WIRING = null;
 // Where the drawing puts a connection back when it stops being lit: before the first step box,
 // which is where every connection starts out. Found on first use rather than at load, because
 // `flow` is declared further down and reading it here would be reading it before it exists.
+//
+// A container counts as a step box here, and has to: its steps are drawn inside it, so the first
+// `.node` on a canvas with containers is a grandchild of the drawing rather than a child of it, and
+// insertBefore against a node that is not its own child throws. The containers are written before
+// the loose steps, so the first of these is a child of the drawing either way.
 let FIRST_NODE;
 function firstNode() {{
-  if (FIRST_NODE === undefined) FIRST_NODE = flow ? flow.querySelector('.node') : null;
+  if (FIRST_NODE === undefined) FIRST_NODE = flow ? flow.querySelector('.group, .node') : null;
   return FIRST_NODE;
 }}
 
@@ -986,6 +1159,53 @@ function paint(el, state) {{
     }} else {{
       flow.appendChild(el);
     }}
+  }}
+}}
+
+// Where every connection runs, once some container has been closed.
+//
+// Run over the whole drawing rather than over the container that just moved, because the two ends of
+// a connection can sit in two different containers: answering for one of them alone would leave a
+// line attached to a box a reader shut a moment ago and has since re-opened. Every connection is
+// asked the same two questions -- is the container it starts in closed, is the one it lands in
+// closed -- and is drawn from the answers, so the state of the canvas is the state of the canvas
+// whatever order the containers were clicked in.
+function repointGroups() {{
+  // Where each closed container's own bar stands, read off the drawing. Read rather than remembered:
+  // the position is already stated in the markup, and a second copy of it drifts.
+  const shut = new Map();
+  for (const box of wrap.querySelectorAll('[data-group].collapsed')) {{
+    const bar = box.querySelector('rect.gpill');
+    shut.set(box.dataset.group, {{
+      x: Number(bar.getAttribute('x')), y: Number(bar.getAttribute('y')),
+      w: Number(bar.getAttribute('width')), h: Number(bar.getAttribute('height')),
+    }});
+  }}
+  for (const edge of wrap.querySelectorAll('.edge')) {{
+    const fromGroup = edge.dataset.fromGroup, toGroup = edge.dataset.toGroup;
+    const a = shut.get(fromGroup), b = shut.get(toGroup);
+    // Both ends inside one closed container: the connection is that container's own plumbing and is
+    // put away with it. Asked of both ends together, because asking about one end alone hides every
+    // crossing connection too -- the section takes its inputs and its outputs with it and the flow
+    // reads as stopping dead at a box.
+    edge.classList.toggle('gone', Boolean(a && b && fromGroup === toGroup));
+    // An end in a closed container attaches to that container's bar; an end that is still drawn goes
+    // back to the coordinate it was drawn at -- the one the page wrote down for it, which is why it
+    // was written down. Re-measuring the node instead would measure something that is display:none,
+    // which measures as nothing, and working it out from the node's rectangle would mean knowing
+    // here what a node's width and height are.
+    const x1 = a ? a.x + a.w : Number(edge.dataset.sx);
+    const y1 = a ? a.y + a.h / 2 : Number(edge.dataset.sy);
+    const x2 = b ? b.x : Number(edge.dataset.tx);
+    const y2 = b ? b.y + b.h / 2 : Number(edge.dataset.ty);
+    const mid = (x1 + x2) / 2;
+    const d = 'M' + x1 + ',' + y1 + ' C' + mid + ',' + y1 + ' ' + mid + ',' + y2 + ' ' + x2 + ',' + y2;
+    // The visible line and its wide transparent twin, in one pass and off one string. Move one and
+    // not the other and the target a hand aims at is no longer on the line, which lights a
+    // neighbouring connection instead -- the very defect the twin was added to fix.
+    for (const path of edge.querySelectorAll('path')) path.setAttribute('d', d);
+    const label = edge.querySelector('text');
+    if (label) {{ label.setAttribute('x', mid); label.setAttribute('y', (y1 + y2) / 2 - 6); }}
   }}
 }}
 
@@ -1066,6 +1286,19 @@ wrap.addEventListener('click', e => {{
   // would fall through to the else and zoom the canvas out on its way to clearing.
   const back = e.target.closest('[data-trace]');
   if (back) {{ clearTrace(); return; }}
+
+  // A container opening and closing. Asked for by attribute rather than by class, so the control can
+  // be drawn however it needs to be drawn -- what the page answers is the thing that says which
+  // container it belongs to.
+  const shutter = e.target.closest('[data-collapse]');
+  if (shutter) {{
+    const box = wrap.querySelector('#group-' + shutter.dataset.collapse);
+    // Toggled, never added. A container that closes and cannot be opened again is a section of the
+    // flow the reader has permanently lost, with the page's own control the thing that lost it.
+    box.classList.toggle('collapsed');
+    repointGroups();
+    return;
+  }}
 
   const edge = e.target.closest('.edge');
   if (edge) {{

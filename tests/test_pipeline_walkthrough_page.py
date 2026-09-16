@@ -20,8 +20,8 @@ import pytest
 
 from dantron_etl.focus import FocusSpec
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import read_pipeline_file
-from dantron_etl.runner import run_pipeline
+from dantron_etl.pipeline import PipelineSpec, PortRef, read_pipeline_file
+from dantron_etl.runner import PipelineTrace, run_pipeline
 
 PROJECT_ROOT = project_root(__file__)
 
@@ -1944,3 +1944,489 @@ class TestTheNoticeStandsWhereThePanelWouldHaveBeen:
             f"{params[0]} is pasted into the URL unencoded ({asked.strip()}); a step id carrying &, # or + then "
             "asks for a different panel, or for none"
         )
+
+
+# ---------------------------------------------------------------------------
+# Containers: a few dozen titled boxes instead of six hundred and seventy-two
+#
+# The flow this page is really for draws 672 steps. Nobody follows that by reading it. What a reader
+# can follow is a few dozen boxes with sentences on them -- "fetch the crm accounts and put
+# the header row back" over the six tools that do it -- opened only when the sentence is not enough.
+#
+# The markup contract these tests pin:
+#
+#     <g class="group" id="group-classify" data-group="classify" data-rows-in="7" data-rows-out="7">
+#       <rect class="gbox" .../>                 the box, drawn round exactly its own steps
+#       <rect class="gpill" .../>                the same container closed, one node's worth
+#       <text ...>Split the entries ...</text>   the title, readable in both states
+#       <text ...>7 in &middot; 7 out</text>     what entered and what left
+#       <g ... data-collapse="classify">...</g>  the control that closes it and opens it again
+#       <a class="node" id="node-receivable">...</a>    its steps, and nobody else's
+#       <a class="node" id="node-set_aside">...</a>
+#     </g>
+#
+# The steps are drawn *inside* the container element rather than beside it, and the rest follows from
+# that: enclosure becomes something the document states rather than something the coordinates imply,
+# and closing a container becomes one class on one element instead of a pass over six hundred nodes
+# asking each whether it belongs to the box being closed.
+#
+# A connection stays where it is -- at the top of the drawing, beside its siblings -- because the
+# trace lifts a lit connection above the steps, and a connection living inside a container would be
+# lifted out of the box it belongs to and never come back. Instead every connection names the
+# container at each of its ends, which is what lets a closed container hide the connections that were
+# internal to it and re-point the ones that crossed its edge.
+#
+# The counts. *In* is every port produced outside a container and read inside it, named once however
+# many members read it. *Out* is every port of a member read by a non-member or by nobody at all --
+# the second half matters, because a container ending in a write would otherwise report that nothing
+# came out of it. A port used up inside the box is the container's own plumbing and is counted at
+# neither end, which is the difference between a reader checking a section without opening it and a
+# reader being handed a number that reconciles with nothing.
+# ---------------------------------------------------------------------------
+
+#: The containers the cases below declare over the fixture flow. Two of its six steps are left in no
+#: container at all, which is the state every step starts in and has to keep working: containers are
+#: adopted a stage at a time, not all at once.
+#:
+#: The ampersand in the first title is deliberate. A title is a person's sentence, and one carrying
+#: an `&` that reaches the drawing unescaped ends the text there.
+GROUP_TITLES: dict[str, str] = {
+    "classify": "Split the entries into revenue & what was set aside",
+    "totalling": "Spread each amount over its months and total it by party",
+}
+GROUP_MEMBERS: dict[str, tuple[str, ...]] = {
+    "classify": ("receivable", "set_aside"),  # lane 'shaping'
+    "totalling": ("monthly", "totals"),  # lane 'figures'
+}
+
+
+def _grouped_spec() -> PipelineSpec:
+    """The fixture flow with two of its stages boxed, read from the same file the page renders.
+
+    Built by reading the shipped pipeline and adding the containers in memory rather than by editing
+    the file on disk: every other test in this repository runs against that file, and a fixture that
+    quietly grew a feature underneath them would be a change nobody reviewed.
+    """
+    import yaml
+
+    from dantron_etl.pipeline import load_pipeline
+
+    document = yaml.safe_load((PROJECT_ROOT / "pipelines" / "fixture.yaml").read_text(encoding="utf8"))
+    document["groups"] = [{"id": group_id, "title": title} for group_id, title in GROUP_TITLES.items()]
+    for group_id, members in GROUP_MEMBERS.items():
+        for step in document["steps"]:
+            if step["id"] in members:
+                step["group"] = group_id
+    return load_pipeline(document, rules={"revenue_type": "REVENUE"})
+
+
+@pytest.fixture(scope="module")
+def boxed() -> tuple[PipelineSpec, PipelineTrace]:
+    """The grouped pipeline and one run of it, which the counts on the boxes are read off."""
+    spec = _grouped_spec()
+    return spec, run_pipeline(spec)
+
+
+@pytest.fixture(scope="module")
+def boxed_page(boxed: tuple[PipelineSpec, PipelineTrace]) -> str:
+    spec, trace = boxed
+    return build(spec, trace, FocusSpec(label="party", identity=("party",)))
+
+
+def _elements(markup: str, opener: str) -> list[tuple[dict[str, str], str]]:
+    """Every element whose start tag begins with ``opener``, as (its attributes, its contents).
+
+    Written as a scan rather than as a non-greedy regex because a container holds the very elements
+    it draws. A non-greedy match stops at the first closing tag it meets, which is the end of
+    something nested inside, and every enclosure assertion below would then be made about a fragment
+    of the container -- passing or failing for reasons that have nothing to do with the container.
+    """
+    tag = opener[1:].split()[0]
+    found: list[tuple[dict[str, str], str]] = []
+    for start in re.finditer(re.escape(opener), markup):
+        head = markup.index(">", start.start())
+        attrs = dict(re.findall(r'([a-z-]+)="([^"]*)"', markup[start.start() : head]))
+        depth, at = 1, head + 1
+        while depth:
+            nxt = re.search(rf"<{tag}\b|</{tag}>", markup[at:])
+            assert nxt is not None, f"{opener} is never closed"
+            depth += -1 if nxt.group(0).startswith("</") else 1
+            at += nxt.end()
+        found.append((attrs, markup[head + 1 : at - len(f"</{tag}>")]))
+    return found
+
+
+def _containers(page: str) -> dict[str, tuple[dict[str, str], str]]:
+    """Every drawn container, keyed by the group it answers to."""
+    return {attrs.get("data-group", ""): (attrs, body) for attrs, body in _elements(_svg(page), '<g class="group"')}
+
+
+def _rect(markup: str) -> tuple[float, float, float, float]:
+    """The first rectangle in ``markup`` as (x, y, width, height)."""
+    found = re.search(
+        r'<rect[^>]*\bx="([\d.-]+)"[^>]*\by="([\d.-]+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"', markup
+    )
+    assert found is not None, f"no rectangle in {markup[:120]!r}"
+    x, y, width, height = (float(value) for value in found.groups())
+    return x, y, width, height
+
+
+def _node_boxes(page: str) -> dict[str, tuple[float, float, float, float]]:
+    """Where every step's box is drawn, by step id, read off the drawing itself."""
+    return {
+        attrs.get("id", "").removeprefix("node-"): _rect(body)
+        for attrs, body in _elements(_svg(page), '<a class="node')
+    }
+
+
+def _own_rects(body: str) -> list[tuple[float, float, float, float]]:
+    """The rectangles a container drew for itself -- its steps' boxes and its control's taken out.
+
+    A container draws its state: the outline round its steps, and the one box it becomes when it is
+    closed. Those are what the title has to sit on. A step's own box, and whatever the control that
+    closes it is drawn with, are not the container saying anything about itself.
+    """
+    bare = re.sub(r'<a class="node.*?</a>', "", body, flags=re.DOTALL)
+    bare = re.sub(r"<g[^>]*data-collapse.*?</g>", "", bare, flags=re.DOTALL)
+    return [_rect(f"<rect{tag}>") for tag in re.findall(r"<rect([^>]*)>", bare) if "data-collapse" not in tag]
+
+
+def _encloses(outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[0] + outer[2] >= inner[0] + inner[2]
+        and outer[1] + outer[3] >= inner[1] + inner[3]
+    )
+
+
+def _overlaps(one: tuple[float, float, float, float], other: tuple[float, float, float, float]) -> bool:
+    return (
+        one[0] < other[0] + other[2]
+        and other[0] < one[0] + one[2]
+        and one[1] < other[1] + other[3]
+        and other[1] < one[1] + one[3]
+    )
+
+
+def _boundary(spec: PipelineSpec, group_id: str) -> tuple[tuple[PortRef, ...], tuple[PortRef, ...]]:
+    """What entered a container and what left it, worked out here from the wiring alone.
+
+    Derived in the test rather than taken from the graph's own answer to the same question: a page
+    that faithfully renders whatever the library hands it and a library that was asked the wrong
+    question agree with each other perfectly, and this is the one figure on the box a reader is
+    invited to trust without opening it.
+    """
+    members = tuple(step.id for step in spec.steps if step.group == group_id)
+    entered: list[PortRef] = []
+    for step_id in members:
+        for source in spec.step(step_id).inputs.values():
+            if source.step not in members and source not in entered:
+                entered.append(source)
+    left: list[PortRef] = []
+    for step_id in members:
+        for port in spec.registry.get(spec.step(step_id).tool).output_ports:
+            read_by = spec.consumers(PortRef(step_id, port))
+            if not read_by or any(ref.step not in members for ref in read_by):
+                left.append(PortRef(step_id, port))
+    return tuple(entered), tuple(left)
+
+
+class TestAContainerIsOneBoxWithASentenceOnIt:
+    """Six boxes a reader has to follow, replaced by one they can read."""
+
+    def test_every_declared_container_is_drawn_once_and_carries_its_title(
+        self, boxed_page: str, boxed: tuple[PipelineSpec, PipelineTrace]
+    ) -> None:
+        """A title is the feature. An id over six boxes is the same canvas with a line drawn on it.
+
+        Compared against the declared title escaped the way this page escapes every other piece of a
+        person's text, because that is what a title is: written with an `&` in it and put into the
+        drawing raw, the text node ends there and the reader is shown half a sentence.
+        """
+        import html
+
+        spec, _ = boxed
+        drawn = _containers(boxed_page)
+
+        assert set(drawn) == set(GROUP_TITLES), f"the containers drawn are {sorted(drawn)}"
+        assert {group.id: group.title for group in spec.groups} == GROUP_TITLES
+        for group_id, title in GROUP_TITLES.items():
+            attrs, body = drawn[group_id]
+            said = re.findall(r"<text[^>]*>(.*?)</text>", body)
+            assert said.count(html.escape(title, quote=True)) == 1, (
+                f"{group_id}: the container's own text is {said}, which is not its title written once"
+            )
+            assert attrs.get("id") == f"group-{group_id}", (
+                f"{group_id}: a container with no id of its own is one nothing can open, close or point at"
+            )
+
+    def test_a_container_encloses_its_own_steps_and_no_others(self, boxed_page: str) -> None:
+        """Both senses of enclosing, because the box makes its claim in both.
+
+        In the document, because that is what makes closing a container one class on one element
+        rather than a pass over six hundred nodes asking each whether it belongs to the box.
+
+        And on the canvas, because a box is a visual claim about what is inside it. A rectangle drawn
+        round five of a container's six steps says nothing is missing; one drawn over a stranger says
+        that stranger is part of the job. Neither announces itself -- the drawing looks finished
+        either way, and a reader believes the line.
+        """
+        boxes = _node_boxes(boxed_page)
+        containers = _containers(boxed_page)
+
+        assert set(containers) == set(GROUP_TITLES), "nothing is drawn to enclose anything"
+        inside_any: set[str] = set()
+        for group_id, (_, body) in containers.items():
+            held = {attrs.get("id", "").removeprefix("node-") for attrs, _ in _elements(body, '<a class="node')}
+            assert held == set(GROUP_MEMBERS[group_id]), f"{group_id} holds {sorted(held)}"
+            inside_any |= held
+
+            around = [box for box in _own_rects(body) if all(_encloses(box, boxes[member]) for member in held)]
+            assert around, f"{group_id}: no rectangle of its own is drawn round all of its steps"
+            box = max(around, key=lambda drawn: drawn[2] * drawn[3])
+            strangers = sorted(at for at, drawn in boxes.items() if at not in held and _overlaps(box, drawn))
+            assert not strangers, f"{group_id}: the box is drawn over {strangers}, which are not in it"
+
+        assert inside_any == {member for members in GROUP_MEMBERS.values() for member in members}
+        assert set(boxes) - inside_any, "every step is in a container, so nothing here proves the ungrouped case"
+
+    def test_a_step_in_no_container_is_drawn_as_it_always_was(
+        self, page: str, boxed_page: str, steps: tuple[str, ...]
+    ) -> None:
+        """The property that lets containers be adopted a stage at a time rather than all at once.
+
+        Most of a 672-step flow will be in no container for a long while, and those steps have to be
+        drawn exactly as they are drawn today -- no box, no indent, no reserved space. A canvas that
+        put a container round every ungrouped step, or one box round the lot of them, would make the
+        first person who tries this feature undo it.
+
+        The second half is the risk that comes with drawing a step inside a container: a node
+        rendered inside the box and again outside it draws twice, and the copy nobody sees is found
+        by clicking the one that turns out not to be wired to anything.
+        """
+        assert not _containers(page), "a pipeline that declares no groups still drew a container"
+        assert '<g class="group"' not in page, "an empty container element is drawn for a flow that has none"
+        assert set(_containers(boxed_page)) == set(GROUP_TITLES), (
+            "a container is drawn for something other than a declared group, or one of them is missing"
+        )
+
+        drawn = re.findall(r'<a class="node[^"]*" id="node-([a-z_]+)"', boxed_page)
+        assert sorted(drawn) == sorted(steps), "boxing some steps drew one of them twice, or dropped one"
+
+    def test_a_container_says_what_entered_it_and_what_left_it(
+        self, boxed_page: str, boxed: tuple[PipelineSpec, PipelineTrace]
+    ) -> None:
+        """The figure that lets a reader check a section without opening it.
+
+        Which is what makes a wrong one worse than none: a container reporting more rows out than a
+        reader can find anywhere downstream sends them hunting for rows that never existed. Both
+        wrong answers are plausible. Summing every member's ports counts the container's own plumbing
+        -- `receivable.false` goes to `set_aside` inside the same box -- and counting only the ports
+        some later step reads loses the rows a container wrote to a file and stopped.
+
+        So the figures are derived from the wiring and the trace, and then checked to be *different*
+        from what the first of those mistakes would produce. An assertion that agrees with the
+        mistake it exists to catch is worse than no assertion, because it is also a claim that the
+        rule is covered.
+        """
+        spec, trace = boxed
+        containers = _containers(boxed_page)
+
+        assert set(containers) == set(GROUP_TITLES), "no container reports anything"
+        for group_id, (attrs, body) in containers.items():
+            entered, left = _boundary(spec, group_id)
+            rows_in = sum(trace.shapes[port].rows for port in entered)
+            rows_out = sum(trace.shapes[port].rows for port in left)
+
+            assert attrs.get("data-rows-in") == str(rows_in), (
+                f"{group_id}: {attrs.get('data-rows-in')} in, not {rows_in}"
+            )
+            assert attrs.get("data-rows-out") == str(rows_out), (
+                f"{group_id}: {attrs.get('data-rows-out')} out, not {rows_out}"
+            )
+            said = " ".join(re.findall(r"<text[^>]*>(.*?)</text>", body))
+            assert re.search(rf"\b{rows_in}\b", said) and re.search(rf"\b{rows_out}\b", said), (
+                f"{group_id}: the counts are in the markup and in nothing a reader can see: {said!r}"
+            )
+
+        naive = {
+            group_id: sum(shape.rows for port, shape in trace.shapes.items() if spec.step(port.step).group == group_id)
+            for group_id in GROUP_TITLES
+        }
+        honest = {
+            group_id: sum(trace.shapes[port].rows for port in _boundary(spec, group_id)[1]) for group_id in GROUP_TITLES
+        }
+        assert naive != honest, "no container has any plumbing of its own, so this case proves nothing about the rule"
+
+
+class TestAContainerOpensAndCloses:
+    """Closed, it is one box with a sentence on it. Open, it is the six tools that do the work."""
+
+    def test_each_container_offers_a_control_that_closes_it_and_opens_it_again(self, boxed_page: str) -> None:
+        """Both states have to be reachable, which a control that only ever adds a class is not.
+
+        A container that closes and cannot be opened is a section of the flow the reader has
+        permanently lost, with the page's own control the thing that lost it for them.
+        """
+        for group_id, (_, body) in _containers(boxed_page).items():
+            assert re.search(rf'data-collapse="{group_id}"', body), (
+                f"{group_id} is drawn with no control that closes it"
+            )
+
+        script = _js(boxed_page)
+        assert "closest('[data-collapse]')" in script, "nothing in the script answers the control"
+        handler = _block(script[script.index("closest('[data-collapse]')") :], "{")
+        assert re.search(r"classList\.toggle\(\s*'collapsed'\s*\)", handler), (
+            "the control does not toggle the state, so a container closes once and never opens again"
+        )
+
+    def test_a_closed_container_draws_one_box_with_its_steps_put_away(self, boxed_page: str) -> None:
+        """What closing means, said in the sheet rather than by moving anything on the canvas.
+
+        The steps are children of the container, so closing is one class on one element and the
+        drawing does the rest. A closed container that still drew its steps would be a box with a
+        title over the six boxes it was meant to replace, which is the canvas this exists to escape.
+
+        And it has to become one box rather than keep its full outline with nothing inside it: a
+        container that keeps its expanded footprint when closed frees no space at all, and space is
+        the only reason a reader closes one.
+        """
+        hides_steps, when_closed, when_open = [], [], []
+        for selector, declarations in _css_rules(boxed_page):
+            for one in selector.split(","):
+                head = one.strip()
+                if not head.startswith(".group"):
+                    continue
+                if ".collapsed" in head and head.endswith(".node") and "display:none" in declarations:
+                    hides_steps.append(head)
+                if ".collapsed" in head and "display:none" not in declarations:
+                    when_closed.append(head)
+                if ".collapsed" not in head and "display:none" in declarations:
+                    when_open.append(head)
+
+        assert hides_steps, "nothing in the sheet puts a closed container's steps away, so closing one changes nothing"
+        assert when_closed, "the sheet says nothing about what a closed container draws instead of its steps"
+        assert when_open, "whatever stands in for a closed container is drawn while it is open as well"
+
+    def test_a_closed_container_still_says_what_it_is(self, boxed_page: str) -> None:
+        """A box with nothing written on it is a section of the flow that has become unreadable.
+
+        Two ways to lose the sentence, and both read as tidying. The sheet can hide the title along
+        with everything else a closed container stops drawing; or the box a closed container becomes
+        can be drawn somewhere the title is not, leaving the sentence floating over the space where
+        the steps used to be.
+        """
+        import html
+
+        containers = _containers(boxed_page)
+        assert set(containers) == set(GROUP_TITLES), "no container is drawn, so no title can be lost"
+        hidden_when_closed = [
+            one.strip()
+            for selector, declarations in _css_rules(boxed_page)
+            for one in selector.split(",")
+            if ".collapsed" in one and "display:none" in declarations
+        ]
+
+        for group_id, (_, body) in containers.items():
+            title = html.escape(GROUP_TITLES[group_id], quote=True)
+            found = re.search(rf"<text([^>]*)>{re.escape(title)}</text>", body)
+            assert found is not None, f"{group_id}: no text element carries the title"
+            worn = re.findall(r'class="([^"]*)"', found.group(1))
+            at = (
+                float(re.search(r'\bx="([\d.-]+)"', found.group(1)).group(1)),
+                float(re.search(r'\by="([\d.-]+)"', found.group(1)).group(1)),
+            )
+
+            for name in " ".join(worn).split():
+                for rule in hidden_when_closed:
+                    assert f".{name}" not in rule, f"{group_id}: closing the container hides its own title ({rule})"
+
+            drawn = _own_rects(body)
+            assert drawn, f"{group_id}: the container draws no box of its own"
+            outside = [
+                box for box in drawn if not (box[0] <= at[0] <= box[0] + box[2] and box[1] <= at[1] <= box[1] + box[3])
+            ]
+            assert not outside, (
+                f"{group_id}: the title does not sit on {outside}, so whichever state draws that box shows a "
+                f"rectangle with nothing written on it"
+            )
+
+
+class TestAClosedContainerStillJoinsUpToTheFlow:
+    """A connection into a step that is no longer drawn is a flow that appears to stop dead at a box."""
+
+    def test_every_connection_names_the_container_at_each_of_its_ends(
+        self, boxed_page: str, boxed: tuple[PipelineSpec, PipelineTrace]
+    ) -> None:
+        """The fact a closed container re-wires itself from, so it is read off the drawing.
+
+        An end in no container names none, and has to name it as nothing rather than by leaving the
+        attribute off altogether: `undefined === undefined` is true in a browser, so two ungrouped
+        ends would compare equal, every connection between two ordinary steps would be read as the
+        internals of a container that does not exist, and all of them would go out the moment any
+        container was closed.
+        """
+        spec, _ = boxed
+        expected = Counter(
+            (source.step, step.id, source.port, spec.step(source.step).group or "", step.group or "")
+            for step in spec.steps
+            for source in step.inputs.values()
+        )
+        drawn = Counter(
+            (
+                attrs.get("data-from", ""),
+                attrs.get("data-to", ""),
+                attrs.get("data-port", ""),
+                attrs.get("data-from-group", "∅"),
+                attrs.get("data-to-group", "∅"),
+            )
+            for attrs, _ in _edges(boxed_page)
+        )
+
+        assert drawn == expected
+
+    def test_closing_a_container_puts_away_its_own_connections_and_re_points_the_rest(self, boxed_page: str) -> None:
+        """The failure this prevents is a flow that reads as finishing at a box.
+
+        A closed container stops drawing its steps, so every connection that ran into one of them now
+        runs into the middle of nothing. Two different answers are owed. A connection with both ends
+        inside belongs to the closed box and goes away with it; a connection with one end outside is
+        how the rest of the flow reaches this section, and has to land on the box instead.
+
+        Telling those apart needs both ends in one test. Ask about one end alone and every crossing
+        connection is hidden too -- the section a reader closed takes its inputs and its outputs with
+        it, and the flow appears to stop.
+
+        The re-pointed curve goes onto the visible line and onto its wide transparent twin together.
+        Move one and not the other and the target a hand aims at is no longer where the line is
+        drawn, which lights a neighbouring connection instead -- the very defect the twin was added
+        to fix.
+        """
+        script = _js(boxed_page)
+        assert "closest('[data-collapse]')" in script, "nothing in the script answers the control"
+        handler = _with_callees(script, _block(script[script.index("closest('[data-collapse]')") :], "{"))
+
+        assert re.search(r"from-group|fromGroup", handler), "closing a container never asks where a connection starts"
+        assert re.search(r"to-group|toGroup", handler), "closing a container never asks where a connection lands"
+        assert re.search(
+            r"(?:from-group|fromGroup)[^;]{0,200}(?:to-group|toGroup)"
+            r"|(?:to-group|toGroup)[^;]{0,200}(?:from-group|fromGroup)",
+            handler,
+        ), (
+            "the two ends of a connection are consulted in two separate places, so nothing here tells a connection "
+            "inside the container from one that crosses its edge"
+        )
+        assert re.search(r"getBBox\(\)|getAttribute\('x'\)|\.x\.baseVal", handler), (
+            "the handler never reads the container's own position, so a re-pointed connection lands wherever the "
+            "hidden step used to be rather than on the box that replaced it"
+        )
+        curves = {value.strip() for value in re.findall(r"setAttribute\(\s*'d'\s*,\s*([^)]+)\)", handler)}
+        assert curves, "no connection's curve is ever rewritten, so a crossing line still runs into a step nobody sees"
+        assert len(curves) == 1, (
+            f"the handler writes {len(curves)} different curves ({sorted(curves)}); the visible line and its wide "
+            "transparent twin have to follow the same one, or the target a hand aims at is not on the line"
+        )
+        assert re.search(
+            r"'\.wire'[^;]{0,120}'\.hit'|'\.hit'[^;]{0,120}'\.wire'|querySelectorAll\('path'\)", handler
+        ), "only one of a connection's two paths is reached, so the line moves and its click target stays behind"
