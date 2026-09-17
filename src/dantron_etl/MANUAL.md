@@ -234,6 +234,52 @@ no field that only applies when another field holds a particular value.
 
 ---
 
+### 4.4 Containers
+
+A flow of any size is unreadable as a list of steps. `groups` names boxes and each step says which
+box it is in:
+
+```yaml
+groups:
+  - {id: read_accounts, title: "Fetch the account list and put its header row back"}
+
+steps:
+  - id: accounts_raw
+    tool: read_table
+    lane: sources
+    stage: parties
+    group: read_accounts
+```
+
+On the drawn page a container is a titled box its steps sit inside, which a reader can close to a
+single bar. That is the whole point: a box a reader can shut is a part of the flow they have decided
+they do not need to look at today.
+
+**What the loader refuses**, before a single step runs:
+
+| | |
+|---|---|
+| a `group` naming no declared container | a typo is refused, never quietly ignored |
+| a container with no members | it would draw as an empty box |
+| a blank or whitespace title | the title is the only thing a closed container shows |
+| a container whose steps sit in two different lanes | a box spans one lane; two is a drawing that cannot be laid out |
+
+**How to draw the boundaries.** A container is *one idea a person can name*. If the title needs an
+"and then", it is two containers. Three to eight steps is the usual size; a run of near-identical
+steps is one container however many it is. Steps in a container need not feed one another -- "read
+the three source tables" is a fine container. And not every step belongs in one: a single assertion,
+or the one big join everything converges on, reads better loose.
+
+**The title is the point.** It is what a reader sees *instead of* six boxes, so it follows §4b: plain
+words, what the steps produce, no vocabulary from this library. Sentence case, no full stop, under
+about seventy characters.
+
+A container is a way of reading the flow. It changes nothing about what runs, in what order, or what
+any step produces -- `group` is not part of a step's fingerprint (§7b), so boxing an existing flow
+does not invalidate a cache.
+
+---
+
 ## 4b. How to write a `why`
 
 A finance person reads these on a page while tracing what happened to a number. They are not
@@ -488,6 +534,54 @@ until something independent agrees with it.
   step that broke it can still be named, rather than three stages later.
 - An assertion over an empty frame passes vacuously — every row of nothing satisfies everything. If
   a branch is legitimately sometimes empty, say so in writing with `allow_empty`.
+
+---
+
+## 7b. Running part of a flow
+
+A large flow is slow to run whole, and while you are working on one corner of it you are running the
+other 95% for nothing. Two arguments to `run_pipeline` let you stop partway and start again from
+where you stopped.
+
+**`until`** runs a step and everything behind it, and nothing else:
+
+```python
+trace = run_pipeline(spec, until="clients_joined")
+```
+
+What runs is the *ancestor closure* -- every step the named one depends on, however far back, and no
+step that merely happens to be written earlier in the file. Naming a step the pipeline does not have
+is refused before anything runs.
+
+**`cached`** hands a port back to a later run so the steps behind it do not run at all:
+
+```python
+from dantron_etl.runner import CachedFrame
+
+first = run_pipeline(spec, until="clients_joined")
+port = PortRef("clients_joined", "rows")
+
+later = run_pipeline(
+    spec,
+    cached={port: CachedFrame(first.frame(port), spec.fingerprint("clients_joined"))},
+)
+```
+
+`CachedFrame` carries the frame **and** a fingerprint, and neither is any use alone. The fingerprint
+is `spec.fingerprint(step_id)`, a hash over that step and every step behind it -- their ids, tools,
+configurations and wiring. Before the run walks a cached port it recomputes that hash and compares:
+if anything upstream has been edited since, the cache is **refused by name** rather than used.
+
+That refusal is the whole feature. A cache that fails to load is a nuisance; a cache that loads
+perfectly against a pipeline somebody has since edited is a wrong number nobody can see.
+
+Deliberately **not** part of the fingerprint: `lane`, `stage`, `why` and `group`. None of them
+changes a figure, so re-drawing or re-describing a flow does not throw away a cache you would still
+have been right to use.
+
+**The loop this is for:** cache the port just before the part you are editing, then run only from
+there while you iterate. Run whole once at the end -- a cached run proves what your edit did, never
+that the flow as a whole still agrees with its oracle.
 
 ---
 
