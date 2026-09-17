@@ -583,6 +583,23 @@ have been right to use.
 there while you iterate. Run whole once at the end -- a cached run proves what your edit did, never
 that the flow as a whole still agrees with its oracle.
 
+### The one thing a fingerprint cannot tell you
+
+It is taken over **the file**, never over the data. `id`, `tool`, `config` and `inputs` -- nothing
+else. So a cache survives a change to what the sources hold, and survives it silently:
+
+> Cache a port. Reload the tables underneath. Resume from the cache. The steps behind that port do
+> not run, so the new rows are never read, and the run reports a clean resume over yesterday's
+> figures.
+
+Nothing catches this, and nothing can: the reads did not happen, so there is no new frame for
+anything to compare against. **A cache is only valid for the data that was there when it was
+taken.** Throw one away whenever the sources are reloaded, and take a fresh one.
+
+This is not an oversight in the hash. Reading the sources to find out whether the cache is stale is
+running the steps the cache exists to skip, so a fingerprint that covered the data would cost exactly
+what it saves. The honest answer is a rule a person follows, which is why it is written here.
+
 ---
 
 ## 8. When a tool really is missing
