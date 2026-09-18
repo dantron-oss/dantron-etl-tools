@@ -1004,7 +1004,11 @@ class TestTwoStepsOfOneConfigDerivedTool:
 #: ``write_workbook`` is the first member: it reads one port per tab its ``sheets`` name, so two
 #: steps of it read different frames and no static attribute can say what either one reads. It has
 #: its own coverage in ``tests/test_dantron_etl_write_workbook.py``.
-SHIPPED_TOOLS_THAT_DERIVE_THEIR_PORTS: frozenset[str] = frozenset({"write_workbook"})
+#:
+#: ``publish_tables`` is the second, for the same shape and the same reason: it reads one port per
+#: table its ``tables`` name, and a publish of five tables reads five frames where a publish of one
+#: reads one. Its coverage is in ``tests/test_dantron_etl_publish_tables.py``.
+SHIPPED_TOOLS_THAT_DERIVE_THEIR_PORTS: frozenset[str] = frozenset({"write_workbook", "publish_tables"})
 
 
 class TestTheShippedCatalogIsCheckedNotExcused:

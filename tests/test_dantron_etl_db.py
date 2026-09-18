@@ -69,6 +69,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from dantron_etl.db import driver_for, open_connection
 from dantron_etl.tool import MAX_REPORTED_ROWS, DataError, ExecutionError, Ports, ToolError, run_tool
 from dantron_etl.tools import write_table as write_table_module
 from dantron_etl.tools.write_table import WriteTable
@@ -979,6 +980,46 @@ class TestARuleTheRowsCannotBeJudgedAgainstStillNamesItsOffenders:
             f"the rows named are not the two whose key is not there: {refusal.examples}"
         )
         assert connection.execute(f"select count(*) from {_SCRATCH_SCHEMA}.dependent").fetchone()[0] == 0
+
+
+class TestAMergeThatFailedDoesNotSpoilTheNextOne:
+    """The scratch a merge builds is not always undone by the transaction that held it."""
+
+    def test_a_merge_can_be_run_again_after_one_that_raised(
+        self,
+        target: _Target,
+    ) -> None:
+        """A merge stages its rows in a temporary table, and on one driver that table outlives a
+        rollback.
+
+        Measured, which is the only reason this test exists: sqlite runs ``CREATE TEMPORARY TABLE``
+        outside the unit of work, so a merge that raises between building the scratch and dropping
+        it leaves the scratch standing, and the next attempt collides with a name rather than
+        failing on its rows. Postgres does not -- ``ON COMMIT DROP`` fires whether the transaction
+        commits or rolls back -- so that half of this passes without doing anything, and is here so
+        the two drivers are held to one promise rather than to whichever one each finds easy.
+
+        A publish cannot reach this: the tables are written in the order they are configured, and
+        the first thing to fail in a flow is almost never the merge at the end of it. So the promise
+        is asked of the loader, where it is made.
+        """
+        with open_connection(os.environ[target.variable]) as connection:
+            loader = driver_for(connection)
+            columns = ["key", "code", "amount"]
+
+            with pytest.raises(Exception):  # noqa: B017 - the driver's own error, which differs
+                with loader.transaction(connection):
+                    # A row of the wrong width: the one thing neither driver quietly accepts, and it
+                    # lands after the scratch exists and before anything drops it.
+                    loader.merge_rows(connection, target.schema, "paired", columns, ["key"], [(1, "a")])
+
+            with loader.transaction(connection):
+                loader.merge_rows(connection, target.schema, "paired", columns, ["key"], [(1, "a", 1.0)])
+
+        assert target.read("paired") == _normalised([(1, "a", 1.0)]), (
+            f"{target.driver}: the merge after a failed one did not land -- the scratch the first "
+            f"one left behind is still standing, and the second collided with it"
+        )
 
 
 class TestAConnectionFromNeitherDriverIsRefusedByName:

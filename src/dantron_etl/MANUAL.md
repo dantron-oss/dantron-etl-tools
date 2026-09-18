@@ -82,7 +82,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-28 tools, by category:
+29 tools, by category:
 
 | category | tools |
 |---|---|
@@ -92,7 +92,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
-| `output` | `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+| `output` | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
 

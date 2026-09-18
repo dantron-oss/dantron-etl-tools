@@ -39,10 +39,12 @@ from .tool import ConfigError
 __all__ = [
     "RowLoader",
     "TableRules",
+    "declared_type_of",
     "driver_for",
     "open_connection",
     "probe_columns",
     "qualified_name",
+    "quoted_identifier",
     "resolve_connection_uri",
     "validate_identifier",
 ]
@@ -69,9 +71,60 @@ _SQLITE_PARAMETER_CHUNK: Final[int] = 500
 # but the column's position in the primary key, counting from one and zero for a column outside it,
 # so it answers "is this column in the key" and "does the key span columns" at once.
 _TABLE_INFO_NAME: Final[int] = 1
+_TABLE_INFO_DECLARED_TYPE: Final[int] = 2
 _TABLE_INFO_NOT_NULL: Final[int] = 3
 _TABLE_INFO_KEY_POSITION: Final[int] = 5
 _INDEX_INFO_NAME: Final[int] = 2
+
+# The scratch table a merge loads into before it upserts. One fixed name rather than one per merge,
+# dropped again as soon as the upsert has read it, so two merges in the same unit of work do not
+# collide. Spelled unlike anything a schema would hold, because on sqlite a temporary table shadows
+# a permanent one of the same name and the merge would then read its own scratch as the target.
+_MERGE_STAGING: Final[str] = "_etl_merge_staging"
+
+# Every SQL type name this library is willing to claim it understands, as the declared type it
+# means. Both drivers are read into this one vocabulary -- sqlite hands back the word from the
+# definition, postgres hands back ``format_type``'s spelling -- so a caller comparing a frame
+# against a table gets the same answer whichever engine the table lives on. A name that is not here
+# is answered with ``None``, which means "no opinion" rather than "wrong": a domain, an enum, a
+# JSON column and a type this list has never heard of are all passed over, because any doubt buys
+# the slow answer and never the wrong one.
+_SQL_TYPE_NAMES: Final[dict[str, str]] = {
+    "int": "Int64",
+    "int2": "Int64",
+    "int4": "Int64",
+    "int8": "Int64",
+    "integer": "Int64",
+    "smallint": "Int64",
+    "bigint": "Int64",
+    "tinyint": "Int64",
+    "mediumint": "Int64",
+    "float": "Float64",
+    "float4": "Float64",
+    "float8": "Float64",
+    "real": "Float64",
+    "double": "Float64",
+    "double precision": "Float64",
+    "numeric": "Float64",
+    "decimal": "Float64",
+    "bpchar": "String",
+    "char": "String",
+    "character": "String",
+    "character varying": "String",
+    "clob": "String",
+    "nvarchar": "String",
+    "string": "String",
+    "text": "String",
+    "varchar": "String",
+    "bool": "Boolean",
+    "boolean": "Boolean",
+    "date": "Date",
+    "datetime": "Datetime",
+    "timestamp": "Datetime",
+    "timestamptz": "Datetime",
+    "time": "Time",
+    "timetz": "Time",
+}
 
 
 def _register_adapters() -> None:
@@ -222,6 +275,54 @@ def quoted_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def declared_type_of(sql_type: str) -> str | None:
+    """The declared type ``sql_type`` means, or ``None`` when this library has no opinion about it.
+
+    One reading for both engines. The width, the precision and the time zone are dropped before the
+    lookup -- ``varchar(20)``, ``numeric(12, 2)`` and ``timestamp without time zone`` each say
+    nothing about *which* of the declared types a value has to be, and carrying them would mean a
+    table declared one place differently from another was answered differently. An array is not
+    reduced to its element type: a column of them holds something no declared type here describes,
+    so it is passed over with everything else unrecognised.
+    """
+    name = sql_type.strip().lower()
+    if name.endswith("[]"):
+        return None
+    name = name.split("(")[0].strip()
+    for suffix in (" without time zone", " with time zone"):
+        name = name.removesuffix(suffix)
+    return _SQL_TYPE_NAMES.get(name.strip())
+
+
+def _merge_statement(qualified: str, staging: str, columns: Sequence[str], key: Sequence[str]) -> str:
+    """Upsert every staged row into ``qualified``, keeping what the incoming row is silent about.
+
+    ``coalesce(excluded.c, {target}.c)`` rather than ``= excluded.c``, and the difference is the
+    whole substance of a merge. A refresh that carries a value overwrites; a refresh that carries a
+    null has nothing to say about that column and the published value stands. The plain assignment
+    behaves identically on three of the four cases and, on the night one upstream source cannot be
+    read, publishes a column of nulls over every row that already held a figure.
+
+    ``WHERE true`` is not decoration. sqlite refuses ``INSERT ... SELECT ... ON CONFLICT`` outright
+    without a ``WHERE`` on the select -- it reads the ``ON`` as the start of a join -- and postgres
+    accepts the same clause, so one statement serves both.
+    """
+    quoted = [quoted_identifier(column) for column in columns]
+    named = ", ".join(quoted)
+    conflict = ", ".join(quoted_identifier(column) for column in key)
+    updated = [
+        f"{quoted_identifier(column)} = coalesce(excluded.{quoted_identifier(column)}, "
+        f"{qualified}.{quoted_identifier(column)})"
+        for column in columns
+        if column not in set(key)
+    ]
+    resolution = f"UPDATE SET {', '.join(updated)}" if updated else "NOTHING"
+    return (
+        f"INSERT INTO {qualified} ({named}) SELECT {named} FROM {staging} WHERE true "
+        f"ON CONFLICT ({conflict}) DO {resolution}"
+    )
+
+
 @dataclass(frozen=True)
 class TableRules:
     """What a table demands of a row, as far as the catalog can be read and the rows can be judged.
@@ -284,6 +385,33 @@ class RowLoader:
         cannot be judged away from the server -- costs a slower diagnosis and never a wrong one.
         """
         return TableRules()
+
+    def declared_column_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
+        """What ``table`` declares each of its columns as, in this library's own vocabulary.
+
+        An optimisation in the same sense as :meth:`table_rules`: the empty answer costs a caller
+        the type check it wanted and never a wrong refusal, so a loader that has not written this
+        one is allowed to decline the whole question rather than guess at it.
+        """
+        return {}
+
+    def merge_rows(
+        self,
+        connection: Any,
+        schema: str | None,
+        table: str,
+        columns: Sequence[str],
+        key: Sequence[str],
+        rows: Sequence[tuple[Any, ...]],
+    ) -> None:
+        """Upsert ``rows`` into ``table`` on ``key``, through ``_etl_merge_staging``, which it disposes of.
+
+        Staged rather than done a row at a time because the bulk path on one of the two drivers is
+        ``COPY``, which cannot carry a conflict resolution of its own. Loading into scratch and
+        upserting from it in one statement keeps the bulk load and gives both engines the same
+        answer, which a per-row upsert on one and a ``COPY`` on the other would not.
+        """
+        raise NotImplementedError
 
     def existing_values(self, connection: Any, qualified: str, column: str, values: Sequence[Any]) -> set[Any]:
         """Which of ``values`` ``column`` already holds, asked in one statement rather than one per value."""
@@ -359,6 +487,45 @@ class _SqliteLoader(RowLoader):
             settled_by_the_engine=tuple(key),
             beyond_the_frame=beyond,
         )
+
+    def declared_column_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
+        """``table_info``'s third column, which is the word the definition used and nothing more.
+
+        ``cursor.description`` cannot answer this on sqlite. Its type codes are absent outside the
+        detect-types modes, and the storage class a value came back as is a property of the value
+        rather than of the column: this engine stores the text ``'heavy'`` in a column declared
+        ``integer`` and reports success. The declaration is the only thing here that says what the
+        column was meant to hold.
+        """
+        prefix = f"{quoted_identifier(schema)}." if schema else ""
+        info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
+        return {entry[_TABLE_INFO_NAME]: declared_type_of(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
+
+    def merge_rows(
+        self,
+        connection: Any,
+        schema: str | None,
+        table: str,
+        columns: Sequence[str],
+        key: Sequence[str],
+        rows: Sequence[tuple[Any, ...]],
+    ) -> None:
+        """Scratch built from a zero-row select, and dropped by name on both sides of the upsert.
+
+        This engine has neither ``LIKE`` nor ``ON COMMIT DROP``, so the shape of the scratch table
+        is taken from a select that returns nothing and its disposal is explicit. Dropped *before*
+        it is created as well as after it is read, because a temporary table here can outlive the
+        unit of work that made it: a publish that failed part way would otherwise leave one behind,
+        and the next attempt would collide with it and fail for a reason that has nothing to do with
+        the rows.
+        """
+        qualified = qualified_name(schema, table)
+        connection.execute(f"DROP TABLE IF EXISTS temp.{_MERGE_STAGING}")
+        connection.execute(f"CREATE TEMPORARY TABLE {_MERGE_STAGING} AS SELECT * FROM {qualified} WHERE 0")
+        if rows:
+            connection.executemany(self._insert_statement(_MERGE_STAGING, columns), rows)
+            connection.execute(_merge_statement(qualified, _MERGE_STAGING, columns, key))
+        connection.execute(f"DROP TABLE IF EXISTS temp.{_MERGE_STAGING}")
 
     def existing_values(self, connection: Any, qualified: str, column: str, values: Sequence[Any]) -> set[Any]:
         quoted = quoted_identifier(column)
@@ -455,6 +622,49 @@ class _PostgresLoader(RowLoader):
         finally:
             cursor.close()
         return _rules_from_constraints(not_null, constraints, unbacked > 0)
+
+    def declared_column_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
+        """``format_type`` over ``pg_attribute``, which is the only reading that survives a domain.
+
+        ``cursor.description`` carries type codes here, unlike on sqlite, but they are OIDs a caller
+        would have to resolve against the catalog anyway -- and a domain resolves to its own OID
+        rather than to the type underneath it. Asking the catalog directly is the same round trip
+        and gives the name the definition was written with.
+        """
+        qualified = qualified_name(schema, table)
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "select attname, format_type(atttypid, atttypmod) from pg_attribute "
+                "where attrelid = %s::regclass and attnum > 0 and not attisdropped",
+                (qualified,),
+            )
+            return {name: declared_type_of(spelling) for name, spelling in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+    def merge_rows(
+        self,
+        connection: Any,
+        schema: str | None,
+        table: str,
+        columns: Sequence[str],
+        key: Sequence[str],
+        rows: Sequence[tuple[Any, ...]],
+    ) -> None:
+        """Scratch shaped by ``LIKE``, loaded by ``COPY``, and upserted from in one statement.
+
+        ``LIKE`` copies the target's ``NOT NULL`` declarations, so a row the target would refuse is
+        refused on the way into the scratch table rather than surviving as far as the upsert.
+        ``ON COMMIT DROP`` disposes of the table whichever way the unit of work ends; the explicit
+        drop afterwards is what lets a second merge in the same unit of work reuse the name.
+        """
+        qualified = qualified_name(schema, table)
+        connection.execute(f"CREATE TEMPORARY TABLE {_MERGE_STAGING} (LIKE {qualified}) ON COMMIT DROP")
+        if rows:
+            self.load_rows(connection, _MERGE_STAGING, columns, rows)
+            connection.execute(_merge_statement(qualified, _MERGE_STAGING, columns, key))
+        connection.execute(f"DROP TABLE {_MERGE_STAGING}")
 
     def existing_values(self, connection: Any, qualified: str, column: str, values: Sequence[Any]) -> set[Any]:
         quoted = quoted_identifier(column)
