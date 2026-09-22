@@ -29,7 +29,7 @@ the rows coming out, and let them look. That is what this is for: every step is 
 instance of a general tool, every step's output is inspectable, and the definition of a run is one
 file a non-developer can read.
 
-## The 28 tools
+## The 29 tools
 
 | category | tools |
 |---|---|
@@ -39,7 +39,7 @@ file a non-developer can read.
 | **combine** | `join`, `union` |
 | **text** | `normalize_text`, `regex_extract_groups` |
 | **assert** | `assert_rows` |
-| **output** | `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+| **output** | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
 
 Every tool carries executable worked examples, and a conformance test runs each example on its
 stated input and compares it to its stated output. The catalog is generated from the registry, so a
@@ -88,6 +88,9 @@ ROOT = project_root(__file__)          # $ETL_PROJECT_ROOT, else the nearest pyp
 
 ## Looking at a run
 
+**These live in `scripts/`, which is not part of the installed package** — a `pip install` gives you
+the tools, the runner and the manual, not the page builders. Clone the repository to use them:
+
 ```bash
 python scripts/pipeline_walkthrough_page.py    # render a flow and its data as a page
 python scripts/serve_runs.py                   # serve what has been written, on :8899
@@ -109,9 +112,12 @@ the count correct.
 
 ```bash
 uv sync --extra dev
-PYTHONPATH=src pytest tests/ -q      # 3,594 tests
+PYTHONPATH=src pytest tests/ -q      # 3,764 tests
 ruff check src tests scripts
 ```
+
+160 of those need a Postgres DSN and skip without one, so a checkout with no database still runs the
+other 3,604 rather than reporting a failure it cannot fix.
 
 The suite includes a boundary test that imports every shipped file in an interpreter where client
 packages do not exist, which is the world this library lives in once installed.
