@@ -56,3 +56,7 @@ target-version = "py313"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# This checkout's own source, ahead of whatever an editable install points at. Without it a run
+# inside a worktree imports the *main* checkout's package -- the tests pass or fail against code
+# nobody is editing, which is the one failure mode a test run cannot report.
+pythonpath = ["src"]
