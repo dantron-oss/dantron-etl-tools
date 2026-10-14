@@ -68,6 +68,7 @@ import enum
 import math
 import operator
 import re
+import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
@@ -138,6 +139,7 @@ ALLOWED_FUNCTIONS: Final[frozenset[str]] = frozenset(
         "regex_match",
         "concat",
         "format_number",
+        "uuid5",
     }
 )
 
@@ -304,6 +306,7 @@ _FUNCTION_ARITY: Final[dict[str, int]] = {
     "regex_match": 2,
     "concat": -1,  # variadic, at least two
     "format_number": 4,
+    "uuid5": 2,
 }
 
 _NUMBER_FUNCTIONS: Final[frozenset[str]] = frozenset({"abs", "round"})
@@ -325,9 +328,9 @@ _DIGITS: Final[str] = "0123456789"
 _MISSING: Final[Any] = object()
 _QUOTED_TEXT_ADVICE: Final[str] = "write text in single quotes, like 'PAID'"
 
-# Why an argument has to be quoted text written in the file. Two wordings, because the two
-# arguments that carry this rule worry about different things: one is what the data becomes, the
-# other is how the data is spelled.
+# Why an argument has to be quoted text written in the file. Three wordings, because the three
+# arguments that carry this rule worry about different things: one is what the data becomes, one is
+# how the data is spelled, and one is which key space the data lands in.
 _REWRITE_REASON: Final[str] = (
     "a rewrite whose replacement came out of the data would let the data decide what the data becomes"
 )
@@ -335,6 +338,16 @@ _SEPARATOR_REASON: Final[str] = (
     "a separator is a decision written in the file, the way the rest of a report's spelling is, and never a value a "
     "row supplies -- figures that chose their own separators would be deciding how they read"
 )
+_NAMESPACE_REASON: Final[str] = (
+    "a namespace is what keeps one flow's ids from colliding with another's, so a namespace out of the data would "
+    "let the data choose which key space its own id lands in -- and it could not be checked until the row that is "
+    "malformed, by which time the ids before it have been written"
+)
+
+# Shown to an author whose namespace did not parse, so that the refusal carries the shape as well
+# as the complaint: lowercase hex, hyphenated 8-4-4-4-12. The same one the manual uses, because an
+# author who meets it twice should meet it spelled identically both times.
+_UUID_EXAMPLE: Final[str] = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 
 
 class _Family(enum.Enum):
@@ -381,17 +394,19 @@ _FUNCTION_RESULTS: Final[dict[str, _Family]] = {
     "contains": _Family.BOOLEAN,
     "regex_match": _Family.BOOLEAN,
     "format_number": _Family.TEXT,
+    "uuid5": _Family.TEXT,
 }
 
 
-# What three of those functions hand back exactly, beside the family. year() and len() always give
-# a whole number, so a count of months may be built out of either, and format_number() always gives
-# a plain string. abs() and round() are not here: they hand back whatever their subject holds,
-# which is passed in from where the subject is in view.
+# What four of those functions hand back exactly, beside the family. year() and len() always give
+# a whole number, so a count of months may be built out of either, and format_number() and uuid5()
+# always give a plain string. abs() and round() are not here: they hand back whatever their subject
+# holds, which is passed in from where the subject is in view.
 _FUNCTION_RESULT_DTYPES: Final[dict[str, pl.DataType]] = {
     "year": pl.Int32(),
     "len": pl.UInt32(),
     "format_number": pl.String(),
+    "uuid5": pl.String(),
 }
 
 
@@ -1245,7 +1260,7 @@ class _FrameTarget:
           and gives -15.22. The two are written side by side here, and in the manual, so that a
           reader meets the disagreement in the catalog rather than in a finished report.
 
-        **This is the one function here that works a row at a time, and it is accepted only here.**
+        **This works a row at a time, which is a cost nothing here pays without an argument.**
         The alternatives were measured rather than assumed: round(), a cast to a 2-place decimal
         type and the obvious scale-then-round all answer -15.22, and a very wide decimal type lands
         on the right side of this tie by luck and drifts the other way at wider scales still. There
@@ -1259,6 +1274,34 @@ class _FrameTarget:
         """
         return subject.expr.map_elements(
             lambda value: _written_as_text(value, decimals, thousands, point),
+            return_dtype=pl.String,
+        )
+
+    def uuid5(self, subject: _Typed, namespace: uuid.UUID) -> pl.Expr:
+        """A stable id derived from a namespace and a value: RFC 4122 version 5, verbatim.
+
+        The whole worth of this function is that the derivation is not this library's, so it is the
+        standard library's own that runs, rather than a SHA-1 and a bit-twiddle written out here
+        that would have to be kept equal to it by review. A hand-rolled digest measured 2.4x
+        quicker and was refused at that price: an id only this library can reproduce is not a key,
+        and the contract here is equality with uuid.uuid5 rather than resemblance to it.
+
+        **This works a row at a time, like format_number, and here the engine leaves no choice.**
+        There is no SHA-1 in it -- its hash() is a fast non-cryptographic one, which is a different
+        number -- so there is no kernel to vectorise against. A batch-at-a-time map measured 6%
+        quicker and would have to skip the nulls by hand, which is not a trade worth making. The
+        cost is about 5 microseconds a row, so a build over tens of thousands of rows spends a
+        fraction of a second here. Derive the id once, where the key is built, rather than
+        recomputing it in each step that joins on it.
+
+        A null value gives a null id, left to the engine's own skipping rather than written here. A
+        missing value hashed as some stand-in would put every row that is missing a part under one
+        real-looking id, which reads downstream as a legitimate key with several rows behind it
+        instead of as data that was never there. An author who wants the other behaviour writes
+        uuid5('...', coalesce([code], 'missing')), where the choice is visible.
+        """
+        return self._as_text(subject).map_elements(
+            lambda value: str(uuid.uuid5(namespace, value)),
             return_dtype=pl.String,
         )
 
@@ -1440,10 +1483,10 @@ _PATTERN_REASON: Final[str] = (
     "pattern to match different rows"
 )
 
-# Every exclusion below is a measured disagreement between an engine and the frame target, not a
-# worry about one. They are keyed by function alone because each was wrong in both engines -- which
-# is itself the argument for the per-dialect model, since upper() and lower() are wrong in the two
-# engines for entirely different reasons.
+# Every exclusion below is a measured disagreement between an engine and the frame target, or a
+# capability no engine here has at all -- never a worry about one. They are keyed by function alone
+# because each was wrong in both engines -- which is itself the argument for the per-dialect model,
+# since upper() and lower() are wrong in the two engines for entirely different reasons.
 _OUTSIDE_THE_SUBSET: Final[dict[str, str]] = {
     "upper": (
         "case folding belongs to the engine: 'straße' uppercases to STRASSE in the frame target and leaves the ß "
@@ -1480,6 +1523,12 @@ _OUTSIDE_THE_SUBSET: Final[dict[str, str]] = {
     "format_number": (
         "there is no portable spelling of a grouped, fixed-decimal number, and the last place is "
         "exactly what each engine rounds its own way"
+    ),
+    "uuid5": (
+        "neither engine can be asked for it: one has no SHA-1 at all, and at the other the digest and the id "
+        "function both live behind extensions that need not be installed -- so a pushdown would either fail "
+        "mid-read or build some other 36-character id, which is compared against the frame target's and keeps no "
+        "rows while raising nothing"
     ),
 }
 
@@ -1629,6 +1678,9 @@ class _SqlTarget:
 
     def format_number(self, subject: _Typed, decimals: int, thousands: str, point: str) -> _Fragment:
         raise self._outside("format_number")
+
+    def uuid5(self, subject: _Typed, namespace: uuid.UUID) -> _Fragment:
+        raise self._outside("uuid5")
 
     def check_pattern(self, name: str, pattern: str) -> None:
         """Nothing here will ever run a pattern, so there is no engine to ask and nothing to check.
@@ -1988,7 +2040,14 @@ class _Compiler:
         return self._apply(name, node)
 
     def _apply(self, name: str, node: ast.Call) -> _Typed:
-        """One whitelisted function: its operands checked here, its spelling left to the target."""
+        """One whitelisted function: its operands checked here, its spelling left to the target.
+
+        The named branches come first because the tail under them is not a fallback that raises --
+        it takes argument 0 as a text subject and ends at text_function(), which answers a name it
+        does not know with a character count. So a function whose first argument is not its
+        subject, as uuid5's namespace is not, is not merely better placed above the tail: reaching
+        the tail would compile it to the length of its own literal and raise nothing.
+        """
         arguments = node.args
 
         if name == "coalesce":
@@ -2029,6 +2088,15 @@ class _Compiler:
             point = self._text_literal(name, arguments[3], "fourth", _SEPARATOR_REASON)
             built = self._target.format_number(subject, decimals, thousands, point)
             return self._result(name, built, node)
+
+        if name == "uuid5":
+            # The namespace is read first, and out of the file rather than out of a row, so that a
+            # malformed one is refused in the line the author wrote instead of inside a select
+            # that has already written ids for every row before it.
+            namespace = self._namespace(arguments[0])
+            value = self._typed(arguments[1])
+            self._require(value, _Family.TEXT, "uuid5() derives an id from text")
+            return self._result(name, self._target.uuid5(value, namespace), node)
 
         if name in _NUMBER_FUNCTIONS:
             subject = self._typed(arguments[0])
@@ -2229,6 +2297,24 @@ class _Compiler:
         if not isinstance(value, str):
             raise _error(self._text, f"{name}() needs quoted text as its {position} argument: {reason}")
         return value
+
+    def _namespace(self, node: ast.expr) -> uuid.UUID:
+        """uuid5()'s first argument: quoted text in the file, and a UUID, checked before any row.
+
+        Parsed rather than pattern-matched, and parsed by the same library that will derive the
+        ids, so what is accepted here is exactly what works there -- a rule of this module's own
+        would either refuse a namespace that derives perfectly good ids or pass one that fails at
+        row time, and both defeat the point of checking at all.
+        """
+        written = self._text_literal("uuid5", node, "first", _NAMESPACE_REASON)
+        try:
+            return uuid.UUID(written)
+        except ValueError as failure:
+            raise _error(
+                self._text,
+                f"uuid5() was given a namespace that is not a UUID: {written!r} ({failure}) -- write one as "
+                f"'{_UUID_EXAMPLE}'",
+            ) from None
 
     def _whole_number(self, name: str, node: ast.expr, position: str) -> int:
         value = self._literal(node)

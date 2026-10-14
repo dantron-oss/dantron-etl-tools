@@ -183,20 +183,39 @@ concat('order ', [number])
 regex_replace(lower([name]), '[^a-z0-9]+', ' ')
 add_months([starts_on], [months] - 1)
 format_number([total], 2, ',', '.')
+uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
 Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `strip`,
 `len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`,
-`concat`, `format_number`.
+`concat`, `format_number`, `uuid5`.
 
 `format_number(value, decimals, thousands_separator, decimal_separator)` writes a number as text:
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`
 gives `123.456,789`. All four arguments are required, because nothing in this language has a
 default, and you state both separators rather than having one chosen for you. The last three are
 quoted decisions written in the file, never columns. See section 5 for how its rounding differs
-from `round`, and note that it is the one function here that works a row at a time — put it at the
-end of a flow, on the rows somebody reads, not in the middle of one.
+from `round`, and note that it works a row at a time, as `uuid5` does — put it at the end of a
+flow, on the rows somebody reads, not in the middle of one.
+
+`uuid5(namespace, value)` derives a stable id: one 36-character column where the natural key is
+three or four columns of text, which is a poor thing to join on and a worse thing to quote in a
+ticket. It is RFC 4122 version 5 — SHA-1 over a namespace and a name — so the id a flow writes is
+the id anything else computing it the same way writes, and that reproducibility is the entire
+point: a run that re-derived yesterday's id differently would not update a row, it would insert a
+second one. Build the key with `concat` and a separator you can see, as in
+`uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))` — without the
+separator, `('ab', 'c')` and `('a', 'bc')` are two different keys under one id, which is a silent
+merge of two rows. The namespace is quoted text written in the file, never a column: it is what
+keeps one flow's ids from colliding with another's, and a namespace out of the data could not be
+checked until the row that is malformed, by which time the ids before it have been written.
+Generate one per flow once (`python -c "import uuid; print(uuid.uuid4())"`) and leave it alone —
+changing it changes every id. The value must be text; a number is refused rather than quietly
+stringified, because `1` and `1.0` are one value and two ids. Like `format_number` it works a row
+at a time, at roughly five microseconds a row, because there is no SHA-1 in the engine to
+vectorise against: derive the id once, where the key is built, instead of recomputing it in each
+step that joins on it.
 
 Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`,
 `is null`, `is not null`.
@@ -405,6 +424,14 @@ Every one of these was measured, most of them the hard way.
   `999,999.99`, which looks like a defect and is not — that double is `999999.99499999999534...`.
   If a figure has to be rounded *and* formatted to the same answer, `round` it first and format the
   result. Decide which you want; do not discover the difference in a finished report.
+- **`uuid5` on a key with a missing part gives a null id, not an id.** A null anywhere in the value
+  — straight from a column, or through the `concat` that builds the key — makes the whole id null,
+  the way `concat` itself already behaves. The alternative is worse than it looks: hashing a
+  stand-in would put *every* row missing that part under one real-looking id, which reads
+  downstream as a legitimate key with several rows behind it rather than as data that was never
+  there. A null id matches nothing and shows up as a null in a count, which is a question somebody
+  asks. If a missing part should still produce an id, write the substitution where a reviewer sees
+  it: `uuid5('...', concat(coalesce([code], 'none'), '|', [period]))`.
 - **`format_number` writes a figure that is not a number as blank, not as a number.** `/` is true
   division, so `[total] / [count]` is infinity on the row where the count is zero and `0.0 / 0.0`
   is not-a-number. Formatting either gives null — an empty cell — because a figure that cannot be

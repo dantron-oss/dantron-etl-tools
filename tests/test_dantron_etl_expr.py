@@ -24,6 +24,8 @@ import math
 import os
 import re
 import sqlite3
+import unicodedata
+import uuid
 from collections.abc import Iterator
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
@@ -650,6 +652,12 @@ class TestSecurity:
         matched, because its replacement is verbatim text by design. One column in, one column out,
         so it is a function and not a tool -- and it takes four required arguments rather than
         Alteryx's two optional ones, because this language has no defaulted argument anywhere.
+
+        ``uuid5`` is the newest, and it is the first name here that hashes anything. It arrived
+        because a published table needs one narrow, fixed-width column to be joined on where its
+        natural key is three columns of text -- and nothing else on this list can turn several
+        values into one stable id. It is the standard library's version 5, not an invention, so
+        the id a flow writes is the id anything else computing it the same way would write.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
@@ -670,6 +678,7 @@ class TestSecurity:
             "regex_match",
             "concat",
             "format_number",
+            "uuid5",
         }
         # A column is written [name]; 'col' is an internal rewrite target, not a documented function.
         assert "col" not in ALLOWED_FUNCTIONS
@@ -775,6 +784,11 @@ DTYPE_SWEEP_TEMPLATES: tuple[str, ...] = (
     # this sweep asks "is a text column refused *before* it reaches a number function" for a
     # function whose result is text -- the shape that would otherwise compile and fail in a select.
     "format_number({c}, 2, ',', '.')",
+    # uuid5() is the other direction through the same gate: text in, text out, by way of a
+    # per-row call rather than an engine kernel -- so a dtype that reached it would not announce
+    # itself by raising, and this is the only place that asks whether it gets that far. The
+    # namespace is written out because the constant it comes from is defined further down.
+    "uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', {c})",
     "coalesce({c}, 'Z')",
     "coalesce({c}, 0)",
     "coalesce({c}, [code])",
@@ -1037,9 +1051,9 @@ class TestSchemaDtypeChecking:
         The two lower bounds at the end keep the sweep honest in both directions: an implementation
         that refused everything, or one that checked nothing, would otherwise satisfy it.
 
-        The bounds are the counted answer, not a slack figure. There are 42 templates and 7
-        columns, so 294 expressions, and no engine failure is allowed: every one of them is either
-        compiled or refused. 101 compile and 193 are refused, and those two numbers add to 294, so
+        The bounds are the counted answer, not a slack figure. There are 43 templates and 7
+        columns, so 301 expressions, and no engine failure is allowed: every one of them is either
+        compiled or refused. 104 compile and 197 are refused, and those two numbers add to 301, so
         the pair pins the split exactly. That is the point of stating them tightly. A fix that
         closes the add_months() gap by refusing whole-number counts as well would still leave the
         sweep with no engine failure, and a loose bound would call that a pass.
@@ -1071,8 +1085,8 @@ class TestSchemaDtypeChecking:
         assert not engine_failures, (
             f"these compiled against the schema and then failed in the engine: {engine_failures}"
         )
-        assert compiled >= 101, f"only {compiled} of the swept expressions compiled; dtype checking is too strict"
-        assert refused >= 193, f"only {refused} of the swept expressions were refused; dtype checking is not happening"
+        assert compiled >= 104, f"only {compiled} of the swept expressions compiled; dtype checking is too strict"
+        assert refused >= 197, f"only {refused} of the swept expressions were refused; dtype checking is not happening"
 
     def test_each_form_of_the_columns_argument_checks_what_it_can(self, frame: pl.DataFrame) -> None:
         """A schema checks existence and dtype, bare names check existence, ``None`` checks neither.
@@ -1119,6 +1133,7 @@ TEXT_OPERATION_TEMPLATES: tuple[str, ...] = (
     "regex_match({c}, '^ +a')",
     "concat({c}, 'x')",
     "concat({c}, [code])",
+    "uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', {c})",
     "{c} = 'Beta'",
     "{c} != 'Beta'",
     "{c} < 'Beta'",
@@ -2114,6 +2129,9 @@ FUNCTION_SNIPPETS: dict[str, str] = {
     # but they are real expressions, so that the day a dialect can push one down it already works.
     "year": "year([seen]) = 2026",
     "add_months": "add_months([seen], 1) = date'2026-02-01'",
+    # The right-hand side is the real id of 'A' in that namespace, computed by the standard
+    # library, so this snippet keeps a row rather than merely compiling.
+    "uuid5": "uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', [code]) = '9759785f-95f6-554a-ba7a-c3e586ec5609'",
 }
 
 # Arithmetic is outside every subset, as a family rather than one operator at a time, and on
@@ -4198,3 +4216,485 @@ class TestAFigureThatIsNotANumberHasNoWrittenForm:
 
         assert math.isnan(scalar("0.0 / 0.0"))
         assert scalar("format_number(0.0 / 0.0, 2, ',', '.')") is None
+
+
+# ---------------------------------------------------------------------------
+# A stable surrogate key: one fixed-width id derived from several columns
+# ---------------------------------------------------------------------------
+#
+# A published table's natural key is often three or four columns of text, which is a poor thing to
+# join on and a worse thing to quote in a ticket. ``uuid5`` turns that key into one 36-character
+# column, and the whole value of it is that the derivation is *not* this library's: it is RFC 4122
+# version 5, so the id a flow writes is the id anything else computing it the same way writes.
+# Every assertion below is therefore made against ``uuid.uuid5`` computed in the test, and the one
+# hardcoded id is a cross-check rather than the contract.
+
+# The namespaces these tests use. The first is RFC 4122's own DNS namespace, which brings a
+# published test vector with it; the second is arbitrary, so that no assertion here can pass by
+# knowing only the well-known constant.
+NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+OTHER_NAMESPACE = "1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+
+# The canonical written form: lowercase hex, hyphenated 8-4-4-4-12, the version nibble a '5' and
+# the variant nibble one of 8/9/a/b. Matching this is what makes the id safe to put in a text
+# column and compare as text.
+CANONICAL_UUID: re.Pattern[str] = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+
+def ids_for(namespace: str, values: list[str | None]) -> list[str | None]:
+    """What the standard library makes of each value in ``namespace`` -- and null for a null.
+
+    The expectation is computed rather than written down, because the contract is equality with
+    ``uuid.uuid5`` and not equality with a string somebody once pasted into a test.
+    """
+    space = uuid.UUID(namespace)
+    return [None if value is None else str(uuid.uuid5(space, value)) for value in values]
+
+
+class TestUuid5:
+    """``uuid5(namespace, value)`` derives a stable id, and agrees with the standard library.
+
+    The namespace is a literal written in the file and the value is any text expression, which is
+    the split that matters: a namespace is a decision a reviewer reads in the line -- it is what
+    keeps two different flows' ids from colliding -- while the value is the row's own key, built
+    out of columns with ``concat``.
+    """
+
+    @pytest.mark.parametrize("namespace", [NAMESPACE, OTHER_NAMESPACE])
+    @pytest.mark.parametrize("column", ["code", "label", "note"])
+    def test_every_row_gets_the_id_the_standard_library_makes_of_it(
+        self, frame: pl.DataFrame, namespace: str, column: str
+    ) -> None:
+        """Equality with ``uuid.uuid5``, row for row, in two namespaces and over three columns.
+
+        This is the binding contract and the reason the function is worth having: an id that is
+        only stable within this library is a key nobody outside it can reproduce. ``note`` is in
+        the sweep because it holds text that looks like expression syntax (``a=b``, ``x [y]``,
+        ``and``), so the value hashed is pinned as the row's data rather than anything the scanner
+        might have touched on the way past.
+        """
+        values = frame[column].to_list()
+        text = f"uuid5('{namespace}', [{column}])"
+        assert checked(frame, text) == ids_for(namespace, values)
+
+    def test_the_id_is_text_in_the_canonical_lowercase_hyphenated_form(self, frame: pl.DataFrame) -> None:
+        """A plain string column, 36 characters, hyphenated, lowercase, version 5.
+
+        The written form is as much of the contract as the bytes are: an id that arrived as
+        uppercase, or braced, or without hyphens, would compare unequal to the same id written by
+        anything else -- and the comparison is the only thing anyone ever does with it. The last
+        pair of assertions is the published RFC 4122 vector, kept as a cross-check beside the
+        computed expectation rather than instead of it.
+        """
+        built = frame.select(compile_expr(f"uuid5('{NAMESPACE}', [code])", columns=frame.schema).alias("out"))["out"]
+        assert built.dtype == pl.String
+
+        for value in built.to_list()[:3]:
+            assert CANONICAL_UUID.fullmatch(value) is not None, f"{value!r} is not canonically written"
+
+        # It is text, so it nests into the text functions like any other text.
+        assert checked(frame, f"len(uuid5('{NAMESPACE}', [code]))") == [36, 36, 36, None]
+        assert checked(frame, f"uuid5('{NAMESPACE}', [code]) = '9759785f-95f6-554a-ba7a-c3e586ec5609'") == [
+            True,
+            False,
+            False,
+            None,
+        ]
+
+        vector = scalar(f"uuid5('{NAMESPACE}', 'www.example.org')")
+        assert vector == str(uuid.uuid5(uuid.UUID(NAMESPACE), "www.example.org"))
+        assert vector == "74738ff5-5367-5958-9aee-98fffdcd1876"
+
+    def test_a_null_value_gives_a_null_id_and_never_an_id_for_nothing(self, frame: pl.DataFrame) -> None:
+        """Null in, null out -- and specifically not the id of ``'null'``, ``''`` or anything else.
+
+        This is the defect this function could most plausibly ship with, and the one that would be
+        invisible: a surrogate key that turned a missing value into a real-looking id would put
+        every row with a missing part under the *same* id, which reads downstream as a legitimate
+        key with several rows behind it rather than as data that was never there. A null key
+        matches nothing and shows up as a null, which is the rule the rest of this language
+        already follows -- and the author who wants the other behaviour writes the ``coalesce``
+        themselves, exactly as they do to make a null row participate in a comparison.
+        """
+        space = uuid.UUID(NAMESPACE)
+        ids = checked(frame, f"uuid5('{NAMESPACE}', [code])")
+
+        assert ids == ids_for(NAMESPACE, frame["code"].to_list())
+        assert ids[-1] is None
+        assert checked(frame, f"uuid5('{NAMESPACE}', [code]) is null") == [False, False, False, True]
+
+        # No stand-in for a missing value was hashed anywhere in the column.
+        for stand_in in ("null", "NULL", "None", "", "nan"):
+            assert str(uuid.uuid5(space, stand_in)) not in ids, f"a missing value was hashed as {stand_in!r}"
+
+        # A null part of a built key makes the whole key null, the way concat() already does.
+        assert checked(frame, f"uuid5('{NAMESPACE}', concat([code], '|', [label]))")[-1] is None
+
+        # ... and the escape hatch is the one this language already teaches.
+        assert checked(frame, f"uuid5('{NAMESPACE}', coalesce([code], 'missing'))") == ids_for(
+            NAMESPACE, ["A", "B", "C", "missing"]
+        )
+
+    def test_a_key_built_from_several_columns_is_the_id_of_the_joined_text(self, frame: pl.DataFrame) -> None:
+        """The stated use: ``concat`` the natural key, hash it once, carry one column.
+
+        The value argument is an expression and not a column, so the key a flow derives is written
+        in the file where a reviewer can read which columns went into it and in what order.
+        """
+        text = f"uuid5('{NAMESPACE}', concat([code], '|', [label]))"
+        joined = [
+            None if code is None or label is None else f"{code}|{label}"
+            for code, label in zip(frame["code"].to_list(), frame["label"].to_list(), strict=True)
+        ]
+        assert checked(frame, text) == ids_for(NAMESPACE, joined)
+
+        # And it composes both ways, as every text function here does.
+        assert checked(frame, f"upper({text})") == [
+            None if one is None else one.upper() for one in ids_for(NAMESPACE, joined)
+        ]
+        assert checked(frame, f"uuid5('{NAMESPACE}', concat(upper([code]), '|', strip([label])))") == ids_for(
+            NAMESPACE, ["A|alpha", "B|Beta", "C|gamma", None]
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A column: the namespace would then be chosen by the data it is namespacing.
+            "uuid5([code], [label])",
+            "uuid5([note], [label])",
+            # Computed, even out of literals: a namespace has to be readable as one line in a file.
+            "uuid5(concat('6ba7b810-9dad-11d1-80b4', '-00c04fd430c8'), [label])",
+            "uuid5(upper([code]), [label])",
+            f"uuid5(coalesce([code], '{NAMESPACE}'), [label])",
+            # And a literal that is not text at all.
+            "uuid5(1, [label])",
+            "uuid5(null, [label])",
+            "uuid5(true, [label])",
+            "uuid5(date'2026-01-01', [label])",
+        ],
+    )
+    def test_the_namespace_must_be_quoted_text_written_in_the_file(self, text: str) -> None:
+        """A namespace is a fixed decision recorded in the line, like a pattern or a separator.
+
+        Two reasons, and the second is the one with teeth. It cannot be checked before the run
+        otherwise -- a namespace that varied row by row could be malformed on row nine hundred,
+        inside the engine, having already written nine hundred ids. And a namespace is what keeps
+        one flow's ids from colliding with another's, so letting the data choose it means the data
+        decides which flow's key space its rows land in.
+        """
+        reported = message(text)
+        assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
+        assert "namespace" in reported.lower(), f"the refusal does not name the argument: {reported!r}"
+
+    @pytest.mark.parametrize(
+        "namespace",
+        [
+            "",
+            "not-a-uuid",
+            "6ba7b810-9dad-11d1-80b4",
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c",
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8f",
+            "zba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "6ba7b810_9dad_11d1_80b4_00c04fd430c8",
+        ],
+    )
+    def test_a_namespace_that_is_not_a_uuid_is_refused_before_a_row_is_read(self, namespace: str) -> None:
+        """Checked at compile time, in the author's words, and never inside a select.
+
+        Each case is asserted to be one the standard library refuses too, so the test is about a
+        malformed namespace and not about an opinion on spelling. Catching it here is the whole
+        promise of this module: a mistake fails in the line the author wrote, not two hours into a
+        load with a partial table behind it.
+        """
+        with pytest.raises(ValueError):
+            uuid.UUID(namespace)
+
+        reported = message(f"uuid5('{namespace}', [code])")
+        assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
+        assert "namespace" in reported.lower(), f"the refusal does not name the argument: {reported!r}"
+
+    def test_the_same_input_gives_the_same_id_every_time_it_is_evaluated(self, frame: pl.DataFrame) -> None:
+        """Separate compilations, a different row order and a different frame all agree.
+
+        A surrogate key is only a key if it is reproducible: a run that re-derives yesterday's id
+        differently does not update a row, it inserts a second one.
+        """
+        text = f"uuid5('{NAMESPACE}', [code])"
+        first = checked(frame, text)
+
+        assert checked(frame, text) == first
+        assert checked(frame.reverse(), text) == list(reversed(first))
+        assert checked(pl.DataFrame({"code": ["C", "A"]}), text) == [first[2], first[0]]
+
+    def test_rows_differing_in_any_one_component_get_different_ids(self) -> None:
+        """Including the case a delimiter exists to prevent, and a change of namespace.
+
+        ``('ab', 'c')`` and ``('a', 'bc')`` are the pair that collides when parts are run together
+        without a separator -- two different natural keys arriving under one id, which is a silent
+        merge of two rows. The last pair is the other direction: the same value in two namespaces
+        is two ids, which is what makes a namespace worth writing at all.
+        """
+        parts = pl.DataFrame(
+            {
+                "code": ["ab", "a", "ab", "ac", "ab"],
+                "label": ["c", "bc", "d", "c", "c"],
+            }
+        )
+        ids = checked(parts, f"uuid5('{NAMESPACE}', concat([code], '|', [label]))")
+
+        assert len(set(ids[:4])) == 4, f"two different keys landed on one id: {ids[:4]}"
+        assert ids[0] != ids[1], "the delimiter did not separate the parts"
+        assert ids[4] == ids[0], "two identical keys produced different ids"
+
+        assert scalar(f"uuid5('{NAMESPACE}', 'ab|c')") != scalar(f"uuid5('{OTHER_NAMESPACE}', 'ab|c')")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            f"uuid5('{NAMESPACE}')",
+            "uuid5()",
+            f"uuid5('{NAMESPACE}', [code], [label])",
+            f"uuid5('{NAMESPACE}', [code], '|', [label])",
+        ],
+    )
+    def test_uuid5_takes_exactly_two_arguments_and_is_offered_by_name(self, text: str) -> None:
+        """Fixed arity with no defaults, like every name before it, and listed where a mistake is made.
+
+        Three arguments is the shape an author reaches for when they mean to join two columns, so
+        it has to be refused by name rather than quietly absorbed -- the answer they want is
+        ``uuid5(namespace, concat([a], '|', [b]))``, where the separator is visible.
+        """
+        assert "uuid5" in ALLOWED_FUNCTIONS
+
+        reported = message(text)
+        assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
+        assert "2" in reported, f"the refusal does not say how many arguments it takes: {reported!r}"
+
+        assert "uuid5" in message("sqrt([amount])"), (
+            "uuid5 is not offered to an author who reached for a function that does not exist"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            f"uuid5('{NAMESPACE}', 1)",
+            f"uuid5('{NAMESPACE}', [qty])",
+            f"uuid5('{NAMESPACE}', [amount])",
+            f"uuid5('{NAMESPACE}', [flag])",
+            f"uuid5('{NAMESPACE}', [start_date])",
+            f"uuid5('{NAMESPACE}', true)",
+            f"uuid5('{NAMESPACE}', date'2026-01-01')",
+        ],
+    )
+    def test_a_value_that_is_not_text_is_refused_rather_than_quietly_stringified(
+        self, frame: pl.DataFrame, text: str
+    ) -> None:
+        """The same rule ``concat`` carries, and for the same reason, sharpened by what this builds.
+
+        A number stringified on the way into a hash is a key whose stability depends on how the
+        engine wrote it that day: ``1`` and ``1.0`` are one value and two ids. The author who
+        really means to key on a number writes the conversion where a reviewer can see it.
+
+        The refusal has to say *text*, not merely raise: "uuid5 is not a function this language
+        has" would satisfy a bare ``pytest.raises`` while the function was still missing, and this
+        case would then have been passing for a reason that has nothing to do with what it pins.
+        """
+        reported = schema_message(frame, text)
+        assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
+        assert "text" in reported.lower(), f"the refusal does not say the value has to be text: {reported!r}"
+
+    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
+    def test_an_id_is_never_pushed_down_to_an_engine(self, rows: pl.DataFrame, dialect: str) -> None:
+        """Outside every subset, refused by name, naming the dialect, and saying why.
+
+        This is the one exclusion where a wrong answer would not look wrong. An engine's own
+        ``uuid_generate_v5`` or digest function is reachable in one dialect and absent in the
+        other, and a pushdown that produced *some* 36-character id would be compared against the
+        frame target's id and silently keep no rows -- or, worse, be written as a key. So it is
+        refused the way the regex functions are, and the author's predicate is answered by a
+        Filter step after the read, in memory, with the frame target's exact semantics.
+        """
+        text = FUNCTION_SNIPPETS["uuid5"]
+
+        assert "uuid5" not in sql_subset(dialect).functions
+        assert compile_expr(text, rows.schema) is not None
+
+        reported = sql_message(text, rows.schema, dialect=dialect)
+        assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
+        assert dialect in reported, f"the refusal does not name the dialect: {reported!r}"
+        assert "filter" in reported.lower(), f"no route to a Filter step in {reported!r}"
+
+        lowered = reported.lower()
+        assert any(word in lowered for word in ("sha", "hash", "digest")), (
+            f"the refusal does not say what the engine would have had to compute: {reported!r}"
+        )
+
+    @pytest.mark.parametrize("namespace", [NAMESPACE, OTHER_NAMESPACE])
+    def test_the_value_is_hashed_as_utf8_whatever_script_it_is_written_in(
+        self, rows: pl.DataFrame, namespace: str
+    ) -> None:
+        """Equality with ``uuid.uuid5`` over text that is not ASCII, which is where encodings differ.
+
+        ASCII is a fixed point of UTF-8, latin-1 and cp1252 alike, so a column of ``'A'``, ``'B'``,
+        ``'C'`` cannot tell those three apart: a hand-rolled digest over the wrong encoding passes
+        every assertion that only ever hashes ASCII. This fixture's labels are accented and
+        dotted, so the bytes hashed are pinned as the ones the standard library hashes rather than
+        as whichever encoding happened to be reached for.
+
+        What is at stake is not a different id but an unreproducible one. Under latin-1 an accented
+        name still yields a well-formed, stable id -- it simply is not the id anything else in the
+        world derives from that value, which is only discovered when a second system tries to join
+        on it.
+        """
+        values = rows["label"].to_list()
+        assert any(value is not None and not value.isascii() for value in values), (
+            "the fixture no longer carries a non-ASCII value, so this assertion proves nothing"
+        )
+        assert checked(rows, f"uuid5('{namespace}', [label])") == ids_for(namespace, values)
+
+    def test_text_no_single_byte_encoding_could_hold_is_hashed_rather_than_failing_mid_select(self) -> None:
+        """Scripts outside Latin-1 entirely, and a character outside the basic plane.
+
+        The failure mode here is worse than a wrong id. A single-byte encoding cannot represent
+        these values at all, so it raises from inside a select -- halfway through a load, with ids
+        already written for every row that happened to be Latin-1 and nothing written for the rest.
+        The emoji is the separate case: it lives outside the basic plane, so an implementation that
+        reached its bytes by way of UTF-16 would split it into a surrogate pair and hash something
+        no other system derives.
+        """
+        written = pl.DataFrame({"label": ["é", "ÉCLAIR", "straße", "İstanbul", "κόσμος", "文字", "😀", "a😀b"]})
+        values = written["label"].to_list()
+
+        for value in ("文字", "κόσμος", "😀"):
+            with pytest.raises(UnicodeEncodeError):
+                value.encode("latin-1")
+
+        assert checked(written, f"uuid5('{NAMESPACE}', [label])") == ids_for(NAMESPACE, values)
+        assert len(set(checked(written, f"uuid5('{NAMESPACE}', [label])"))) == len(values)
+
+    def test_two_spellings_of_one_accent_are_two_values_and_are_never_normalised(self) -> None:
+        """``'é'`` written as one character and as a letter plus a combining mark get different ids.
+
+        The two read identically to a person and compare unequal to a machine, and the standard
+        library normalises neither -- so neither does this. It is a real shape rather than a
+        curiosity: text arriving from one operating system is decomposed and the same text typed
+        elsewhere is composed, so a flow that mixed the two sources would derive two ids for what a
+        reader sees as one value.
+
+        Pinning it in this direction is deliberate. Normalising would be the *friendlier* thing to
+        do and would still be wrong, because the id would then be reproducible only by code that
+        normalised the same way -- which is the one promise this function exists to keep.
+        """
+        composed = "é"
+        decomposed = "é"
+        assert unicodedata.normalize("NFC", decomposed) == composed
+        assert unicodedata.normalize("NFD", composed) == decomposed
+
+        written = pl.DataFrame({"label": [composed, decomposed]})
+        ids = checked(written, f"uuid5('{NAMESPACE}', [label])")
+
+        assert ids == ids_for(NAMESPACE, [composed, decomposed])
+        assert ids[0] != ids[1], "the two spellings were folded together before hashing"
+
+    def test_an_empty_value_is_an_ordinary_value_and_never_a_missing_one(self, rows: pl.DataFrame) -> None:
+        """``''`` has an id of its own: present, canonical, and unlike the id of anything else.
+
+        This is the other side of the null rule, and the side nothing pinned. An implementation
+        that read emptiness as absence -- the one-character difference between "is this value
+        missing" and "is this value falsy" -- passes every assertion about nulls while writing a
+        null key onto a row that has data on it. Downstream that is a key that joins to nothing and
+        a primary key that will not take.
+
+        So the three outcomes are asserted together, against one frame, as three distinct things:
+        the id of a value, the id of the empty value, and nothing at all.
+        """
+        space = uuid.UUID(NAMESPACE)
+        empty = scalar(f"uuid5('{NAMESPACE}', '')")
+
+        assert empty is not None, "the empty value was read as a missing one"
+        assert empty == str(uuid.uuid5(space, ""))
+        assert CANONICAL_UUID.fullmatch(empty) is not None, f"{empty!r} is not canonically written"
+        assert empty != scalar(f"uuid5('{NAMESPACE}', ' ')"), "an empty value and a blank one share an id"
+        assert empty != scalar(f"uuid5('{NAMESPACE}', 'null')")
+
+        written = pl.DataFrame({"code": ["A", "", None]})
+        ids = checked(written, f"uuid5('{NAMESPACE}', [code])")
+
+        assert ids == ids_for(NAMESPACE, ["A", "", None])
+        assert ids[1] is not None, "the empty value was read as a missing one"
+        assert ids[2] is None, "the missing value was given an id"
+        assert len({ids[0], ids[1]}) == 2, "the empty value took another value's id"
+
+        # ... and the same over the fixture that already carries an empty cell beside its nulls.
+        assert checked(rows, f"uuid5('{NAMESPACE}', [code])") == ids_for(NAMESPACE, rows["code"].to_list())
+
+    def test_a_built_key_with_an_empty_part_stays_a_key_of_its_own(self) -> None:
+        """``('', 'a|b')`` and ``('', 'a')`` and ``('a', 'b')`` are three keys, so they are three ids.
+
+        The delimiter case again, with an empty part this time: an empty first component is where a
+        separator most easily gets dropped, and dropping it merges the first row into the third.
+        """
+        parts = pl.DataFrame({"code": ["", "", "a"], "label": ["a|b", "a", "b"]})
+        ids = checked(parts, f"uuid5('{NAMESPACE}', concat([code], '|', [label]))")
+
+        assert ids == ids_for(NAMESPACE, ["|a|b", "|a", "a|b"])
+        assert len(set(ids)) == 3, f"two different keys landed on one id: {ids}"
+
+    def test_a_compactly_stored_value_is_hashed_as_its_text_and_not_as_how_it_is_stored(
+        self, frame: pl.DataFrame, restricted_frame: pl.DataFrame
+    ) -> None:
+        """The same values in the two compact dtypes give the ids the plain text column gives.
+
+        Every other text function reaches for an engine string kernel, so a column stored
+        compactly announced itself by raising. This one reaches its value a row at a time instead,
+        which means it would raise nothing whatever it was handed: if what arrived were the
+        dictionary's physical index rather than the text behind it, the ids would be well-formed,
+        canonical, stable within the run, and keyed to the order the values were first seen -- so
+        the next load, which saw them in another order, would derive different ids for the same
+        rows. There is no symptom to notice before the duplicates appear.
+
+        The last pair is the path where the cast is the only thing doing this work: compiled
+        against no schema at all, where the leaf reference was never cast on the way in.
+        """
+        plain = checked(frame, f"uuid5('{NAMESPACE}', [label])")
+
+        assert plain == ids_for(NAMESPACE, frame["label"].to_list())
+        assert checked(frame, f"uuid5('{NAMESPACE}', [category])") == plain
+        assert checked(frame, f"uuid5('{NAMESPACE}', [grade])") == plain
+
+        # Nested, where the fallback hands back a value that is still stored compactly, and names a
+        # value the column was never allowed to hold.
+        assert checked(restricted_frame, f"uuid5('{NAMESPACE}', coalesce([grade], 'missing'))") == ids_for(
+            NAMESPACE, ["alpha", "beta", "missing"]
+        )
+        assert checked(restricted_frame, f"uuid5('{NAMESPACE}', coalesce([grade], 'missing'))") == checked(
+            restricted_frame, f"uuid5('{NAMESPACE}', coalesce([label], 'missing'))"
+        )
+
+        assert evaluate(frame, f"uuid5('{NAMESPACE}', [category])") == plain
+        assert evaluate(frame, f"uuid5('{NAMESPACE}', [grade])") == plain
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            NAMESPACE.upper(),
+            "{" + NAMESPACE + "}",
+            f"urn:uuid:{NAMESPACE}",
+            NAMESPACE.replace("-", ""),
+        ],
+        ids=["uppercase", "braced", "urn", "unhyphenated"],
+    )
+    def test_a_namespace_the_standard_library_reads_is_accepted_and_names_the_same_space(
+        self, frame: pl.DataFrame, spelling: str
+    ) -> None:
+        """Four written forms of one namespace, all accepted, all deriving the same ids.
+
+        The refusals beside this pin what is *not* a namespace; nothing pinned what is. These four
+        are the forms the standard library reads, so they are the forms an author may already have
+        pasted out of wherever the namespace was agreed. A later tightening to a hand-written
+        pattern -- the obvious way to make the refusal message nicer -- would start refusing flows
+        that run today, and the author would be told their namespace is not a UUID while holding
+        one that is.
+        """
+        assert uuid.UUID(spelling) == uuid.UUID(NAMESPACE)
+        assert checked(frame, f"uuid5('{spelling}', [code])") == checked(frame, f"uuid5('{NAMESPACE}', [code])")
