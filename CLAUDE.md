@@ -31,10 +31,21 @@ uv sync --extra dev                         # set up from uv.lock. Plain `uv syn
 .venv/bin/pytest tests/ -q                  # ~3,800 tests, 2-4 min (pyproject puts src/ and the root on the path)
 .venv/bin/ruff check src tests scripts      # lint. This is the gate
 .venv/bin/python scripts/tool_catalog_page.py          # writes output_files/tool_catalog.{html,json}
-.venv/bin/python scripts/pipeline_walkthrough_page.py  # writes output_files/pipeline_walkthrough.html
+.venv/bin/python scripts/pipeline_walkthrough_page.py <name>  # runs pipelines/<name>.yaml, saves the run to
+                                                       # output_files/runs/<name>/, opens it in the viewer
 .venv/bin/python scripts/etl_architecture_page.py      # the architecture page, read from the library itself
 .venv/bin/python scripts/serve_runs.py                 # serves output_files/runs/ on :8899
 ```
+
+The `Makefile` holds shortcuts for all of these (`make` lists them): `make test`, `make test-all`
+(starts the test Postgres too), `make run p=<name>`, `make catalog`. Each is one command and nothing
+more, so on Windows, which has no `make`, the command itself is what to run. Keep it that way: logic
+goes in Python, where it is tested and runs on both systems.
+
+A project is `pipelines/<name>.yaml`, its inputs in `pipelines/<name>/`, and
+`pipelines/<name>/settings.yaml` holding its `rules` and its `focus` column. `fixture` is the worked
+example. The runner script never reshapes data: it runs the flow, saves what the run produced, and
+draws it.
 
 The versions are fixed in `uv.lock`, which is committed. Keep it that way: without it, a fresh
 checkout resolves the newest of everything, and once that meant polars 2.x (40 failing tests) and a

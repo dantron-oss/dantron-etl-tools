@@ -92,13 +92,40 @@ ROOT = project_root(__file__)          # $ETL_PROJECT_ROOT, else the nearest pyp
 the tools, the runner and the manual, not the page builders. Clone the repository to use them:
 
 ```bash
-python scripts/pipeline_walkthrough_page.py    # render a flow and its data as a page
-python scripts/serve_runs.py                   # serve what has been written, on :8899
-python scripts/tool_catalog_page.py            # the catalog, from the registry
+make run p=fixture     # run pipelines/fixture.yaml, save the run, and open its page
+make view              # the viewer for every saved run, on http://localhost:8899/
+make catalog           # every tool, its settings and its worked examples
+make                   # list every command
 ```
 
 The walkthrough draws the flow as wired, follows one entity through it, and shows each step's rows
 beside its configuration. Selecting a step lights its whole upstream and downstream chain.
+
+### A project
+
+`make run p=<name>` runs a project. A project is three things with one name:
+
+| | |
+|---|---|
+| `pipelines/<name>.yaml` | the flow |
+| `pipelines/<name>/` | its input files |
+| `pipelines/<name>/settings.yaml` | the values the flow reads as `${rules.<name>}`, and the column that identifies one entity, so the page can follow it |
+
+The sample project, `fixture`, is the one to copy. Its settings file:
+
+```yaml
+rules:
+  revenue_type: REVENUE
+focus: party
+```
+
+The run is saved in `output_files/runs/<name>/`, replacing the last one. The page reads its rows
+from the viewer, so `make run` starts the viewer if it is not already running and opens the page in
+your browser. Ctrl-C stops the viewer. If a step fails, the run is still saved up to that step, so
+you can open the failing step and look at the rows that went into it.
+
+On Windows, without `make`, run the same thing as
+`uv run python scripts/pipeline_walkthrough_page.py <name>`.
 
 ## For agents
 

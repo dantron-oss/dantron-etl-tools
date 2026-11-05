@@ -1,0 +1,8 @@
+# What `make run p=fixture` needs to run pipelines/fixture.yaml.
+
+# The values the flow reads as ${rules.<name>}.
+rules:
+  revenue_type: REVENUE
+
+# The column that identifies one entity, so the page can follow one party through every step.
+focus: party
