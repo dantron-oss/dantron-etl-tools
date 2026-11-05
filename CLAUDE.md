@@ -27,13 +27,20 @@ the manual.
 ## Commands
 
 ```bash
-uv sync --extra dev                         # set up. Plain `uv sync` leaves out pytest and ruff
-.venv/bin/pytest tests/ -q                  # ~3,800 tests, ~4 min (pyproject puts src/ on the path)
+uv sync --extra dev                         # set up from uv.lock. Plain `uv sync` leaves out pytest, ruff, orjson
+.venv/bin/pytest tests/ -q                  # ~3,800 tests, 2-4 min (pyproject puts src/ and the root on the path)
 .venv/bin/ruff check src tests scripts      # lint. This is the gate
 .venv/bin/python scripts/tool_catalog_page.py          # writes output_files/tool_catalog.{html,json}
 .venv/bin/python scripts/pipeline_walkthrough_page.py  # writes output_files/pipeline_walkthrough.html
+.venv/bin/python scripts/etl_architecture_page.py      # the architecture page, read from the library itself
 .venv/bin/python scripts/serve_runs.py                 # serves output_files/runs/ on :8899
 ```
+
+The versions are fixed in `uv.lock`, which is committed. Keep it that way: without it, a fresh
+checkout resolves the newest of everything, and once that meant polars 2.x (40 failing tests) and a
+ruff with new default rules (147 lint findings). `pyproject.toml` caps polars below 2 and pins ruff
+exactly for the same reason. Moving either one is a deliberate change: raise the bound, fix what
+breaks, run `uv lock`, and commit the lock with the fix.
 
 About 160 tests need Postgres. They read a DSN from `DANTRON_TEST_POSTGRES` and **skip** without
 it, so a checkout with no database still runs everything else. If you change `read_table`,
@@ -268,5 +275,6 @@ yet proven; a second, unrelated pipeline is the real test of every abstraction h
 
 - `develop` is the working branch. Work happens on `feature/<name>` and merges into `develop` with
   `--no-ff`, titled `Merge feature/<name> into develop`. `main` trails `develop`.
+- `develop` is also GitHub's default branch, so a pull request targets it unless told otherwise.
 - Commit titles are plain sentences that say what changed for the reader ("Publish a set of related
   tables, all of them or none of them"). The body explains why, in plain prose.
