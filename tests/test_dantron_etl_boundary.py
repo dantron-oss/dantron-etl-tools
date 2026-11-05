@@ -322,6 +322,7 @@ LIBRARY_TEST_GLOB = "test_dantron_etl_*.py"
 SHIPPED_SCRIPT_TESTS: tuple[str, ...] = (
     "test_tool_catalog_page.py",
     "test_pipeline_walkthrough_page.py",
+    "test_pipeline_walkthrough_projects.py",
 )
 
 _ARRIVAL_SCRIPT = '''
