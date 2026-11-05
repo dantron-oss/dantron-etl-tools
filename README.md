@@ -111,13 +111,25 @@ the count correct.
 ## Development
 
 ```bash
-uv sync --extra dev
-PYTHONPATH=src pytest tests/ -q      # 3,764 tests
-ruff check src tests scripts
+uv sync --extra dev --extra postgres
+.venv/bin/pytest tests/ -q           # about 3,800 tests
+.venv/bin/ruff check src tests scripts
 ```
 
-160 of those need a Postgres DSN and skip without one, so a checkout with no database still runs the
-other 3,604 rather than reporting a failure it cannot fix.
+On Windows the same commands work with `.venv\Scripts\` in place of `.venv/bin/`.
+
+About 160 of those tests need a Postgres server and skip without one, so a checkout with no database
+still runs the rest rather than reporting a failure it cannot fix. To run them, start the test
+server in `compose.yaml` (it needs Docker) and say where it is:
+
+```bash
+docker compose up -d --wait
+export DANTRON_TEST_POSTGRES=postgresql://etl_test:etl_test@localhost:5434/etl_test
+```
+
+In Windows PowerShell, set it with
+`$env:DANTRON_TEST_POSTGRES = "postgresql://etl_test:etl_test@localhost:5434/etl_test"`.
+`docker compose down` stops the server, and its data goes with it.
 
 The suite includes a boundary test that imports every shipped file in an interpreter where client
 packages do not exist, which is the world this library lives in once installed.
