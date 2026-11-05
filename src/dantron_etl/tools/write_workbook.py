@@ -302,7 +302,7 @@ class WriteWorkbook:
         """
         path = config["path"]
         if not path.lower().endswith(".xlsx"):
-            raise ConfigError(f"write_workbook only writes .xlsx workbooks; got path {path!r}")
+            raise ConfigError(f"write_workbook only writes .xlsx workbooks; got path '{path}'")
 
         tabs: dict[str, str] = {}
         ports: set[str] = set()
@@ -331,15 +331,15 @@ class WriteWorkbook:
             return
         if _names_the_same_file(template, path):
             raise ConfigError(
-                f"write_workbook refuses to write to its own template; 'template' is {template!r} "
-                f"and 'path' is {path!r}, and the two name the same file on disk. The template is "
+                f"write_workbook refuses to write to its own template; 'template' is '{template}' "
+                f"and 'path' is '{path}', and the two name the same file on disk. The template is "
                 f"read every run, and overwriting it would leave the next run with nothing to start "
                 f"from. Change 'path' to name the pack to be delivered, somewhere other than the "
                 f"template."
             )
         if not Path(template).exists():
             raise ConfigError(
-                f"write_workbook cannot find the template {template!r}; a template that is not "
+                f"write_workbook cannot find the template '{template}'; a template that is not "
                 f"there is not a template. Check the path, or leave 'template' out to start from "
                 f"nothing."
             )

@@ -1474,7 +1474,7 @@ def _refuse_disturbance(refusal: str, before: tuple[dict[str, str], str]) -> Non
     environment_after, directory_after = _process_state()
     if directory_after != directory_before:
         raise ConformanceError(
-            f"{refusal}: the working directory changed, from {directory_before!r} to {directory_after!r}"
+            f"{refusal}: the working directory changed, from '{directory_before}' to '{directory_after}'"
         )
     changed = sorted(
         name
@@ -1526,7 +1526,7 @@ def scratch_path(value: str) -> Path:
             "scratch_path() has nothing to resolve against: it may only be called while check_tool "
             "is checking a worked example whose configuration holds the {scratch} token"
         )
-    return Path(_SCRATCH_PATTERN.sub(str(directory), value))
+    return Path(_SCRATCH_PATTERN.sub(lambda _: str(directory), value))  # a function: see _resolved_scratch
 
 
 def _uses_scratch(value: Any) -> bool:
@@ -1556,7 +1556,9 @@ def _resolved_scratch(value: Any, directory: Path) -> Any:
     else's machine.
     """
     if isinstance(value, str):
-        return _SCRATCH_PATTERN.sub(str(directory), value)
+        # A function, not the string itself: re.sub reads backslashes in a replacement string as
+        # escapes, and every Windows path is full of them (C:\Users\... is a bad \U escape).
+        return _SCRATCH_PATTERN.sub(lambda _: str(directory), value)
     if isinstance(value, list):
         return [_resolved_scratch(item, directory) for item in value]
     if isinstance(value, dict):

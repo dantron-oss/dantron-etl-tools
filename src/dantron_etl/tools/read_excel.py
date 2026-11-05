@@ -113,7 +113,7 @@ class ReadExcel:
         """Refuse the wrong format or a negative skip count before a workbook is ever opened."""
         path = config["path"]
         if not path.lower().endswith(".xlsx"):
-            raise ConfigError(f"read_excel only reads .xlsx workbooks; got path {path!r}")
+            raise ConfigError(f"read_excel only reads .xlsx workbooks; got path '{path}'")
         if config["skip_rows"] < 0:
             raise ConfigError(f"config field 'skip_rows' must not be negative, got {config['skip_rows']}")
 
@@ -128,27 +128,27 @@ class ReadExcel:
 
         target = Path(path)
         if not target.exists():
-            raise ConfigError(f"read_excel found no file at {path!r}")
+            raise ConfigError(f"read_excel found no file at '{path}'")
 
         try:
             reader = fastexcel.read_excel(path)
         except Exception as error:
-            raise ConfigError(f"read_excel could not open {path!r} as an XLSX workbook: {error}") from error
+            raise ConfigError(f"read_excel could not open '{path}' as an XLSX workbook: {error}") from error
 
         sheet_names = reader.sheet_names
         if sheet not in sheet_names:
             raise ConfigError(
-                f"read_excel found no sheet named {sheet!r} in {path!r}; the sheets present are: "
+                f"read_excel found no sheet named {sheet!r} in '{path}'; the sheets present are: "
                 f"{', '.join(sheet_names)}"
             )
 
         try:
             raw_header = reader.load_sheet_by_name(sheet, header_row=None, skip_rows=skip_rows, n_rows=1).to_polars()
         except Exception as error:
-            raise ConfigError(f"read_excel could not read sheet {sheet!r} in {path!r}: {error}") from error
+            raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
         if raw_header.height == 0:
-            raise ConfigError(f"read_excel found nothing on sheet {sheet!r} in {path!r}")
+            raise ConfigError(f"read_excel found nothing on sheet {sheet!r} in '{path}'")
 
         if has_header:
             _validate_header_row(raw_header.row(0), sheet)
@@ -167,7 +167,7 @@ class ReadExcel:
                 raise_if_empty=False,
             )
         except Exception as error:
-            raise ConfigError(f"read_excel could not read sheet {sheet!r} in {path!r}: {error}") from error
+            raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
         return Ports({"rows": frame})
 
