@@ -44,7 +44,17 @@ breaks, run `uv lock`, and commit the lock with the fix.
 
 About 160 tests need Postgres. They read a DSN from `DANTRON_TEST_POSTGRES` and **skip** without
 it, so a checkout with no database still runs everything else. If you change `read_table`,
-`write_table`, `publish_tables` or `db.py`, set it and run them.
+`write_table`, `publish_tables` or `db.py`, set it and run them. `compose.yaml` holds a throwaway
+server for exactly this, on port 5434 so it misses any other Postgres on the machine:
+
+```bash
+uv sync --extra dev --extra postgres        # the drivers those tests use
+docker compose up -d --wait                 # data is in memory, gone on `docker compose down`
+export DANTRON_TEST_POSTGRES=postgresql://etl_test:etl_test@localhost:5434/etl_test
+```
+
+Never point `DANTRON_TEST_POSTGRES` at a server holding real data. The tests stay inside schemas of
+their own, but a test server is the place to find out they do not.
 
 `ruff format` is not applied across the repo. Do not reformat files you are not otherwise changing.
 

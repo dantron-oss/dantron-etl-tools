@@ -1,0 +1,36 @@
+# A Postgres server for this library's own tests, and nothing else.
+#
+#   docker compose up -d --wait     # start it, and wait until it accepts connections
+#   docker compose down             # stop it. Its data goes with it
+#
+# Then point the tests at it:
+#
+#   export DANTRON_TEST_POSTGRES=postgresql://etl_test:etl_test@localhost:5434/etl_test   # Linux, macOS, WSL
+#   $env:DANTRON_TEST_POSTGRES = "postgresql://etl_test:etl_test@localhost:5434/etl_test" # Windows PowerShell
+#
+# The login is local and test-only, which is why it can sit in a committed file. Port 5434 rather
+# than 5432 so it does not collide with a Postgres another project already runs on this machine.
+#
+# The data lives in memory and is gone when the container stops. Nothing here is worth keeping: the
+# tests create their own schemas and drop them. fsync is off for the same reason, and it makes the
+# suite faster. Never copy these settings to a server that holds real data.
+
+name: dantron-etl-tools
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: etl_test
+      POSTGRES_PASSWORD: etl_test
+      POSTGRES_DB: etl_test
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    ports:
+      - "5434:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl_test -d etl_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
