@@ -1398,7 +1398,7 @@ class TestWriteWorkbookInTheCatalog:
         assert entry is not None and entry.type == "object", "a sheet entry has a declared shape"
         assert entry.fields is not None
         # 'formats' is the third member, and its own shape is pinned where it is argued, below.
-        assert set(entry.fields) == {"port", "sheet", "formats"}
+        assert set(entry.fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
         assert entry.fields["port"].required is True and entry.fields["port"].non_empty is True
         assert entry.fields["sheet"].required is True and entry.fields["sheet"].non_empty is True
         assert expression_fields(template) == (), "nothing here is a column reference"
@@ -2339,7 +2339,7 @@ class TestHowNumbersAreShownIsDeclaredAndDocumented:
         entry = template["sheets"].items
 
         assert entry is not None and entry.fields is not None
-        assert set(entry.fields) == {"port", "sheet", "formats"}
+        assert set(entry.fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
 
         formats = entry.fields["formats"]
         assert formats.type == "array"
@@ -2390,3 +2390,103 @@ class TestHowNumbersAreShownIsDeclaredAndDocumented:
         ), "the notes do not say the format code is passed through unchecked"
 
         check_tool(tool)
+
+
+# ---------------------------------------------------------------------------
+
+
+def _cell_kinds(path: Path, sheet: str) -> dict[str, tuple[str, Any]]:
+    """Each written cell of one tab, as the kind the file stores it as and what it holds.
+
+    The kind is ``"f"`` for a formula and ``"s"`` for text. A formula cell is a ``<f>`` element in the
+    file, so the spreadsheet program works it out when the pack is opened; a text cell is shown as
+    written.
+    """
+    book = openpyxl.load_workbook(path)
+    try:
+        return {
+            cell.coordinate: (cell.data_type, cell.value)
+            for row in book[sheet].iter_rows()
+            for cell in row
+            if cell.value is not None
+        }
+    finally:
+        book.close()
+
+
+_STARTS_WITH_EQUALS = ("=1+1", '=HYPERLINK("http://example.invalid","open")')
+_STARTS_WITH_OTHER_FORMULA_SIGNS = ("+1+1", "-1+1", "@SUM(A1)")
+
+
+class TestTextThatLooksLikeAFormulaIsWrittenAsText:
+    """A text value is written as text, even when it starts with a sign a spreadsheet reads as a formula.
+
+    A spreadsheet program treats text typed in starting with ``=``, ``+``, ``-`` or ``@`` as a
+    formula. A frame's text column can hold exactly that: a free-text note, a reference typed by a
+    person, a value copied from another system. Written as a formula, the cell shows a computed
+    result instead of the text that was in the frame. That is a wrong value in a delivered pack. It
+    is also a formula-injection risk: a pack is sent to people, and a formula such as ``HYPERLINK``
+    or an external lookup runs on their machine when they open it.
+
+    Each case is checked with no template and with one, because the two paths open the workbook
+    differently and a fix to one could miss the other.
+    """
+
+    @pytest.fixture(params=["no template", "template"])
+    def target_and_template(self, request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Path, Path | None]:
+        template = _template(tmp_path / "template.xlsx") if request.param == "template" else None
+        return tmp_path / "pack.xlsx", template
+
+    def _write_text(self, target: Path, template: Path | None, frame: pl.DataFrame) -> dict[str, tuple[str, Any]]:
+        config: dict[str, Any] = {"path": str(target), "sheets": [{"port": "rows", "sheet": "Rows"}]}
+        if template is not None:
+            config["template"] = str(template)
+        _write({"rows": frame}, config)
+        return _cell_kinds(target, "Rows")
+
+    @pytest.mark.parametrize("text", _STARTS_WITH_EQUALS)
+    def test_a_text_value_starting_with_equals_is_written_as_text_not_a_formula(
+        self, target_and_template: tuple[Path, Path | None], text: str
+    ) -> None:
+        """A text value starting with = is written as the text in the frame, never as a live formula."""
+        target, template = target_and_template
+        cells = self._write_text(target, template, pl.DataFrame({"note": [text]}))
+
+        assert cells["A2"] == ("s", text), (
+            f"the text {text!r} was written as {cells['A2']!r}; a kind of 'f' is a live formula the "
+            f"reader's spreadsheet runs when the pack is opened"
+        )
+
+    @pytest.mark.parametrize("text", _STARTS_WITH_OTHER_FORMULA_SIGNS)
+    def test_a_text_value_starting_with_plus_minus_or_at_is_written_as_text(
+        self, target_and_template: tuple[Path, Path | None], text: str
+    ) -> None:
+        """Pinned: these are written as text today, and must stay that way."""
+        target, template = target_and_template
+        cells = self._write_text(target, template, pl.DataFrame({"note": [text]}))
+
+        assert cells["A2"] == ("s", text)
+
+    @pytest.mark.parametrize("name", _STARTS_WITH_OTHER_FORMULA_SIGNS)
+    def test_a_column_name_starting_with_plus_minus_or_at_is_written_as_text(
+        self, target_and_template: tuple[Path, Path | None], name: str
+    ) -> None:
+        """Pinned: a heading starting with one of these signs is written as text today."""
+        target, template = target_and_template
+        cells = self._write_text(target, template, pl.DataFrame({name: ["x"]}))
+
+        assert cells["A1"] == ("s", name)
+
+    @pytest.mark.parametrize("name", _STARTS_WITH_EQUALS)
+    def test_a_column_name_starting_with_equals_is_written_as_text_not_a_formula(
+        self, target_and_template: tuple[Path, Path | None], name: str
+    ) -> None:
+        """A column name starting with '=' is written to the heading cell as text, not a formula.
+
+        A table takes its column names from the heading cells, so a heading must hold the name as
+        written, with and without a template.
+        """
+        target, template = target_and_template
+        cells = self._write_text(target, template, pl.DataFrame({name: ["x"]}))
+
+        assert cells["A1"] == ("s", name)
