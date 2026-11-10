@@ -791,7 +791,9 @@ def _toposort(
     remaining_deps: dict[str, set[str]] = {step_id: set() for step_id in step_ids}
     for step_id in step_ids:
         for edge in inputs_by_step.get(step_id, {}).values():
-            if edge.step in position:
+            # A step can read two ports of one upstream step. That is one dependency, not two, so
+            # it is recorded once. Recording it twice would put this step in the walk twice.
+            if edge.step in position and edge.step not in remaining_deps[step_id]:
                 remaining_deps[step_id].add(edge.step)
                 dependents[edge.step].append(step_id)
 

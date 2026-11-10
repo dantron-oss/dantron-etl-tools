@@ -381,6 +381,73 @@ class TestTheWiringIsRefusedBeforeARowMoves:
             PortRef("also_kept", "rows"),
         )
 
+    def test_a_step_may_read_two_ports_of_one_upstream_step(self, tmp_path: Path) -> None:
+        """Two edges from one step into one step, on different ports, are not a loop.
+
+        A join reading both halves of one split is the ordinary way to set what passed against what
+        did not. The loader once counted the second edge as a second dependency it then cleared
+        twice, put the join in its walk twice, and refused the flow as a cycle naming no steps.
+        """
+        entries = tmp_path / "entries.csv"
+        entries.write_text("group,code,amount\ng1,A,10\ng1,B,5\ng2,A,7\n", encoding="utf8")
+        paired = tmp_path / "paired.csv"
+        document = {
+            "name": "a split read twice",
+            "steps": [
+                {"id": "entries", "tool": "read_csv", "config": {"path": str(entries)}},
+                {
+                    "id": "split",
+                    "tool": "filter",
+                    "config": {"predicate": "[code] = 'A'"},
+                    "inputs": {"rows": "entries.rows"},
+                },
+                {
+                    "id": "paired",
+                    "tool": "join",
+                    "config": {"keys": ["group"]},
+                    "inputs": {"left": "split.true", "right": "split.false"},
+                },
+                {
+                    "id": "published",
+                    "tool": "write_csv",
+                    "config": {"path": str(paired)},
+                    "inputs": {"rows": "paired.matched"},
+                },
+            ],
+        }
+
+        spec = load_pipeline(document)
+
+        assert spec.order() == ("entries", "split", "paired", "published"), "each step walked once"
+        run_pipeline(spec)
+        written = pl.read_csv(paired)
+        assert written["group"].to_list() == ["g1"]
+        assert written["amount"].to_list() == [10]
+        assert written["amount_right"].to_list() == [5]
+
+    def test_a_cycle_through_two_ports_of_one_step_is_still_refused_by_name(self) -> None:
+        """The mirror of the case above: parallel edges inside a real loop must not hide the loop."""
+        document = _document()
+        document["steps"].append(
+            {
+                "id": "loop_a",
+                "tool": "join",
+                "lane": "shaping",
+                "stage": "shape",
+                "config": {"keys": ["entry_id"]},
+                "inputs": {"left": "loop_b.true", "right": "loop_b.false"},
+            }
+        )
+        document["steps"].append(_filter_step("loop_b", "loop_a.matched"))
+
+        with pytest.raises(PipelineError) as raised:
+            load_pipeline(document, rules=RULES)
+
+        message = str(raised.value)
+        assert "cycle" in message.lower()
+        assert "loop_a" in message and "loop_b" in message
+        assert "entries" not in message, "the steps that are fine must not be named in the refusal"
+
     def test_a_step_nothing_consumes_and_that_writes_nothing_is_refused(self) -> None:
         """A branch that goes nowhere is refused; a branch that ends in a sink is the normal case.
 
