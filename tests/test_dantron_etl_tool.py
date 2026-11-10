@@ -45,6 +45,7 @@ from typing import Any, Final
 
 import polars as pl
 import pytest
+import xlsxwriter
 
 from dantron_etl import tool as tool_contract
 from dantron_etl.expr import ExpressionError, compile_expr, references
@@ -3427,11 +3428,49 @@ _OUTPUT_NAMING_TOOLS: Final[Mapping[str, tuple[str, Callable[[str], Mapping[str,
 }
 
 
+def _read_excel_config(name: str, directory: Path) -> Mapping[str, Any]:
+    """Plant a two-sheet workbook in ``directory`` and stack both sheets, naming the sheet column ``name``."""
+    path = directory / "months.xlsx"
+    with xlsxwriter.Workbook(str(path)) as workbook:
+        for sheet, key in (("Jan 2026", "j1"), ("Feb 2026", "f1")):
+            worksheet = workbook.add_worksheet(sheet)
+            worksheet.write_row(0, 0, ["key", "amount"])
+            worksheet.write_row(1, 0, [key, 1.5])
+    return {"path": str(path), "sheets_matching": "2026", "sheet_column": name}
+
+
+# Source tools read no input port, so the frame above cannot reach them. Each entry here writes the
+# file its configuration reads into the test's own directory, and the tool runs with no inputs.
+# Otherwise the same as the roster above, and checked for completeness together with it.
+_SOURCE_OUTPUT_NAMING_TOOLS: Final[Mapping[str, tuple[str, Callable[[str, Path], Mapping[str, Any]]]]] = {
+    "read_excel": ("sheet_column", _read_excel_config),
+}
+
+
+def _roster() -> frozenset[str]:
+    """Every tool either roster covers."""
+    return frozenset(_OUTPUT_NAMING_TOOLS) | frozenset(_SOURCE_OUTPUT_NAMING_TOOLS)
+
+
+def _run_naming(tool_name: str, name: str, directory: Path) -> Ports:
+    """Run one roster tool with ``name`` as its output column.
+
+    A tool that reads rows runs on the shared frame. A source tool runs on the file its builder
+    writes into ``directory``, with no inputs.
+    """
+    tool = REGISTRY.get(tool_name)
+    if tool_name in _SOURCE_OUTPUT_NAMING_TOOLS:
+        _path, build_from_file = _SOURCE_OUTPUT_NAMING_TOOLS[tool_name]
+        return run_tool(tool, Ports({}), build_from_file(name, directory))
+    _path, build = _OUTPUT_NAMING_TOOLS[tool_name]
+    return run_tool(tool, Ports({"rows": _catalog_frame()}), build(name))
+
+
 def _catalog_blank_cases() -> list[Any]:
-    """Every tool in the roster against every shape of nothing."""
+    """Every tool in either roster against every shape of nothing."""
     return [
         pytest.param(tool_name, name, id=f"{tool_name}_given_{name!r}")
-        for tool_name in _OUTPUT_NAMING_TOOLS
+        for tool_name in sorted(_roster())
         for name in _BLANK_NAMES
     ]
 
@@ -3461,24 +3500,22 @@ class TestEveryToolThatNamesAnOutputColumnRefusesABlankOne:
     """The catalog-wide statement, so the seventh tool is covered before anybody writes it."""
 
     @pytest.mark.parametrize(("tool_name", "name"), _catalog_blank_cases())
-    def test_a_blank_name_never_reaches_the_engine(self, tool_name: str, name: str) -> None:
+    def test_a_blank_name_never_reaches_the_engine(self, tool_name: str, name: str, tmp_path: Path) -> None:
         """Refused, by whichever of its rules gets there first.
 
         Wording is deliberately not asserted here. Four of these tools answered this correctly
         before the shared rule existed and answer it in their own words, which must not change;
         what this test pins is that no tool in the catalog writes a column with no name.
         """
-        _path, build = _OUTPUT_NAMING_TOOLS[tool_name]
         with pytest.raises(ConfigError) as caught:
-            run_tool(REGISTRY.get(tool_name), Ports({"rows": _catalog_frame()}), build(name))
+            _run_naming(tool_name, name, tmp_path)
 
         assert "config field" in str(caught.value), f"a configuration fault, reported as one: {caught.value}"
 
-    @pytest.mark.parametrize("tool_name", sorted(_OUTPUT_NAMING_TOOLS))
-    def test_the_same_tools_still_take_a_name_that_is_merely_unusual(self, tool_name: str) -> None:
+    @pytest.mark.parametrize("tool_name", sorted(_roster()))
+    def test_the_same_tools_still_take_a_name_that_is_merely_unusual(self, tool_name: str, tmp_path: Path) -> None:
         """The other half, tool by tool: a real name with spaces around it is written as spelled."""
-        _path, build = _OUTPUT_NAMING_TOOLS[tool_name]
-        result = run_tool(REGISTRY.get(tool_name), Ports({"rows": _catalog_frame()}), build(" total "))
+        result = _run_naming(tool_name, " total ", tmp_path)
 
         assert " total " in result["rows"].columns, f"{tool_name} must write the name as spelled"
 
@@ -3489,11 +3526,13 @@ class TestEveryToolThatNamesAnOutputColumnRefusesABlankOne:
         collision rule it needs anyway -- and the moment it does, this fails until somebody adds it
         to the roster and it is covered by every case above.
         """
-        assert _tools_calling_the_seam() == frozenset(_OUTPUT_NAMING_TOOLS), (
+        assert _tools_calling_the_seam() == _roster(), (
             f"the roster and the catalog disagree; only in the roster: "
-            f"{sorted(frozenset(_OUTPUT_NAMING_TOOLS) - _tools_calling_the_seam())}, only in the "
-            f"catalog: {sorted(_tools_calling_the_seam() - frozenset(_OUTPUT_NAMING_TOOLS))}"
+            f"{sorted(_roster() - _tools_calling_the_seam())}, only in the "
+            f"catalog: {sorted(_tools_calling_the_seam() - _roster())}"
         )
+        reads_rows = sorted(name for name in _SOURCE_OUTPUT_NAMING_TOOLS if REGISTRY.get(name).input_ports)
+        assert not reads_rows, f"listed as source tools but they read input ports: {reads_rows}"
 
 
 # ---------------------------------------------------------------------------

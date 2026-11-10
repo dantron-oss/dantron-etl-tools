@@ -15,6 +15,7 @@ Two places to write the same names is two places for them to disagree, and the p
 that decides.
 """
 
+import re
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -24,6 +25,7 @@ from ..tool import (
     REGISTRY,
     ConfigError,
     ConfigField,
+    DataError,
     Ports,
     ToolHelp,
     WorkedExample,
@@ -33,6 +35,8 @@ from ..tool import (
 )
 
 _STRUCT_COLUMN: Final[str] = "__regex_extract_groups__"
+_TEXT_COLUMN: Final[str] = "__regex_extract_groups_text__"
+_ROW_COLUMN: Final[str] = "__regex_extract_groups_row__"
 
 
 class RegexExtractGroups:
@@ -66,6 +70,20 @@ class RegexExtractGroups:
                 required=False,
                 default=None,
             ),
+            "all_matches": ConfigField(
+                type="boolean",
+                description="When true, every match in the text becomes its own row, not only the "
+                "first. A row whose text matches nothing is kept once, with every group null.",
+                required=False,
+                default=False,
+            ),
+            "match_number_column": ConfigField(
+                type="string",
+                description="Name for the column numbering each match from 1, in the order the text "
+                "states them. Required with all_matches, and refused without it.",
+                required=False,
+                default=None,
+            ),
         }
 
     def help(self) -> ToolHelp:
@@ -74,9 +92,10 @@ class RegexExtractGroups:
                 "Every named group of `pattern` becomes a text column, appended after the input "
                 "columns in the order the pattern declares them. A row that matches the whole pattern "
                 "fills every group; a row that does not is null in every group, because this tool "
-                "exists precisely to keep a partial match from surfacing as a silent partial answer."
+                "exists precisely to keep a partial match from surfacing as a silent partial answer. "
+                "With `all_matches`, every match in the text becomes its own row."
             ),
-            examples=(_period_example(), _code_example()),
+            examples=(_period_example(), _code_example(), _every_match_example()),
             notes=(
                 "There is no field listing the output column names beside the pattern: they are read "
                 "off the pattern's own named groups, so there is nowhere for the two to disagree.",
@@ -88,6 +107,20 @@ class RegexExtractGroups:
                 "ASCII it is larger than the position a person would count to. Compare two offsets "
                 "against each other, which is what it is for and is always right; do not read one as "
                 "'the Nth character', and do not slice text with it.",
+                "With all_matches, each match becomes a row: the input row repeated, that match's "
+                "groups, and its number counted from 1. Matches are found left to right and do not "
+                "overlap. A row with no match, an empty text or a missing text is kept once, with the "
+                "groups and the number null. No input row is lost.",
+                "With all_matches, Python's own regular expressions find the matches, one distinct "
+                "text at a time. This is a known exception to working on whole columns. The engine can "
+                "list every match, but not every match's groups. Cutting each match out and reading it "
+                "again on its own gives wrong groups when the pattern looks at the text beside the "
+                "match, as \\b and \\B do. So each match is read where it sits in the full text.",
+                "The engine's list of matches is still checked against Python's for every text. A text "
+                "where the two find different matches is refused, not given rows. A pattern that can "
+                "match empty text, such as a*, is the usual cause.",
+                "position_column is refused with all_matches: the match number already says which "
+                "match comes first, and one offset for several matches would be wrong for all but one.",
             ),
             field_help={
                 "source": "An expression, so the text matched need not already be a stored column.",
@@ -97,7 +130,24 @@ class RegexExtractGroups:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        return None
+        every = bool(config.get("all_matches"))
+        number = config.get("match_number_column")
+        if every and number is None:
+            raise ConfigError(
+                "config field 'match_number_column' is required when 'all_matches' is true: without "
+                "it, two rows from one text cannot be told apart or put back in order"
+            )
+        if not every and number is not None:
+            raise ConfigError(
+                f"config field 'match_number_column' names {number!r}, but 'all_matches' is not true, "
+                f"so there would be no match number to write; set all_matches: true or remove the field"
+            )
+        if every and config.get("position_column") is not None:
+            raise ConfigError(
+                "config field 'position_column' cannot be used with 'all_matches': the match number "
+                "already says which match the text states first, and one offset cannot describe "
+                "several matches"
+            )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a bad `source` or a bad `pattern` before any row is read.
@@ -127,10 +177,22 @@ class RegexExtractGroups:
                     f"of this pattern; one of the two would overwrite the other"
                 )
 
+        number = config.get("match_number_column")
+        if config.get("all_matches") and number is not None:
+            check_output_column(frame, number, "match_number_column", replace=None)
+            if number in names:
+                raise ConfigError(
+                    f"config field 'match_number_column' names {number!r}, which is also a named "
+                    f"group of this pattern; one of the two would overwrite the other"
+                )
+            _python_pattern(config["pattern"], names)
+
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         pattern = config["pattern"]
         source_expr = compile_for(frame, config["source"], "source")
+        if config.get("all_matches"):
+            return Ports({"rows": _every_match(frame, source_expr, pattern, config["match_number_column"])})
         extracted = (
             frame.lazy()
             .with_columns(source_expr.str.extract_groups(pattern).alias(_STRUCT_COLUMN))
@@ -186,6 +248,124 @@ def _group_names(frame: pl.DataFrame, source_expr: pl.Expr, pattern: str) -> tup
             f"derived from"
         )
     return names
+
+
+def _python_pattern(pattern: str, names: tuple[str, ...]) -> re.Pattern[str]:
+    """The pattern compiled by Python's own regular expressions, which all_matches runs it with.
+
+    The engine accepts some spellings Python does not, such as (?<name>...) or a flag in the middle
+    of a pattern. Those are refused here, before any row is read, rather than failing mid-run.
+    """
+    try:
+        compiled = re.compile(pattern)
+    except re.error as error:
+        raise ConfigError(
+            f"config field 'pattern' cannot be used with 'all_matches': {error}. Every match is found "
+            f"with Python's regular expressions, which do not accept this spelling; write named "
+            f"groups as (?P<name>...) and put flags at the start, in pattern: `{pattern}`"
+        ) from error
+    if tuple(compiled.groupindex) != names:
+        raise ConfigError(
+            f"config field 'pattern' cannot be used with 'all_matches': Python reads its named groups "
+            f"as {', '.join(compiled.groupindex)} where the engine reads {', '.join(names)}, in "
+            f"pattern: `{pattern}`"
+        )
+    return compiled
+
+
+def _every_match(frame: pl.DataFrame, source_expr: pl.Expr, pattern: str, number: str) -> pl.DataFrame:
+    """One row per match, the input row repeated; one row with nulls where nothing matches.
+
+    Each distinct text is searched once with ``re.finditer``, over the whole text, so a group that
+    depends on the text around its match is read correctly. The engine's own list of whole matches
+    is the check: a text where Python finds different matches is refused, not given wrong rows.
+    """
+    names = _group_names(frame, source_expr, pattern)
+    compiled = _python_pattern(pattern, names)
+
+    keyed = frame.with_columns(source_expr.alias(_TEXT_COLUMN)).with_row_index(_ROW_COLUMN)
+    distinct = keyed.select(pl.col(_TEXT_COLUMN).drop_nulls().unique())
+    engine = distinct.with_columns(pl.col(_TEXT_COLUMN).str.extract_all(pattern).alias(_STRUCT_COLUMN))
+
+    texts: list[str] = []
+    numbers: list[int] = []
+    groups: dict[str, list[str | None]] = {name: [] for name in names}
+    disagree: list[str] = []
+    for text, expected in engine.iter_rows():
+        found = list(compiled.finditer(text))
+        if [match.group(0) for match in found] != expected:
+            disagree.append(text)
+            continue
+        for index, match in enumerate(found, start=1):
+            texts.append(text)
+            numbers.append(index)
+            for name in names:
+                groups[name].append(match.group(name))
+
+    if disagree:
+        raise DataError(
+            f"regex_extract_groups with all_matches: Python and the engine found different matches "
+            f"in some texts, so their groups cannot be trusted. A pattern that can match empty "
+            f"text, such as a*, is the usual cause, in pattern: `{pattern}`",
+            offending=frame.filter(keyed[_TEXT_COLUMN].is_in(disagree)),
+            total=frame.height,
+        )
+
+    matches = pl.DataFrame(
+        {_TEXT_COLUMN: texts, **groups, number: numbers},
+        schema={_TEXT_COLUMN: pl.String, **dict.fromkeys(names, pl.String), number: pl.Int64},
+    )
+    return (
+        keyed.join(matches, on=_TEXT_COLUMN, how="left")
+        .sort([_ROW_COLUMN, number], nulls_last=True, maintain_order=True)
+        .drop(_ROW_COLUMN, _TEXT_COLUMN)
+    )
+
+
+def _every_match_example() -> WorkedExample:
+    pattern = r"(?P<ref_prefix>[A-Z]{3})-(?P<ref_number>\d+)"
+    inputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {"key": [1, 2, 3], "note": ["ABC-12 then XYZ-345", "no reference", "see DEF-7"]},
+                schema={"key": pl.Int64, "note": pl.String},
+            )
+        }
+    )
+    outputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {
+                    "key": [1, 1, 2, 3],
+                    "note": ["ABC-12 then XYZ-345", "ABC-12 then XYZ-345", "no reference", "see DEF-7"],
+                    "ref_prefix": ["ABC", "XYZ", None, "DEF"],
+                    "ref_number": ["12", "345", None, "7"],
+                    "match": [1, 2, None, 1],
+                },
+                schema={
+                    "key": pl.Int64,
+                    "note": pl.String,
+                    "ref_prefix": pl.String,
+                    "ref_number": pl.String,
+                    "match": pl.Int64,
+                },
+            )
+        }
+    )
+    return WorkedExample(
+        scenario="list every reference a note names, one row each",
+        configuration={
+            "source": "[note]",
+            "pattern": pattern,
+            "all_matches": True,
+            "match_number_column": "match",
+        },
+        explanation="The first note names two references, so it becomes two rows, numbered 1 and 2. "
+        "The second names none and is kept once, with nulls. The third names one.",
+        inputs=inputs,
+        outputs=outputs,
+        check_row_order=True,
+    )
 
 
 def _period_example() -> WorkedExample:

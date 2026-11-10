@@ -53,6 +53,7 @@ from dantron_etl.tool import (
     CATEGORIES,
     REGISTRY,
     ConfigError,
+    DataError,
     ExecutionError,
     Ports,
     ToolError,
@@ -383,7 +384,7 @@ class TestRegexExtractGroupsRefusals:
         """
         template = RegexExtractGroups().config_template()
 
-        assert set(template) == {"source", "pattern", "position_column"}
+        assert set(template) == {"source", "pattern", "position_column", "all_matches", "match_number_column"}
         assert template["position_column"].required is False
         assert template["position_column"].default is None, "absent must mean no such column"
         assert expression_fields(template) == ("source",), "the loader seam is the declared type"
@@ -624,3 +625,351 @@ class TestRegexExtractGroupsRefusesAPositionColumnThatIsNotAName:
         )
 
         assert result["rows"].columns == [*_notes().columns, "month"], "no position column, and no refusal"
+
+
+# ---------------------------------------------------------------------------
+# Every match, one row each: the `all_matches` option
+#
+# A free-text description can name any number of reference numbers or product words, and the
+# number is not bounded, so "the first match" is not the question and "the first N" is an arbitrary
+# limit written into a flow. With `all_matches: true`, each match in the text becomes its own row:
+# the input row repeated once per match, the named groups of that match, and a column numbering the
+# match from 1 in the order the text states them.
+#
+# Rulings pinned here:
+#
+# - A row whose text matches nothing is KEPT, once, with every group null and a null match number.
+#   No input row vanishes. A null text and an empty text are the same case.
+# - Matches are found left to right and do not overlap, and each one is decided whole: a stretch of
+#   text that half-matches is not a match and takes no number.
+# - The match-number column is required with the option and refused without it. It obeys the same
+#   naming rules as every other output column.
+# - `position_column` is refused alongside `all_matches`: the match number already says which match
+#   the text states first, and an offset for only one of the matches would be a wrong answer.
+# - With the option off -- omitted or written as false -- nothing about the tool changes.
+# ---------------------------------------------------------------------------
+
+REF = r"(?P<ref_prefix>[A-Z]{3})-(?P<ref_number>\d+)"
+
+
+def _every_match(
+    frame: pl.DataFrame,
+    pattern: str,
+    *,
+    number_column: str = "match_number",
+    source: str = "[note]",
+    **extra: Any,
+) -> pl.DataFrame:
+    """``rows`` after one run with every match asked for, through the boundary."""
+    config: dict[str, Any] = {
+        "source": source,
+        "pattern": pattern,
+        "all_matches": True,
+        "match_number_column": number_column,
+        **extra,
+    }
+    return run_tool(RegexExtractGroups(), Ports({"rows": frame}), config)["rows"]
+
+
+def _descriptions() -> pl.DataFrame:
+    """Free-text lines naming three references, none, one, and a missing line."""
+    return pl.DataFrame(
+        {
+            "key": [1, 2, 3, 4],
+            "note": [
+                "ABC-12 then XYZ-345, and later QRS-6",
+                "no reference here",
+                "see DEF-7",
+                None,
+            ],
+        },
+        schema={"key": pl.Int64, "note": pl.String},
+    )
+
+
+class TestEveryMatchBecomesARow:
+    """With `all_matches: true`, one output row per match, and no input row lost."""
+
+    def test_each_match_is_its_own_row_numbered_in_the_order_the_text_states_them(self) -> None:
+        """The input row is repeated once per match; each copy carries that match's groups."""
+        rows = _every_match(_descriptions(), REF)
+
+        expected = pl.DataFrame(
+            {
+                "key": [1, 1, 1, 2, 3, 4],
+                "note": [
+                    "ABC-12 then XYZ-345, and later QRS-6",
+                    "ABC-12 then XYZ-345, and later QRS-6",
+                    "ABC-12 then XYZ-345, and later QRS-6",
+                    "no reference here",
+                    "see DEF-7",
+                    None,
+                ],
+                "ref_prefix": ["ABC", "XYZ", "QRS", None, "DEF", None],
+                "ref_number": ["12", "345", "6", None, "7", None],
+                "match_number": [1, 2, 3, None, 1, None],
+            },
+            schema={
+                "key": pl.Int64,
+                "note": pl.String,
+                "ref_prefix": pl.String,
+                "ref_number": pl.String,
+                "match_number": rows.schema["match_number"],
+            },
+        )
+        assert rows.schema["match_number"].is_integer(), "a match number is a count, not text"
+        assert_frame_equal(rows, expected, check_row_order=True)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("nothing to find", id="text_with_no_match"),
+            pytest.param("", id="empty_text"),
+            pytest.param(None, id="missing_text"),
+        ],
+    )
+    def test_a_row_with_no_match_is_kept_once_with_every_group_and_the_number_null(self, text: str | None) -> None:
+        """No input row vanishes. A row that disappeared would drop out of every total downstream."""
+        frame = pl.DataFrame({"key": [7], "note": [text]}, schema={"key": pl.Int64, "note": pl.String})
+
+        rows = _every_match(frame, REF)
+
+        assert rows.height == 1
+        assert rows.row(0, named=True) == {
+            "key": 7,
+            "note": text,
+            "ref_prefix": None,
+            "ref_number": None,
+            "match_number": None,
+        }
+
+    def test_no_input_row_is_lost_and_none_is_invented(self) -> None:
+        """Rows out = for each input row, its match count, or one if it has none."""
+        frame = pl.DataFrame(
+            {"note": ["ABC-1", "ABC-1 ABC-2 ABC-3 ABC-4 ABC-5", "none", None, "ABC-1 x ABC-2"]},
+            schema={"note": pl.String},
+        )
+
+        rows = _every_match(frame, REF)
+
+        assert rows.height == 1 + 5 + 1 + 1 + 2
+        assert rows["match_number"].to_list() == [1, 1, 2, 3, 4, 5, None, None, 1, 2]
+
+    def test_each_match_is_decided_whole_and_a_half_match_takes_no_number(self) -> None:
+        """`c=x` looks like a pair and is not one, so the pair after it is the third match, not the fourth."""
+        frame = pl.DataFrame({"note": ["a=1 b=2 c=x d=4"]})
+
+        rows = _every_match(frame, r"(?P<name>[a-z]+)=(?P<value>\d+)")
+
+        assert rows["name"].to_list() == ["a", "b", "d"]
+        assert rows["value"].to_list() == ["1", "2", "4"]
+        assert rows["match_number"].to_list() == [1, 2, 3]
+
+    def test_matches_are_found_left_to_right_and_do_not_overlap(self) -> None:
+        """`aaaa` holds two `aa`, not three: the search resumes after the end of each match."""
+        frame = pl.DataFrame({"note": ["aaaa"]})
+
+        rows = _every_match(frame, r"(?P<pair>aa)")
+
+        assert rows["pair"].to_list() == ["aa", "aa"]
+        assert rows["match_number"].to_list() == [1, 2]
+
+    def test_an_optional_group_missing_from_one_match_is_null_there_and_filled_in_the_next(self) -> None:
+        """The mirror of the first-match rule: a group that did not take part is null, never ``""``."""
+        frame = pl.DataFrame({"note": ["ABC-12 ABC-13/r2"]})
+
+        rows = _every_match(frame, r"(?P<code>[A-Z]{3}-\d+)(?:/(?P<rev>r\d))?")
+
+        assert rows["code"].to_list() == ["ABC-12", "ABC-13"]
+        assert rows["rev"].to_list() == [None, "r2"]
+
+    def test_the_number_column_comes_after_the_groups_and_an_empty_frame_keeps_the_shape(self) -> None:
+        """Zero rows in, zero rows out, with the same columns and types a full frame would get."""
+        empty = pl.DataFrame({"key": [], "note": []}, schema={"key": pl.Int64, "note": pl.String})
+
+        rows = _every_match(empty, REF)
+
+        assert rows.height == 0
+        assert rows.columns == ["key", "note", "ref_prefix", "ref_number", "match_number"]
+        assert rows.schema["ref_prefix"] == pl.String
+        assert rows.schema["ref_number"] == pl.String
+        assert rows.schema["match_number"].is_integer()
+
+    def test_the_source_may_be_computed(self) -> None:
+        """The source is an expression with the option on, exactly as it is with it off."""
+        frame = pl.DataFrame({"left": ["ABC-1 "], "right": ["XYZ-2"]})
+
+        rows = _every_match(frame, REF, source="concat([left], [right])")
+
+        assert rows["ref_prefix"].to_list() == ["ABC", "XYZ"]
+        assert rows.columns == ["left", "right", "ref_prefix", "ref_number", "match_number"]
+
+
+class TestEveryMatchIsReadInItsOwnText:
+    """Each match is read where it sits in the text, and the two regex engines must agree on the matches."""
+
+    def test_a_pattern_that_looks_beside_its_match_reads_each_match_in_place(self) -> None:
+        """`\\B` asks about the character before the match, so the match cannot be read cut out alone.
+
+        In "box fox x" the x in "box" and in "fox" follow a letter, and the last x follows a space.
+        So two matches. Cut out and re-read on its own, each "x" starts the text, `\\B` fails, and
+        the group comes back null. Reference-number patterns lean on word boundaries in just this way.
+        """
+        frame = pl.DataFrame({"note": ["box fox x"]})
+
+        rows = _every_match(frame, r"\B(?P<l>x)")
+
+        assert rows["l"].to_list() == ["x", "x"]
+        assert rows["match_number"].to_list() == [1, 2]
+
+    def test_a_text_where_the_engines_find_different_matches_is_refused_not_given_rows(self) -> None:
+        """`a*` on "baaa": the engine finds two matches and Python finds three, so no row is trusted.
+
+        The other text, "bbb", is one where the two agree. It is not reported, so the refusal points
+        at the one text that needs looking at.
+        """
+        frame = pl.DataFrame({"key": [1, 2], "note": ["baaa", "bbb"]})
+
+        with pytest.raises(DataError) as caught:
+            _every_match(frame, r"(?P<run>a*)")
+
+        assert caught.value.offending_rows == 1
+        assert caught.value.total_rows == 2
+        assert caught.value.examples == ({"key": 1, "note": "baaa"},)
+
+
+class TestFirstMatchIsStillTheDefault:
+    """The option changes nothing unless it is switched on."""
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            pytest.param({}, id="option_left_out"),
+            pytest.param({"all_matches": False}, id="option_written_as_false"),
+        ],
+    )
+    def test_text_with_several_matches_still_gives_one_row_with_the_first(self, extra: dict[str, Any]) -> None:
+        rows = run_tool(
+            RegexExtractGroups(),
+            Ports({"rows": _descriptions()}),
+            {"source": "[note]", "pattern": REF, **extra},
+        )["rows"]
+
+        assert rows.columns == ["key", "note", "ref_prefix", "ref_number"], "no match-number column appears"
+        assert rows["key"].to_list() == [1, 2, 3, 4], "one row per input row"
+        assert rows["ref_prefix"].to_list() == ["ABC", None, "DEF", None], "the first match only"
+
+    def test_position_column_still_works_with_the_option_written_as_false(self) -> None:
+        rows = run_tool(
+            RegexExtractGroups(),
+            Ports({"rows": _descriptions()}),
+            {"source": "[note]", "pattern": REF, "all_matches": False, "position_column": "at"},
+        )["rows"]
+
+        assert rows["at"].to_list() == [0, None, 4, None]
+
+
+class TestEveryMatchRefusals:
+    """The configuration mistakes the option makes possible, each refused by name before a row is read."""
+
+    def test_the_option_without_a_match_number_column_is_refused(self) -> None:
+        """Without the number, two rows from one text cannot be told apart or put back in order."""
+        with pytest.raises(ConfigError) as caught:
+            run_tool(
+                RegexExtractGroups(),
+                Ports({"rows": _descriptions()}),
+                {"source": "[note]", "pattern": REF, "all_matches": True},
+            )
+
+        assert "match_number_column" in str(caught.value)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            pytest.param({}, id="option_left_out"),
+            pytest.param({"all_matches": False}, id="option_written_as_false"),
+        ],
+    )
+    def test_a_match_number_column_without_the_option_is_refused(self, extra: dict[str, Any]) -> None:
+        """A field that would silently do nothing is a mistake the author should hear about."""
+        with pytest.raises(ConfigError) as caught:
+            run_tool(
+                RegexExtractGroups(),
+                Ports({"rows": _descriptions()}),
+                {"source": "[note]", "pattern": REF, "match_number_column": "n", **extra},
+            )
+
+        message = str(caught.value)
+        assert "match_number_column" in message and "all_matches" in message
+        assert "unknown" not in message, "both fields are known; the refusal is about using one without the other"
+
+    def test_position_column_together_with_the_option_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            _every_match(_descriptions(), REF, position_column="at")
+
+        message = str(caught.value)
+        assert "position_column" in message and "all_matches" in message
+
+    @pytest.mark.parametrize(
+        ("name", "rows"),
+        [
+            pytest.param("note", 4, id="an_input_column"),
+            pytest.param("ref_number", 4, id="a_group_of_its_own_pattern"),
+            pytest.param("note", 0, id="an_input_column_on_an_empty_frame"),
+            pytest.param("ref_number", 0, id="a_group_on_an_empty_frame"),
+        ],
+    )
+    def test_a_match_number_column_that_would_overwrite_another_column_is_refused(self, name: str, rows: int) -> None:
+        """Refused on the frame's shape, so an empty frame is refused the same way as a full one."""
+        frame = _descriptions().head(rows)
+
+        with pytest.raises(ConfigError) as caught:
+            _every_match(frame, REF, number_column=name)
+
+        message = str(caught.value)
+        assert "match_number_column" in message and name in message
+
+    @pytest.mark.parametrize("name", ["", " ", "\t"])
+    def test_a_blank_match_number_column_is_refused(self, name: str) -> None:
+        with pytest.raises(ConfigError) as caught:
+            _every_match(_descriptions(), REF, number_column=name)
+
+        assert "'match_number_column'" in str(caught.value)
+
+    def test_the_pattern_rules_still_apply_with_the_option_on(self) -> None:
+        """An unnamed capturing group has no column to go to, whichever mode reads it."""
+        with pytest.raises(ConfigError) as caught:
+            _every_match(_descriptions(), r"(?P<ref_prefix>[A-Z]{3})-(\d+)")
+
+        assert "(?:" in str(caught.value)
+
+
+class TestEveryMatchInTheCatalog:
+    """The option is declared in the template and shown in an example that conformance runs."""
+
+    def test_the_template_declares_the_option_off_by_default(self) -> None:
+        template = RegexExtractGroups().config_template()
+
+        assert {"all_matches", "match_number_column"} <= set(template)
+        assert template["all_matches"].type == "boolean"
+        assert template["all_matches"].required is False
+        assert template["all_matches"].default is False, "first match stays the default"
+        assert template["match_number_column"].type == "string"
+        assert template["match_number_column"].required is False
+        assert template["match_number_column"].default is None
+        assert expression_fields(template) == ("source",), "neither new field is an expression"
+
+    def test_an_example_shows_a_text_with_several_matches_and_a_row_with_none(self) -> None:
+        """Conformance executes it, so the row-kept-on-no-match rule is checked in the catalog too."""
+        tool = RegexExtractGroups()
+
+        check_tool(tool)
+
+        every = [example for example in tool.help().examples if example.configuration.get("all_matches") is True]
+        assert every, "an example must show the option, or the catalog page never mentions it"
+        example = every[0]
+        number = example.configuration["match_number_column"]
+        out = example.outputs["rows"]
+        assert out.height > example.inputs["rows"].height, "some text in the example must match more than once"
+        assert out[number].null_count() >= 1, "and some row must match nothing and still be there"
+        assert example.check_row_order, "the order of matches is part of the claim"

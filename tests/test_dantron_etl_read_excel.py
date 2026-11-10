@@ -500,10 +500,10 @@ class TestReadExcelInTheCatalog:
         """
         template = ReadExcel().config_template()
 
-        assert set(template) == {"path", "sheet", "has_header", "skip_rows"}
+        assert set(template) == {"path", "sheet", "sheets_matching", "sheet_column", "has_header", "skip_rows"}
         assert template["path"].required is True
         assert template["path"].non_empty is True
-        assert template["sheet"].required is True, "the tab is named, never guessed"
+        assert template["sheet"].required is False, "never guessed: naming neither a tab nor a pattern is refused"
         assert template["sheet"].non_empty is True
         assert template["has_header"].type == "boolean"
         assert template["has_header"].default is True, "a spreadsheet's first row is a header until told otherwise"
@@ -555,3 +555,450 @@ class TestReadExcelInTheCatalog:
         assert isinstance(REGISTRY.get("read_excel"), ReadExcel)
 
         check_registry(REGISTRY)
+
+
+# ---------------------------------------------------------------------------
+# Every tab whose name matches a pattern: the `sheets_matching` option
+#
+# A report workbook that gains one tab a month cannot be read by listing its tabs: a list in the
+# configuration goes stale the month a tab is added, and a tab nobody listed is a tab nobody reads,
+# with no refusal anywhere. `sheets_matching` is the alternative to `sheet`: a pattern, and every
+# tab whose name matches it is read and stacked, in workbook order, with `sheet_column` naming the
+# tab each row came from.
+#
+# Rulings pinned here:
+#
+# - `sheet` and `sheets_matching` are mutually exclusive, and one of them is required. The tab is
+#   still never guessed.
+# - The pattern is found anywhere in the tab name, like `regex_match()` in an expression, and is
+#   case-sensitive. Anchor it with ^ and $ to match whole names.
+# - A pattern that matches no tab is refused, with the tabs that are there. It is almost always a
+#   mistyped pattern, and an empty result would look like a quiet month.
+# - Each matching tab is read exactly as naming it in `sheet` would read it, so every refusal a named
+#   tab can draw (a blank or repeated heading, a tab with nothing on it) is drawn by a matched tab
+#   too, naming that tab. A tab that does not match is never read.
+# - Tabs whose columns differ are stacked by column name. A column one tab lacks is null on that
+#   tab's rows; columns come in the order they first appear, and `sheet_column` comes last.
+# - Where a column's type differs between tabs: whole and fractional figures stack as fractional
+#   figures; a tab where the column holds no values at all takes the other tabs' type; any other
+#   difference -- text on one tab, figures on another -- is refused, naming the column and the tabs.
+#   Converting figures to text quietly would change what every later step compares them with.
+# ---------------------------------------------------------------------------
+
+MONTH_TAB = r"^[A-Z][a-z]{2} \d{4}$"
+
+
+def _monthly(path: Path) -> Path:
+    """A report workbook: a cover tab, three month tabs out of calendar order, and a summary tab.
+
+    The month tabs are deliberately not in alphabetical or calendar order, so a reader that sorted
+    the tabs it found would put the rows in a different order from the workbook.
+    """
+    return _workbook(
+        path,
+        {
+            "Cover": [["Monthly report"]],
+            "Mar 2026": [["key", "amount"], ["m1", 1.5], ["m2", 2.5]],
+            "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+            "Summary": [["total"], [14.25]],
+            "Feb 2026": [["key", "amount"], ["f1", -5.5], ["f2", 7.75]],
+        },
+    )
+
+
+def _matching(path: Path, pattern: str = MONTH_TAB, **extra: Any) -> pl.DataFrame:
+    """Every tab matching ``pattern``, read through the boundary, with the tab named in ``tab``."""
+    return _read({"path": str(path), "sheets_matching": pattern, "sheet_column": "tab", **extra})
+
+
+class TestEveryTabMatchingAPattern:
+    """Every matching tab is read, in workbook order, and each row says which tab it came from."""
+
+    def test_every_matching_tab_is_stacked_in_workbook_order_and_no_other_tab_is_read(self, tmp_path: Path) -> None:
+        rows = _matching(_monthly(tmp_path / "report.xlsx"))
+
+        expected = pl.DataFrame(
+            {
+                "key": ["m1", "m2", "j1", "f1", "f2"],
+                "amount": [1.5, 2.5, 10.25, -5.5, 7.75],
+                "tab": ["Mar 2026", "Mar 2026", "Jan 2026", "Feb 2026", "Feb 2026"],
+            }
+        )
+        assert_frame_equal(rows, expected, check_row_order=True)
+
+    def test_each_tab_stacked_is_exactly_what_naming_that_tab_would_have_read(self, tmp_path: Path) -> None:
+        """The option adds tabs and a column. It changes nothing about how one tab is read."""
+        path = _monthly(tmp_path / "report.xlsx")
+
+        rows = _matching(path)
+
+        for tab in ("Mar 2026", "Jan 2026", "Feb 2026"):
+            alone = _read({"path": str(path), "sheet": tab})
+            from_stack = rows.filter(pl.col("tab") == tab).drop("tab")
+            assert_frame_equal(from_stack, alone, check_row_order=True)
+
+    def test_the_tab_column_is_text_and_comes_after_every_column_read(self, tmp_path: Path) -> None:
+        rows = _matching(_monthly(tmp_path / "report.xlsx"))
+
+        assert rows.columns == ["key", "amount", "tab"]
+        assert rows.schema["tab"] == pl.String
+
+    @pytest.mark.parametrize(
+        ("pattern", "tabs"),
+        [
+            pytest.param("2026", ["Jan 2026", "2026 notes"], id="found_anywhere_in_the_name"),
+            pytest.param(r"^[A-Z][a-z]{2} \d{4}$", ["Jan 2026"], id="anchors_narrow_it_to_whole_names"),
+            pytest.param("(?i)^JAN", ["Jan 2026"], id="case_ignored_only_when_the_pattern_says_so"),
+        ],
+    )
+    def test_the_pattern_is_found_anywhere_in_a_tab_name_unless_anchored(
+        self,
+        tmp_path: Path,
+        pattern: str,
+        tabs: list[str],
+    ) -> None:
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key"], ["j1"]],
+                "2026 notes": [["key"], ["n1"]],
+                "Summary": [["key"], ["s1"]],
+            },
+        )
+
+        rows = _matching(path, pattern)
+
+        assert rows["tab"].unique(maintain_order=True).to_list() == tabs
+
+    def test_the_header_and_skip_settings_apply_to_every_matching_tab(self, tmp_path: Path) -> None:
+        """A report whose every tab has a title block above the table."""
+        titled = [["Report for the month", None], [None, None], ["key", "amount"]]
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [*titled, ["j1", 10.25]],
+                "Feb 2026": [*titled, ["f1", -5.5]],
+            },
+        )
+
+        rows = _matching(path, skip_rows=2)
+
+        assert rows.columns == ["key", "amount", "tab"]
+        assert rows["key"].to_list() == ["j1", "f1"]
+
+    def test_tabs_read_without_headers_stack_by_position_and_a_narrower_tab_is_blank_beyond_its_edge(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The case the option exists for: tabs whose layout moves, read positionally and sorted out later."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["Order", "Cost", "Points"], ["o1", "1.5", "10"]],
+                "Feb 2026": [["Order", "Cost"], ["o2", "2.5"]],
+            },
+        )
+
+        rows = _matching(path, has_header=False)
+
+        assert rows.columns == ["column_1", "column_2", "column_3", "tab"]
+        assert rows["column_1"].to_list() == ["Order", "o1", "Order", "o2"]
+        assert rows["column_3"].to_list() == ["Points", "10", None, None], "the narrower tab has nothing there"
+        assert rows["tab"].to_list() == ["Jan 2026", "Jan 2026", "Feb 2026", "Feb 2026"]
+
+    def test_a_column_one_tab_lacks_is_null_on_that_tabs_rows_and_columns_keep_first_appearance_order(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount", "code"], ["j1", 10.25, "A"]],
+                "Feb 2026": [["key", "code", "extra"], ["f1", "B", "x"]],
+            },
+        )
+
+        rows = _matching(path)
+
+        assert rows.columns == ["key", "amount", "code", "extra", "tab"]
+        assert rows["amount"].to_list() == [10.25, None]
+        assert rows["extra"].to_list() == [None, "x"]
+        assert rows["code"].to_list() == ["A", "B"]
+
+    def test_whole_figures_on_one_tab_and_fractional_on_another_stack_as_figures(self, tmp_path: Path) -> None:
+        """A month of round amounts reads back whole; stacked beside a month with cents, both are figures."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.0], ["j2", 20.0]],
+                "Feb 2026": [["key", "amount"], ["f1", 2.5]],
+            },
+        )
+
+        rows = _matching(path)
+
+        assert rows.schema["amount"] == pl.Float64
+        assert rows["amount"].to_list() == [10.0, 20.0, 2.5]
+
+    def test_a_column_holding_no_values_on_one_tab_takes_its_type_from_the_others(self, tmp_path: Path) -> None:
+        """A month with nothing in a column is not a month of text."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Feb 2026": [["key", "amount"], ["f1", None]],
+            },
+        )
+
+        rows = _matching(path)
+
+        assert rows.schema["amount"] == pl.Float64
+        assert rows["amount"].to_list() == [10.25, None]
+
+    def test_a_matching_tab_with_a_header_and_no_rows_adds_no_rows_and_refuses_nothing(self, tmp_path: Path) -> None:
+        """A month tab set up before the month's figures arrive."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Feb 2026": [["key", "amount"]],
+            },
+        )
+
+        rows = _matching(path)
+
+        assert rows["key"].to_list() == ["j1"]
+        assert rows.schema["amount"] == pl.Float64
+
+
+class TestEveryTabMatchingAPatternRefusals:
+    """The mistakes the option makes possible, each refused by name."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            pytest.param(r"^Dec 2030$", id="a_pattern_no_tab_matches"),
+            pytest.param(r"^jan", id="a_pattern_differing_only_in_case"),
+        ],
+    )
+    def test_a_pattern_that_matches_no_tab_is_refused_with_the_tabs_that_are_there(
+        self,
+        tmp_path: Path,
+        pattern: str,
+    ) -> None:
+        """An empty result would look like a quiet month; it is almost always a mistyped pattern."""
+        path = _monthly(tmp_path / "report.xlsx")
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(path, pattern)
+
+        message = str(caught.value)
+        assert pattern in message, "the pattern that was asked for"
+        assert "Jan 2026" in message and "Summary" in message and "Cover" in message, "and the tabs that exist"
+        assert str(path) in message, "and which workbook"
+        assert not isinstance(caught.value, ExecutionError)
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            pytest.param({"sheet": "Jan 2026", "sheets_matching": MONTH_TAB, "sheet_column": "tab"}, id="both"),
+            pytest.param({}, id="neither"),
+            pytest.param({"sheet": None, "sheets_matching": None}, id="neither_written_as_null"),
+        ],
+    )
+    def test_naming_a_tab_and_a_pattern_or_neither_is_refused_before_the_workbook_is_opened(
+        self,
+        tmp_path: Path,
+        config: dict[str, Any],
+    ) -> None:
+        """The workbook does not exist: the refusal must come from the configuration, not the file."""
+        absent = tmp_path / "absent.xlsx"
+
+        with pytest.raises(ConfigError) as caught:
+            _read({"path": str(absent), **config})
+
+        message = str(caught.value)
+        assert "'sheet'" in message and "'sheets_matching'" in message, message
+        assert "no file" not in message, "refused on the configuration, before the file is looked for"
+
+    def test_a_pattern_the_engine_cannot_compile_is_refused_before_the_workbook_is_opened(self, tmp_path: Path) -> None:
+        absent = tmp_path / "absent.xlsx"
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(absent, "Jan (2026")
+
+        message = str(caught.value)
+        assert "'sheets_matching'" in message and "Jan (2026" in message
+        assert "no file" not in message
+
+    def test_a_pattern_without_a_tab_column_is_refused(self, tmp_path: Path) -> None:
+        """Without the tab named on each row, two months' rows cannot be told apart."""
+        with pytest.raises(ConfigError) as caught:
+            _read({"path": str(tmp_path / "absent.xlsx"), "sheets_matching": MONTH_TAB})
+
+        message = str(caught.value)
+        assert "'sheet_column'" in message
+        assert "no file" not in message
+
+    def test_a_tab_column_beside_a_single_named_tab_is_refused(self, tmp_path: Path) -> None:
+        """It would do nothing, and a field that silently does nothing is a mistake to hear about."""
+        with pytest.raises(ConfigError) as caught:
+            _read({"path": str(tmp_path / "absent.xlsx"), "sheet": "Jan 2026", "sheet_column": "tab"})
+
+        message = str(caught.value)
+        assert "'sheet_column'" in message and "sheets_matching" in message
+        assert "unknown" not in message, "the field is known; the refusal is about using it without a pattern"
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            pytest.param("sheet_column", "", id="empty_tab_column"),
+            pytest.param("sheet_column", "   ", id="whitespace_tab_column"),
+            pytest.param("sheets_matching", "", id="empty_pattern"),
+        ],
+    )
+    def test_a_blank_pattern_or_tab_column_is_refused(self, tmp_path: Path, field: str, value: str) -> None:
+        path = _monthly(tmp_path / "report.xlsx")
+        config = {"path": str(path), "sheets_matching": MONTH_TAB, "sheet_column": "tab", field: value}
+
+        with pytest.raises(ConfigError) as caught:
+            _read(config)
+
+        assert f"'{field}'" in str(caught.value)
+
+    def test_a_tab_column_named_like_a_column_on_any_matching_tab_is_refused(self, tmp_path: Path) -> None:
+        """Checked on every tab read, not only the first: here only the second tab has the column."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key"], ["j1"]],
+                "Feb 2026": [["key", "tab"], ["f1", "x"]],
+            },
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(path)
+
+        message = str(caught.value)
+        assert "'sheet_column'" in message and "tab" in message
+
+    def test_a_column_holding_text_on_one_tab_and_figures_on_another_is_refused_naming_both_tabs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Turning the figures into text quietly would change every later comparison against them."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Feb 2026": [["key", "amount"], ["f1", "n/a"]],
+            },
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(path)
+
+        message = str(caught.value)
+        assert "amount" in message, "which column"
+        assert "Jan 2026" in message and "Feb 2026" in message, "and which tabs disagree"
+
+    def test_a_matching_tab_with_a_bad_header_is_refused_naming_that_tab(self, tmp_path: Path) -> None:
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Feb 2026": [["key", "key"], ["f1", "f2"]],
+            },
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(path)
+
+        message = str(caught.value)
+        assert "Feb 2026" in message and "key" in message
+
+    def test_a_tab_that_does_not_match_is_never_read_so_its_bad_header_refuses_nothing(self, tmp_path: Path) -> None:
+        """The mirror of the case above."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Notes": [["key", "key"], [None, "scribble"]],
+            },
+        )
+
+        rows = _matching(path)
+
+        assert rows["tab"].to_list() == ["Jan 2026"]
+
+    def test_a_matching_tab_with_nothing_on_it_is_refused_naming_the_tab_and_the_workbook(self, tmp_path: Path) -> None:
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Feb 2026": [],
+            },
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(path)
+
+        message = str(caught.value)
+        assert "Feb 2026" in message and str(path) in message
+        assert not isinstance(caught.value, ExecutionError)
+
+
+class TestANamedTabIsStillReadAsBefore:
+    """The option changes nothing for a flow that names its tab."""
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            pytest.param({}, id="new_fields_left_out"),
+            pytest.param({"sheets_matching": None, "sheet_column": None}, id="new_fields_written_as_null"),
+        ],
+    )
+    def test_a_named_tab_in_a_workbook_of_many_similar_tabs_reads_that_tab_alone(
+        self,
+        tmp_path: Path,
+        extra: dict[str, Any],
+    ) -> None:
+        rows = _read({"path": str(_monthly(tmp_path / "report.xlsx")), "sheet": "Feb 2026", **extra})
+
+        expected = pl.DataFrame({"key": ["f1", "f2"], "amount": [-5.5, 7.75]})
+        assert_frame_equal(rows, expected, check_row_order=True)
+
+
+class TestEveryTabMatchingAPatternInTheCatalog:
+    """The option is declared in the template and shown in an example that conformance runs."""
+
+    def test_the_template_declares_the_pattern_as_an_alternative_to_the_named_tab(self) -> None:
+        template = ReadExcel().config_template()
+
+        assert template["sheet"].required is False, "the pattern is the alternative; one of the two is required"
+        assert template["sheet"].default is None
+        assert template["sheet"].non_empty is True
+        assert template["sheets_matching"].type == "string"
+        assert template["sheets_matching"].required is False
+        assert template["sheets_matching"].default is None
+        assert template["sheets_matching"].non_empty is True
+        assert template["sheet_column"].type == "string"
+        assert template["sheet_column"].required is False
+        assert template["sheet_column"].default is None
+        assert expression_fields(template) == (), "a tab pattern is not a column reference"
+
+    def test_an_example_reads_several_matching_tabs_into_one_frame(self) -> None:
+        """Conformance executes the example, so the stacking claim is checked in the catalog."""
+        tool = ReadExcel()
+
+        check_tool(tool)
+
+        stacked = [example for example in tool.help().examples if example.configuration.get("sheets_matching")]
+        assert stacked, "an example must show the option, or the catalog page never mentions it"
+        example = stacked[0]
+        assert example.configuration.get("sheet") is None
+        column = example.configuration["sheet_column"]
+        tabs = example.outputs["rows"][column].unique(maintain_order=True).to_list()
+        assert len(tabs) >= 2, "the example must stack more than one tab"
+        assert example.check_row_order, "workbook order is part of the claim"
+        assert example.setup is not None
