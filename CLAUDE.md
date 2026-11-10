@@ -64,7 +64,7 @@ than the one you are editing. If anything looks impossible, run
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
 Some module docstrings are older than the code. `pipeline.py` still says "nineteen tools"; there
-are 29. The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are
+are 31. The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are
 not.
 
 ## The rules

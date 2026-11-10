@@ -82,19 +82,34 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-29 tools, by category:
+31 tools, by category:
 
 | category | tools |
 |---|---|
 | `input` | `read_csv`, `read_excel`, `read_table` |
-| `preparation` | `cast_columns`, `filter`, `limit_rows`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
+| `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
+| `transform` | `assemble_date`, `case_when`, `connected_components`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
 | `output` | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
+
+Four capabilities that each replace a shape you would otherwise build badly:
+
+- **Records that belong together through a chain** (A links to B, B to C, so A and C are one
+  group) — `connected_components`. A fixed run of joins follows a chain only as deep as you wrote
+  it, and fails silently on a deeper one. Clear blank keys to null first: an empty string is a
+  record, and every row sharing one would join a single giant group.
+- **Best available match, each side used once** — `match_one_to_one`. A join plus filters cannot
+  express it, because whether a candidate is still free depends on which were accepted before it.
+  Remove exact duplicate candidates first: under `ties: refuse`, two identical rows tie with each
+  other and both keys are refused.
+- **Every match in a text, one row each** — `regex_extract_groups` with `all_matches`. Not a fixed
+  number of single-match steps, which caps the count.
+- **Every tab of a workbook whose name follows a pattern** — `read_excel` with `sheets_matching`.
+  Not one read step per tab, which has to be edited every time the workbook gains a tab.
 
 ---
 

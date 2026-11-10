@@ -29,13 +29,13 @@ the rows coming out, and let them look. That is what this is for: every step is 
 instance of a general tool, every step's output is inspectable, and the definition of a run is one
 file a non-developer can read.
 
-## The 29 tools
+## The 31 tools
 
 | category | tools |
 |---|---|
 | **input** | `read_csv`, `read_excel`, `read_table` |
-| **preparation** | `cast_columns`, `filter`, `limit_rows`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| **transform** | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
+| **preparation** | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
+| **transform** | `assemble_date`, `case_when`, `connected_components`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
 | **combine** | `join`, `union` |
 | **text** | `normalize_text`, `regex_extract_groups` |
 | **assert** | `assert_rows` |
