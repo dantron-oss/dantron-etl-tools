@@ -44,7 +44,7 @@ nouns.
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import polars as pl
 import pytest
@@ -62,6 +62,7 @@ from dantron_etl.tool import (
     expression_fields,
     run_tool,
 )
+from dantron_etl.tools.cast_columns import CastColumns
 from dantron_etl.tools.read_excel import ReadExcel
 from dantron_etl.tools.write_excel import WriteExcel
 
@@ -500,7 +501,15 @@ class TestReadExcelInTheCatalog:
         """
         template = ReadExcel().config_template()
 
-        assert set(template) == {"path", "sheet", "sheets_matching", "sheet_column", "has_header", "skip_rows"}
+        assert set(template) == {
+            "path",
+            "sheet",
+            "sheets_matching",
+            "sheet_column",
+            "has_header",
+            "skip_rows",
+            "as_text",
+        }
         assert template["path"].required is True
         assert template["path"].non_empty is True
         assert template["sheet"].required is False, "never guessed: naming neither a tab nor a pattern is refused"
@@ -1002,3 +1011,446 @@ class TestEveryTabMatchingAPatternInTheCatalog:
         assert len(tabs) >= 2, "the example must stack more than one tab"
         assert example.check_row_order, "workbook order is part of the claim"
         assert example.setup is not None
+
+
+# ---------------------------------------------------------------------------
+# Every cell read as text: the `as_text` option
+#
+# A report workbook can hold figures in a column on some tabs and text in the same column on
+# others, and which tabs do which can change from month to month. `sheets_matching` refuses to stack
+# that, correctly. `as_text: true` reads every cell as text instead, so the flow converts each column
+# on purpose one step later with `cast_columns`. That is the discipline the library already applies
+# to name-like columns read from CSV: a code written "3600" must not quietly become a number.
+#
+# Rulings pinned here:
+#
+# - With the option on, every column comes back as text: for one named tab, and for every tab a
+#   pattern matches. The type-conflict refusal cannot arise, so those tabs stack. The tab column is
+#   still added, still text, still last.
+# - The text is what the cell stores, not how Excel displays it. A cell formatted "000" that shows
+#   007 stores 7 and reads "7"; a cell typed as the text 007 reads "007".
+# - A whole figure reads with no decimal point: 12 reads "12", never "12.0". A cell cannot say
+#   whether it was typed 12 or 12.0.
+# - A fractional figure reads as the shortest text that converts back to exactly the stored number:
+#   0.1 reads "0.1", 99999999999.99 reads "99999999999.99", 1/3 reads "0.3333333333333333". Any
+#   shorter would lose digits; any longer would show binary noise ("99999999999.990005493"). The
+#   pin that matters most is the round trip: text cast back with `cast_columns` equals the figure
+#   the default read gives, exactly. Very large and very small figures are pinned by that round trip
+#   only, not by spelling.
+# - A date reads "YYYY-MM-DD". A date with a time of day reads "YYYY-MM-DDTHH:MM:SS", with the T,
+#   because that is the form `cast_columns` reads as a Datetime; the form with a space it refuses.
+#   The limit: a cell stores one number and cannot say whether midnight was meant, so a datetime at
+#   exactly midnight reads as a date. Fractional seconds are not pinned.
+# - A time with no date (a cell formatted hh:mm) reads as that time on 1899-12-31, the day Excel
+#   counts from: 14:05 reads "1899-12-31T14:05:00". That is a limit, pinned so a change is seen.
+# - Negative zero reads "0", not "-0" or "-0.0".
+# - A truth value reads "true" or "false" -- the spelling the default read already gives one in a
+#   column of text.
+# - A blank cell reads as null, never "", so an `is null` check downstream still matches it. A cell
+#   holding text of length zero reads "", exactly as the default read gives it: that cell holds text.
+# - A plain figure in a column that also holds dates is a figure, not a date: 12 reads "12", not
+#   "1900-01-12". Likewise a figure beside a truth value is not "true", and a truth value beside
+#   figures is not "1".
+# - With the option off or left out, the read is exactly what it was. The exact-field-set test
+#   above (`test_the_template_names_the_tab_and_refuses_to_guess_it`) was widened by this one field.
+# ---------------------------------------------------------------------------
+
+AS_TEXT = "as_text"
+
+
+class Formatted(NamedTuple):
+    """A cell written with an Excel number format, so what it shows and what it stores differ."""
+
+    value: Any
+    num_format: str
+
+
+def _typed_workbook(path: Path, sheets: Sheets) -> Path:
+    """Like ``_workbook``, but text is always written as text and a cell may carry its own format.
+
+    ``_workbook`` hands a string to xlsxwriter's ``write``, which turns ``"007"`` into the number 7
+    only if asked; written explicitly here so the leading-zero case is a text cell beyond doubt.
+    A datetime with a time of day gets a format that shows the time, and a time alone gets hh:mm,
+    as a person would set them.
+    """
+    with xlsxwriter.Workbook(str(path)) as workbook:
+        date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
+        stamp_format = workbook.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"})
+        time_format = workbook.add_format({"num_format": "hh:mm"})
+        formats: dict[str, Any] = {}
+        for name, rows in sheets.items():
+            sheet = workbook.add_worksheet(name)
+            for row_index, row in enumerate(rows):
+                for column_index, cell in enumerate(row):
+                    cell_format = None
+                    value = cell
+                    if isinstance(cell, Formatted):
+                        value = cell.value
+                        cell_format = formats.setdefault(
+                            cell.num_format, workbook.add_format({"num_format": cell.num_format})
+                        )
+                    if isinstance(value, dt.datetime):
+                        sheet.write_datetime(row_index, column_index, value, cell_format or stamp_format)
+                    elif isinstance(value, dt.date):
+                        sheet.write_datetime(row_index, column_index, value, cell_format or date_format)
+                    elif isinstance(value, dt.time):
+                        sheet.write_datetime(row_index, column_index, value, cell_format or time_format)
+                    elif value is None:
+                        sheet.write_blank(row_index, column_index, None)
+                    elif isinstance(value, str):
+                        sheet.write_string(row_index, column_index, value)
+                    elif isinstance(value, bool):
+                        sheet.write_boolean(row_index, column_index, value)
+                    else:
+                        sheet.write_number(row_index, column_index, value, cell_format)
+    return path
+
+
+def _one_column(path: Path, cells: Sequence[Any]) -> Path:
+    """A tab named Figures: ``cells`` down a column headed ``value``, each beside a key.
+
+    The key keeps a row whose value is blank from being dropped as layout.
+    """
+    rows = [["value", "key"], *([cell, f"r{index}"] for index, cell in enumerate(cells))]
+    return _typed_workbook(path, {"Figures": rows})
+
+
+def _as_text(path: Path, **extra: Any) -> pl.DataFrame:
+    return _read({"path": str(path), "sheet": "Figures", AS_TEXT: True, **extra})
+
+
+class TestEveryCellReadAsText:
+    """With the option on, a named tab arrives with every column as text."""
+
+    def test_every_column_of_a_named_tab_comes_back_as_text_in_the_tabs_own_order(self, tmp_path: Path) -> None:
+        """Without the option, these five columns arrive as five different types."""
+        path = _typed_workbook(
+            tmp_path / "pack.xlsx",
+            {
+                "Figures": [
+                    ["key", "amount", "count", "on", "flag"],
+                    ["r1", 10.25, 3, dt.date(2026, 1, 31), True],
+                    ["r2", -5.5, 4, dt.date(2026, 2, 28), False],
+                ]
+            },
+        )
+
+        rows = _as_text(path)
+
+        assert rows.columns == ["key", "amount", "count", "on", "flag"]
+        assert rows.schema == pl.Schema({name: pl.String for name in rows.columns})
+        assert rows.row(0) == ("r1", "10.25", "3", "2026-01-31", "true")
+        assert rows.row(1) == ("r2", "-5.5", "4", "2026-02-28", "false")
+
+    @pytest.mark.parametrize(
+        ("cell", "text"),
+        [
+            pytest.param(12, "12", id="a_whole_figure_has_no_point"),
+            pytest.param(12.0, "12", id="even_when_written_as_a_float"),
+            pytest.param(-40, "-40", id="a_negative_whole_figure"),
+            pytest.param(-0.0, "0", id="negative_zero_reads_as_zero"),
+            pytest.param(123456789012345, "123456789012345", id="fifteen_digits_all_kept"),
+            pytest.param(0.1, "0.1", id="a_tenth_is_not_binary_noise"),
+            pytest.param(10.25, "10.25", id="a_money_figure"),
+            pytest.param(-5.5, "-5.5", id="a_negative_money_figure"),
+            pytest.param(99999999999.99, "99999999999.99", id="a_large_money_figure_keeps_its_cents_exactly"),
+            pytest.param(123456789.123, "123456789.123", id="nine_whole_digits_and_three_after_the_point"),
+            pytest.param(0.123456789012, "0.123456789012", id="twelve_digits_after_the_point_are_not_cut"),
+            pytest.param(1 / 3, "0.3333333333333333", id="a_third_keeps_every_digit_the_cell_stores"),
+            pytest.param(True, "true", id="a_true_cell"),
+            pytest.param(False, "false", id="a_false_cell"),
+            pytest.param(dt.date(2026, 1, 31), "2026-01-31", id="a_date"),
+            pytest.param(dt.datetime(2026, 1, 31, 14, 5, 9), "2026-01-31T14:05:09", id="a_date_with_a_time"),
+            pytest.param(dt.datetime(2026, 1, 31, 0, 0, 0), "2026-01-31", id="midnight_reads_as_a_date_the_limit"),
+            pytest.param(dt.time(14, 5), "1899-12-31T14:05:00", id="a_time_alone_reads_on_1899_12_31_the_limit"),
+            pytest.param("007", "007", id="leading_zeros_in_a_text_cell_are_kept"),
+            pytest.param("3600", "3600", id="digits_in_a_text_cell_stay_as_written"),
+            pytest.param("12.50", "12.50", id="a_trailing_zero_in_a_text_cell_is_kept"),
+            pytest.param(None, None, id="a_blank_cell_is_null_not_an_empty_string"),
+            pytest.param("", "", id="a_text_cell_holding_nothing_is_empty_text_as_the_default_read_gives"),
+            pytest.param(Formatted(7, "000"), "7", id="a_figure_shown_as_007_stores_7"),
+            pytest.param(Formatted(1234.5, "$#,##0.00"), "1234.5", id="a_currency_format_is_not_read"),
+            pytest.param(Formatted(10.25, "0.0"), "10.25", id="a_figure_shown_rounded_keeps_its_digits"),
+        ],
+    )
+    def test_a_cell_reads_as_the_text_of_what_it_stores(self, tmp_path: Path, cell: Any, text: str | None) -> None:
+        rows = _as_text(_one_column(tmp_path / "pack.xlsx", [cell]))
+
+        assert rows.schema["value"] == pl.String
+        assert rows["value"].to_list() == [text]
+
+    def test_a_column_mixing_figures_text_dates_and_truth_values_reads_each_cell_as_its_own_text(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The case the option exists for. Each cell's text must not depend on its neighbours.
+
+        A reader that picked one type for the column and coerced every cell to it would turn 12 into
+        a date in 1900, a truth value into 1, or 12 into "true". A reader that let the engine render
+        figures in a text column gives "99999999999.990005493".
+        """
+        cells = [99999999999.99, "n/a", True, dt.date(2026, 1, 31), 12, None, "007", 0.1, False]
+
+        rows = _as_text(_one_column(tmp_path / "pack.xlsx", cells))
+
+        assert rows["value"].to_list() == [
+            "99999999999.99",
+            "n/a",
+            "true",
+            "2026-01-31",
+            "12",
+            None,
+            "007",
+            "0.1",
+            "false",
+        ]
+
+    def test_text_cast_back_gives_exactly_the_figures_dates_and_times_the_default_read_gives(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The contract with the next step: reading as text and casting loses nothing.
+
+        Very large and very small figures are checked here rather than by spelling: "1e+20" and
+        "100000000000000000000" are both faithful, and which one is not a ruling about the figure.
+        """
+        figures = [
+            10.25,
+            99999999999.99,
+            123456789.123,
+            1 / 3,
+            0.1,
+            1e-7,
+            2.5e-10,
+            1e20,
+            12.0,
+            -5.5,
+            0.30000000000000004,
+        ]
+        dates = [dt.date(2026, 1, 31), dt.date(1999, 12, 31), dt.date(2026, 2, 28)]
+        stamps = [
+            dt.datetime(2026, 1, 31, 14, 5, 9),
+            dt.datetime(2026, 2, 1, 9, 30, 0),
+            dt.datetime(2026, 3, 1, 23, 59, 59),
+        ]
+        width = len(figures)
+        sheet = [["figure", "on", "at"]]
+        for index in range(width):
+            sheet.append(
+                [
+                    figures[index],
+                    dates[index] if index < len(dates) else None,
+                    stamps[index] if index < len(stamps) else None,
+                ]
+            )
+        path = _typed_workbook(tmp_path / "pack.xlsx", {"Figures": sheet})
+        default = _read({"path": str(path), "sheet": "Figures"})
+
+        text = _as_text(path)
+        cast = run_tool(
+            CastColumns(),
+            Ports({"rows": text}),
+            {
+                "columns": [
+                    {"column": "figure", "type": "Float64"},
+                    {"column": "on", "type": "Date"},
+                    {"column": "at", "type": "Datetime"},
+                ]
+            },
+        )["rows"]
+
+        assert default.schema["figure"] == pl.Float64, "the fixture is a column of figures"
+        assert cast["figure"].to_list() == default["figure"].to_list(), "every figure, to the last bit"
+        assert cast["on"].to_list() == default["on"].to_list()
+        assert cast["at"].to_list() == default["at"].to_list()
+
+    def test_a_row_blank_in_every_column_is_still_layout_rather_than_a_row(self, tmp_path: Path) -> None:
+        """The mirror of the default read's ruling: the option changes types, not which rows exist."""
+        path = _typed_workbook(
+            tmp_path / "pack.xlsx",
+            {"Figures": [["key", "amount"], ["r1", 10.25], [None, None], ["r2", -5.5]]},
+        )
+
+        rows = _as_text(path)
+
+        assert rows["key"].to_list() == ["r1", "r2"]
+        assert rows["amount"].to_list() == ["10.25", "-5.5"]
+
+    def test_a_title_block_and_a_missing_header_are_handled_as_without_the_option(self, tmp_path: Path) -> None:
+        """skip_rows and has_header mean the same thing with the option on; only the types change."""
+        path = _typed_workbook(
+            tmp_path / "pack.xlsx",
+            {
+                "Figures": [
+                    ["Figures for the period", None],
+                    [None, None],
+                    ["r1", 10.25],
+                    ["r2", 2026],
+                ]
+            },
+        )
+
+        rows = _as_text(path, skip_rows=2, has_header=False)
+
+        assert rows.columns == ["column_1", "column_2"]
+        assert rows.schema == pl.Schema({"column_1": pl.String, "column_2": pl.String})
+        assert rows["column_2"].to_list() == ["10.25", "2026"]
+
+    def test_the_header_row_still_names_the_columns_and_is_still_refused_when_repeated(self, tmp_path: Path) -> None:
+        path = _typed_workbook(tmp_path / "pack.xlsx", {"Figures": [["key", "key"], ["r1", "r2"]]})
+
+        with pytest.raises(ConfigError) as caught:
+            _as_text(path)
+
+        assert "key" in str(caught.value) and "Figures" in str(caught.value)
+
+
+class TestEveryTabMatchingAPatternAsText:
+    """With the option on, tabs that disagree about a column's type stack, as text."""
+
+    def test_text_on_one_tab_and_figures_on_another_stack_and_keep_the_tab_column(self, tmp_path: Path) -> None:
+        """The refusal pinned above, now on its accept side: under the option there is no conflict."""
+        path = _typed_workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Cover": [["Monthly report"]],
+                "Jan 2026": [["key", "amount"], ["j1", 10.25], ["j2", 99999999999.99]],
+                "Feb 2026": [["key", "amount"], ["f1", "n/a"]],
+                "Mar 2026": [["key", "amount"], ["m1", 12]],
+            },
+        )
+
+        rows = _matching(path, **{AS_TEXT: True})
+
+        expected = pl.DataFrame(
+            {
+                "key": ["j1", "j2", "f1", "m1"],
+                "amount": ["10.25", "99999999999.99", "n/a", "12"],
+                "tab": ["Jan 2026", "Jan 2026", "Feb 2026", "Mar 2026"],
+            }
+        )
+        assert_frame_equal(rows, expected, check_row_order=True)
+
+    def test_each_cell_keeps_its_own_text_when_stacked_rather_than_taking_the_stacks_type(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Without the option, whole and fractional tabs stack as figures and 10 becomes 10.0.
+
+        As text, each cell keeps the text of what it stores. A column one tab lacks is still null on
+        that tab's rows, and columns still come in the order they first appear, with the tab last.
+        """
+        path = _typed_workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.0], ["j2", 20.0]],
+                "Feb 2026": [["key", "amount", "on"], ["f1", 2.5, dt.date(2026, 2, 28)]],
+            },
+        )
+
+        rows = _matching(path, **{AS_TEXT: True})
+
+        assert rows.columns == ["key", "amount", "on", "tab"]
+        assert rows.schema == pl.Schema({name: pl.String for name in rows.columns})
+        assert rows["amount"].to_list() == ["10", "20", "2.5"]
+        assert rows["on"].to_list() == [None, None, "2026-02-28"]
+
+    def test_each_tab_stacked_is_exactly_what_naming_that_tab_with_the_option_reads(self, tmp_path: Path) -> None:
+        path = _typed_workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25], ["j2", True]],
+                "Feb 2026": [["key", "amount"], ["f1", "n/a"], ["f2", dt.date(2026, 2, 28)]],
+            },
+        )
+
+        rows = _matching(path, **{AS_TEXT: True})
+
+        for tab in ("Jan 2026", "Feb 2026"):
+            alone = _read({"path": str(path), "sheet": tab, AS_TEXT: True})
+            assert_frame_equal(rows.filter(pl.col("tab") == tab).drop("tab"), alone, check_row_order=True)
+
+
+class TestTheDefaultReadIsUnchanged:
+    """With the option off, nothing about the read moves: not a value, not a type, not a refusal."""
+
+    def test_the_option_set_false_reads_exactly_as_leaving_it_out(self, tmp_path: Path) -> None:
+        path = _typed_workbook(
+            tmp_path / "pack.xlsx",
+            {
+                "Figures": [
+                    ["key", "amount", "count", "on", "flag", "mixed"],
+                    ["r1", 10.25, 3, dt.date(2026, 1, 31), True, 10.25],
+                    ["r2", -5.5, 4, dt.date(2026, 2, 28), False, "n/a"],
+                ]
+            },
+        )
+
+        left_out = _read({"path": str(path), "sheet": "Figures"})
+        set_false = _read({"path": str(path), "sheet": "Figures", AS_TEXT: False})
+
+        assert_frame_equal(set_false, left_out, check_row_order=True)
+        assert left_out.schema["amount"] == pl.Float64 and left_out.schema["on"] == pl.Date
+
+    def test_the_option_set_false_still_refuses_text_on_one_tab_and_figures_on_another(self, tmp_path: Path) -> None:
+        """The mirror of the stacking accept side above."""
+        path = _workbook(
+            tmp_path / "report.xlsx",
+            {
+                "Jan 2026": [["key", "amount"], ["j1", 10.25]],
+                "Feb 2026": [["key", "amount"], ["f1", "n/a"]],
+            },
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            _matching(path, **{AS_TEXT: False})
+
+        message = str(caught.value)
+        assert "amount" in message and "Jan 2026" in message and "Feb 2026" in message
+
+
+class TestAsTextInTheTemplateAndTheCatalog:
+    """The option is a declared boolean, off by default, and shown in an example conformance runs."""
+
+    def test_the_template_declares_the_option_as_a_boolean_that_is_off_by_default(self) -> None:
+        template = ReadExcel().config_template()
+
+        assert template[AS_TEXT].type == "boolean", "a switch, like has_header"
+        assert template[AS_TEXT].required is False
+        assert template[AS_TEXT].default is False, "a flow that does not ask for text gets the types the sheet holds"
+        assert expression_fields(template) == ()
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("true", id="the_word_true_written_as_text"),
+            pytest.param(1, id="a_number"),
+        ],
+    )
+    def test_a_value_that_is_not_true_or_false_is_refused_by_name_before_the_workbook_is_opened(
+        self,
+        tmp_path: Path,
+        value: Any,
+    ) -> None:
+        with pytest.raises(ConfigError) as caught:
+            _read({"path": str(tmp_path / "absent.xlsx"), "sheet": "Figures", AS_TEXT: value})
+
+        message = str(caught.value)
+        assert f"'{AS_TEXT}'" in message
+        assert "no file" not in message, "refused on the configuration, before the file is looked for"
+
+    def test_an_example_reads_a_tab_as_text_and_conformance_checks_it(self) -> None:
+        tool = ReadExcel()
+
+        check_tool(tool)
+
+        help_ = tool.help()
+        as_text = [example for example in help_.examples if example.configuration.get(AS_TEXT) is True]
+        assert as_text, "an example must show the option, or the catalog page never mentions it"
+        example = as_text[0]
+        assert example.setup is not None, "the workbook it reads is a world it declares"
+        assert str(example.configuration["path"]).startswith("{scratch}/")
+        frame = example.outputs["rows"]
+        assert frame.height >= 1
+        assert all(dtype == pl.String for dtype in frame.schema.values()), "the example's output is all text"
+        assert AS_TEXT in help_.field_help, "the field has its own help line"

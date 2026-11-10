@@ -20,6 +20,7 @@ otherwise leak into a flow's own column names, silently, the moment a downstream
 column that came first.
 """
 
+import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -43,6 +44,13 @@ from ..tool import (
 
 _EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/rows.xlsx"
 _MONTHS_EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/months.xlsx"
+_TEXT_EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/mixed.xlsx"
+
+AS_TEXT: Final[str] = "as_text"
+
+# Below this, every whole figure a float holds is exact and fits a 64-bit integer, so it can be
+# written without a decimal point. Above it, the shortest round-trip spelling ("1e+20") is used.
+_EXACT_WHOLE_LIMIT: Final[float] = float(2**53)
 
 
 class ReadExcel:
@@ -97,6 +105,12 @@ class ReadExcel:
                 "to skip -- for a title block laid out above the table.",
                 default=0,
             ),
+            AS_TEXT: ConfigField(
+                type="boolean",
+                description="Read every cell as text, so a column holding figures on one sheet and text "
+                "on another can be stacked and converted on purpose by cast_columns afterwards.",
+                default=False,
+            ),
         }
 
     def help(self) -> ToolHelp:
@@ -110,7 +124,7 @@ class ReadExcel:
                 "wrong sheet the moment a delivered pack puts a cover sheet in front of the figures. "
                 "A row blank in every column is dropped as layout rather than kept as a row of nulls."
             ),
-            examples=(_reads_a_sheet_example(), _reads_matching_sheets_example()),
+            examples=(_reads_a_sheet_example(), _reads_matching_sheets_example(), _reads_as_text_example()),
             notes=(
                 "A sheet named in the configuration that is not in the workbook is refused with "
                 "the sheet names that are there; a name differing only in case or a trailing space "
@@ -130,6 +144,21 @@ class ReadExcel:
                 "figures stack as fractional figures. A sheet where a column holds no values takes "
                 "the other sheets' type. Any other difference, such as text on one sheet and figures "
                 "on another, is refused, naming the column and the sheets.",
+                "as_text makes every column text. Each cell reads as what it stores, not as Excel "
+                "displays it. A whole figure has no point: 12, never 12.0. Any other figure reads as "
+                "the shortest text that converts back to exactly the stored number. A date reads "
+                "YYYY-MM-DD, and a date with a time of day YYYY-MM-DDTHH:MM:SS. A truth value reads "
+                "true or false. A blank cell is null. In a column that mixes kinds, each cell keeps "
+                "its own text.",
+                "as_text has two limits, both because Excel stores a date or a time as one number. "
+                "A time of exactly midnight reads as a date. A cell holding only a time of day "
+                "(formatted hh:mm, say) reads as that time on 31 December 1899: 14:05 reads "
+                "1899-12-31T14:05:00.",
+                "as_text reads the sheet four times instead of once: as text, as figures, as truth "
+                "values and as dates. Each cell takes its text from the reading that suits what it "
+                "holds. So a large sheet takes a few times longer to read. The text reading alone "
+                "would be quicker, but it rounds figures: 99999999999.99 comes back "
+                "99999999999.990005493.",
             ),
             field_help={
                 "sheet": "By name. Refused, with the sheet names present, if it does not match one of "
@@ -137,6 +166,8 @@ class ReadExcel:
                 "skip_rows": "Rows above the header (or the data) to skip; must not be negative.",
                 "sheets_matching": "Found anywhere in the sheet name, like regex_match(). Refused if no sheet matches.",
                 "sheet_column": "Comes after every column read, and holds the sheet's name as text.",
+                AS_TEXT: "Every column arrives as text; cast_columns afterwards states what each one is. "
+                "Off by default.",
             },
         )
 
@@ -145,6 +176,8 @@ class ReadExcel:
         path = config["path"]
         if not path.lower().endswith(".xlsx"):
             raise ConfigError(f"read_excel only reads .xlsx workbooks; got path {path!r}")
+        if not isinstance(config.get(AS_TEXT, False), bool):
+            raise ConfigError(f"config field '{AS_TEXT}' must be true or false, got {config[AS_TEXT]!r}")
         if config["skip_rows"] < 0:
             raise ConfigError(f"config field 'skip_rows' must not be negative, got {config['skip_rows']}")
 
@@ -203,7 +236,7 @@ class ReadExcel:
                 f"read_excel found no sheet named {sheet!r} in {path!r}; the sheets present are: "
                 f"{', '.join(sheet_names)}"
             )
-        return Ports({"rows": _read_sheet(reader, path, sheet, has_header, skip_rows)})
+        return Ports({"rows": _read_sheet(reader, path, sheet, has_header, skip_rows, config[AS_TEXT])})
 
 
 def _read_matching(reader: Any, config: Mapping[str, Any]) -> pl.DataFrame:
@@ -222,7 +255,7 @@ def _read_matching(reader: Any, config: Mapping[str, Any]) -> pl.DataFrame:
 
     frames: list[tuple[str, pl.DataFrame]] = []
     for name in matched:
-        frame = _read_sheet(reader, path, name, config["has_header"], config["skip_rows"])
+        frame = _read_sheet(reader, path, name, config["has_header"], config["skip_rows"], config[AS_TEXT])
         check_output_column(frame, column, "sheet_column", replace=None)
         frames.append((name, frame))
 
@@ -267,7 +300,14 @@ def _stacked_type(column: str, frames: Sequence[tuple[str, pl.DataFrame]]) -> pl
     )
 
 
-def _read_sheet(reader: Any, path: str, sheet: str, has_header: bool, skip_rows: int) -> pl.DataFrame:
+def _read_sheet(
+    reader: Any,
+    path: str,
+    sheet: str,
+    has_header: bool,
+    skip_rows: int,
+    as_text: bool = False,
+) -> pl.DataFrame:
     """One sheet, read exactly as naming it in ``sheet`` reads it."""
     try:
         raw_header = reader.load_sheet_by_name(sheet, header_row=None, skip_rows=skip_rows, n_rows=1).to_polars()
@@ -285,6 +325,8 @@ def _read_sheet(reader: Any, path: str, sheet: str, has_header: bool, skip_rows:
         read_options["skip_rows"] = skip_rows
 
     try:
+        if as_text:
+            return _read_sheet_as_text(path, sheet, has_header, read_options)
         frame = pl.read_excel(
             path,
             sheet_name=sheet,
@@ -297,6 +339,105 @@ def _read_sheet(reader: Any, path: str, sheet: str, has_header: bool, skip_rows:
         raise ConfigError(f"read_excel could not read sheet {sheet!r} in {path!r}: {error}") from error
 
     return frame
+
+
+def _read_sheet_as_text(path: str, sheet: str, has_header: bool, read_options: Mapping[str, Any]) -> pl.DataFrame:
+    """Every cell of one sheet as the text of what it stores.
+
+    The engine reads a whole column as one type and forces every cell into it. So the sheet is read
+    four times: as text, as figures, as truth values and as dates. Each cell then takes its text
+    from the reading that suits what it holds (see ``_cell_as_text``). Empty rows are kept in all
+    four readings so their rows line up. A row blank in every column is dropped at the end, as the
+    default read drops it.
+    """
+
+    def read_as(dtype: str) -> pl.DataFrame:
+        return pl.read_excel(
+            path,
+            sheet_name=sheet,
+            has_header=has_header,
+            read_options={**read_options, "dtypes": dtype},
+            drop_empty_rows=False,
+            drop_empty_cols=False,
+            raise_if_empty=False,
+        )
+
+    text, figure, truth, date = (read_as(dtype) for dtype in ("string", "float", "boolean", "datetime"))
+
+    cell = _cell_as_text()
+    columns = [
+        pl.DataFrame(
+            {
+                "text": text[name].cast(pl.String),
+                "figure": figure[name].cast(pl.Float64),
+                "truth": truth[name].cast(pl.Boolean),
+                "date": date[name].cast(pl.Datetime("ms")),
+            }
+        )
+        .select(cell.alias(name))
+        .to_series()
+        for name in text.columns
+    ]
+
+    frame = pl.DataFrame(columns, schema={name: pl.String for name in text.columns})
+    if frame.width == 0:
+        return frame
+    return frame.filter(~pl.all_horizontal(pl.all().is_null()))
+
+
+def _cell_as_text() -> pl.Expr:
+    """One cell's text, picked from its four readings in columns ``text``, ``figure``, ``truth``, ``date``.
+
+    What each reading gives, by what the cell holds. Measured on the engine; the tests in
+    ``TestEveryCellReadAsText`` fail if it changes.
+
+        cell holds      text reading            figure    truth          date
+        a figure        the figure, rounded     exact     true or false  a day counted from 1900
+        a truth value   "true" or "false"       1 or 0    exact          none
+        a date or time  "2026-01-31 14:05:00"   none      none           exact
+        text            as typed                a figure if it looks like one; none otherwise
+        blank           none                    none      none           none
+
+    So the rule, in order:
+
+    1. No text reading: the cell is blank. It reads as null.
+    2. A truth reading, and the text reading is "true" or "false": a truth value. Keep the text.
+    3. Any other truth reading: a figure. Spell it from the figure reading, since the text reading
+       rounds it.
+    4. No truth reading, but a date reading: a date or time. Spell it from the date reading.
+    5. Anything else is text. Keep it as typed.
+
+    The figure reading cannot decide on its own: a text cell holding "1" has one.
+    """
+    figure = pl.col("figure")
+    # A whole figure is written without a point. Below 2**53 the conversion to a whole number is
+    # exact. -0.0 counts as whole, so it reads "0".
+    whole = (figure == figure.floor()) & (figure.abs() < _EXACT_WHOLE_LIMIT)
+    figure_text = (
+        pl.when(whole).then(figure.cast(pl.Int64, strict=False).cast(pl.String)).otherwise(figure.cast(pl.String))
+    )
+
+    date = pl.col("date")
+    # A cell cannot say whether midnight was meant, so a time of exactly midnight reads as a date.
+    date_text = (
+        pl.when(date == date.dt.truncate("1d"))
+        .then(date.dt.strftime("%Y-%m-%d"))
+        .otherwise(date.dt.strftime("%Y-%m-%dT%H:%M:%S%.f"))
+    )
+
+    text = pl.col("text")
+    has_truth = pl.col("truth").is_not_null()
+    return (
+        pl.when(text.is_null())
+        .then(pl.lit(None, dtype=pl.String))
+        .when(has_truth & text.is_in(["true", "false"]))
+        .then(text)
+        .when(has_truth)
+        .then(figure_text)
+        .when(date.is_not_null())
+        .then(date_text)
+        .otherwise(text)
+    )
 
 
 def _validate_header_row(raw_header: Sequence[Any], sheet: str) -> None:
@@ -390,6 +531,42 @@ def _reads_matching_sheets_example() -> WorkedExample:
         outputs=outputs,
         setup=_months_workbook,
         check_row_order=True,
+    )
+
+
+@contextmanager
+def _mixed_workbook() -> Iterator[None]:
+    """A workbook whose one column mixes a figure, text and a date, for the as_text example."""
+    target = scratch_path(_TEXT_EXAMPLE_PATH)
+    with xlsxwriter.Workbook(str(target)) as workbook:
+        worksheet = workbook.add_worksheet("Sample")
+        date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
+        worksheet.write_row(0, 0, ["key", "amount"])
+        worksheet.write_row(1, 0, ["a", 10.25])
+        worksheet.write_row(2, 0, ["b", 12])
+        worksheet.write_string(3, 0, "c")
+        worksheet.write_string(3, 1, "n/a")
+        worksheet.write_string(4, 0, "d")
+        worksheet.write_datetime(4, 1, dt.date(2026, 1, 31), date_format)
+    yield
+
+
+def _reads_as_text_example() -> WorkedExample:
+    outputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {"key": ["a", "b", "c", "d"], "amount": ["10.25", "12", "n/a", "2026-01-31"]},
+            )
+        }
+    )
+    return WorkedExample(
+        scenario="read a sheet whose column mixes figures, text and a date, every cell as text",
+        configuration={"path": _TEXT_EXAMPLE_PATH, "sheet": "Sample", AS_TEXT: True},
+        explanation="Every column arrives as text, each cell as the text of what it stores: the whole "
+        "figure without a point, the date as YYYY-MM-DD. cast_columns afterwards says what each column is.",
+        inputs=Ports({}),
+        outputs=outputs,
+        setup=_mixed_workbook,
     )
 
 
