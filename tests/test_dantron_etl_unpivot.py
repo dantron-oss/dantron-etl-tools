@@ -77,13 +77,20 @@ Vocabulary is deliberately generic -- code, site, period, amount, label -- becau
 carries no caller's nouns.
 """
 
+import math
+import os
+import subprocess
+import sys
+import textwrap
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import dantron_etl
 from dantron_etl.column_types import DECLARED_DTYPE, DECLARED_TYPES
 from dantron_etl.tool import (
     CATEGORIES,
@@ -970,7 +977,7 @@ class TestTheStatedMeltIsDeclaredAndDocumented:
         """
         template = Unpivot().config_template()
 
-        assert set(template) == {"index", "into", "values", "values_type", "on_invalid"}
+        assert set(template) == {"index", "into", "values", "values_type", "on_invalid", "exclude_nulls"}
         assert not set(template) & YAML_REWRITES, "a field a definition file rewrites is not a field"
         assert expression_fields(template) == (), "every field here names a column or a type; none computes one"
 
@@ -1264,3 +1271,464 @@ class TestUnpivotInTheCatalog:
         assert isinstance(REGISTRY.get("unpivot"), Unpivot)
 
         check_registry(REGISTRY)
+
+
+# ---------------------------------------------------------------------------
+# exclude_nulls: leave out the cells that hold nothing, as SQL's UNPIVOT does
+# ---------------------------------------------------------------------------
+
+#: Melt every column outside ``record_id`` into a name and a value. This is the shape a flow uses
+#: to find columns by their heading in a sheet whose heading row moves from tab to tab.
+CELLS: dict[str, Any] = {"index": ["record_id"], "into": "column", "values": "value"}
+
+#: The same melt with the option switched on.
+CELLS_EXCLUDING_NULLS: dict[str, Any] = {**CELLS, "exclude_nulls": True}
+
+
+def _sheet_as_text() -> pl.DataFrame:
+    """A sheet read with every cell as text, the shape the workbook reader hands over.
+
+    Each edge of the rule is in it, and each is a cell somebody might call "empty":
+
+    - ``None``: a blank cell. The workbook reader reads a blank as null, never as ``""``. This is
+      the only kind of cell the option leaves out.
+    - ``""``: an empty string. It is a value, so it is kept.
+    - ``"   "``: text that is only spaces. Somebody typed it, so it is kept.
+    - ``"0"``: a zero written as text. Kept. It catches a tool that tests truthiness.
+
+    ``record_id`` is null on one row. An index cell is not a melted cell, so that row's values must
+    all survive. Otherwise the option would drop rows for a reason nobody asked for.
+
+    The columns are not in alphabetical order (``c3``, ``c1``, ``c2``), so a tool that sorted its
+    output would fail the order checks.
+    """
+    return pl.DataFrame(
+        {
+            "record_id": [1, 2, None, 4],
+            "c3": ["Heading", None, "", "x"],
+            "c1": [None, "   ", "0", None],
+            "c2": [None, None, "Total", "7.5"],
+        },
+        schema={"record_id": pl.Int64, "c3": pl.String, "c1": pl.String, "c2": pl.String},
+    )
+
+
+def _figures() -> pl.DataFrame:
+    """A block of figures holding a null, a not-a-number, a zero and a negative zero.
+
+    Only the null is left out. Not-a-number is a float value, the result of ``0.0 / 0.0``, and
+    SQL's UNPIVOT keeps it: ``EXCLUDE NULLS`` means NULL and nothing else. Dropping it would also
+    hide a fault upstream. Zero is a measurement, and so is negative zero.
+    """
+    return pl.DataFrame(
+        {
+            "record_id": [1, 2, 3],
+            "q2": [float("nan"), None, 0.0],
+            "q1": [None, -0.0, 4.25],
+        },
+        schema={"record_id": pl.Int64, "q2": pl.Float64, "q1": pl.Float64},
+    )
+
+
+def _melt(frame: pl.DataFrame, config: Mapping[str, Any]) -> Ports:
+    return run_tool(Unpivot(), Ports({"rows": frame}), config)
+
+
+class TestExcludeNullsLeavesOutCellsHoldingNothing:
+    """``exclude_nulls: true`` leaves out a melted cell that is null. Nothing else is left out.
+
+    **Why the option exists.** A flow finds columns by their heading in a workbook whose heading row
+    sits in a different place on each tab. It melts every cell into a row and keeps the rows that
+    hold something. On a real report that is about 104 million rows. About 88 million of them are
+    blank, and the run needs about 20 GB. The blank rows are built only to be thrown away.
+
+    **The rule is one sentence: a null cell is left out, and every other cell comes through.** That
+    is what SQL's ``UNPIVOT`` does by default (``EXCLUDE NULLS``). This tool follows the SQL
+    operation it is named after, so:
+
+    - null is left out;
+    - an empty string ``""`` is kept. SQL keeps ``''``, and an empty string is a value. The
+      workbook reader already reads a blank cell as null, so the blanks this option is for are
+      nulls already;
+    - text that is only spaces is kept. Somebody typed it;
+    - not-a-number in a float column is kept. It is a value in SQL too. It usually means a
+      division went wrong upstream, and a reader needs to see that, not lose it.
+
+    A flow that wants ``""`` treated as nothing turns it into null in a step before this one, where
+    a reader can see it. A second setting for "what counts as empty" would be a second rule to
+    learn, and a place for two readers to disagree.
+
+    **Off by default.** Without the option every cell becomes a row, nulls included, as before.
+    ``test_a_cell_holding_nothing_becomes_a_row_holding_nothing`` still holds unchanged.
+    """
+
+    def test_the_option_leaves_out_null_cells_and_nothing_else(self) -> None:
+        """The whole contract on one frame, with the expected output written out row by row.
+
+        Column-major in the frame's own order (c3, then c1, then c2), with every null cell gone.
+        The ``""``, the spaces and the ``"0"`` all survive. So does every value on the row whose
+        ``record_id`` is null, because an index cell is not a melted cell.
+        """
+        result = _melt(_sheet_as_text(), CELLS_EXCLUDING_NULLS)
+
+        expected = pl.DataFrame(
+            {
+                "record_id": [1, None, 4, 2, None, None, 4],
+                "column": ["c3", "c3", "c3", "c1", "c1", "c2", "c2"],
+                "value": ["Heading", "", "x", "   ", "0", "Total", "7.5"],
+            },
+            schema={"record_id": pl.Int64, "column": pl.String, "value": pl.String},
+        )
+        assert_frame_equal(result["rows"], expected, check_row_order=True, check_exact=True)
+
+    def test_survivors_keep_the_order_the_full_melt_gives_them(self) -> None:
+        """The output is today's output with the null rows taken out, in the same order.
+
+        This is the property that matters downstream. A flow that takes the first row holding a
+        heading gets the same heading with the option on as with it off. A tool that sorted the
+        survivors, or grouped them by record instead of by column, would change which heading comes
+        first, and no figure would look wrong.
+
+        Checked on the text block and on the figures. The filter here is ``is_not_null``, which
+        keeps not-a-number, so on the figures this also pins that not-a-number survives.
+        """
+        for frame in (_sheet_as_text(), _figures()):
+            full = _melt(frame, CELLS)["rows"]
+            excluded = _melt(frame, CELLS_EXCLUDING_NULLS)["rows"]
+
+            expected = full.filter(pl.col("value").is_not_null())
+            assert_frame_equal(excluded, expected, check_row_order=True, check_exact=True)
+            assert excluded.height < full.height, "the fixture has null cells, so some rows must go"
+
+    def test_not_a_number_and_zero_are_values_and_are_kept(self) -> None:
+        """Not-a-number, zero and negative zero all come through. Only the null goes.
+
+        Spelled out on its own because not-a-number is the case most likely to be "fixed" later.
+        In the query engine ``is_null`` and ``is_nan`` are different questions, and SQL's
+        ``EXCLUDE NULLS`` asks only the first.
+        """
+        result = _melt(_figures(), CELLS_EXCLUDING_NULLS)["rows"]
+
+        assert result["column"].to_list() == ["q2", "q2", "q1", "q1"]
+        assert result["record_id"].to_list() == [1, 3, 2, 3]
+        values = result["value"].to_list()
+        assert math.isnan(values[0]), "not-a-number is a value and is kept"
+        assert values[1] == 0.0
+        assert values[2] == 0.0 and math.copysign(1.0, values[2]) == -1.0, "negative zero arrives as itself"
+        assert values[3] == 4.25
+        assert result["value"].null_count() == 0
+
+    def test_the_column_types_are_the_ones_the_full_melt_gives(self) -> None:
+        """Leaving rows out changes no type: not the index, not the name column, not the values."""
+        for frame in (_sheet_as_text(), _figures(), _rows()):
+            index = ["record_id"] if "record_id" in frame.columns else BASE["index"]
+            config = {**CELLS, "index": index}
+            full = _melt(frame, config)["rows"]
+            excluded = _melt(frame, {**config, "exclude_nulls": True})["rows"]
+
+            assert excluded.schema == full.schema
+
+    def test_a_column_with_no_type_at_all_contributes_no_rows(self) -> None:
+        """A column declared ``Null`` holds nothing, so all of its rows are left out.
+
+        The value column still takes the other columns' type. That is Union's ruling, and it is the
+        same with the option on as off.
+        """
+        result = _melt(
+            _one_null_column(),
+            {"index": ["code"], "into": "measure", "values": "amount", "exclude_nulls": True},
+        )
+
+        expected = pl.DataFrame(
+            {"code": ["a", "b"], "measure": ["opening", "opening"], "amount": [1.0, 2.0]},
+            schema={"code": pl.String, "measure": pl.String, "amount": pl.Float64},
+        )
+        assert_frame_equal(result["rows"], expected, check_row_order=True)
+
+    def test_a_frame_whose_every_melted_cell_is_null_gives_no_rows_and_the_full_schema(self) -> None:
+        """No cell holds anything, so no row comes out, and the schema is the full melt's.
+
+        A step after this one still has columns to compile against. Checked three ways: typed
+        columns holding only nulls, columns declared ``Null``, and a frame with no rows.
+        """
+        typed_but_empty = pl.DataFrame(
+            {"record_id": [1, 2], "c1": [None, None], "c2": [None, None]},
+            schema={"record_id": pl.Int64, "c1": pl.String, "c2": pl.String},
+        )
+        no_type_at_all = pl.DataFrame(
+            {"record_id": [1, 2], "c1": [None, None], "c2": [None, None]},
+            schema={"record_id": pl.Int64, "c1": pl.Null, "c2": pl.Null},
+        )
+        no_rows = _sheet_as_text().head(0)
+
+        for frame in (typed_but_empty, no_type_at_all, no_rows):
+            full = _melt(frame, CELLS)["rows"]
+            excluded = _melt(frame, CELLS_EXCLUDING_NULLS)["rows"]
+
+            assert excluded.height == 0
+            assert excluded.schema == full.schema
+
+        assert dict(_melt(typed_but_empty, CELLS_EXCLUDING_NULLS)["rows"].schema) == {
+            "record_id": pl.Int64,
+            "column": pl.String,
+            "value": pl.String,
+        }
+
+    def test_leaving_the_option_out_or_writing_false_gives_exactly_todays_output(self) -> None:
+        """Off is the old behaviour: every value, every row, every type, every note.
+
+        Checked on plain melts and on a melt with a stated type that empties values. That path also
+        carries notes and a per-row status, and both must be unchanged too.
+        """
+        for frame, config in ((_rows(), BASE), (_sheet_as_text(), CELLS), (_mixed_block(), TYPED)):
+            absent = _melt(frame, config)
+            written_false = _melt(frame, {**config, "exclude_nulls": False})
+
+            assert_frame_equal(written_false["rows"], absent["rows"], check_row_order=True, check_exact=True)
+            assert written_false.notes == absent.notes
+            assert set(written_false.status) == set(absent.status)
+            for port, status in absent.status.items():
+                assert_frame_equal(written_false.status[port], status, check_row_order=True)
+
+        # And leaving it out still gives what the original tests wrote down: 21 rows, nulls included.
+        assert _melt(_rows(), BASE)["rows"].height == 21
+
+    def test_the_option_leaves_its_input_untouched(self) -> None:
+        """Leaving rows out of the output must not leave rows out of the input."""
+        frame = _sheet_as_text()
+        before = frame.clone()
+
+        _melt(frame, CELLS_EXCLUDING_NULLS)
+
+        assert_frame_equal(frame, before)
+
+
+class TestExcludeNullsWithAStatedType:
+    """With ``values_type`` given, a cell is judged as it arrived, before it is converted.
+
+    A cell that held nothing is left out. A cell that held text which did not read as the stated
+    type is kept, because it held something. Under ``on_invalid: empty`` it comes through as a row
+    holding nothing, with its warning mark beside it, as it does today. If the option dropped it,
+    the note would count values a reader can no longer find, and the per-row status would point at
+    rows that are not there.
+    """
+
+    def test_a_value_that_failed_to_convert_is_kept_and_marked_and_a_blank_is_left_out(self) -> None:
+        """On the mixed block, c's blank p2 and b's blank comment go. The three failed comments stay."""
+        result = _melt(_mixed_block(), {**TYPED, "exclude_nulls": True})
+        rows = result["rows"]
+
+        expected = pl.DataFrame(
+            {
+                "code": ["a", "b", "d"] + ["a", "b", "c", "d"] + ["a", "c", "d"],
+                "period": ["p2"] * 3 + ["p1"] * 4 + ["comment"] * 3,
+                "amount": [5.0, 2.0, 7.0] + [10.0, 3.0, 8.0, A_HAIR_UNDER_HALF_A_CENT] + [None, None, None],
+            },
+            schema={"code": pl.String, "period": pl.String, "amount": pl.Float64},
+        )
+        assert_frame_equal(rows, expected, check_row_order=True, check_exact=True)
+
+        # The marks line up with the rows that are left, and blame the column each row came from.
+        status = result.status["rows"]
+        assert status.height == rows.height
+        assert status["level"].to_list() == ["ok"] * 7 + ["warning"] * 3
+        reasons = status["reason"].to_list()
+        for position in range(7, 10):
+            assert [entry["column"] for entry in reasons[position]] == ["comment"]
+
+        assert len(result.notes) == 1
+        assert result.notes[0].startswith("3 of "), f"three values failed to read: {result.notes[0]}"
+
+    def test_a_value_that_will_not_convert_still_stops_the_run(self) -> None:
+        """The option leaves out what was empty. It does not hide what was wrong.
+
+        Without ``on_invalid: empty``, text that does not read as a figure stops the run, naming
+        the column, exactly as it does with the option off.
+        """
+        strict = {key: value for key, value in TYPED.items() if key != "on_invalid"}
+
+        with pytest.raises(DataError) as caught:
+            _melt(_mixed_block(), {**strict, "exclude_nulls": True})
+
+        assert "comment" in str(caught.value)
+
+
+#: Run in a fresh interpreter by the memory test below, once per melt. It melts a sparse frame,
+#: with ``exclude_nulls`` set to the argument it is given, and prints two numbers: the rows that
+#: came out, and how far the melt raised the process's peak memory above where it started.
+_PEAK_MEMORY_SCRIPT = textwrap.dedent(
+    """
+    import sys
+
+    import polars as pl
+
+    from dantron_etl.tool import Ports, run_tool
+    from dantron_etl.tools.unpivot import Unpivot
+
+
+    def status_bytes(key: str) -> int:
+        with open("/proc/self/status") as status:
+            for line in status:
+                if line.startswith(key + ":"):
+                    return int(line.split()[1]) * 1024
+        raise SystemExit(f"/proc/self/status has no {key}")
+
+
+    rows, columns = 20_000, 200
+    # One cell in fifty holds something, about the share a sparse report sheet has.
+    frame = pl.DataFrame({"record_id": pl.int_range(rows, eager=True)}).with_columns(
+        pl.when((pl.int_range(pl.len()) + i) % 50 == 0).then(pl.lit(f"v{i}")).otherwise(None).alias(f"c{i}")
+        for i in range(columns)
+    )
+    config = {"index": ["record_id"], "into": "column", "values": "value", "exclude_nulls": sys.argv[1] == "on"}
+
+    # Warm up on a few rows, so loading code and starting threads is not counted.
+    run_tool(Unpivot(), Ports({"rows": frame.head(50)}), config)
+
+    # Building the frame set a high-water mark of its own. Writing 5 to clear_refs resets the
+    # mark to the memory in use now, so the peak read afterwards is the melt's alone.
+    with open("/proc/self/clear_refs", "w") as clear:
+        clear.write("5")
+    start = status_bytes("VmRSS")
+
+    melted = run_tool(Unpivot(), Ports({"rows": frame}), config)["rows"]
+    print(melted.height, status_bytes("VmHWM") - start)
+    """
+)
+
+
+def _measure_melt(exclude_nulls: bool) -> tuple[int, int]:
+    """Melt the sparse frame in a fresh interpreter; give back (rows out, peak memory growth in bytes)."""
+    source = Path(dantron_etl.__file__).resolve().parent.parent
+    path = os.pathsep.join(part for part in (str(source), os.environ.get("PYTHONPATH", "")) if part)
+
+    finished = subprocess.run(
+        [sys.executable, "-c", _PEAK_MEMORY_SCRIPT, "on" if exclude_nulls else "off"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": path},
+        timeout=300,
+        check=False,
+    )
+    assert finished.returncode == 0, f"the measuring interpreter failed:\n{finished.stderr}"
+    height, growth = (int(word) for word in finished.stdout.split())
+    return height, growth
+
+
+class TestExcludeNullsDoesNotBuildTheRowsItLeavesOut:
+    """The option exists to save memory, so it is measured on memory, not only on its output.
+
+    A melt that builds every row and then filters gives the right output and saves nothing: the
+    blank rows are built first and thrown away after. No output check can tell the two apart, so
+    this test measures peak memory.
+
+    How it stays reliable:
+
+    - Each melt runs in its own fresh interpreter. Nothing an earlier test allocated hides the peak,
+      and the second melt cannot reuse memory the first one freed. (In one interpreter it does: a
+      second full melt measured about 10 MB against 70 MB for the first.)
+    - The peak is reset after the frame is built, so the frame's own construction is not counted.
+      Linux allows this by writing 5 to ``/proc/self/clear_refs``; the peak is then ``VmHWM``.
+    - It compares against itself, not against a fixed number. The full melt of the same frame is the
+      yardstick, so the result does not depend on the machine, the allocator or the polars version.
+    - It checks the yardstick moved by a clear amount. If the full melt barely raised the peak, the
+      measurement cannot see anything, and the test fails rather than passing by accident.
+
+    Measured with a prototype on this frame: the full melt raised the peak by 65-75 MB. A melt that
+    builds one column at a time and keeps only the cells holding something raised it by 0.5-1.5 MB.
+    The bar is a quarter of the full melt, well clear of both.
+    """
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="resetting and reading the peak needs Linux's /proc")
+    def test_the_option_keeps_peak_memory_well_below_a_full_melt(self) -> None:
+        full_height, full_growth = _measure_melt(exclude_nulls=False)
+        kept, lean_growth = _measure_melt(exclude_nulls=True)
+
+        assert full_height == 20_000 * 200
+        assert kept == 20_000 * 200 // 50, "one cell in fifty holds something"
+        assert full_growth > 20_000_000, (
+            f"the full melt raised peak memory by only {full_growth:,} bytes, so this measurement "
+            f"cannot tell a lean melt from a full one"
+        )
+        assert lean_growth < full_growth / 4, (
+            f"with exclude_nulls the peak grew by {lean_growth:,} bytes, against {full_growth:,} for "
+            f"the full melt, so the rows it leaves out were built first and thrown away after"
+        )
+
+
+class TestExcludeNullsIsDeclaredAndDocumented:
+    """The option as a definition file meets it: a true-or-false switch, off unless written."""
+
+    def test_the_template_declares_an_optional_switch_that_is_off_by_default(self) -> None:
+        """A boolean, not required, defaulting to false, so a flow that says nothing gets today's melt.
+
+        A switch rather than a word. Any pair of words for this (include/exclude, keep/drop) is a
+        second spelling of true and false, and true and false are what a definition file already
+        writes safely for a boolean field.
+        """
+        field = Unpivot().config_template()["exclude_nulls"]
+
+        assert field.type == "boolean"
+        assert field.required is False
+        assert field.default is False, "a flow that says nothing must get every cell, as before"
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            pytest.param("true", id="the_word_true_in_quotes"),
+            pytest.param("yes", id="the_word_yes_in_quotes"),
+            pytest.param(1, id="the_number_one"),
+            pytest.param(["true"], id="a_list"),
+        ],
+    )
+    @pytest.mark.parametrize("height", [4, 0], ids=["a_frame_with_rows", "a_frame_with_no_rows"])
+    def test_anything_but_true_or_false_is_refused_by_name(self, written: Any, height: int) -> None:
+        """Refused before a row moves, naming the field, on a full frame and an empty one alike.
+
+        ``"true"`` in quotes is text, and ``1`` is a number. Accepting either would make a switch
+        that some spellings turn on and others quietly leave off.
+
+        The refusal must be the type refusal, not "unknown config field": a field the tool does not
+        declare is refused by name too, so the name alone would not show the field exists.
+        """
+        frame = _sheet_as_text().head(height)
+
+        with pytest.raises(ConfigError) as caught:
+            _melt(frame, {**CELLS, "exclude_nulls": written})
+
+        message = str(caught.value)
+        assert "'exclude_nulls'" in message, f"refusal should name the field: {message}"
+        assert "boolean" in message, f"refusal should say a true-or-false is wanted: {message}"
+        assert "unknown config field" not in message, f"the field must be declared: {message}"
+
+    def test_a_worked_example_shows_where_the_rule_stops(self) -> None:
+        """The catalog shows the option, and its example shows both sides of the rule.
+
+        Conformance runs every example, so this one is checked, not just written. It has to show a
+        null cell left out and an empty string kept. An example holding only nulls would teach a
+        reader that "empty" cells go, which is the wrong half of the rule.
+        """
+        tool = Unpivot()
+
+        check_tool(tool)
+
+        excluding = [example for example in tool.help().examples if example.configuration.get("exclude_nulls") is True]
+        assert excluding, "the option a flow reaches for needs an example a flow can copy"
+
+        example = excluding[0]
+        assert example.check_row_order, "the order of the survivors is part of the contract"
+
+        index = set(example.configuration["index"])
+        frame = example.inputs["rows"]
+        melted = [name for name in frame.columns if name not in index]
+        values = str(example.configuration["values"])
+        output = example.outputs["rows"]
+
+        nulls_in = sum(frame[name].null_count() for name in melted)
+        assert nulls_in > 0, "an example with no null cell shows nothing being left out"
+        assert output.height == frame.height * len(melted) - nulls_in, "exactly the null cells are left out"
+        assert output[values].null_count() == 0
+
+        empty_strings_in = sum(int((frame[name] == "").sum()) for name in melted if frame.schema[name] == pl.String)
+        assert empty_strings_in > 0, "the example must hold an empty string, to show it is kept"
+        assert int((output[values] == "").sum()) == empty_strings_in, "and every empty string comes through"

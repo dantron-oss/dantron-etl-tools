@@ -77,9 +77,21 @@ nothing and the wide frame travels on to steps written for a long one. That is t
 ``cast_columns`` already gives a cast to the type a column already holds: a configuration edited
 halfway, where saying so beats agreeing.
 
-**A null in a melted cell survives as a row holding nothing.** The row existed and the cell was
-empty, and both facts are data. Dropping it would take a pair out of the long frame with nothing
-left to say it had been there, and a later count by name would be short without looking short.
+**By default, a null in a melted cell survives as a row holding nothing.** The row existed and the
+cell was empty, and both facts are data. Dropping it would take a pair out of the long frame with
+nothing left to say it had been there, and a later count by name would be short without looking
+short.
+
+**``exclude_nulls: true`` leaves those rows out.** This follows SQL's ``UNPIVOT``, whose default is
+``EXCLUDE NULLS``. Only a null is left out. An empty string, text that is only spaces, a zero and
+not-a-number are all values, and all come through. A null in an index column drops nothing; only
+melted cells are judged. With ``values_type``, a cell is judged as it arrived, before it is
+converted. So text that fails to convert under ``on_invalid: empty`` still comes through as a row
+holding nothing, with its warning mark. The survivors keep the order the full melt gives them.
+
+The option exists to save memory. A sparse sheet melted whole can be mostly blank rows. So the
+null cells are dropped one melted column at a time, before that column's rows are built. Building
+the whole melt and filtering it afterwards would give the same rows and save nothing.
 
 **Every refusal is read off the schema**, so a frame of a million rows and a frame of none are
 refused identically. An unpivot whose configuration only fails once a row has been seen is an
@@ -173,6 +185,13 @@ class Unpivot:
                 "reports how many, out of how many. Refused without 'values_type' beside it.",
                 enum=_ON_INVALID_ENUM,
             ),
+            "exclude_nulls": ConfigField(
+                type="boolean",
+                description="Whether a melted cell that is null is left out instead of becoming a "
+                "row holding nothing. Only null is left out: an empty string, spaces, zero and "
+                "not-a-number all come through. Left out, it is false.",
+                default=False,
+            ),
         }
 
     def help(self) -> ToolHelp:
@@ -186,7 +205,12 @@ class Unpivot:
                 "all the rows of the second, in the frame's own column order. This is the inverse "
                 "of 'cross_tab'."
             ),
-            examples=(_periods_become_rows(), _some_columns_stay_put(), _a_stated_type_melts_a_mixed_block()),
+            examples=(
+                _periods_become_rows(),
+                _some_columns_stay_put(),
+                _a_stated_type_melts_a_mixed_block(),
+                _null_cells_are_left_out(),
+            ),
             notes=(
                 "There is no field naming the columns to melt. Every column is either in 'index' "
                 "or melted, so such a list would say nothing new, could contradict 'index', and "
@@ -197,8 +221,15 @@ class Unpivot:
                 "stacking columns, for the same reason: null is the one value belonging to every "
                 "family. Columns that genuinely differ are refused, naming both columns and both "
                 "types.",
-                "A null in a melted cell comes back as a row holding nothing, never as no row. "
-                "The row existed and the cell was empty, and both are facts about the data.",
+                "By default a null in a melted cell comes back as a row holding nothing, not as no "
+                "row. The row existed and the cell was empty, and both are facts about the data.",
+                "'exclude_nulls: true' leaves a null melted cell out, as SQL's UNPIVOT does by "
+                "default (EXCLUDE NULLS). Only null goes. An empty string, spaces, zero and "
+                "not-a-number are values and come through. A null in an index column drops "
+                "nothing. With 'values_type', a cell is judged as it arrived, so text that fails "
+                "to convert is kept as a row holding nothing, with its warning mark. The rows that "
+                "are left keep the order the full melt gives them. The null rows are never built, "
+                "so a sparse sheet melts in a fraction of the memory.",
                 "Row order is column-major and is not sorted, so a step needing another order puts "
                 "a Sort after it, as everywhere else here.",
                 "An 'index' that covers every column is refused: the step would reshape nothing "
@@ -221,6 +252,7 @@ class Unpivot:
                 "values": "The new column holding the cell, at the melted columns' type.",
                 "values_type": "The type every melted column is read as; without it they must agree.",
                 "on_invalid": "What a value that will not convert does. Only beside 'values_type'.",
+                "exclude_nulls": "Leave out melted cells that are null. Nothing else is left out.",
             },
         )
 
@@ -312,9 +344,9 @@ class Unpivot:
             settled = _settled_dtype(frame, melted)
             values = {column: frame[column].cast(settled) for column in melted}
             notes: list[str] = []
-            status: pl.DataFrame | None = None
+            blocks: list[pl.DataFrame] | None = None
         else:
-            values, notes, status = _stated_values(
+            values, notes, blocks = _stated_values(
                 frame, melted, config["values_type"], config["on_invalid"] == "empty"
             )
 
@@ -322,17 +354,43 @@ class Unpivot:
         # column-major ruling expressed directly rather than produced and then re-ordered: there is
         # no intermediate order for a later change to leak through. The index columns are selected
         # in the order they were configured, which is the order the output carries them in.
-        parts = [
-            frame.select(
-                *(pl.col(name) for name in index),
-                pl.lit(column, dtype=pl.String).alias(config["into"]),
-            ).with_columns(values[column].alias(config["values"]))
-            for column in melted
-        ]
+        #
+        # With 'exclude_nulls', each column's null cells are dropped before its rows are built, so
+        # the rows the option leaves out are never built at all. That is the reason the option
+        # exists: it saves memory. Do not move the filter after the stack. The output would be the
+        # same, but the full melt would be built first and nothing would be saved.
+        # TestExcludeNullsDoesNotBuildTheRowsItLeavesOut measures peak memory and fails if it is.
+        #
+        # A cell is judged as it arrived, before any 'values_type' conversion. So a value that
+        # failed to convert is not null here, and it stays.
+        #
+        # The status comes in one block per column for the same reason. Each block must lose the
+        # same rows its column loses, using the same mask, so a mark stays beside its own row.
+        # Only then are the blocks stacked.
+        column_blocks = blocks if blocks is not None else [None] * len(melted)
+        parts: list[pl.DataFrame] = []
+        kept_blocks: list[pl.DataFrame] = []
+        for column, block in zip(melted, column_blocks, strict=True):
+            part = frame.select(*(pl.col(name) for name in index))
+            value = values[column]
+            if config["exclude_nulls"]:
+                keep = frame[column].is_not_null()
+                part = part.filter(keep)
+                value = value.filter(keep)
+                if block is not None:
+                    block = block.filter(keep)
+            parts.append(
+                part.with_columns(
+                    pl.lit(column, dtype=pl.String).alias(config["into"]),
+                    value.alias(config["values"]),
+                )
+            )
+            if block is not None:
+                kept_blocks.append(block)
         return Ports(
             {"rows": pl.concat(parts, how="vertical")},
             notes=notes,
-            status={"rows": status} if status is not None else None,
+            status={"rows": pl.concat(kept_blocks, how="vertical")} if blocks is not None else None,
         )
 
 
@@ -381,7 +439,7 @@ def _stated_values(
     melted: Sequence[str],
     declared: str,
     lenient: bool,
-) -> tuple[dict[str, pl.Series], list[str], pl.DataFrame | None]:
+) -> tuple[dict[str, pl.Series], list[str], list[pl.DataFrame] | None]:
     """Each melted column read as the stated type, a note per column that lost something, and the rows.
 
     ``cast_columns``' answer to the same question, copied whole and down to the wording of the note:
@@ -397,6 +455,10 @@ def _stated_values(
     stacking rather than a second one that has to be kept in step with it -- a clean column
     contributes a block of ``ok`` exactly where its rows are. ``None`` when nothing was lost, since
     a status that degraded nothing is refused at the boundary and rightly.
+
+    The blocks come back unstacked, one per melted column, and the caller stacks them. They have to
+    stay apart until then. With ``exclude_nulls`` the caller drops rows from each column, and the
+    block for that column must lose exactly the same rows, or the marks slide onto the wrong rows.
     """
     target = DECLARED_DTYPE[declared]
     values: dict[str, pl.Series] = {}
@@ -450,7 +512,7 @@ def _stated_values(
                 offending=offending,
                 total=frame.height,
             ) from error
-    return values, notes, (pl.concat(blocks, how="vertical") if degraded else None)
+    return values, notes, (blocks if degraded else None)
 
 
 def _periods_become_rows() -> WorkedExample:
@@ -568,6 +630,43 @@ def _a_stated_type_melts_a_mixed_block() -> WorkedExample:
         "leaves the text holding nothing and reports how many values that was, out of how many, so "
         "the run carries on and the size of it carries on with it. A later step drops the rows "
         "whose name is not a period.",
+        inputs=inputs,
+        outputs=outputs,
+        check_row_order=True,
+    )
+
+
+def _null_cells_are_left_out() -> WorkedExample:
+    inputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {
+                    "record_id": [1, 2, 3],
+                    "c1": ["Heading", None, ""],
+                    "c2": [None, "Total", "7.5"],
+                },
+                schema={"record_id": pl.Int64, "c1": pl.String, "c2": pl.String},
+            )
+        }
+    )
+    outputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {
+                    "record_id": [1, 3, 2, 3],
+                    "column": ["c1", "c1", "c2", "c2"],
+                    "value": ["Heading", "", "Total", "7.5"],
+                },
+                schema={"record_id": pl.Int64, "column": pl.String, "value": pl.String},
+            )
+        }
+    )
+    return WorkedExample(
+        scenario="melt a sparse sheet and leave out the cells that hold nothing",
+        configuration={"index": ["record_id"], "into": "column", "values": "value", "exclude_nulls": True},
+        explanation="The two null cells are left out: record 2's c1 and record 1's c2. Record 3's "
+        "c1 holds an empty string, which is a value, so it comes through. Only null is left out. "
+        "The rows that are left keep the order the full melt gives them: all of c1, then all of c2.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
