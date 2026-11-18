@@ -90,7 +90,6 @@ from dantron_etl.tool import (
     Tool,
     ToolError,
     apply_defaults,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -874,4 +873,3 @@ class TestReadCsvInTheCatalog:
 
         assert "read_csv" in REGISTRY
         assert isinstance(REGISTRY.get("read_csv"), ReadCsv)
-        check_registry(REGISTRY)

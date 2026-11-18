@@ -175,7 +175,7 @@ class ReadExcel:
         """Refuse the wrong format or a negative skip count before a workbook is ever opened."""
         path = config["path"]
         if not path.lower().endswith(".xlsx"):
-            raise ConfigError(f"read_excel only reads .xlsx workbooks; got path {path!r}")
+            raise ConfigError(f"read_excel only reads .xlsx workbooks; got path '{path}'")
         if not isinstance(config.get(AS_TEXT, False), bool):
             raise ConfigError(f"config field '{AS_TEXT}' must be true or false, got {config[AS_TEXT]!r}")
         if config["skip_rows"] < 0:
@@ -221,19 +221,19 @@ class ReadExcel:
 
         target = Path(path)
         if not target.exists():
-            raise ConfigError(f"read_excel found no file at {path!r}")
+            raise ConfigError(f"read_excel found no file at '{path}'")
 
         try:
             reader = fastexcel.read_excel(path)
         except Exception as error:
-            raise ConfigError(f"read_excel could not open {path!r} as an XLSX workbook: {error}") from error
+            raise ConfigError(f"read_excel could not open '{path}' as an XLSX workbook: {error}") from error
 
         sheet_names = reader.sheet_names
         if sheet is None:
             return Ports({"rows": _read_matching(reader, config)})
         if sheet not in sheet_names:
             raise ConfigError(
-                f"read_excel found no sheet named {sheet!r} in {path!r}; the sheets present are: "
+                f"read_excel found no sheet named {sheet!r} in '{path}'; the sheets present are: "
                 f"{', '.join(sheet_names)}"
             )
         return Ports({"rows": _read_sheet(reader, path, sheet, has_header, skip_rows, config[AS_TEXT])})
@@ -249,7 +249,7 @@ def _read_matching(reader: Any, config: Mapping[str, Any]) -> pl.DataFrame:
     matched = [name for name, hit in zip(sheet_names, hits, strict=True) if hit]
     if not matched:
         raise ConfigError(
-            f"config field 'sheets_matching' pattern `{pattern}` matches no sheet in {path!r}; the "
+            f"config field 'sheets_matching' pattern `{pattern}` matches no sheet in '{path}'; the "
             f"sheets present are: {', '.join(sheet_names)}"
         )
 
@@ -312,10 +312,10 @@ def _read_sheet(
     try:
         raw_header = reader.load_sheet_by_name(sheet, header_row=None, skip_rows=skip_rows, n_rows=1).to_polars()
     except Exception as error:
-        raise ConfigError(f"read_excel could not read sheet {sheet!r} in {path!r}: {error}") from error
+        raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
     if raw_header.height == 0:
-        raise ConfigError(f"read_excel found nothing on sheet {sheet!r} in {path!r}")
+        raise ConfigError(f"read_excel found nothing on sheet {sheet!r} in '{path}'")
 
     if has_header:
         _validate_header_row(raw_header.row(0), sheet)
@@ -336,7 +336,7 @@ def _read_sheet(
             raise_if_empty=False,
         )
     except Exception as error:
-        raise ConfigError(f"read_excel could not read sheet {sheet!r} in {path!r}: {error}") from error
+        raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
     return frame
 

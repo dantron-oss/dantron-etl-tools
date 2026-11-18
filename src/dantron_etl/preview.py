@@ -74,6 +74,23 @@ MANIFEST = "ports.json"
 PANEL_MANIFEST = "panels.json"
 PANEL_DIR = "panels"
 
+#: The kinds of file the source route hands out: pipeline and settings YAML, Python source and
+#: Markdown. Everything else under the source root -- data, keys, workbooks -- is refused.
+SOURCE_SUFFIXES = frozenset({".py", ".yaml", ".yml", ".md"})
+
+
+def _inside(directory: Path, name: str) -> Path:
+    """``directory / name``, refused unless it resolves to a file inside ``directory``.
+
+    The names come from a run's own index files. Those are written by this module, but they are
+    files on disk, and one edited or copied from elsewhere must not point the viewer at the rest of
+    the machine.
+    """
+    landed = (directory / name).resolve()
+    if not landed.is_relative_to(directory.resolve()):
+        raise PreviewError(f"{name!r} is outside the run's directory, so it is not served")
+    return landed
+
 
 #: The name a port's marks travel under while they are being sliced beside its rows. A port is a
 #: client's data and may well carry a column called ``status`` of its own, so the name is checked
@@ -271,7 +288,7 @@ class PortStore:
         if name is None:
             have = ", ".join(sorted(written)) or "no panels at all"
             raise PreviewError(f"no panel for step {step!r} in this run; it has: {have}")
-        return (self.directory / PANEL_DIR / name).read_text(encoding="utf-8")
+        return _inside(self.directory / PANEL_DIR, name).read_text(encoding="utf-8")
 
     def window(
         self,
@@ -325,7 +342,7 @@ class PortStore:
                     f"no step said anything about the rows of port {port!r}, so it cannot be narrowed to {level!r}"
                 )
 
-        scan = pl.scan_parquet(self.directory / entry["file"])
+        scan = pl.scan_parquet(_inside(self.directory, entry["file"]))
         beside = _beside(columns)
         if marks is not None:
             # A status is written row for row with the port it describes -- the tool boundary
@@ -349,7 +366,7 @@ class PortStore:
             # joining a row to its mark, and a join on a column either side happens to carry would
             # be a different question with a plausible answer.
             scan = pl.concat(
-                [scan, pl.scan_parquet(self.directory / marks["file"]).select(pl.struct(pl.all()).alias(beside))],
+                [scan, pl.scan_parquet(_inside(self.directory, marks["file"])).select(pl.struct(pl.all()).alias(beside))],
                 how="horizontal",
             )
             if level is not None:
@@ -443,6 +460,42 @@ def _index(runs: list[Run]) -> bytes:
     ).encode()
 
 
+def _source_file(source_root: Path | None, query: dict[str, list[str]]) -> tuple[int, Path | str]:
+    """The source file a page asked for, or the status and sentence that refuse it.
+
+    Served only when all of these hold:
+
+    - the path is relative;
+    - it resolves, with ``..`` and symlinks followed, to a file inside the source root;
+    - no part of where it landed starts with a dot, so no ``.env`` and nothing in ``.git``;
+    - the file it landed on is one of :data:`SOURCE_SUFFIXES`.
+
+    A refusal is 403 for a file this route never serves and 404 for one that is not there.
+    """
+    if source_root is None:
+        return 404, "this service was not given a source root, so it serves no code"
+    asked = (query.get("path") or [""])[0]
+    if not asked:
+        return 400, "name the file to read, as 'path' relative to the source root"
+    if "\x00" in asked:
+        return 404, "the path holds a null character, so no file has that name"
+
+    path = Path(asked)
+    allowed = ", ".join(sorted(SOURCE_SUFFIXES))
+    if path.is_absolute() or path.anchor:
+        return 403, f"{asked!r} is absolute; give the path relative to the source root"
+    landed = (source_root / path).resolve()
+    if not landed.is_relative_to(source_root):
+        return 403, f"{asked!r} leads outside the source root; only files under it are served"
+    if any(part.startswith(".") for part in landed.relative_to(source_root).parts):
+        return 403, f"{asked!r} leads to a hidden file or folder, which is not served"
+    if landed.suffix.lower() not in SOURCE_SUFFIXES:
+        return 403, f"{asked!r} is not a kind of file this route serves; it serves: {allowed}"
+    if not landed.is_file():
+        return 404, f"{asked!r} is not a file under the source root"
+    return 200, landed
+
+
 def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandler]:
     """The request handler, reading ``root`` on each request so a re-run is picked up without a restart."""
 
@@ -472,10 +525,11 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
                 return
 
             if parsed.path == "/api/source":
-                try:
-                    self._source(parse_qs(parsed.query))
-                except PreviewError as refusal:
-                    self._json(400, {"error": str(refusal)})
+                status, found = _source_file(source_root, parse_qs(parsed.query))
+                if isinstance(found, Path):
+                    self._send(200, found.read_bytes(), "text/plain; charset=utf-8")
+                else:
+                    self._json(status, {"error": found})
                 return
 
             name, _, tail = rest.partition("/")
@@ -517,29 +571,6 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
             serves = f"/{name}/, /{name}/api/ports, /{name}/api/rows?port=..., /{name}/api/panel?step=..."
             self._json(404, {"error": f"no route {parsed.path!r}; run {name!r} serves: {serves}"})
 
-        def _source(self, query: dict[str, list[str]]) -> None:
-            """One source file, as text, from under the declared root and nowhere else.
-
-            The path is resolved and then checked to be inside the root, rather than inspected for
-            '..' beforehand: a check on the spelling of a path is a check on one way of writing a
-            way out, and a symlink or an absolute path is another. Resolving first and asking where
-            the answer landed covers every spelling at once.
-            """
-            if source_root is None:
-                raise PreviewError("this service was not given a source root, so it serves no code")
-
-            asked = (query.get("path") or [""])[0]
-            if not asked:
-                raise PreviewError("name the file to read, as 'path' relative to the source root")
-
-            landed = (source_root / asked).resolve()
-            if not landed.is_relative_to(source_root):
-                raise PreviewError(f"{asked!r} is outside the source root; only files under it are served")
-            if not landed.is_file():
-                raise PreviewError(f"{asked!r} is not a file under the source root")
-
-            self._send(200, landed.read_bytes(), "text/plain; charset=utf-8")
-
         def _window(self, run: Run, query: dict[str, list[str]]) -> dict[str, Any]:
             port = (query.get("port") or [""])[0]
             try:
@@ -576,7 +607,7 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
 def serve(
     root: Path,
     *,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8899,
     source_root: Path | None = None,
 ) -> ThreadingHTTPServer:
@@ -592,10 +623,15 @@ def serve(
     **This is a local viewer, and it carries no authentication, no authorisation and no transport
     security.** Every row of every port is readable by anything that can reach the socket. That is a
     deliberate trade, not an omission: the alternative is a dependency chain and a login on a tool
-    one person uses to look at their own run. The default host is ``0.0.0.0`` only because a process
-    inside a container is unreachable from its host otherwise -- it is how the port is forwarded, and
-    it is not a judgement that the socket is safe to expose. Anyone putting this anywhere a stranger
-    can reach is not hardening this module; they are choosing a different one.
+    one person uses to look at their own run. Anyone putting this anywhere a stranger can reach is
+    not hardening this module; they are choosing a different one.
+
+    It listens on ``127.0.0.1`` unless ``host`` says otherwise, so only this machine can reach it.
+    Passing ``host="0.0.0.0"`` lets every machine on the network read every row of every run; a
+    process in a container whose port is published to its host needs exactly that.
+
+    With ``source_root``, ``/api/source?path=`` hands out source files under it: YAML, Python and
+    Markdown only, never a hidden file, never anything outside it. See :func:`_source_file`.
     """
     server = ThreadingHTTPServer(
         (host, port), _handler(Path(root), Path(source_root).resolve() if source_root else None)

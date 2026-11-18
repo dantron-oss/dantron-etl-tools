@@ -61,7 +61,6 @@ from dantron_etl.tool import (
     ConfigError,
     Ports,
     ToolError,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -403,7 +402,7 @@ class TestNormalizeTextKeys:
         rows = result["rows"]
 
         assert rows.columns == [*frame.columns, "party_key"], "the key is appended, never inserted"
-        assert_frame_equal(rows.select(frame.columns), frame), "every column and every row, in order"
+        assert_frame_equal(rows.select(frame.columns), frame)  # every column and every row, in order
         assert rows["party_key"].to_list() == ["acme", "northwind trading", None]
         assert_frame_equal(frame, before)
 
@@ -577,12 +576,10 @@ class TestNormalizeTextInTheCatalog:
             "this tool preserves row order, and an example is where that is proved rather than claimed"
         )
 
-    def test_it_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_it_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "normalize_text" in REGISTRY
         assert isinstance(REGISTRY.get("normalize_text"), NormalizeText)
-
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------

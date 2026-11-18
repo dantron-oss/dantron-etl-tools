@@ -99,7 +99,6 @@ from dantron_etl.tool import (
     ConfigError,
     DataError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -1265,12 +1264,10 @@ class TestUnpivotInTheCatalog:
             for example in examples
         ), "an example must melt more than one column and pin the order they come back in"
 
-    def test_unpivot_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_unpivot_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "unpivot" in REGISTRY
         assert isinstance(REGISTRY.get("unpivot"), Unpivot)
-
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------
@@ -1639,6 +1636,7 @@ class TestExcludeNullsDoesNotBuildTheRowsItLeavesOut:
     The bar is a quarter of the full melt, well clear of both.
     """
 
+    @pytest.mark.slow
     @pytest.mark.skipif(sys.platform != "linux", reason="resetting and reading the peak needs Linux's /proc")
     def test_the_option_keeps_peak_memory_well_below_a_full_melt(self) -> None:
         full_height, full_growth = _measure_melt(exclude_nulls=False)

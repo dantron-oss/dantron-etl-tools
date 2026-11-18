@@ -24,8 +24,9 @@ HOST_PORT = 8899
 
 
 def main() -> None:
-    # The source root is the repository, so a page can show the code behind a step. Read-only, and
-    # every path is resolved and checked to have landed inside it -- see `preview.serve`.
+    # The source root is the repository, so a page can show the code behind a step. Only YAML,
+    # Python and Markdown files inside it are served, never a hidden one such as .env -- see
+    # `preview.serve`. It listens on this machine only; pass host="0.0.0.0" to serve() to change that.
     server = serve(RUNS_ROOT, port=HOST_PORT, source_root=PROJECT_ROOT)
 
     runs = sorted(p.name for p in RUNS_ROOT.iterdir() if (p / "ports.json").is_file()) if RUNS_ROOT.is_dir() else []

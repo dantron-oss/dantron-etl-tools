@@ -53,7 +53,6 @@ from dantron_etl.tool import (
     ConfigError,
     Ports,
     ToolError,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -489,9 +488,7 @@ class TestAssembleDateInTheCatalog:
             "and the default day, because a period that names only a month is the motivating case"
         )
 
-    def test_assemble_date_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_assemble_date_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "assemble_date" in REGISTRY
         assert isinstance(REGISTRY.get("assemble_date"), AssembleDate)
-
-        check_registry(REGISTRY)

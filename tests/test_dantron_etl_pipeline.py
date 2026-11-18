@@ -37,7 +37,9 @@ Vocabulary here is deliberately neutral -- entries, headers, codes, keys -- beca
 into other repositories and must carry no caller's nouns.
 """
 
+import os
 import re
+import json
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -45,7 +47,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Final
 
-import orjson
 import polars as pl
 import pytest
 
@@ -62,6 +63,14 @@ from dantron_etl.pipeline import (
 )
 from dantron_etl.runner import run_pipeline
 from dantron_etl.tool import REGISTRY, ConfigError, ToolError, apply_defaults, validate_against_template
+
+# The environment a child interpreter is started with, when a test needs one with nothing inherited.
+# Linux needs only a PATH. Windows will not start Python without SYSTEMROOT, so it is passed on
+# where it exists.
+_BARE_ENVIRONMENT: Final[dict[str, str]] = {
+    "PATH": os.pathsep.join(["/usr/bin", "/bin"]) if os.name != "nt" else os.environ.get("PATH", ""),
+    **({"SYSTEMROOT": os.environ["SYSTEMROOT"]} if "SYSTEMROOT" in os.environ else {}),
+}
 
 # ---------------------------------------------------------------------------
 # The fixture flow
@@ -635,7 +644,7 @@ class TestTheLibraryTakesNoFileFormatDependency:
             text=True,
             check=True,
             cwd=str(source_root),
-            env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(source_root), "PYTHONDONTWRITEBYTECODE": "1"},
+            env={**_BARE_ENVIRONMENT, "PYTHONPATH": str(source_root), "PYTHONDONTWRITEBYTECODE": "1"},
         )
         assert probe.stdout.strip() == "False", (
             "importing the pipeline module must not pull in a YAML parser: the dependency belongs to "
@@ -797,14 +806,14 @@ class TestARuleValueIsEscapedForTheAuthorRatherThanByThem:
             "steps:\n"
             "  - id: entries\n"
             "    tool: read_csv\n"
-            f'    config: {{path: "{entries}"}}\n'
+            f"    config: {{path: '{entries}'}}\n"
             "  - id: kept\n"
             "    tool: filter\n"
             '    config: {predicate: "[code] = ${rules.kept_code}"}\n'
             "    inputs: {rows: entries.rows}\n"
             "  - id: published\n"
             "    tool: write_csv\n"
-            f'    config: {{path: "{kept}"}}\n'
+            f"    config: {{path: '{kept}'}}\n"
             "    inputs: {rows: kept.true}\n",
             encoding="utf8",
         )
@@ -1408,17 +1417,17 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
         """
         document_path = tmp_path / "document.json"
         rules_path = tmp_path / "rules.json"
-        document_path.write_bytes(orjson.dumps(_document()))
-        rules_path.write_bytes(orjson.dumps(RULES))
+        document_path.write_text(json.dumps(_document()), encoding="utf8")
+        rules_path.write_text(json.dumps(RULES), encoding="utf8")
 
         probe = tmp_path / "probe.py"
         probe.write_text(
             "import sys\n"
             "from pathlib import Path\n"
-            "import orjson\n"
+            "import json\n"
             "from dantron_etl.pipeline import load_pipeline\n"
-            "document = orjson.loads(Path(sys.argv[1]).read_bytes())\n"
-            "rules = orjson.loads(Path(sys.argv[2]).read_bytes())\n"
+            "document = json.loads(Path(sys.argv[1]).read_text(encoding='utf8'))\n"
+            "rules = json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))\n"
             "print(load_pipeline(document, rules=rules).fingerprint(sys.argv[3]))\n",
             encoding="utf8",
         )
@@ -1433,7 +1442,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
                 check=True,
                 cwd=str(tmp_path),
                 env={
-                    "PATH": "/usr/bin:/bin",
+                    **_BARE_ENVIRONMENT,
                     "PYTHONPATH": str(source_root),
                     "PYTHONDONTWRITEBYTECODE": "1",
                     "PYTHONHASHSEED": seed,

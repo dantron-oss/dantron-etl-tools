@@ -55,6 +55,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,12 @@ def _probe(body: str, argument: str, *, cwd: Path, env_overrides: Mapping[str, s
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
     )
     return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@cache
+def _script_probe(script_name: str) -> dict:
+    """``_SCRIPT_PROBE`` for one viewer script, run from this checkout. One subprocess per script per session."""
+    return _probe(_SCRIPT_PROBE, str(SCRIPTS_DIR / script_name), cwd=REPO_ROOT)
 
 
 def _make_project(root: Path, marker: str = "pyproject.toml") -> Path:
@@ -428,7 +435,7 @@ class TestTheViewerScriptsNoLongerReachIntoClientCode:
         of the question that survives the library being installed somewhere that has no client
         package to import at all.
         """
-        probe = _probe(_SCRIPT_PROBE, str(SCRIPTS_DIR / script_name), cwd=REPO_ROOT)
+        probe = _script_probe(script_name)
 
         assert CLIENT_PACKAGE not in probe["top_level"], (
             f"{script_name} imported {CLIENT_PACKAGE!r}. The scripts ship with the library, so the "
@@ -445,7 +452,7 @@ class TestTheViewerScriptsNoLongerReachIntoClientCode:
         a path that is not under this worktree -- which is what "a page built from a pipeline file
         the author had never touched" looked like from the outside.
         """
-        probe = _probe(_SCRIPT_PROBE, str(SCRIPTS_DIR / script_name), cwd=REPO_ROOT)
+        probe = _script_probe(script_name)
 
         strays = {name: value for name, value in probe["paths"].items() if not Path(value).is_relative_to(REPO_ROOT)}
         assert not strays, (
@@ -480,7 +487,7 @@ class TestTheViewerScriptsNoLongerReachIntoClientCode:
         under active change, and pinning a filename it is in the middle of moving would be a test
         about today's bytes rather than about the root.
         """
-        probe = _probe(_SCRIPT_PROBE, str(SCRIPTS_DIR / script_name), cwd=REPO_ROOT)
+        probe = _script_probe(script_name)
 
         resolved = {Path(value) for value in probe["paths"].values()}
         wanted = {REPO_ROOT / relative if relative else REPO_ROOT for relative in expected}

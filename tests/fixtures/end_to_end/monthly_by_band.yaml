@@ -1,0 +1,76 @@
+# A small neutral flow, checked figure by figure in tests/test_dantron_etl_end_to_end.py.
+# Paths are relative to the folder the test runs it from (a scratch folder holding these CSVs).
+name: Monthly amount by tier band
+
+steps:
+  # The figures are read as text, the way an export often hands them over, and typed below.
+  - id: entries
+    tool: read_csv
+    config:
+      path: entries.csv
+      column_types:
+        - {column: amount, type: String}
+        - {column: months, type: String}
+
+  - id: parties
+    tool: read_csv
+    config: {path: parties.csv}
+
+  - id: typed
+    tool: cast_columns
+    config:
+      columns:
+        - {column: amount, type: Float64}
+        - {column: months, type: Int64}
+    inputs: {rows: entries.rows}
+
+  # Entry 8 has no kind, so it leaves on `false`, as does the refund.
+  - id: revenue
+    tool: filter
+    config: {predicate: "[kind] = 'REVENUE'"}
+    inputs: {rows: typed.rows}
+
+  # Entry 6 has no party code and must not pair with the parties row that has none either.
+  # Entry 7's code X is not a party. Both are kept, with nothing from the right.
+  - id: with_party
+    tool: join
+    config: {keys: [party_code], how: left}
+    inputs: {left: revenue.true, right: parties.rows}
+
+  - id: banded
+    tool: case_when
+    config:
+      output: band
+      rules:
+        - {when: "[tier] = 'gold'", then: "'top'"}
+        - {when: "[tier] = 'silver'", then: "'middle'"}
+      otherwise: "'other'"
+    inputs: {rows: with_party.matched}
+
+  - id: monthly
+    tool: formula
+    config:
+      columns:
+        - {name: monthly, value: "[amount] / [months]"}
+    inputs: {rows: banded.rows}
+
+  - id: totals
+    tool: group_by
+    config:
+      by: [band]
+      aggregations:
+        - {name: monthly_total, function: sum, value: "[monthly]"}
+        - {name: entries, function: count}
+    inputs: {rows: monthly.rows}
+
+  - id: ranked
+    tool: sort
+    config:
+      by:
+        - {column: monthly_total, direction: desc}
+    inputs: {rows: totals.rows}
+
+  - id: published
+    tool: write_csv
+    config: {path: totals.csv}
+    inputs: {rows: ranked.rows}

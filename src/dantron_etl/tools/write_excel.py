@@ -142,13 +142,13 @@ class WriteExcel:
         """
         path = config["path"]
         if not path.lower().endswith(".xlsx"):
-            raise ConfigError(f"write_excel only writes .xlsx workbooks; got path {path!r}")
+            raise ConfigError(f"write_excel only writes .xlsx workbooks; got path '{path}'")
 
         _validate_sheet_name(config["sheet"])
 
         if Path(path).exists() and not config["replace"]:
             raise ConfigError(
-                f"write_excel refuses to overwrite the file already at {path!r}; set replace: true "
+                f"write_excel refuses to overwrite the file already at '{path}'; set replace: true "
                 "to overwrite it deliberately"
             )
 

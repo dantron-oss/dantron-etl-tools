@@ -62,7 +62,6 @@ import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from datetime import date, datetime
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -76,10 +75,6 @@ from dantron_etl.tools.write_table import WriteTable
 
 # The name of the variable a pipeline definition would carry, holding the connection for this run.
 _VARIABLE = "ETL_TEST_LOAD_CONNECTION"
-
-# Where a Postgres server is, if there is one. The same variable the expression suite's parity tests
-# read, so one export runs both halves of the library's cross-driver coverage.
-_POSTGRES_VARIABLE = "DANTRON_TEST_POSTGRES"
 
 # The tests own this schema and nothing else. It is created, used and dropped by the fixture below.
 # The server this runs against also holds real data in schemas of its own, and no test here names
@@ -108,27 +103,6 @@ _DENSE_HEIGHT = 200
 # them is the bulk load that already failed; the rest is headroom for an implementation that asks
 # the table something on the way to its answer.
 _ALLOWED_ATTEMPTS = 4
-
-
-@cache
-def _postgres_dsn() -> str | None:
-    """The DSN to test against, or ``None`` when there is no server to test against."""
-    return os.environ.get(_POSTGRES_VARIABLE) or None
-
-
-@cache
-def _postgres_reachable() -> bool:
-    """Whether a Postgres accepts a connection, evaluated once per session."""
-    dsn = _postgres_dsn()
-    if dsn is None:
-        return False
-    try:
-        import psycopg
-
-        with psycopg.connect(dsn, connect_timeout=3):
-            return True
-    except Exception:
-        return False
 
 
 _SQLITE_DDL: tuple[str, ...] = (
@@ -193,25 +167,20 @@ class _Target:
 
 
 @pytest.fixture(scope="session")
-def postgres_session() -> Iterator[Any]:
-    """A Postgres session owning one scratch schema, dropped on the way out.
+def postgres_session(postgres_scratch: Any) -> Any:
+    """A Postgres connection owning this file's scratch schema (see ``postgres_scratch`` in conftest)."""
+    return postgres_scratch(_SCRATCH_SCHEMA)
 
-    The server this runs against also holds real data in schemas of its own, so the fixture makes a
-    schema nothing else would name and drops it with everything in it at teardown. No test here
-    names any other schema, reads from one, or writes to one.
-    """
-    if not _postgres_reachable():
-        pytest.skip(f"no Postgres to test against: set {_POSTGRES_VARIABLE}")
-    import psycopg
 
-    connection = psycopg.connect(_postgres_dsn(), connect_timeout=5, autocommit=True)
-    try:
-        connection.execute(f"drop schema if exists {_SCRATCH_SCHEMA} cascade")
-        connection.execute(f"create schema {_SCRATCH_SCHEMA}")
-        yield connection
-    finally:
-        connection.execute(f"drop schema if exists {_SCRATCH_SCHEMA} cascade")
-        connection.close()
+def _seed_sqlite(database: Path) -> None:
+    """The four tables, with ``target`` and ``strict`` holding their previous figures."""
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("pragma synchronous = off")  # built once per session as a template
+        for statement in _SQLITE_DDL:
+            connection.execute(statement)
+        connection.executemany("insert into target values (?, ?, ?, ?)", _BEFORE_TARGET)
+        connection.executemany("insert into strict values (?, ?)", _BEFORE_STRICT)
+        connection.commit()
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -223,13 +192,7 @@ def target(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.M
     driver whose conveniences it was written for is a sink nobody has tested.
     """
     if request.param == "sqlite":
-        database = tmp_path / "store.db"
-        with closing(sqlite3.connect(database)) as connection:
-            for statement in _SQLITE_DDL:
-                connection.execute(statement)
-            connection.executemany("insert into target values (?, ?, ?, ?)", _BEFORE_TARGET)
-            connection.executemany("insert into strict values (?, ?)", _BEFORE_STRICT)
-            connection.commit()
+        database = request.getfixturevalue("seeded_sqlite")(tmp_path / "store.db", _seed_sqlite)
         monkeypatch.setenv(_VARIABLE, f"sqlite:///{database}")
 
         def read(table: str) -> list[tuple[Any, ...]]:
@@ -239,6 +202,7 @@ def target(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.M
         return _Target("sqlite", _VARIABLE, None, read)
 
     connection = request.getfixturevalue("postgres_session")
+    dsn = request.getfixturevalue("postgres_dsn")
     for table in ("target", "strict", "guarded", "paired"):
         connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.{table}")
     for statement in _POSTGRES_DDL:
@@ -249,7 +213,7 @@ def target(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.M
         [(key, label, amount, date.fromisoformat(seen)) for key, label, amount, seen in _BEFORE_TARGET],
     )
     cursor.executemany(f"insert into {_SCRATCH_SCHEMA}.strict values (%s, %s)", list(_BEFORE_STRICT))
-    monkeypatch.setenv(_VARIABLE, str(_postgres_dsn()))
+    monkeypatch.setenv(_VARIABLE, dsn)
 
     def read(table: str) -> list[tuple[Any, ...]]:
         return list(connection.execute(f"select * from {_SCRATCH_SCHEMA}.{table}").fetchall())
@@ -411,6 +375,7 @@ class TestBothDriversAnswerARefusalTheSameWay:
         self,
         tmp_path: Path,
         postgres_session: Any,
+        postgres_dsn: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """One frame, two engines, one answer to "which rows offended, out of how many?".
@@ -434,7 +399,7 @@ class TestBothDriversAnswerARefusalTheSameWay:
 
         failures: dict[str, DataError] = {}
         for driver in ("sqlite", "postgres"):
-            engine = _build_target(driver, tmp_path, postgres_session, monkeypatch)
+            engine = _build_target(driver, tmp_path, postgres_session, postgres_dsn, monkeypatch)
             with pytest.raises(DataError) as caught:
                 run_tool(WriteTable(), Ports({"rows": frame}), _write(engine))
             failures[driver] = caught.value
@@ -456,6 +421,7 @@ class TestBothDriversAnswerARefusalTheSameWay:
         self,
         tmp_path: Path,
         postgres_session: Any,
+        postgres_dsn: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The offender sits in the middle, so the replay has to carry on past it.
@@ -480,7 +446,7 @@ class TestBothDriversAnswerARefusalTheSameWay:
         )
 
         for driver in ("sqlite", "postgres"):
-            engine = _build_target(driver, tmp_path, postgres_session, monkeypatch)
+            engine = _build_target(driver, tmp_path, postgres_session, postgres_dsn, monkeypatch)
             with pytest.raises(DataError) as caught:
                 run_tool(WriteTable(), Ports({"rows": frame}), _write(engine))
             failure = caught.value
@@ -501,6 +467,7 @@ class TestTheLoadIsBulk:
     def test_the_whole_frame_lands_in_one_statement_rather_than_one_per_row(
         self,
         postgres_session: Any,
+        postgres_dsn: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Counted by the server, not asserted about the source.
@@ -512,7 +479,7 @@ class TestTheLoadIsBulk:
         trigger and wrote nothing would otherwise pass.
         """
         connection = postgres_session
-        monkeypatch.setenv(_VARIABLE, str(_postgres_dsn()))
+        monkeypatch.setenv(_VARIABLE, postgres_dsn)
         connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.bulk")
         connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.statement_log")
         connection.execute(f"create table {_SCRATCH_SCHEMA}.bulk (key integer, label text)")
@@ -585,7 +552,7 @@ def _one_offender(height: int) -> pl.DataFrame:
     return _keyed_frame(keys)
 
 
-def _counted_table(connection: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def _counted_table(connection: Any, dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A table whose every insert statement is counted, failed ones and discarded ones included.
 
     The bulk test counts statements with an ``AFTER`` trigger writing a row, which is enough there
@@ -595,7 +562,7 @@ def _counted_table(connection: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     taken ``BEFORE`` the statement and kept in a sequence, which is the one thing on the server a
     rollback does not undo.
     """
-    monkeypatch.setenv(_VARIABLE, str(_postgres_dsn()))
+    monkeypatch.setenv(_VARIABLE, dsn)
     connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.counted")
     connection.execute(f"drop sequence if exists {_SCRATCH_SCHEMA}.attempts")
     connection.execute(f"create table {_SCRATCH_SCHEMA}.counted (key integer primary key, label text)")
@@ -633,6 +600,7 @@ class TestNamingTheOffendersCostsNoAttemptPerRow:
     def test_one_bad_row_in_a_large_frame_costs_the_same_few_statements_however_many_rows_there_are(
         self,
         postgres_session: Any,
+        postgres_dsn: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Measured on the server, at two sizes, because one size cannot tell a cost from a constant.
@@ -648,7 +616,7 @@ class TestNamingTheOffendersCostsNoAttemptPerRow:
         the rows must not quadruple what is asked of the server. The refusal is checked as well as
         the cost, because something that answered instantly and wrongly would otherwise pass.
         """
-        _counted_table(postgres_session, monkeypatch)
+        _counted_table(postgres_session, postgres_dsn, monkeypatch)
         small = _one_offender(_DIAGNOSED_HEIGHT).select("key", "label")
         large = _one_offender(_QUADRUPLED_HEIGHT).select("key", "label")
 
@@ -682,6 +650,7 @@ class TestNamingTheOffendersCostsNoAttemptPerRow:
     def test_a_frame_where_nearly_every_row_offends_costs_no_more_than_one_where_a_single_row_does(
         self,
         postgres_session: Any,
+        postgres_dsn: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The mirror of the case above, and the one a cheaper strategy is most likely to lose.
@@ -692,7 +661,7 @@ class TestNamingTheOffendersCostsNoAttemptPerRow:
         which all but the first row offends, and the count is held exactly: every offender, not the
         first handful, because the reader's next question after "it failed" is "how much of it".
         """
-        _counted_table(postgres_session, monkeypatch)
+        _counted_table(postgres_session, postgres_dsn, monkeypatch)
         frame = _keyed_frame([7] * _DENSE_HEIGHT).select("key", "label")
 
         refusal, attempts = _refusal_and_attempts(postgres_session, frame)
@@ -936,6 +905,7 @@ class TestARuleTheRowsCannotBeJudgedAgainstStillNamesItsOffenders:
     def test_a_key_that_has_to_exist_in_another_table_still_names_the_rows_that_lack_one(
         self,
         postgres_session: Any,
+        postgres_dsn: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The other rule the rows cannot settle by themselves: one whose answer is in another table.
@@ -948,7 +918,7 @@ class TestARuleTheRowsCannotBeJudgedAgainstStillNamesItsOffenders:
         not fall back for the other.
         """
         connection = postgres_session
-        monkeypatch.setenv(_VARIABLE, str(_postgres_dsn()))
+        monkeypatch.setenv(_VARIABLE, postgres_dsn)
         connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.dependent")
         connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.held")
         connection.execute(f"create table {_SCRATCH_SCHEMA}.held (key integer primary key)")
@@ -1122,7 +1092,9 @@ def _foreign_connection(uri: str) -> Iterator[_ForeignConnection]:
     yield _ForeignConnection()
 
 
-def _build_target(driver: str, tmp_path: Path, postgres_session: Any, monkeypatch: pytest.MonkeyPatch) -> _Target:
+def _build_target(
+    driver: str, tmp_path: Path, postgres_session: Any, dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> _Target:
     """The ``target`` fixture's body, for the one test that needs both drivers inside a single case."""
     if driver == "sqlite":
         database = tmp_path / "parity.db"
@@ -1147,7 +1119,7 @@ def _build_target(driver: str, tmp_path: Path, postgres_session: Any, monkeypatc
         f"insert into {_SCRATCH_SCHEMA}.target values (%s, %s, %s, %s)",
         [(key, label, amount, date.fromisoformat(seen)) for key, label, amount, seen in _BEFORE_TARGET],
     )
-    monkeypatch.setenv(_VARIABLE, str(_postgres_dsn()))
+    monkeypatch.setenv(_VARIABLE, dsn)
 
     def read_postgres(table: str) -> list[tuple[Any, ...]]:
         return list(connection.execute(f"select * from {_SCRATCH_SCHEMA}.{table}").fetchall())

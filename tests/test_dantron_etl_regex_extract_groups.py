@@ -58,7 +58,6 @@ from dantron_etl.tool import (
     Ports,
     ToolError,
     WorkedExample,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -146,7 +145,7 @@ class TestRegexExtractGroupsExtraction:
         assert rows.columns == [*frame.columns, *expected_columns], "input columns first, groups in pattern order"
         assert [rows.schema[name] for name in expected_columns] == [pl.String] * len(expected_columns)
         assert rows.height == frame.height, "extracting columns adds no rows and drops none"
-        assert_frame_equal(rows.select(frame.columns), frame), "every input column survives, in order"
+        assert_frame_equal(rows.select(frame.columns), frame)  # every input column survives, in order
 
     @pytest.mark.parametrize(
         ("note", "matched"),
@@ -434,12 +433,10 @@ class TestRegexExtractGroupsInTheCatalog:
             "this tool preserves row order, and an example is where that is proved rather than claimed"
         )
 
-    def test_it_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_it_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "regex_extract_groups" in REGISTRY
         assert isinstance(REGISTRY.get("regex_extract_groups"), RegexExtractGroups)
-
-        check_registry(REGISTRY)
 
 
 class TestWhereThePatternMatched:

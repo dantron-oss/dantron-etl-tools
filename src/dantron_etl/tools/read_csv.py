@@ -203,7 +203,7 @@ class ReadCsv:
         """
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
-            raise ConfigError(f"read_csv only reads {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path {path!r}")
+            raise ConfigError(f"read_csv only reads {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
         if config["skip_rows"] < 0:
             raise ConfigError(f"config field 'skip_rows' must not be negative, got {config['skip_rows']}")
         _validate_column_types(config["column_types"] or [])
@@ -216,9 +216,9 @@ class ReadCsv:
         """
         path = Path(config["path"])
         if not path.is_file():
-            raise ConfigError(f"read_csv found no file at {config['path']!r}")
+            raise ConfigError(f"read_csv found no file at '{config['path']}'")
         if path.stat().st_size == 0:
-            raise ConfigError(f"read_csv found no bytes in {config['path']!r}")
+            raise ConfigError(f"read_csv found no bytes in '{config['path']}'")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         path = config["path"]
@@ -235,7 +235,7 @@ class ReadCsv:
 
         records = _parse_records(remainder, delimiter, skip_rows)
         if not records:
-            raise ConfigError(f"read_csv found nothing to read in {path!r} after skipping {skip_rows} row(s)")
+            raise ConfigError(f"read_csv found nothing to read in '{path}' after skipping {skip_rows} row(s)")
 
         header_fields = records[0][1]
         expected_fields = len(header_fields)
@@ -317,7 +317,7 @@ def _decode(raw: bytes, encoding: str, path: str) -> str:
     try:
         return raw.decode(encoding)
     except UnicodeDecodeError as error:
-        raise ConfigError(f"read_csv could not decode {path!r} as {encoding!r}: {error}") from error
+        raise ConfigError(f"read_csv could not decode '{path}' as {encoding!r}: {error}") from error
 
 
 def _strip_bom(text: str) -> str:

@@ -45,7 +45,6 @@ from dantron_etl.tool import (
     ConfigError,
     Ports,
     ToolError,
-    check_registry,
     check_tool,
     compiled_dtype,
     expression_fields,
@@ -292,12 +291,10 @@ class TestFilterInTheCatalog:
             "null routing is the behaviour most likely to surprise, so an example must show it"
         )
 
-    def test_filter_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_filter_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "filter" in REGISTRY
         assert isinstance(REGISTRY.get("filter"), Filter)
-
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------

@@ -115,7 +115,6 @@ from dantron_etl.tool import (
     ConfigError,
     DataError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -1135,12 +1134,10 @@ class TestCrossTabInTheCatalog:
             for example in joining
         ), "a joined example must show both cells: the one that joins to '' and the one that stays null"
 
-    def test_cross_tab_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_cross_tab_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "cross_tab" in REGISTRY
         assert isinstance(REGISTRY.get("cross_tab"), CrossTab)
-
-        check_registry(REGISTRY)
 
 
 def _holds_an_empty_cell(frame: pl.DataFrame, index: Sequence[str]) -> bool:
@@ -1153,3 +1150,29 @@ def _holds_a_blank_cell(frame: pl.DataFrame, index: Sequence[str]) -> bool:
     """Whether any value column of ``frame`` holds the empty string, which is the other answer."""
     value_columns = [name for name in frame.columns if name not in set(index)]
     return any(frame[name].dtype == pl.String and (frame[name] == "").any() for name in value_columns)
+
+
+class TestFirstWhenTheFirstValueIsNull:
+    """What ``first`` puts in a cell whose first row holds no value: that null, as GroupBy does.
+
+    pandas' ``first`` skips nulls instead, so this is the rule a port or a "fix" would change
+    quietly. The owner ruled on 2026-11-18 to keep it: the first row as it arrives, null or not.
+    """
+
+    # pins current behaviour, kept by the owner's ruling on finding F-02
+    def test_first_returns_the_first_rows_null_rather_than_the_first_value(self) -> None:
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b", "b"], "period": ["p1"] * 4, "amount": [None, 7.0, 3.0, None]},
+            schema={"code": pl.String, "period": pl.String, "amount": pl.Float64},
+        )
+
+        result = run_tool(
+            CrossTab(),
+            Ports({"rows": rows}),
+            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "first"},
+        )["rows"].sort("code")
+
+        assert_frame_equal(
+            result,
+            pl.DataFrame({"code": ["a", "b"], "p1": [None, 3.0]}, schema={"code": pl.String, "p1": pl.Float64}),
+        )

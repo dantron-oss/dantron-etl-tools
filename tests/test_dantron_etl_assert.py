@@ -56,7 +56,6 @@ from dantron_etl.tool import (
     ExecutionError,
     Ports,
     ToolError,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -320,9 +319,7 @@ class TestAssertInTheCatalog:
         assert "null" in documented, "that a null result is not a pass cannot be guessed from the config"
         assert "empty" in documented, "nor can the ruling on a frame that arrived empty"
 
-    def test_assert_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_assert_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "assert_rows" in REGISTRY
         assert isinstance(REGISTRY.get("assert_rows"), AssertRows)
-
-        check_registry(REGISTRY)

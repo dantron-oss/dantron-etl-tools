@@ -53,7 +53,6 @@ from dantron_etl.tool import (
     REGISTRY,
     ConfigError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -355,9 +354,7 @@ class TestLimitRowsInTheCatalog:
             "no worked example shows a row leaving by 'dropped', which is the reason the port exists"
         )
 
-    def test_limit_rows_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_limit_rows_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "limit_rows" in REGISTRY
         assert isinstance(REGISTRY.get("limit_rows"), LimitRows)
-
-        check_registry(REGISTRY)
