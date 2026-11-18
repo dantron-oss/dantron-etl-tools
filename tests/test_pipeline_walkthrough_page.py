@@ -17,6 +17,7 @@ import itertools
 import random
 import re
 from collections import Counter
+from contextlib import chdir
 from pathlib import Path
 
 import pytest
@@ -37,15 +38,16 @@ from scripts.pipeline_walkthrough_page import _canvas, build  # noqa: E402 -- ne
 
 
 @pytest.fixture(scope="module")
-def page() -> str:
+def page(fixture_flow_sandbox: Path) -> str:
     """One rendered page, shared: building it is pure and costs nothing to reuse."""
     spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
-    trace = run_pipeline(spec)
+    with chdir(fixture_flow_sandbox):  # the flow's sinks write under the working folder
+        trace = run_pipeline(spec)
     return build(spec, trace, FocusSpec(label="party", identity=("party",)))
 
 
 @pytest.fixture(scope="module")
-def panels() -> dict[str, str]:
+def panels(fixture_flow_sandbox: Path) -> dict[str, str]:
     """Every step's data panel, keyed by the step it answers to, as the service will hand them over.
 
     Imported here rather than at the top of the file so that a suite run before the panels exist
@@ -54,7 +56,8 @@ def panels() -> dict[str, str]:
     from scripts.pipeline_walkthrough_page import build_panels
 
     spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
-    trace = run_pipeline(spec)
+    with chdir(fixture_flow_sandbox):
+        trace = run_pipeline(spec)
     return build_panels(spec, trace, FocusSpec(label="party", identity=("party",)))
 
 
@@ -1843,7 +1846,9 @@ class TestThePanelOpensOnTheEntityTheReaderChose:
             "rendered hidden, so the reader opens the step and finds no tables at all"
         )
 
-    def test_the_pickers_buttons_and_a_panels_views_name_the_same_entities(self, page: str) -> None:
+    def test_the_pickers_buttons_and_a_panels_views_name_the_same_entities(
+        self, page: str, fixture_flow_sandbox: Path
+    ) -> None:
         """The two halves are built by separate passes over the trace, and nothing else compares them.
 
         The picker is rendered with the page and the views are rendered into the panels, so a pass
@@ -1858,7 +1863,8 @@ class TestThePanelOpensOnTheEntityTheReaderChose:
         from scripts.pipeline_walkthrough_page import build_panels
 
         spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
-        trace = run_pipeline(spec)
+        with chdir(fixture_flow_sandbox):
+            trace = run_pipeline(spec)
         fetched = build_panels(spec, trace, FocusSpec(label="party", identity=("party",)))
         offered = re.findall(r'<button data-pick="([^"]*)"', page)
 
@@ -2029,10 +2035,11 @@ def _grouped_spec() -> PipelineSpec:
 
 
 @pytest.fixture(scope="module")
-def boxed() -> tuple[PipelineSpec, PipelineTrace]:
+def boxed(fixture_flow_sandbox: Path) -> tuple[PipelineSpec, PipelineTrace]:
     """The grouped pipeline and one run of it, which the counts on the boxes are read off."""
     spec = _grouped_spec()
-    return spec, run_pipeline(spec)
+    with chdir(fixture_flow_sandbox):
+        return spec, run_pipeline(spec)
 
 
 @pytest.fixture(scope="module")
