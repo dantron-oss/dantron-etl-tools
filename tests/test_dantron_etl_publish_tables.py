@@ -58,13 +58,11 @@ creates is one nothing else names, created and dropped by the fixture, and no te
 other schema or reads from one.
 """
 
-import os
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from datetime import UTC, datetime
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -77,9 +75,6 @@ from dantron_etl.tools.publish_tables import PublishTables
 # The name a pipeline definition would carry: the name of the variable, never the connection itself.
 _VARIABLE = "ETL_TEST_PUBLISH_CONNECTION"
 
-# Where a Postgres server is, if there is one. The same variable the rest of the library's
-# cross-driver coverage reads, so one export runs all of it.
-_POSTGRES_VARIABLE = "DANTRON_TEST_POSTGRES"
 
 # The tests own this schema and nothing else. It is created, used and dropped by the fixture below.
 # The server this runs against also holds real data in schemas of its own, and no test here names
@@ -141,27 +136,6 @@ _EARLIER_CONTENTS: Mapping[str, tuple[tuple[Any, ...], ...]] = {
 }
 
 
-@cache
-def _postgres_dsn() -> str | None:
-    """The DSN to test against, or ``None`` when there is no server to test against."""
-    return os.environ.get(_POSTGRES_VARIABLE) or None
-
-
-@cache
-def _postgres_reachable() -> bool:
-    """Whether a Postgres accepts a connection, evaluated once per session."""
-    dsn = _postgres_dsn()
-    if dsn is None:
-        return False
-    try:
-        import psycopg
-
-        with psycopg.connect(dsn, connect_timeout=3):
-            return True
-    except Exception:
-        return False
-
-
 def _plain(value: Any) -> Any:
     """One spelling per value, so a row read from either engine compares against one expectation.
 
@@ -215,24 +189,23 @@ def _as_it_was() -> dict[str, list[tuple[Any, ...]]]:
 
 
 @pytest.fixture(scope="session")
-def postgres_session() -> Iterator[Any]:
-    """A Postgres session owning one scratch schema, dropped with everything in it on the way out.
+def postgres_session(postgres_scratch: Any) -> Any:
+    """A Postgres connection owning this file's scratch schema (see ``postgres_scratch`` in conftest)."""
+    return postgres_scratch(_SCRATCH_SCHEMA)
 
-    The server this runs against also holds real data in schemas of its own, so the fixture makes a
-    schema nothing else would name, and drops nothing it did not create.
-    """
-    if not _postgres_reachable():
-        pytest.skip(f"no Postgres to test against: set {_POSTGRES_VARIABLE}")
-    import psycopg
 
-    connection = psycopg.connect(_postgres_dsn(), connect_timeout=5, autocommit=True)
-    try:
-        connection.execute(f"drop schema if exists {_SCRATCH_SCHEMA} cascade")
-        connection.execute(f"create schema {_SCRATCH_SCHEMA}")
-        yield connection
-    finally:
-        connection.execute(f"drop schema if exists {_SCRATCH_SCHEMA} cascade")
-        connection.close()
+def _seed_sqlite(database: Path) -> None:
+    """Every table, holding what the previous publish left in it."""
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("pragma synchronous = off")  # built once per session as a template
+        for statement in _SQLITE_DDL:
+            connection.execute(statement)
+        for table, rows in _EARLIER_CONTENTS.items():
+            if not rows:  # a table the previous publish left empty has nothing to seed
+                continue
+            marks = ", ".join("?" for _ in rows[0])
+            connection.executemany(f"insert into {table} values ({marks})", [tuple(row) for row in rows])
+        connection.commit()
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -245,16 +218,7 @@ def target(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.M
     the rest of one, and how a staging table is made and disposed of.
     """
     if request.param == "sqlite":
-        database = tmp_path / "publish.db"
-        with closing(sqlite3.connect(database)) as connection:
-            for statement in _SQLITE_DDL:
-                connection.execute(statement)
-            for table, rows in _EARLIER_CONTENTS.items():
-                if not rows:  # a table the previous publish left empty has nothing to seed
-                    continue
-                marks = ", ".join("?" for _ in rows[0])
-                connection.executemany(f"insert into {table} values ({marks})", [tuple(row) for row in rows])
-            connection.commit()
+        database = request.getfixturevalue("seeded_sqlite")(tmp_path / "publish.db", _seed_sqlite)
         monkeypatch.setenv(_VARIABLE, f"sqlite:///{database}")
 
         def read(table: str) -> list[tuple[Any, ...]]:
@@ -264,6 +228,7 @@ def target(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.M
         return _Target("sqlite", _VARIABLE, None, read)
 
     connection = request.getfixturevalue("postgres_session")
+    dsn = request.getfixturevalue("postgres_dsn")
     for table in _TABLES:
         connection.execute(f"drop table if exists {_SCRATCH_SCHEMA}.{table}")
     for statement in _POSTGRES_DDL:
@@ -274,7 +239,7 @@ def target(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.M
             continue
         marks = ", ".join("%s" for _ in rows[0])
         cursor.executemany(f"insert into {_SCRATCH_SCHEMA}.{table} values ({marks})", [tuple(row) for row in rows])
-    monkeypatch.setenv(_VARIABLE, str(_postgres_dsn()))
+    monkeypatch.setenv(_VARIABLE, dsn)
 
     def read(table: str) -> list[tuple[Any, ...]]:
         return list(connection.execute(f"select * from {_SCRATCH_SCHEMA}.{table}").fetchall())

@@ -48,7 +48,7 @@ and no credentials.
 import os
 import sqlite3
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,7 @@ _BEFORE_STRICT = [(1, 1.0), (2, 2.0)]
 def _seed(database: Path) -> None:
     """A target with a key, a target with a not-null column, and a bystander that must not move."""
     with closing(sqlite3.connect(database)) as connection:
+        connection.execute("pragma synchronous = off")  # built once per session as a template
         connection.execute("create table target (key integer primary key, label text)")
         connection.execute("create table strict (key integer primary key, amount real not null)")
         connection.execute("create table bystander (key integer)")
@@ -110,11 +111,9 @@ def _tables(database: Path) -> set[str]:
 
 
 @pytest.fixture
-def database(tmp_path: Path) -> Path:
-    """A temporary SQLite file holding the tables the tests write."""
-    path = tmp_path / "store.db"
-    _seed(path)
-    return path
+def database(tmp_path: Path, seeded_sqlite: Any) -> Path:
+    """A temporary SQLite file holding the tables the tests write: a copy of one seeded per session."""
+    return seeded_sqlite(tmp_path / "store.db", _seed)
 
 
 @pytest.fixture
@@ -122,15 +121,6 @@ def connection(database: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """The NAME of an environment variable holding a URI for ``database``; restored on teardown."""
     monkeypatch.setenv(_VARIABLE, f"sqlite:///{database}")
     return _VARIABLE
-
-
-@pytest.fixture
-def environment_restored() -> Iterator[None]:
-    """Undo whatever the tool's own documentation exported, by name or not."""
-    before = dict(os.environ)
-    yield
-    os.environ.clear()
-    os.environ.update(before)
 
 
 def _rows() -> pl.DataFrame:

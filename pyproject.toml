@@ -69,3 +69,9 @@ testpaths = ["tests"]
 # nobody is editing, which is the one failure mode a test run cannot report.
 # The checkout's root is there too, so the page-builder tests can import `scripts`.
 pythonpath = ["src", "."]
+# `postgres` is added by tests/conftest.py to every test that reaches the test server.
+markers = [
+    "slow: takes seconds on its own; leave out with -m 'not slow'",
+    "postgres: needs the test Postgres named by DANTRON_TEST_POSTGRES; skips without it",
+]
+addopts = "--strict-markers"
