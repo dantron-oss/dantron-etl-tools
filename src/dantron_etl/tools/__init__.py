@@ -1,6 +1,6 @@
-"""Tools built on the contract in :mod:`.tool`.
+"""Tools built on the contract in :mod:`.authoring`.
 
-Each tool's module registers its own instance into :data:`.tool.REGISTRY` at import time, so
+Each tool's module registers its own instance into :data:`.registry.REGISTRY` at import time, so
 importing a tool's module -- directly, or by importing this package -- is what puts it in the
 shipped catalog. This package imports every module beneath it itself, discovered from the
 filesystem rather than listed here, so that importing this package (or the top-level package, which

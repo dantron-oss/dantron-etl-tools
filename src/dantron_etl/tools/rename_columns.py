@@ -36,7 +36,7 @@ from typing import Any
 
 import polars as pl
 
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,

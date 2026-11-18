@@ -40,7 +40,7 @@ from ..column_types import (
     TEMPORAL_TYPES,
     TIME_DEFAULT_FORMAT,
 )
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     SCRATCH_TOKEN,
     ConfigError,

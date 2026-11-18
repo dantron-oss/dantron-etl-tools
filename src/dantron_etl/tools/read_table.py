@@ -26,7 +26,7 @@ from typing import Any
 import polars as pl
 
 from ..db import open_connection, probe_columns, qualified_name, resolve_connection_uri, validate_identifier
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigField,
     Ports,

@@ -45,7 +45,7 @@ from ..db import (
     resolve_connection_uri,
     validate_identifier,
 )
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,
