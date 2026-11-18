@@ -28,7 +28,8 @@ the manual.
 
 ```bash
 uv sync --extra dev                         # set up from uv.lock. Plain `uv sync` leaves out pytest, ruff, orjson
-.venv/bin/pytest tests/ -q                  # ~3,800 tests, 2-4 min (pyproject puts src/ and the root on the path)
+.venv/bin/pytest tests/ -q                  # ~4,000 tests, about a minute (pyproject puts src/ and the root on the path)
+.venv/bin/pytest tests/tools/test_join.py -q   # one tool's tests; one area is tests/core, tests/expr, tests/tools ...
 .venv/bin/ruff check src tests scripts      # lint. This is the gate
 .venv/bin/python scripts/tool_catalog_page.py          # writes output_files/tool_catalog.{html,json}
 .venv/bin/python scripts/pipeline_walkthrough_page.py <name>  # runs pipelines/<name>.yaml, saves the run to
@@ -36,6 +37,13 @@ uv sync --extra dev                         # set up from uv.lock. Plain `uv syn
 .venv/bin/python scripts/etl_architecture_page.py      # the architecture page, read from the library itself
 .venv/bin/python scripts/serve_runs.py                 # serves output_files/runs/ on :8899
 ```
+
+The tests are laid out by area: `core/` (the contract, config, registry, loader, runner, trace,
+focus, preview, paths, database plumbing), `expr/`, `tools/` (one file per tool, named after it),
+`viewer/` (the page builders), `package/` (what ships: the client-neutral boundary, the sdist, the
+vocabulary snapshot, the documentation examples) and `flows/` (end-to-end flows and property checks).
+Shared fixtures are in `tests/conftest.py`, data files in `tests/fixtures/`. Test file names must
+be unique across folders: there is no `__init__.py`, so pytest imports each file by its name alone.
 
 The `Makefile` holds shortcuts for all of these (`make` lists them): `make test`, `make test-all`
 (starts the test Postgres too), `make run p=<name>`, `make catalog`. Each is one command and nothing

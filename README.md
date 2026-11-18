@@ -136,7 +136,7 @@ the count correct.
 
 ```bash
 uv sync --extra dev --extra postgres
-.venv/bin/pytest tests/ -q           # about 3,800 tests
+.venv/bin/pytest tests/ -q           # about 4,000 tests, laid out by area: core, expr, tools, viewer, package, flows
 .venv/bin/ruff check src tests scripts
 ```
 
