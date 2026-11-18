@@ -28,8 +28,8 @@ interesting fields would drift between runs in a way a documented example cannot
 
 import logging
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
 
@@ -53,7 +53,7 @@ from ..authoring import (
     Ports,
     ToolHelp,
     WorkedExample,
-    temporary_environment,
+    example_database,
 )
 
 _MODE_ENUM = ("replace", "append")
@@ -427,24 +427,15 @@ def _replayed_offenders(load: _Load) -> pl.DataFrame:
     return load.frame[offending_indices] if offending_indices else load.frame.head(0)
 
 
-@contextmanager
-def _example_database() -> Iterator[None]:
-    """An in-memory database the examples write into, entered around each example and torn down after.
+def _seed_example(connection: sqlite3.Connection) -> None:
+    """The tables the examples write into."""
+    connection.execute("create table sample (key integer, label text)")
+    connection.executemany("insert into sample values (?, ?)", [(1, "first"), (2, "second")])
 
-    Built here rather than inside ``help()``, for the same reason as every source's: the catalog
-    page generator calls ``help()`` on every tool, and a description that opened a connection or
-    exported a variable as a side effect of describing itself is exactly the disturbance
-    ``check_tool`` now refuses.
-    """
-    anchor = sqlite3.connect(_EXAMPLE_URI, uri=True)
-    try:
-        anchor.execute("create table sample (key integer, label text)")
-        anchor.executemany("insert into sample values (?, ?)", [(1, "first"), (2, "second")])
-        anchor.commit()
-        with temporary_environment(**{_EXAMPLE_CONNECTION: _EXAMPLE_URI}):
-            yield
-    finally:
-        anchor.close()
+
+def _example_database() -> AbstractContextManager[None]:
+    """The in-memory database the example runs against, named by its connection variable for the run."""
+    return example_database(_EXAMPLE_URI, _EXAMPLE_CONNECTION, _seed_example)
 
 
 def _replace_example() -> WorkedExample:

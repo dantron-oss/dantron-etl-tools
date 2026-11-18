@@ -19,8 +19,8 @@ rather than leaning on a source to keep a promise it cannot make.
 """
 
 import sqlite3
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from typing import Any
 
 import polars as pl
@@ -32,7 +32,7 @@ from ..authoring import (
     Ports,
     ToolHelp,
     WorkedExample,
-    temporary_environment,
+    example_database,
 )
 
 _EXAMPLE_CONNECTION = "SOURCE_DATABASE_URL"
@@ -120,26 +120,15 @@ class ReadTable:
         return Ports({"rows": frame})
 
 
-@contextmanager
-def _example_database() -> Iterator[None]:
-    """An in-memory database the example reads, entered around the example and torn down after.
+def _seed_example(connection: sqlite3.Connection) -> None:
+    """The tables the example reads."""
+    connection.execute("create table sample (key integer, label text)")
+    connection.executemany("insert into sample values (?, ?)", [(1, "first"), (2, "second")])
 
-    Built here rather than inside ``help()``, which must describe the tool without changing the
-    process doing the describing: the catalog page generator calls ``help()`` on every tool, and a
-    description that exported a variable or opened a connection as a side effect would be exactly
-    the disturbance ``check_tool`` now refuses. The anchor connection is what keeps the shared,
-    in-memory database alive for the whole of the block; closing it on the way out, in every case,
-    is what lets the same example run again the next time the catalog is checked.
-    """
-    anchor = sqlite3.connect(_EXAMPLE_URI, uri=True)
-    try:
-        anchor.execute("create table sample (key integer, label text)")
-        anchor.executemany("insert into sample values (?, ?)", [(1, "first"), (2, "second")])
-        anchor.commit()
-        with temporary_environment(**{_EXAMPLE_CONNECTION: _EXAMPLE_URI}):
-            yield
-    finally:
-        anchor.close()
+
+def _example_database() -> AbstractContextManager[None]:
+    """The in-memory database the example runs against, named by its connection variable for the run."""
+    return example_database(_EXAMPLE_URI, _EXAMPLE_CONNECTION, _seed_example)
 
 
 def _reads_a_table_example() -> WorkedExample:

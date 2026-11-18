@@ -21,7 +21,7 @@ from .errors import (
     RegistryError,
     ToolError,
 )
-from .example_world import SCRATCH_TOKEN, scratch_path, temporary_environment
+from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
 from .frame_checks import (
     REPLACE_FIELD,
     check_output_column,
@@ -79,6 +79,7 @@ __all__ = [
     "ToolError",
     # the world a worked example runs in
     "SCRATCH_TOKEN",
+    "example_database",
     "scratch_path",
     "temporary_environment",
     # registering, running and checking a tool

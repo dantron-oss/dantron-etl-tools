@@ -47,8 +47,8 @@ have been emptied is not a refusal, it is a failed publish with a helpful messag
 """
 
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -73,7 +73,7 @@ from ..authoring import (
     Ports,
     ToolHelp,
     WorkedExample,
-    temporary_environment,
+    example_database,
 )
 
 #: Spelled so a definition file hands each of them over as the word itself.
@@ -554,28 +554,19 @@ def _receipt(entries: Sequence[_Entry], inputs: Ports, stamp: _Stamp | None) -> 
     return pl.DataFrame(counts)
 
 
-@contextmanager
-def _example_database() -> Iterator[None]:
-    """An in-memory database the examples publish into, entered around each example and torn down after.
+def _seed_example(connection: sqlite3.Connection) -> None:
+    """The tables the examples publish into."""
+    connection.execute("create table totals (period text primary key, amount real)")
+    connection.execute("create table movements (period text, change real)")
+    connection.execute("create table parties (party text primary key, label text, amount real)")
+    connection.executemany("insert into totals values (?, ?)", [("2026-01", 100.0)])
+    connection.executemany("insert into movements values (?, ?)", [("2026-01", 1.0)])
+    connection.executemany("insert into parties values (?, ?, ?)", [("a", "Alpha", 10.0)])
 
-    Built here rather than inside ``help()``, for the same reason as every sink's: the catalog page
-    generator calls ``help()`` on every tool, and a description that opened a connection or exported
-    a variable as a side effect of describing itself is exactly the disturbance ``check_tool``
-    refuses.
-    """
-    anchor = sqlite3.connect(_EXAMPLE_URI, uri=True)
-    try:
-        anchor.execute("create table totals (period text primary key, amount real)")
-        anchor.execute("create table movements (period text, change real)")
-        anchor.execute("create table parties (party text primary key, label text, amount real)")
-        anchor.executemany("insert into totals values (?, ?)", [("2026-01", 100.0)])
-        anchor.executemany("insert into movements values (?, ?)", [("2026-01", 1.0)])
-        anchor.executemany("insert into parties values (?, ?, ?)", [("a", "Alpha", 10.0)])
-        anchor.commit()
-        with temporary_environment(**{_EXAMPLE_CONNECTION: _EXAMPLE_URI}):
-            yield
-    finally:
-        anchor.close()
+
+def _example_database() -> AbstractContextManager[None]:
+    """The in-memory database the example runs against, named by its connection variable for the run."""
+    return example_database(_EXAMPLE_URI, _EXAMPLE_CONNECTION, _seed_example)
 
 
 def _together_example() -> WorkedExample:

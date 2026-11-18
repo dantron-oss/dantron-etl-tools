@@ -23,14 +23,15 @@ directory.
 import contextvars
 import os
 import re
-from collections.abc import Iterator
+import sqlite3
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
 from .errors import ConformanceError
 
-__all__ = ["SCRATCH_TOKEN", "scratch_path", "temporary_environment"]
+__all__ = ["SCRATCH_TOKEN", "example_database", "scratch_path", "temporary_environment"]
 
 
 @contextmanager
@@ -56,6 +57,32 @@ def temporary_environment(**values: str) -> Iterator[None]:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+
+@contextmanager
+def example_database(uri: str, variable: str, seed: Callable[[sqlite3.Connection], None]) -> Iterator[None]:
+    """A shared in-memory SQLite database for one worked example, named by ``variable`` for the block.
+
+    ``uri`` names a shared in-memory database, such as ``file:name?mode=memory&cache=shared``.
+    ``seed`` builds its tables on an open connection, which is then committed. The environment
+    variable ``variable`` holds ``uri`` for the block, so the example's configuration can name it.
+
+    Built in a setup rather than inside ``help()``, which must describe the tool without changing the
+    process doing the describing: the catalog page generator calls ``help()`` on every tool, and
+    ``check_tool`` refuses a description that opens a connection or exports a variable.
+
+    The seeding connection stays open for the whole block, because a shared in-memory database
+    lives only while a connection to it is open. It is closed on the way out in every case, so the
+    same example can run again the next time the catalog is checked.
+    """
+    anchor = sqlite3.connect(uri, uri=True)
+    try:
+        seed(anchor)
+        anchor.commit()
+        with temporary_environment(**{variable: uri}):
+            yield
+    finally:
+        anchor.close()
 
 
 def _process_state() -> tuple[dict[str, str], str]:
