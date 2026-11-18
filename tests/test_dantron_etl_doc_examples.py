@@ -31,7 +31,6 @@ _FENCE = re.compile(r"^```(?P<info>[^\n`]*)\n(?P<body>.*?)^```\s*$", re.MULTILIN
 _FAILING_TODAY = {
     "README.md yaml #0": "a step list with no name, reading a step 'source_lines' it never defines",
     "README.md yaml #1": "a settings file, not a pipeline: fence it as `yaml fragment`",
-    "README.md python #0": "uses PortRef without importing it (G-03)",
     "MANUAL.md yaml #0": "its last step, 'recent_orders', is a dead end: nothing reads it (F-03)",
     "MANUAL.md yaml #1": "an `inputs:` map on its own: fence it as `yaml fragment`",
     "MANUAL.md yaml #2": "declares no name and uses lane 'sources', which it does not declare",

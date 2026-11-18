@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlparse
 
-from .tool import ConfigError
+from .errors import ConfigError
 
 __all__ = [
     "RowLoader",

@@ -52,11 +52,11 @@ def _pipeline_file_keys() -> dict[str, list[str]]:
     Every literal key read as ``document["k"]``, ``document.get("k")``, ``raw["k"]`` or
     ``raw.get("k")`` is listed.
     """
-    from dantron_etl import pipeline
+    from dantron_etl import loader
 
     keys: dict[str, set[str]] = {"document": set(), "entry": set()}
     roles = {"document": "document", "raw": "entry"}
-    for node in ast.walk(ast.parse(Path(pipeline.__file__).read_text(encoding="utf8"))):
+    for node in ast.walk(ast.parse(Path(loader.__file__).read_text(encoding="utf8"))):
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
             owner, key = node.value.id, node.slice
         elif (

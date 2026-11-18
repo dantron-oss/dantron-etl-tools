@@ -78,10 +78,26 @@ than the one you are editing. If anything looks impossible, run
 
 | module | what it owns |
 |---|---|
-| `tool.py` | The contract every tool meets. `Ports` (the named-frame envelope), `ConfigField`, `WorkedExample`, `ToolHelp`, the `Tool` protocol, the optional `DerivesInputPorts` member, `REGISTRY`, `run_tool` (the boundary every call goes through), `check_tool` and `check_registry` (conformance), per-row status. |
+| `__init__.py` | The public API for running a flow: `read_pipeline`, `load_pipeline`, `run_pipeline`, `Pipeline`, `Step`, `PortRef`, `PipelineTrace`, `StepEvent`, `CachedFrame`, the focus names, `REGISTRY`, `get_tool`, `COLUMN_TYPES`, `project_root`, and the errors. |
+| `authoring.py` | Everything a tool author needs, gathered from the modules below. Every file in `tools/` imports from here and nowhere else in the core. |
+| `errors.py` | The error family. Everything descends from `ToolError`. |
+| `config.py` | `ConfigField`, the template a tool's settings are checked against, default filling, and finding the expressions a configuration holds. |
+| `ports.py` | `Ports`, the named-frame envelope a step reads and returns. |
+| `status.py` | Per-row status: its shape and the helpers that build one. |
+| `contract.py` | The `Tool` protocol, the optional `DerivesInputPorts` member, `ToolHelp`, `WorkedExample`, the categories, and asking which ports a step reads. |
+| `boundary.py` | `run_tool`, the boundary every call to a tool goes through. |
+| `frame_checks.py` | The helpers a tool calls to check its configuration against the frames it was given (`require_columns`, `compile_for`, `check_output_column` ...). |
+| `registry.py` | `ToolRegistry`, the shipped `REGISTRY`, and `get_tool`. |
+| `example_world.py` | The scratch directory and temporary environment a worked example runs in. |
+| `conformance.py` | `check_tool` and `check_registry`: every catalog rule, and every worked example run and compared. |
 | `expr.py` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression **or** to parameterised SQL. Never `eval`. |
-| `pipeline.py` | The YAML loader. `StepSpec`, `PortRef`, `PipelineSpec`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
-| `runner.py` | Walks a loaded flow. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
+| `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Group`, the walk order, the fingerprint. |
+| `rules.py` | Resolving `${rules.*}` references in a step's configuration. |
+| `loader.py` | `read_pipeline` and `load_pipeline`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
+| `walk.py` | Works out a run before it starts: which steps `until=` and `cached=` leave to walk, the frames handed in, and when each frame can be freed. |
+| `trace.py` | What a run leaves behind: `StepEvent`, `PipelineTrace`, `CachedFrame`, and the failures that carry a partial trace. |
+| `runner.py` | `run_pipeline`. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
+| `tool.py`, `pipeline.py` | Old import paths, re-exporting the names above. Removed once consumers move to the new ones. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
 | `preview.py` | Serves a run's ports a window at a time, so a page can search all the rows, not only the drawn ones. |
 | `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. |
@@ -91,9 +107,7 @@ than the one you are editing. If anything looks impossible, run
 | `scripts/` | The page builders and the run server. **Not shipped in the wheel.** They render; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
-Some module docstrings are older than the code. `pipeline.py` still says "nineteen tools"; there
-are 31. The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are
-not.
+The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are not.
 
 ## The rules
 
@@ -237,7 +251,8 @@ compilation or an explicit refusal there, tests for both targets, and its entry 
 ### Adding a tool
 
 Only after the questions in manual §2 have been answered in writing. Then the contract in manual
-§8.2. `tools/filter.py` is the smallest complete example to copy the shape from. Checklist:
+§8.2. `tools/filter.py` is the smallest complete example to copy the shape from. A tool imports
+everything it needs from `authoring.py`. Checklist:
 
 1. One file in `tools/`, registering itself at the bottom.
 2. Every config field typed and described, required or defaulted.

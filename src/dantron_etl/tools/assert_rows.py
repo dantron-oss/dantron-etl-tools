@@ -8,7 +8,7 @@ offending rows go in the raised message instead. A flow that wants them as *data
 refusal reaches for Filter, which already keeps both sides of a predicate.
 
 **A violated assertion is a data fault, never a configuration fault and never a bare execution
-failure.** It raises :class:`~.tool.DataError`, because the reader's next move differs from every
+failure.** It raises :class:`~.authoring.DataError`, because the reader's next move differs from every
 other member of the family: go and look at the data, not at the run and not at the file.
 
 **A predicate over no rows is not satisfied.** Every row of an empty frame satisfies every
@@ -27,7 +27,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..tool import (
+from ..authoring import (
     MAX_REPORTED_ROWS,
     REGISTRY,
     ConfigField,

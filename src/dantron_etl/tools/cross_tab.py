@@ -32,7 +32,7 @@ that wrote the file, so one rule covers both. The tool refuses, names the column
 rows. The fix is upstream, where an author decides whether to drop them or label them.
 
 **A new column name that collides with an index column is refused.** This is the hazard
-:func:`~.tool.check_output_column` exists for, one step removed. The name is in the rows rather
+:func:`~.authoring.check_output_column` exists for, one step removed. The name is in the rows rather
 than in the configuration, so it can only be checked once the rows have been seen. Left alone, one
 of the two columns wins and the other is gone. A name that collides with a column outside the index
 is fine, because only the index columns survive into the output.
@@ -60,7 +60,7 @@ from typing import Any
 
 import polars as pl
 
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,

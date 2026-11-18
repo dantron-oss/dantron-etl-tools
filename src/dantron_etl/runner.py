@@ -17,12 +17,13 @@ wiring alone -- from which steps still have to consume a port -- so it is a prop
 being run rather than a choice a caller could get subtly wrong, and the one property both modes are
 required to share is that every count, shape and message they report is identical.
 
-Refusals are ordered so that none of them can arrive after a side effect. A parameter placeholder
-that survived into a configuration is refused before a single step runs, because a refusal after
-several steps have already written somewhere is not a refusal. A column an expression names is
-checked against a step's own input frames the moment they exist -- not for the whole flow at once,
-because no tool declares the columns it produces, so an up-front pass could only ever reach the
-steps fed by frames supplied before the run began.
+Refusals are ordered so that as many as possible arrive before any side effect. A parameter
+placeholder that survived into a configuration is refused before a single step runs, because a
+refusal after several steps have already written somewhere is not a refusal. A column an
+expression names is checked against a step's own input frames the moment they exist -- not for
+the whole flow at once, because no tool declares the columns it produces, so an up-front pass
+could only ever reach the steps fed by frames supplied before the run began. That check, and a
+source supplied on only some of its ports, can therefore refuse after earlier steps have written.
 
 A source step is handed its frame rather than made to read one, because every zero-input tool in
 the catalog opens a file or a database, and a run driven from tests, from a notebook, or from an
@@ -49,16 +50,24 @@ rested on one, so a reader who was not there can refuse it.
 import logging
 import time
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Literal
 
 import polars as pl
 
-from .pipeline import PipelineSpec, PortRef
-from .tool import REGISTRY, Ports, Tool, ToolError, ToolRegistry, input_ports_for, run_tool
+# The runner calls the boundary through this module's own name, run_tool. A caller may replace
+# runner.run_tool to watch every step's output as the run goes; keep the call a bare run_tool(...).
+from .boundary import run_tool
+from .contract import Tool, input_ports_for
+from .errors import RunError, ToolError
+from .ports import Ports
+from .registry import REGISTRY, ToolRegistry
+from .spec import Pipeline, PortRef
+from .trace import CachedFrame, ColumnCheckError, FrameShape, Level, PipelineTrace, StepEvent, StepFailedError
+from .walk import release_schedule, resolve_cached, resolve_sources, walk_around_cache, walk_for
 
+# compatibility: removed in the names stage -- the trace names below now live in trace.py
 __all__ = [
     "CachedFrame",
     "ColumnCheckError",
@@ -72,10 +81,6 @@ __all__ = [
     "run_pipeline",
 ]
 
-#: How a reader should treat one event. ``"warning"`` is a step that ran and produced a frame while
-#: something it declared went quiet -- an empty frame on a port a later step will read. ``"error"``
-#: is a step that produced nothing, and is always the last event a run reports.
-Level = Literal["info", "warning", "error"]
 
 #: Where one step's output frames came from. Not a pair of booleans on the walk, because "ran" and
 #: "was skipped for two different reasons" is one question with three answers.
@@ -95,178 +100,6 @@ _ORIGIN_VERBS: Mapping[_Origin, str] = {
 _RETAIN_MODES: tuple[str, ...] = ("all", "live")
 
 
-class RunError(ToolError):
-    """A run could not proceed: a bad argument, an unresolved reference, evidence asked for that a
-    retention mode already freed. Stays inside the one family every tool boundary already raises so
-    a caller has one type to catch, whichever layer refused.
-    """
-
-
-@dataclass(frozen=True, slots=True)
-class FrameShape:
-    """A named frame's size, reported against the port that produced it rather than the step.
-
-    ``columns`` carries names rather than a count: a released port's frame is gone under
-    ``retain="live"``, but its schema is still worth drawing, and a width alone cannot be drawn.
-    """
-
-    port: PortRef
-    rows: int
-    columns: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class CachedFrame:
-    """A frame a previous run left on a computed port, and the fingerprint recorded beside it.
-
-    Two fields because neither is any use alone. The frame without the fingerprint is a number with
-    no provenance, and the danger a cache carries is not one that fails to load -- it is one that
-    loads perfectly against a pipeline somebody has since edited. The fingerprint is
-    :meth:`~.pipeline.PipelineSpec.fingerprint` taken over the closure that produced the port, and
-    :func:`run_pipeline` compares it before it walks a step.
-
-    Frozen because it is evidence of a run that already happened, not a value the run holding it may
-    edit on its way past.
-    """
-
-    frame: pl.DataFrame
-    fingerprint: str
-
-
-@dataclass(frozen=True, slots=True)
-class StepEvent:
-    """What one step did, for a reader who was not there when it ran.
-
-    ``inputs`` and ``outputs`` are one shape per declared port, in the tool's own declared order --
-    a pairing reports one input shape per side and one output shape per branch, never a single
-    number standing in for all of them. ``message`` is the whole sentence a log line or an exception
-    reads; nothing here is assembled twice into two different wordings.
-
-    ``supplied`` and ``cached`` are separate facts and are never both true. A supplied source is
-    the routine case -- a run handed the frame a reader would otherwise have opened. A cached step
-    is a claim about a *previous* run, whose ancestors did not run in this one, so its event reports
-    no input shapes: it read nothing, and reporting what it would have read would be inventing
-    evidence.
-    """
-
-    pipeline: str
-    step_id: str
-    tool: str
-    level: Level
-    inputs: tuple[FrameShape, ...]
-    outputs: tuple[FrameShape, ...]
-    duration_ms: float
-    at: datetime
-    message: str
-    lane: str | None = None
-    stage: str | None = None
-    supplied: bool = False
-    cached: bool = False
-    released: tuple[PortRef, ...] = ()
-    notes: tuple[str, ...] = ()
-    error: str | None = None
-    run_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StepFailedError(RunError):
-    """A step's own tool refused, mid-run. ``__cause__`` is that refusal, exactly as the tool raised
-    it -- a :class:`~.tool.DataError` says go and look at the rows, an
-    :class:`~.tool.ExecutionError` says go and look at the run, and flattening the two into one
-    wording would erase that choice.
-    """
-
-    step_id: str
-    event: StepEvent
-    trace: "PipelineTrace"
-
-    def __init__(self, step_id: str, event: StepEvent, trace: "PipelineTrace") -> None:
-        RunError.__init__(self, event.message)
-        object.__setattr__(self, "step_id", step_id)
-        object.__setattr__(self, "event", event)
-        object.__setattr__(self, "trace", trace)
-
-
-@dataclass(frozen=True, slots=True)
-class ColumnCheckError(RunError):
-    """A step's configuration names a column that none of its input frames carry, caught the moment
-    those frames exist rather than by letting the tool discover it.
-    """
-
-    step_id: str
-    event: StepEvent
-    trace: "PipelineTrace"
-
-    def __init__(self, step_id: str, event: StepEvent, trace: "PipelineTrace") -> None:
-        RunError.__init__(self, event.message)
-        object.__setattr__(self, "step_id", step_id)
-        object.__setattr__(self, "event", event)
-        object.__setattr__(self, "trace", trace)
-
-
-@dataclass(frozen=True, slots=True)
-class PipelineTrace:
-    """One run: every frame it produced (subject to ``retain``), every shape, every event, in order.
-
-    ``shapes`` is complete regardless of ``retain`` -- how large a released frame was is exactly
-    what a failure needs -- while ``frames`` holds only what the retention mode kept. Both are
-    read-only mappings: a trace is evidence of what happened, not a value a reader can rewrite.
-
-    ``until`` is what the run was asked to reach, and is empty for a whole run. A reader of a trace
-    is not the caller that produced it and cannot ask it anything, so a partial run has to say on
-    its own face that it was one: rendering a seven-step closure of a nine-step flow as the flow
-    would quietly tell somebody that two steps do not exist. The steps are reported in dependency
-    order, whatever order or container the caller wrote them in -- a set has no order of its own,
-    and a field on a piece of evidence that renders differently run to run is not evidence.
-
-    ``cached`` names the ports this run took from a cache instead of computing, in the order it
-    reached them, and is empty for a run that computed everything it reports. It is the only thing
-    that tells an honest run from a resumed one, because a resumed run's figures are as plausible
-    as any other's -- so a report, a page or a scheduled job that must not publish a resumed run
-    reads this field, and a caller who merely offered a cache the run never reached does not
-    trip it.
-
-    ``status`` holds the per-row mark a step reported beside a port it degraded -- one row per row
-    of that port, in the same order -- and holds nothing for every port that degraded nothing, which
-    on a real flow is almost all of them. It does not travel downstream: a step handing on the very
-    rows an earlier step emptied reports nothing, because a status is a fact about what a step did
-    and that step did nothing to those values. Propagating it would turn one degradation into a mark
-    on every step after it and make the last step of a flow look like the culprit. It is released in
-    lockstep with the frame it describes, since a status kept after its rows were freed is a row
-    reference with nothing to point at -- ``shapes``, which is a summary rather than a reference,
-    survives as it always did.
-    """
-
-    pipeline: str
-    retain: Literal["all", "live"]
-    events: tuple[StepEvent, ...]
-    shapes: Mapping[PortRef, FrameShape]
-    frames: Mapping[PortRef, pl.DataFrame]
-    status: Mapping[PortRef, pl.DataFrame] = MappingProxyType({})
-    until: tuple[str, ...] = ()
-    cached: tuple[PortRef, ...] = ()
-    run_id: str | None = None
-
-    def frame(self, port: PortRef) -> pl.DataFrame:
-        """The frame ``port`` produced, or a refusal naming why it cannot be handed back."""
-        if port in self.frames:
-            return self.frames[port]
-        if port in self.shapes:
-            raise RunError(
-                f"port {port!s} produced a frame, but it was released under retain={self.retain!r} "
-                f"before this trace was read; its shape is still on trace.shapes"
-            )
-        raise RunError(f"no port {port!s} on this trace; ports are: {', '.join(str(p) for p in self.shapes)}")
-
-    def event(self, step_id: str) -> StepEvent:
-        """The event ``step_id`` reported, or a refusal listing the steps that actually ran."""
-        for candidate in self.events:
-            if candidate.step_id == step_id:
-                return candidate
-        ran = ", ".join(event.step_id for event in self.events) or "none"
-        raise RunError(f"no event for step {step_id!r}; steps that ran: {ran}")
-
-
 def logging_sink(logger: logging.Logger | None = None) -> Callable[[StepEvent], None]:
     """A sink that writes each event's own message, verbatim, at the log level its own level names.
 
@@ -284,7 +117,7 @@ def logging_sink(logger: logging.Logger | None = None) -> Callable[[StepEvent], 
 
 
 def run_pipeline(
-    spec: PipelineSpec,
+    spec: Pipeline,
     *,
     sources: Mapping[PortRef | str, pl.DataFrame] | None = None,
     retain: Literal["all", "live"] = "all",
@@ -363,7 +196,7 @@ def run_pipeline(
     if retain not in _RETAIN_MODES:
         raise RunError(f"retain must be one of {', '.join(_RETAIN_MODES)}; got {retain!r}")
 
-    requested, order = _walk_for(spec, until)
+    requested, order = walk_for(spec, until)
 
     registry: ToolRegistry = spec.registry if spec.registry is not None else REGISTRY
     tools_by_step: dict[str, Tool] = {step.id: registry.get(step.tool) for step in spec.steps}
@@ -376,18 +209,18 @@ def run_pipeline(
                 f"a run must not start on a configuration the loader was meant to have finished resolving"
             )
 
-    supplied_frames = _resolve_sources(spec, tools_by_step, sources or {})
-    cached_frames = _resolve_cached(spec, tools_by_step, cached or {})
+    supplied_frames = resolve_sources(spec, tools_by_step, sources or {})
+    cached_frames = resolve_cached(spec, tools_by_step, cached or {})
     cached_steps = {ref.step for ref in cached_frames}
 
     # The walk the cache leaves to do, which is the closure minus whatever is now only wanted by a
     # step that will not run. Computed after the cache is resolved and before anything else reads
     # `order`, so the release schedule below and the trace both describe the run that happens.
-    order = _walk_around_cache(spec, order, requested, cached_steps)
+    order = walk_around_cache(spec, order, requested, cached_steps)
 
     column_refs = spec.column_references()
 
-    schedule = _release_schedule(spec, tools_by_step, order) if retain == "live" else {}
+    schedule = release_schedule(spec, tools_by_step, order) if retain == "live" else {}
 
     frames: dict[PortRef, pl.DataFrame] = {}
     shapes: dict[PortRef, FrameShape] = {}
@@ -611,217 +444,6 @@ def _find_placeholder(value: object) -> str | None:
     return None
 
 
-def _walk_for(spec: PipelineSpec, until: str | Collection[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(the steps asked for, the steps to walk)``, both in dependency order.
-
-    A whole run asks for nothing and walks everything. A truncated one walks the ancestor closure of
-    what it named, followed through :attr:`~.pipeline.StepSpec.inputs`, which is the only edge list
-    a flow has. Neither tuple is ordered here: both are :meth:`~.pipeline.PipelineSpec.order`
-    filtered down to a set of ids. So a step that runs sits in exactly the position it occupies in a
-    whole run, a step reached from two directions is still walked once, and what the trace reports
-    as asked for is in the same order as what it reports as run -- whatever order, and whatever kind
-    of container, the caller wrote them in.
-
-    Both refusals happen here, before a caller can have done anything: a step id this pipeline does
-    not have is a typo, and silently running nothing or silently running everything are equally
-    defensible readings of one, each leaving an author looking at a result that does not answer the
-    question they asked. An empty collection is refused for the same reason -- it almost always
-    arrives from a comprehension over something that turned out empty, and a trace with no events
-    reads identically to a run that failed on its first step.
-    """
-    order = spec.order()
-    if until is None:
-        return (), order
-
-    named = (until,) if isinstance(until, str) else tuple(until)
-    known = ", ".join(step.id for step in spec.steps) or "none"
-    if not named:
-        raise RunError(
-            "until was given an empty collection, so this run would have had nothing to do; pass "
-            f"None to run the whole pipeline, or name at least one of: {known}"
-        )
-
-    known_ids = {step.id for step in spec.steps}
-    for step_id in named:
-        if step_id not in known_ids:
-            raise RunError(f"until names step {step_id!r}, which this pipeline does not have; steps are: {known}")
-
-    closure: set[str] = set()
-    pending = list(named)
-    while pending:
-        step_id = pending.pop()
-        if step_id in closure:
-            continue
-        closure.add(step_id)
-        pending.extend(ref.step for ref in spec.step(step_id).inputs.values())
-
-    requested = set(named)
-    return (
-        tuple(step_id for step_id in order if step_id in requested),
-        tuple(step_id for step_id in order if step_id in closure),
-    )
-
-
-def _named_port(
-    spec: PipelineSpec,
-    tools_by_step: Mapping[str, Tool],
-    key: PortRef | str,
-    argument: Literal["sources", "cached"],
-) -> tuple[PortRef, Tool]:
-    """One key of ``sources`` or of ``cached`` read as a port of this flow, with the tool behind it.
-
-    Two arguments hand frames to a run, and a typo has to read the same way in either: the spelling
-    of a key -- a :class:`PortRef` or the text a file would carry -- a step this pipeline has not
-    got, and a port that step does not declare are the same three mistakes whichever argument they
-    were written in, so they are worded once here and told apart only by ``argument``, which names
-    the one the caller actually wrote.
-
-    What the two arguments disagree about is left to them: whether the step behind the port reads
-    anything is the question they want opposite answers to, and is the whole distinction between
-    stating a run's input and standing in for a computation.
-    """
-    if isinstance(key, PortRef):
-        ref = key
-    elif isinstance(key, str) and "." in key:
-        step_id, port_name = key.split(".", 1)
-        ref = PortRef(step_id, port_name)
-    else:
-        raise RunError(f"a {argument} key must be a PortRef or a 'step.port' string; got {key!r}")
-
-    tool = tools_by_step.get(ref.step)
-    if tool is None:
-        steps = ", ".join(step.id for step in spec.steps) or "none"
-        raise RunError(f"{argument} names step {ref.step!r}, which this pipeline does not have; steps are: {steps}")
-    if ref.port not in tool.output_ports:
-        ports = ", ".join(tool.output_ports) if tool.output_ports else "none"
-        raise RunError(
-            f"{argument} names {ref!s}, but step {ref.step!r} (tool {tool.name!r}) has no output "
-            f"port {ref.port!r}; its output ports are: {ports}"
-        )
-    return ref, tool
-
-
-def _resolve_sources(
-    spec: PipelineSpec,
-    tools_by_step: Mapping[str, Tool],
-    sources: Mapping[PortRef | str, pl.DataFrame],
-) -> dict[PortRef, pl.DataFrame]:
-    """``sources`` keyed by :class:`PortRef`, refusing anything that is not a real source port.
-
-    A source port is an output of a step that reads nothing -- the only kind of step a run can hand
-    a frame to without the frame it hands over silently becoming the flow that actually ran. What a
-    step reads is asked of its tool with its own configuration, because a tool that derives its
-    ports names none in its attribute even when the step reads three.
-    """
-    resolved: dict[PortRef, pl.DataFrame] = {}
-    for key, frame in sources.items():
-        ref, tool = _named_port(spec, tools_by_step, key, "sources")
-        step_input_ports = input_ports_for(tool, spec.step(ref.step).config)
-        if step_input_ports:
-            raise RunError(
-                f"sources supplies {ref!s}, but step {ref.step!r} is computed, not a source: its "
-                f"tool ({tool.name!r}) reads input port(s) {', '.join(step_input_ports)}, so handing "
-                f"it a frame would make the flow that ran a different flow from the one in the file"
-            )
-        resolved[ref] = frame
-    return resolved
-
-
-def _resolve_cached(
-    spec: PipelineSpec,
-    tools_by_step: Mapping[str, Tool],
-    cached: Mapping[PortRef | str, CachedFrame],
-) -> dict[PortRef, CachedFrame]:
-    """``cached`` keyed by :class:`PortRef`, refusing every entry that cannot stand in for a step.
-
-    Structure first and fingerprints after, because a fingerprint cannot be taken of a step that
-    does not exist, and a refusal about a stale cache would send an author to the wrong problem.
-
-    A source port is refused, and the refusal names ``sources``. The two arguments do not mean the
-    same thing: a supplied source is the caller stating this run's input, checked against nothing
-    because there is nothing upstream of it to check, while a cached port is a claim that a
-    computation which already happened may be skipped. One frame with two doors and two different
-    guards would leave every question afterwards -- was this run resumed, is this trace evidence --
-    answerable both ways at once.
-
-    A step cached on some but not all of its output ports is refused for a plainer reason: it
-    produced all of them in one pass, so obtaining the rest would mean running the step, and its
-    ancestors, and the reads they open, which is the entire cost the cache was taken to avoid --
-    and would then leave two answers for one step, one of them from a previous run.
-    """
-    resolved: dict[PortRef, CachedFrame] = {}
-    for key, entry in cached.items():
-        ref, tool = _named_port(spec, tools_by_step, key, "cached")
-        if not input_ports_for(tool, spec.step(ref.step).config):
-            raise RunError(
-                f"cached names {ref!s}, but step {ref.step!r} is a source rather than a computation: "
-                f"there is nothing upstream of it that resuming could skip, and a frame for a source "
-                f"port is what sources takes"
-            )
-        resolved[ref] = entry
-
-    for step_id in dict.fromkeys(ref.step for ref in resolved):
-        tool = tools_by_step[step_id]
-        missing = [str(PortRef(step_id, port)) for port in tool.output_ports if PortRef(step_id, port) not in resolved]
-        if missing:
-            raise RunError(
-                f"step {step_id!r} was cached on some but not all of its output ports; still "
-                f"missing: {', '.join(missing)}. A step produces every one of its ports in one pass, "
-                f"so a run would have to perform it -- and everything behind it -- to obtain the rest"
-            )
-
-    for ref, entry in resolved.items():
-        if entry.fingerprint != spec.fingerprint(ref.step):
-            raise RunError(
-                f"cached port {ref!s} cannot be used: the configuration that produced it has "
-                f"changed. The fingerprint recorded beside the frame is not the one step "
-                f"{ref.step!r} and its ancestors produce now, so those rows came from a pipeline "
-                f"that is no longer in the file. Take the cache again, or drop it"
-            )
-    return resolved
-
-
-def _walk_around_cache(
-    spec: PipelineSpec,
-    order: tuple[str, ...],
-    requested: tuple[str, ...],
-    cached_steps: Collection[str],
-) -> tuple[str, ...]:
-    """``order`` with every step dropped that was only there to produce something now cached.
-
-    The ancestors are the whole point of the feature. Skipping the cached step alone would save one
-    step out of fifty, still open every file the flow reads, take just as long, and report that it
-    had resumed.
-
-    So the walk is recomputed backwards from what the run is *for*: the steps ``until`` named, or,
-    for a whole run, the steps nothing else in the walk reads. From each, every input edge is
-    followed -- except through a cached step, which reads nothing this run and so ends the backward
-    walk there. What survives is every step some running step still needs, which is why an ancestor
-    two further steps read is not dropped merely because one of its consumers was cached. A cache
-    that saves nothing at all is left alone rather than refused: it is not a mistake, and a refusal
-    would send an author hunting for one they have not made.
-    """
-    if not cached_steps:
-        return order
-
-    in_walk = set(order)
-    read_in_walk = {edge.step for step_id in order for edge in spec.step(step_id).inputs.values()}
-    roots = list(requested) if requested else [step_id for step_id in order if step_id not in read_in_walk]
-
-    needed: set[str] = set()
-    pending = list(roots)
-    while pending:
-        step_id = pending.pop()
-        if step_id in needed:
-            continue
-        needed.add(step_id)
-        if step_id in cached_steps:
-            continue
-        pending.extend(ref.step for ref in spec.step(step_id).inputs.values() if ref.step in in_walk)
-
-    return tuple(step_id for step_id in order if step_id in needed)
-
-
 # ---------------------------------------------------------------------------
 # Per-step column pre-flight
 # ---------------------------------------------------------------------------
@@ -874,37 +496,3 @@ def _outcome_message(
     for note in notes:
         message += f"; {note}"
     return message
-
-
-# ---------------------------------------------------------------------------
-# The release schedule -- a property of the wiring, computed once per run
-# ---------------------------------------------------------------------------
-
-
-def _release_schedule(
-    spec: PipelineSpec,
-    tools_by_step: Mapping[str, Tool],
-    order: tuple[str, ...],
-) -> dict[str, tuple[PortRef, ...]]:
-    """``step id -> ports to free once that step has finished``, for ``retain="live"``.
-
-    A port is due at the last step that still reads it -- read off :meth:`PipelineSpec.consumers`,
-    a property of the wiring alone. ``order`` is what decides *last*, and under a truncated run
-    that is the closure rather than the whole flow: a consumer that will never run cannot be a
-    port's last use, and counting one would leave a source frame -- the largest in the run -- due
-    at a step the walk never reaches, which is to say never freed at all. A port nothing remaining
-    reads is due at the very step that produced it, for the same reason: a terminal frame kept
-    "just in case" is the largest one in the run, and this is what keeps it from being kept.
-
-    Both halves of that are the one question -- is this step in the walk? -- asked of a producer by
-    walking ``order`` rather than the spec, and of a consumer by looking its step up in ``position``.
-    """
-    position = {step_id: index for index, step_id in enumerate(order)}
-    schedule: dict[str, list[PortRef]] = {step_id: [] for step_id in order}
-    for step_id in order:
-        for port_name in tools_by_step[step_id].output_ports:
-            ref = PortRef(step_id, port_name)
-            read_at = [position[consumer.step] for consumer in spec.consumers(ref) if consumer.step in position]
-            due_at = max(read_at, default=position[step_id])
-            schedule[order[due_at]].append(ref)
-    return {step_id: tuple(refs) for step_id, refs in schedule.items()}
