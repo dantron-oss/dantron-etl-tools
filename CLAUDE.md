@@ -88,7 +88,7 @@ than the one you are editing. If anything looks impossible, run
 | `boundary.py` | `run_tool`, the boundary every call to a tool goes through. |
 | `frame_checks.py` | The helpers a tool calls to check its configuration against the frames it was given (`require_columns`, `compile_for`, `check_output_column` ...). |
 | `registry.py` | `ToolRegistry`, the shipped `REGISTRY`, and `get_tool`. |
-| `example_world.py` | The scratch directory and temporary environment a worked example runs in. |
+| `example_world.py` | The scratch directory, temporary environment and in-memory database a worked example runs in. |
 | `conformance.py` | `check_tool` and `check_registry`: every catalog rule, and every worked example run and compared. |
 | `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
 | `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Group`, the walk order, the fingerprint. |
@@ -100,10 +100,10 @@ than the one you are editing. If anything looks impossible, run
 | `tool.py`, `pipeline.py` | Old import paths, re-exporting the names above. Removed once consumers move to the new ones. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
 | `preview.py` | Serves a run's ports a window at a time, so a page can search all the rows, not only the drawn ones. |
-| `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. |
+| `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. The table helpers the table tools share. |
 | `paths.py` | `project_root(__file__)`. Where the caller's project is, or a refusal. |
 | `column_types.py` | The type names a flow may write (`String`, `Float64`, `Date` ...). |
-| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. |
+| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. A module whose name starts with `_` is a helper, not a tool, and is skipped: `_spreadsheet.py` holds what a cell and a tab can hold, and `_workbook_*.py` hold the parts of `write_workbook`. |
 | `scripts/` | The page builders and the run server. **Not shipped in the wheel.** They render; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
