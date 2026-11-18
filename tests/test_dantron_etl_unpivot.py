@@ -1636,6 +1636,7 @@ class TestExcludeNullsDoesNotBuildTheRowsItLeavesOut:
     The bar is a quarter of the full melt, well clear of both.
     """
 
+    @pytest.mark.slow
     @pytest.mark.skipif(sys.platform != "linux", reason="resetting and reading the peak needs Linux's /proc")
     def test_the_option_keeps_peak_memory_well_below_a_full_melt(self) -> None:
         full_height, full_growth = _measure_melt(exclude_nulls=False)
