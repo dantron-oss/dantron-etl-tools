@@ -39,6 +39,7 @@ into other repositories and must carry no caller's nouns.
 
 import os
 import re
+import json
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -46,7 +47,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Final
 
-import orjson
 import polars as pl
 import pytest
 
@@ -1417,17 +1417,17 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
         """
         document_path = tmp_path / "document.json"
         rules_path = tmp_path / "rules.json"
-        document_path.write_bytes(orjson.dumps(_document()))
-        rules_path.write_bytes(orjson.dumps(RULES))
+        document_path.write_text(json.dumps(_document()), encoding="utf8")
+        rules_path.write_text(json.dumps(RULES), encoding="utf8")
 
         probe = tmp_path / "probe.py"
         probe.write_text(
             "import sys\n"
             "from pathlib import Path\n"
-            "import orjson\n"
+            "import json\n"
             "from dantron_etl.pipeline import load_pipeline\n"
-            "document = orjson.loads(Path(sys.argv[1]).read_bytes())\n"
-            "rules = orjson.loads(Path(sys.argv[2]).read_bytes())\n"
+            "document = json.loads(Path(sys.argv[1]).read_text(encoding='utf8'))\n"
+            "rules = json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))\n"
             "print(load_pipeline(document, rules=rules).fingerprint(sys.argv[3]))\n",
             encoding="utf8",
         )

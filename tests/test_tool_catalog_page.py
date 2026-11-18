@@ -50,10 +50,10 @@ that are not the catalog's.
 """
 
 import html
+import json
 import importlib.util
 from typing import Any
 
-import orjson
 import pytest
 
 from dantron_etl.paths import project_root
@@ -138,6 +138,11 @@ def _rendered_depth(rendered: dict[str, Any]) -> int:
     inner += [_rendered_depth(member) for member in (rendered.get("fields") or {}).values()]
     return 1 + max(inner, default=0)
 
+
+
+def _as_json(value: Any) -> str:
+    """``value`` as JSON text. Dates are written as ISO text, the way the catalog's JSON file holds them."""
+    return json.dumps(value, default=lambda v: v.isoformat())
 
 class TestCatalogCompleteness:
     """The catalog says everything the registry declares, for every tool the registry holds."""
@@ -243,7 +248,7 @@ class TestCatalogArtefacts:
         """The generator is a pure function of the registry, so a change to a tool is diffable."""
         again = catalog_page.catalog()
 
-        assert orjson.dumps(again) == orjson.dumps(data), "two runs of the generator disagree"
+        assert _as_json(again) == _as_json(data), "two runs of the generator disagree"
         assert catalog_page.build_page(again) == catalog_page.build_page(data), "two renders of one catalog disagree"
 
     def test_page_and_json_are_written_from_a_single_catalog(
@@ -264,7 +269,7 @@ class TestCatalogArtefacts:
 
         catalog_page.main()
 
-        assert orjson.loads(json_path.read_bytes()) == orjson.loads(orjson.dumps(stub)), "the JSON is not the catalog"
+        assert json.loads(json_path.read_bytes()) == json.loads(_as_json(stub)), "the JSON is not the catalog"
         assert html_path.read_text(encoding="utf-8") == catalog_page.build_page(stub), (
             "the page was not rendered from the catalog that was written as JSON"
         )
