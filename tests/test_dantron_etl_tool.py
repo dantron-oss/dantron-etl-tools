@@ -4414,8 +4414,10 @@ class TestAnExampleIsGivenADirectoryToWorkIn:
         assert len(opened) == 1, f"one directory for one example: {opened}"
         prepared = opened[0]
         assert prepared.is_absolute(), f"a token must resolve to somewhere real: {prepared}"
-        resolved = {str(config["path"]) for config in tool.configs}
-        assert resolved == {str(prepared)}, f"every phase saw the same resolved path: {resolved}"
+        # Compared as paths, not text: on Windows the token resolves to "...\scratch_x/rows.csv", which
+        # names the same file as "...\scratch_x\rows.csv" but is not the same string.
+        resolved = {Path(config["path"]) for config in tool.configs}
+        assert resolved == {prepared}, f"every phase saw the same resolved path: {resolved}"
         assert tool.help().examples[0].configuration == stored == {"path": _SCRATCH_FILE}
         assert not prepared.exists(), "the file the example prepared must not outlive it"
         assert not prepared.parent.exists(), "nor the directory it was prepared in"

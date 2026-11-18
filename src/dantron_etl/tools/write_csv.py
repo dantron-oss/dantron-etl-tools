@@ -116,13 +116,13 @@ class WriteCsv:
         """
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
-            raise ConfigError(f"write_csv only writes {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path {path!r}")
+            raise ConfigError(f"write_csv only writes {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
 
         _validate_delimiter(config["delimiter"])
 
         if Path(path).exists() and not config["replace"]:
             raise ConfigError(
-                f"write_csv refuses to overwrite the file already at {path!r}; set replace: true "
+                f"write_csv refuses to overwrite the file already at '{path}'; set replace: true "
                 "to overwrite it deliberately"
             )
 

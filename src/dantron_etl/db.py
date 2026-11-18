@@ -215,7 +215,7 @@ def _connect_sqlite_path(uri: str) -> sqlite3.Connection:
         raise ConfigError(f"a sqlite connection must be written as {_SQLITE_PREFIX}<path>")
     path = Path(uri[len(_SQLITE_PREFIX) :])
     if not path.exists():
-        raise ConfigError(f"sqlite database {str(path)!r} does not exist; a missing path is refused, not created")
+        raise ConfigError(f"sqlite database '{path}' does not exist; a missing path is refused, not created")
     return sqlite3.connect(path)
 
 

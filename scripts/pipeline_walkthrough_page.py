@@ -1,4 +1,10 @@
-"""Render one run of a pipeline as a page: the canvas, and the data at every port.
+"""Run one pipeline, save the run, and show it as a page: the canvas, and the data at every port.
+
+    .venv/bin/python scripts/pipeline_walkthrough_page.py <name>     # or: make run p=<name>
+
+<name> picks a project: the flow in pipelines/<name>.yaml, its input files in pipelines/<name>/, and
+its settings in pipelines/<name>/settings.yaml. The run is saved to output_files/runs/<name>/, the
+viewer is started if it is not already running, and the page opens in a browser.
 
 The page exists because a figure that is wrong has to be traceable to the step that made it
 wrong. So it draws the flow as it is wired, and then shows, for every port, the rows that
@@ -12,8 +18,18 @@ step's own configuration as authored, and the tables come from the frames the ru
 
 from __future__ import annotations
 
+import argparse
 import html
-from collections.abc import Callable, Mapping
+import json
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+import webbrowser
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +38,21 @@ import polars as pl
 import dantron_etl
 from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_trace
 from dantron_etl.paths import project_root
+from dantron_etl.expr import ExpressionError
 from dantron_etl.pipeline import Group, PipelineSpec, StepSpec, read_pipeline_file
-from dantron_etl.runner import PipelineTrace, run_pipeline
-from dantron_etl.tool import STATUS_LEVELS
+from dantron_etl.preview import PAGE_NAME, PreviewError, persist_panels, persist_trace, serve
+from dantron_etl.runner import PipelineTrace, StepFailedError, run_pipeline
+from dantron_etl.tool import STATUS_LEVELS, ToolError
 
 # Resolved from this script's own location rather than from the library's -- see `dantron_etl.paths`.
 PROJECT_ROOT = project_root(__file__)
-OUT_PATH = PROJECT_ROOT / "output_files" / "pipeline_walkthrough.html"
+PIPELINES_DIR = PROJECT_ROOT / "pipelines"
+# Where a run is saved, one folder per project. The same folder scripts/serve_runs.py serves.
+RUNS_ROOT = PROJECT_ROOT / "output_files" / "runs"
+SETTINGS_NAME = "settings.yaml"
+# The port the viewer listens on. The same one scripts/serve_runs.py uses, so either starts the
+# viewer and both find it running.
+VIEWER_PORT = 8899
 # Rows drawn into the page for a slice of one entity, which the service cannot serve.
 MAX_ROWS = 25
 
@@ -653,6 +677,16 @@ def _slice_body(slice_: PortSlice, frame: pl.DataFrame | None) -> str:
     return _table(frame)
 
 
+def _event_if_ran(trace: PipelineTrace, step_id: str) -> Any:
+    """The step's event, or None when the run stopped before reaching it.
+
+    A run stops at the first step that fails, and that is when its page is most wanted: the rows
+    that went into the failing step are the first thing to look at. So every part of the page draws a
+    step that never ran, as one that did not run, rather than refusing to draw the run at all.
+    """
+    return trace.event(step_id) if any(event.step_id == step_id for event in trace.events) else None
+
+
 def _index(spec: PipelineSpec, trace: PipelineTrace) -> str:
     """Every step as a line, grouped by lane, in the order the run took them.
 
@@ -663,8 +697,8 @@ def _index(spec: PipelineSpec, trace: PipelineTrace) -> str:
     lanes: dict[str, list[str]] = {}
     for step_id in spec.order():
         step = spec.step(step_id)
-        event = trace.event(step_id)
-        mark = ' class="flag"' if event.level == "warning" else ""
+        event = _event_if_ran(trace, step_id)
+        mark = ' class="notrun"' if event is None else ' class="flag"' if event.level == "warning" else ""
         lanes.setdefault(step.lane or "", []).append(
             f'<li><button data-goto="{_e(step_id)}"{mark}>'
             f"<span>{_e(step_id)}</span><em>{_e(step.tool)}</em></button></li>"
@@ -685,18 +719,22 @@ def _index(spec: PipelineSpec, trace: PipelineTrace) -> str:
 def _step_detail(spec: PipelineSpec, trace: PipelineTrace, step_id: str) -> str:
     """What this step is: why it exists, how it is configured, what feeds it, what it cost."""
     step = spec.step(step_id)
-    event = trace.event(step_id)
+    event = _event_if_ran(trace, step_id)
     notes = (
-        "<ul class=notes>" + "".join(f"<li>{_e(note)}</li>" for note in event.notes) + "</ul>" if event.notes else ""
+        "<ul class=notes>" + "".join(f"<li>{_e(note)}</li>" for note in event.notes) + "</ul>"
+        if event is not None and event.notes
+        else ""
     )
+    level = event.level if event is not None else "notrun"
+    cost = f"{event.duration_ms:.1f} ms" if event is not None else "did not run: the run stopped before this step"
     feeds = "".join(
         f"<li><code>{_e(name)}</code> &larr; <code>{_e(ref)}</code></li>" for name, ref in step.inputs.items()
     )
     return (
-        f'<section class="detail {event.level}" data-step="{_e(step_id)}" hidden>'
+        f'<section class="detail {level}" data-step="{_e(step_id)}" hidden>'
         f'<header><h3><code>{_e(step_id)}</code><span class="tool">{_e(step.tool)}</span></h3>'
         f'<p class="where">{_e(step.lane or "")} &middot; {_e(step.stage or "")} &middot; '
-        f"{event.duration_ms:.1f} ms</p>"
+        f"{cost}</p>"
         f"{f'<p class=why>{_e(step.why)}</p>' if step.why else ''}{notes}</header>"
         f"<h5>configuration, as written</h5>{_config(step.config)}"
         f"{f'<h5>fed by</h5><ul class=feeds>{feeds}</ul>' if feeds else ''}"
@@ -711,7 +749,7 @@ def _step_data(
     views: dict[str, Any],
 ) -> str:
     step = spec.step(step_id)
-    event = trace.event(step_id)
+    event = _event_if_ran(trace, step_id)
     # What left, and what arrived. A step's inputs are upstream output ports, so both sides are
     # frames this run already produced and the service already serves by name -- which is what makes
     # searching and paging work on an input exactly as it does on an output.
@@ -719,7 +757,7 @@ def _step_data(
     # Reading a step used to mean holding its output in your head and scrolling to the step before it
     # to see what went in. The comparison a reader actually wants -- what did this step DO -- is
     # between two frames that were never on the screen together.
-    leaving = [(shape.port, shape.rows, _e(shape.port.port)) for shape in event.outputs]
+    leaving = [(shape.port, shape.rows, _e(shape.port.port)) for shape in event.outputs] if event is not None else []
     arriving = [
         (ref, trace.shapes[ref].rows if ref in trace.shapes else None, f"{_e(name)} &larr; {_e(ref.port)}")
         for name, ref in step.inputs.items()
@@ -733,7 +771,11 @@ def _step_data(
         for ref, rows, label in entries:
             panes = []
             for key, view in views.items():
-                if view is None:
+                if ref not in trace.shapes:
+                    # An input whose step never ran: the run stopped before it.
+                    body = '<p class="more">not produced &mdash; the step that makes it did not run</p>'
+                    count = "&mdash;"
+                elif view is None:
                     frame = trace.frames.get(ref)
                     body = (
                         # Keyed off the port rather than off the step being read, so a marked port
@@ -925,6 +967,8 @@ html, body {{ height:100%; }}
 .index button[aria-current="true"] {{ background:var(--accent-soft); border-left-color:var(--accent); }}
 .index button[aria-current="true"] span {{ color:var(--accent); font-weight:600; }}
 .index button.flag span::after {{ content:' !'; color:var(--warn); font-weight:700; }}
+.index button.notrun span {{ opacity:.55; }}
+.index button.notrun span::after {{ content:' (did not run)'; font-weight:400; }}
 .rail {{ background:none; border:1px solid var(--line); border-radius:6px; cursor:pointer;
   font-size:.9rem; line-height:1; padding:.3rem .45rem; color:var(--muted); }}
 .rail:hover {{ border-color:var(--accent); color:var(--accent); }}
@@ -1964,15 +2008,188 @@ def _refuse_a_borrowed_checkout() -> None:
         )
 
 
-def main() -> None:
+class ProjectError(Exception):
+    """A project that cannot be run as asked. The message says what to change, in plain words."""
+
+
+@dataclass(frozen=True)
+class Project:
+    """What a name on the command line stands for: a flow, the values it needs, and who to follow."""
+
+    name: str
+    pipeline: Path
+    rules: dict[str, Any]
+    focus: FocusSpec
+
+
+# A project name becomes a file name and a folder name, so it is kept to characters that are safe as
+# both on every system. A slash or a ".." would point outside pipelines/ altogether.
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+_SETTINGS_EXAMPLE = """  rules:                # the values the flow reads as ${rules.<name>}
+    revenue_type: REVENUE
+  focus: party          # the column that identifies one entity, to follow it through the flow"""
+
+
+def projects(pipelines_dir: Path = PIPELINES_DIR) -> list[str]:
+    """Every project name there is a pipeline file for."""
+    return sorted(path.stem for path in pipelines_dir.glob("*.yaml"))
+
+
+def load_project(name: str, pipelines_dir: Path = PIPELINES_DIR) -> Project:
+    """The project ``name`` stands for, or a :class:`ProjectError` saying what is missing or wrong."""
+    if not _PROJECT_NAME.fullmatch(name):
+        raise ProjectError(
+            f"'{name}' is not a project name. A project name is letters, digits, '_' and '-', and names "
+            f"a file in {pipelines_dir}: 'sales' runs {pipelines_dir / 'sales.yaml'}."
+        )
+    pipeline = pipelines_dir / f"{name}.yaml"
+    if not pipeline.is_file():
+        known = ", ".join(projects(pipelines_dir)) or "none yet"
+        raise ProjectError(f"there is no pipeline '{name}': '{pipeline}' does not exist. The projects there are: {known}.")
+
+    settings_path = pipelines_dir / name / SETTINGS_NAME
+    if not settings_path.is_file():
+        raise ProjectError(
+            f"project '{name}' has no settings file. Create '{settings_path}' with the values the flow "
+            f"needs and the column that identifies one entity, like this:\n{_SETTINGS_EXAMPLE}"
+        )
+    settings = _read_settings(settings_path)
+    return Project(name=name, pipeline=pipeline, rules=settings["rules"], focus=settings["focus"])
+
+
+def _read_settings(path: Path) -> dict[str, Any]:
+    """``rules`` and ``focus`` from a settings file, each checked, with any other key refused by name."""
+    import yaml
+
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf8"))
+    except yaml.YAMLError as error:
+        raise ProjectError(f"'{path}' is not readable YAML: {error}") from error
+    if document is None:
+        document = {}
+    if not isinstance(document, dict):
+        raise ProjectError(f"'{path}' must hold 'rules' and 'focus', like this:\n{_SETTINGS_EXAMPLE}")
+
+    # A misspelt key would otherwise be ignored, and the flow would then run without the value it
+    # was meant to carry. Refused here, by name, instead.
+    unknown = sorted(str(key) for key in document if key not in ("rules", "focus"))
+    if unknown:
+        raise ProjectError(f"'{path}' has {', '.join(repr(key) for key in unknown)}; a settings file holds only 'rules' and 'focus'.")
+
+    rules = document.get("rules") or {}
+    if not isinstance(rules, dict) or not all(isinstance(key, str) for key in rules):
+        raise ProjectError(f"'rules' in '{path}' must be a list of names and values, like this:\n{_SETTINGS_EXAMPLE}")
+
+    focus = document.get("focus")
+    columns = [focus] if isinstance(focus, str) else focus
+    if not columns or not isinstance(columns, list) or not all(isinstance(column, str) and column for column in columns):
+        raise ProjectError(
+            f"'{path}' must say which column identifies one entity, so the page can follow it "
+            f"through the flow: 'focus: party', or a list such as 'focus: [account, customer]' to "
+            f"take the first of them each step has."
+        )
+    return {"rules": dict(rules), "focus": FocusSpec(label=columns[0], identity=tuple(columns))}
+
+
+def write_run(project: Project, runs_root: Path = RUNS_ROOT) -> tuple[Path, PipelineTrace]:
+    """Run ``project`` and save it under ``runs_root``: its rows, its panels and its page.
+
+    A step that fails stops the run. What ran before it is still saved, with the page, so the rows
+    that went into the failing step can be looked at. The failure is then raised as it came.
+    """
+    spec = read_pipeline_file(project.pipeline, rules=project.rules)
+    failure: StepFailedError | None = None
+    try:
+        trace = run_pipeline(spec)
+    except StepFailedError as error:
+        failure, trace = error, error.trace
+
+    directory = runs_root / project.name
+    # The previous run is removed first. Saving over it would leave the files of any step that has
+    # since been renamed or removed, and the page would offer data this run never produced.
+    if directory.exists():
+        shutil.rmtree(directory)
+    persist_trace(trace, directory)
+    persist_panels(build_panels(spec, trace, project.focus), directory)
+    (directory / PAGE_NAME).write_text(build(spec, trace, project.focus), encoding="utf-8")
+    if failure is not None:
+        raise failure
+    return directory, trace
+
+
+def _viewer_serves(name: str, port: int) -> bool:
+    """Whether a viewer on ``port`` is already answering for the run called ``name``."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/{name}/api/ports", timeout=2) as answer:
+            return answer.status == 200 and "ports" in json.loads(answer.read())
+    except (OSError, ValueError):
+        return False
+
+
+def open_in_browser(url: str) -> None:
+    """Open ``url`` in the person's browser, including from WSL, where the browser is on Windows."""
+    explorer = shutil.which("explorer.exe")
+    if explorer is not None:
+        # explorer.exe hands an address to the Windows default browser. It reports failure even when
+        # it worked, so its exit code says nothing and is not checked.
+        subprocess.run([explorer, url], check=False)
+    elif not webbrowser.open(url):
+        print(f"open {url} in a browser")
+
+
+def view(name: str, runs_root: Path = RUNS_ROOT, port: int = VIEWER_PORT) -> None:
+    """Show the saved run ``name``: in the viewer already running, or in one started here."""
+    url = f"http://localhost:{port}/{name}/"
+    if _viewer_serves(name, port):
+        print(f"the viewer is already running; opening {url}")
+        open_in_browser(url)
+        return
+    try:
+        server = serve(runs_root, port=port, source_root=PROJECT_ROOT)
+    except OSError as error:
+        raise ProjectError(
+            f"the viewer could not start on port {port}: {error}. Something else is using that port; "
+            f"stop it, or look at the saved run with scripts/serve_runs.py once the port is free."
+        ) from error
+    print(f"viewing {url}\n\n  ctrl-c to stop")
+    open_in_browser(url)
+    # A sleeping loop rather than Event().wait(), so ctrl-c is heard. See scripts/serve_runs.py.
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    print("\nstopping")
+    server.shutdown()
+    server.server_close()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run a pipeline, save the run, and open its page.")
+    parser.add_argument("project", help="the project to run: pipelines/<project>.yaml")
+    parser.add_argument("--no-view", action="store_true", help="save the run without starting the viewer")
+    args = parser.parse_args(argv)
+
     _refuse_a_borrowed_checkout()
-    spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
-    trace = run_pipeline(spec)
-    focus = FocusSpec(label="party", identity=("party",))
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(build(spec, trace, focus), encoding="utf-8")
-    print(f"{len(trace.events)} steps, {len(trace.shapes)} ports -> {OUT_PATH} ({OUT_PATH.stat().st_size:,} bytes)")
+    try:
+        project = load_project(args.project)
+        directory, trace = write_run(project, RUNS_ROOT)
+    except StepFailedError as error:
+        print(f"step '{error.step_id}' failed: {error}", file=sys.stderr)
+        print(f"what ran before it is saved in '{RUNS_ROOT / args.project}'", file=sys.stderr)
+        if not args.no_view:
+            view(args.project, RUNS_ROOT)
+        return 1
+    except (ProjectError, ToolError, ExpressionError, PreviewError) as error:
+        print(f"cannot run '{args.project}': {error}", file=sys.stderr)
+        return 1
+
+    print(f"{len(trace.events)} steps ran, {len(trace.shapes)} ports saved in '{directory}'")
+    if not args.no_view:
+        view(project.name, RUNS_ROOT)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

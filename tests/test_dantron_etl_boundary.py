@@ -75,7 +75,7 @@ def _discover_modules() -> list[str]:
 def _imported_roots(source_path: Path) -> set[str]:
     """Every top-level package name imported anywhere in the file, at any nesting depth."""
     roots: set[str] = set()
-    for node in ast.walk(ast.parse(source_path.read_text())):
+    for node in ast.walk(ast.parse(source_path.read_text(encoding="utf8"))):
         if isinstance(node, ast.Import):
             roots.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
@@ -322,6 +322,7 @@ LIBRARY_TEST_GLOB = "test_dantron_etl_*.py"
 SHIPPED_SCRIPT_TESTS: tuple[str, ...] = (
     "test_tool_catalog_page.py",
     "test_pipeline_walkthrough_page.py",
+    "test_pipeline_walkthrough_projects.py",
 )
 
 _ARRIVAL_SCRIPT = '''
@@ -461,7 +462,7 @@ class TestShippedTestsNameNoClientModules:
     def _module_names_loaded_by_path(source_path: Path) -> list[str]:
         """Every literal module name the file passes to ``spec_from_file_location``."""
         names: list[str] = []
-        for node in ast.walk(ast.parse(source_path.read_text())):
+        for node in ast.walk(ast.parse(source_path.read_text(encoding="utf8"))):
             if not isinstance(node, ast.Call):
                 continue
             function = node.func

@@ -37,6 +37,7 @@ Vocabulary here is deliberately neutral -- entries, headers, codes, keys -- beca
 into other repositories and must carry no caller's nouns.
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -62,6 +63,14 @@ from dantron_etl.pipeline import (
 )
 from dantron_etl.runner import run_pipeline
 from dantron_etl.tool import REGISTRY, ConfigError, ToolError, apply_defaults, validate_against_template
+
+# The environment a child interpreter is started with, when a test needs one with nothing inherited.
+# Linux needs only a PATH. Windows will not start Python without SYSTEMROOT, so it is passed on
+# where it exists.
+_BARE_ENVIRONMENT: Final[dict[str, str]] = {
+    "PATH": os.pathsep.join(["/usr/bin", "/bin"]) if os.name != "nt" else os.environ.get("PATH", ""),
+    **({"SYSTEMROOT": os.environ["SYSTEMROOT"]} if "SYSTEMROOT" in os.environ else {}),
+}
 
 # ---------------------------------------------------------------------------
 # The fixture flow
@@ -635,7 +644,7 @@ class TestTheLibraryTakesNoFileFormatDependency:
             text=True,
             check=True,
             cwd=str(source_root),
-            env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(source_root), "PYTHONDONTWRITEBYTECODE": "1"},
+            env={**_BARE_ENVIRONMENT, "PYTHONPATH": str(source_root), "PYTHONDONTWRITEBYTECODE": "1"},
         )
         assert probe.stdout.strip() == "False", (
             "importing the pipeline module must not pull in a YAML parser: the dependency belongs to "
@@ -797,14 +806,14 @@ class TestARuleValueIsEscapedForTheAuthorRatherThanByThem:
             "steps:\n"
             "  - id: entries\n"
             "    tool: read_csv\n"
-            f'    config: {{path: "{entries}"}}\n'
+            f"    config: {{path: '{entries}'}}\n"
             "  - id: kept\n"
             "    tool: filter\n"
             '    config: {predicate: "[code] = ${rules.kept_code}"}\n'
             "    inputs: {rows: entries.rows}\n"
             "  - id: published\n"
             "    tool: write_csv\n"
-            f'    config: {{path: "{kept}"}}\n'
+            f"    config: {{path: '{kept}'}}\n"
             "    inputs: {rows: kept.true}\n",
             encoding="utf8",
         )
@@ -1433,7 +1442,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
                 check=True,
                 cwd=str(tmp_path),
                 env={
-                    "PATH": "/usr/bin:/bin",
+                    **_BARE_ENVIRONMENT,
                     "PYTHONPATH": str(source_root),
                     "PYTHONDONTWRITEBYTECODE": "1",
                     "PYTHONHASHSEED": seed,
