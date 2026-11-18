@@ -148,6 +148,12 @@ steps:
 Every step has `id`, `tool`, `config`, and `inputs` (except a source, which reads no port). `lane`,
 `stage` and `why` drive the rendered walkthrough.
 
+The loader refuses any key it does not know, at every level: the top of the file (`name`, `steps`,
+`lanes`, `groups`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `group`, `why`), a
+lane (`id`, `label`, `order`) and a group (`id`, `title`). A misspelt key would otherwise be dropped
+without a word. The refusal names the key and suggests the one you probably meant. `stage` is free
+text, so a misspelt stage is not caught: it draws as a stage of its own.
+
 **`why` is required to be useful.** It is the sentence a reader sees next to the number. Write what
 the step decides and why that is the right decision, not what the configuration already says.
 

@@ -58,6 +58,37 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dantron_etl"]
 
+# The source package lists what goes in, rather than taking the working tree minus .gitignore.
+# Otherwise anything lying in a checkout -- a .env, a key, a client's CSV under pipelines/ -- ships
+# to everyone who downloads it. The exclude list catches a secret inside one of these folders too.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src",
+    "tests",
+    "scripts",
+    "pipelines/fixture.yaml",
+    "pipelines/fixture",
+    "README.md",
+    "pyproject.toml",
+    "uv.lock",
+    "Makefile",
+    "compose.yaml",
+]
+exclude = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    ".netrc",
+    ".pypirc",
+    "*.parquet",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"
