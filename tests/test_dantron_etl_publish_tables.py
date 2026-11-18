@@ -565,11 +565,21 @@ def _a_stamp_named_after_a_table(config: dict[str, Any], inputs: Ports) -> tuple
 
 
 def _columns_that_do_not_line_up(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:
+    """The table has a column, ``amount``, that the frame lacks."""
     return config, _frames(series=pl.DataFrame({"period": ["2026-02"]}))
 
 
+def _a_frame_carrying_a_column_the_table_lacks(
+    config: dict[str, Any], inputs: Ports
+) -> tuple[dict[str, Any], Ports]:
+    """The mirror: the frame has a column, ``currency``, that the table lacks."""
+    return config, _frames(
+        series=pl.DataFrame({"period": ["2026-02"], "amount": [200.0], "currency": ["EUR"]})
+    )
+
+
 class TestAConfigurationThatCannotPublishIsRefused:
-    """Nine ways a publish is wrong before it starts, each refused with nothing written."""
+    """Ten ways a publish is wrong before it starts, each refused with nothing written."""
 
     @pytest.mark.parametrize(
         "mutate",
@@ -581,6 +591,7 @@ class TestAConfigurationThatCannotPublishIsRefused:
             pytest.param(_two_entries_on_one_table, id="two_entries_claiming_one_table"),
             pytest.param(_a_table_that_is_not_there, id="a_table_that_is_not_there"),
             pytest.param(_columns_that_do_not_line_up, id="a_frame_whose_columns_are_not_the_tables"),
+            pytest.param(_a_frame_carrying_a_column_the_table_lacks, id="a_frame_carrying_a_column_the_table_lacks"),
             pytest.param(_a_stamp_named_after_a_table, id="a_stamp_named_after_a_table"),
             pytest.param(
                 _a_stamp_named_after_a_table_whose_columns_line_up, id="a_stamp_named_after_a_table_that_carries_it"

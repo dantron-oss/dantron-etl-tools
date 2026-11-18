@@ -145,7 +145,7 @@ class TestRegexExtractGroupsExtraction:
         assert rows.columns == [*frame.columns, *expected_columns], "input columns first, groups in pattern order"
         assert [rows.schema[name] for name in expected_columns] == [pl.String] * len(expected_columns)
         assert rows.height == frame.height, "extracting columns adds no rows and drops none"
-        assert_frame_equal(rows.select(frame.columns), frame), "every input column survives, in order"
+        assert_frame_equal(rows.select(frame.columns), frame)  # every input column survives, in order
 
     @pytest.mark.parametrize(
         ("note", "matched"),

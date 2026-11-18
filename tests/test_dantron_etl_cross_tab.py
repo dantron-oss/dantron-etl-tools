@@ -1150,3 +1150,29 @@ def _holds_a_blank_cell(frame: pl.DataFrame, index: Sequence[str]) -> bool:
     """Whether any value column of ``frame`` holds the empty string, which is the other answer."""
     value_columns = [name for name in frame.columns if name not in set(index)]
     return any(frame[name].dtype == pl.String and (frame[name] == "").any() for name in value_columns)
+
+
+class TestFirstWhenTheFirstValueIsNull:
+    """What ``first`` puts in a cell whose first row holds no value: that null, as GroupBy does.
+
+    pandas' ``first`` skips nulls instead, so this is the rule a port or a "fix" would change
+    quietly. Whether it is the right rule waits on the owner.
+    """
+
+    # pins current behaviour; see finding F-02
+    def test_first_returns_the_first_rows_null_rather_than_the_first_value(self) -> None:
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b", "b"], "period": ["p1"] * 4, "amount": [None, 7.0, 3.0, None]},
+            schema={"code": pl.String, "period": pl.String, "amount": pl.Float64},
+        )
+
+        result = run_tool(
+            CrossTab(),
+            Ports({"rows": rows}),
+            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "first"},
+        )["rows"].sort("code")
+
+        assert_frame_equal(
+            result,
+            pl.DataFrame({"code": ["a", "b"], "p1": [None, 3.0]}, schema={"code": pl.String, "p1": pl.Float64}),
+        )

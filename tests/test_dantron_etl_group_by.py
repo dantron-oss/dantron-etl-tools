@@ -1024,3 +1024,36 @@ class TestGroupByInTheCatalog:
         """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "group_by" in REGISTRY
         assert isinstance(REGISTRY.get("group_by"), GroupBy)
+
+
+class TestFirstWhenTheFirstValueIsNull:
+    """What ``first`` gives when a group's first row holds no value.
+
+    Today it gives that null; it does not skip ahead to the first real value. pandas'
+    ``groupby().first()`` does the opposite, so a port or a "fix" would change figures quietly.
+    Whether this is the right rule waits on the owner.
+    """
+
+    # pins current behaviour; see finding F-02
+    def test_first_returns_the_first_rows_null_rather_than_the_first_value(self) -> None:
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b", "b"], "amount": [None, 7.0, 3.0, None], "note": [None, "x", "y", None]},
+            schema={"code": pl.String, "amount": pl.Float64, "note": pl.String},
+        )
+        config = {
+            "by": ["code"],
+            "aggregations": [
+                {"name": "first_amount", "function": "first", "value": "[amount]"},
+                {"name": "first_note", "function": "first", "value": "[note]"},
+            ],
+        }
+
+        result = run_tool(GroupBy(), Ports({"rows": rows}), config)["rows"].sort("code")
+
+        assert_frame_equal(
+            result,
+            pl.DataFrame(
+                {"code": ["a", "b"], "first_amount": [None, 3.0], "first_note": [None, "y"]},
+                schema={"code": pl.String, "first_amount": pl.Float64, "first_note": pl.String},
+            ),
+        )

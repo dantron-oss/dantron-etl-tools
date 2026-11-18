@@ -275,13 +275,12 @@ class TestJoinPairing:
                 }
             ),
         )
-        assert result["matched"].height == 5, "three left rows paired, two of them twice over"
         assert result["matched"].height != left.height, "matched.height is not left.height, and never was"
-        assert result["matched"]["entry_id"].to_list() == [1, 1, 2, 2, 3], "a copy per match, not one per row"
         assert result["matched"]["amount"].sum() == 90.0, "a fanned-out amount is repeated, not halved"
 
+        # The row order is stable across runs.
         repeat = _run(left, right, {"keys": ["group_id"]})
-        assert_frame_equal(repeat["matched"], result["matched"]), "the row order is stable across runs"
+        assert_frame_equal(repeat["matched"], result["matched"])
 
     @pytest.mark.parametrize(("left", "right", "config", "left_id", "right_id"), _shape_cases())
     def test_every_row_is_paired_at_least_once_or_orphaned_exactly_once_and_never_both(
@@ -313,12 +312,12 @@ class TestJoinPairing:
             assert not (set(paired) & set(orphaned)), f"{orphan_port}: no row may be both paired and orphaned"
             assert len(orphaned) == len(set(orphaned)), f"{orphan_port}: an orphan appears exactly once"
             assert len(set(paired)) + len(orphaned) == frame.height, f"{orphan_port}: every row is accounted for"
-            assert len(paired) >= len(set(paired)), "a paired row may appear more than once -- that is fan-out"
 
         assert result["matched"].columns[: left.width] == left.columns, "the left side's columns come first, in order"
         assert result["matched"].width >= left.width, "an empty matched port still carries its schema"
 
-    def test_a_null_key_never_pairs_and_leaves_on_its_own_sides_orphan_port(self) -> None:
+    @pytest.mark.parametrize("how", ["inner", "left"])
+    def test_a_null_key_never_pairs_and_leaves_on_its_own_sides_orphan_port(self, how: str) -> None:
         """Sameness follows ``JOIN``, not ``DISTINCT``, and the tool's own notes have to say so.
 
         A missing key is a row nothing is known about; pairing two of them would invent a
@@ -329,14 +328,31 @@ class TestJoinPairing:
         so a reader of a configuration cannot infer it and the tool must write it down.
         """
         left = pl.DataFrame({"entry_id": [1, 5], "group_id": ["G1", None], "amount": [10.0, 50.0]})
-        right = pl.DataFrame({"header_id": [10, 14], "group_id": ["G1", None], "state": ["open", "open"]})
+        # Two null-keyed rows on the right: a left join that paired nulls would repeat entry 5 twice.
+        right = pl.DataFrame(
+            {"header_id": [10, 14, 15], "group_id": ["G1", None, None], "state": ["open", "open", "closed"]}
+        )
 
-        result = _run(left, right, {"keys": ["group_id"]})
+        result = _run(left, right, {"keys": ["group_id"], "how": how})
 
-        assert result["matched"]["entry_id"].to_list() == [1], "only the row with a key pairs"
-        assert result["matched"]["header_id"].to_list() == [10]
+        if how == "inner":
+            expected = pl.DataFrame(
+                {"entry_id": [1], "group_id": ["G1"], "amount": [10.0], "header_id": [10], "state": ["open"]}
+            )
+        else:
+            # Under `left` the null-keyed left row is kept once, with nothing paired to it.
+            expected = pl.DataFrame(
+                {
+                    "entry_id": [1, 5],
+                    "group_id": ["G1", None],
+                    "amount": [10.0, 50.0],
+                    "header_id": [10, None],
+                    "state": ["open", None],
+                }
+            )
+        assert_frame_equal(result["matched"], expected)
         assert result["left_only"]["entry_id"].to_list() == [5], "a null key on the left is a left orphan"
-        assert result["right_only"]["header_id"].to_list() == [14], "a null key on the right is a right orphan"
+        assert result["right_only"]["header_id"].to_list() == [14, 15], "a null key on the right is a right orphan"
 
         help_ = Join().help()
         documented = " ".join((help_.detailed_description, *help_.notes, *help_.field_help.values())).lower()

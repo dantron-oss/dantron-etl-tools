@@ -402,7 +402,7 @@ class TestNormalizeTextKeys:
         rows = result["rows"]
 
         assert rows.columns == [*frame.columns, "party_key"], "the key is appended, never inserted"
-        assert_frame_equal(rows.select(frame.columns), frame), "every column and every row, in order"
+        assert_frame_equal(rows.select(frame.columns), frame)  # every column and every row, in order
         assert rows["party_key"].to_list() == ["acme", "northwind trading", None]
         assert_frame_equal(frame, before)
 

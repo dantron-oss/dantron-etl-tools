@@ -277,7 +277,7 @@ class TestDateDiffCounting:
         assert counted.dtype.is_signed_integer(), "a backwards range counts below zero"
         assert_frame_equal(result["rows"], frame.with_columns(counted.alias("counted")))
         assert result["rows"].columns == [*frame.columns, "counted"]
-        assert_frame_equal(frame, before), "the input frame is read-only"
+        assert_frame_equal(frame, before)  # the input frame is read-only
 
 
 # ---------------------------------------------------------------------------
