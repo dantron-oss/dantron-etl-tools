@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import dantron_etl  # noqa: E402,F401  -- importing the package is what fills the registry
 from dantron_etl.paths import project_root  # noqa: E402
-from dantron_etl.tool import CATEGORIES, REGISTRY, Tool, catalog_input_ports, ports_from_config  # noqa: E402
+from dantron_etl.authoring import CATEGORIES, REGISTRY, Tool  # noqa: E402
+from dantron_etl.contract import catalog_input_ports, ports_from_config  # noqa: E402
 
 # Resolved from this script's own location rather than from the library's -- see `dantron_etl.paths`.
 PROJECT_ROOT = project_root(__file__)
@@ -32,9 +33,27 @@ OUT_DIR = PROJECT_ROOT / "output_files" / "runs" / "architecture"
 #: the module's own docstring supplies everything else.
 LAYERS: tuple[tuple[str, str, str], ...] = (
     (
-        "tool",
+        "contract",
         "The contract",
-        "What a tool is, and every rule enforced at the boundary rather than remembered by an author.",
+        "What a tool is: its ports, its settings, its documentation, and the questions the library asks it.",
+    ),
+    ("config", "A tool's settings", "The template a step's configuration is held to, checked without a frame."),
+    ("ports", "The envelope", "Named frames in and out, so a side output cannot be forgotten without a word."),
+    ("status", "What happened to a row", "Which rows a step degraded and why, carried beside the port."),
+    (
+        "boundary",
+        "The boundary",
+        "Every rule enforced on each call to a tool, rather than remembered by each tool's author.",
+    ),
+    (
+        "frame_checks",
+        "A setting against a frame",
+        "The questions most tools ask once the frames exist, answered once and in one wording.",
+    ),
+    (
+        "conformance",
+        "Keeping the catalog true",
+        "Every tool held to the catalog's rules, and every worked example run and compared.",
     ),
     (
         "expr",
@@ -42,8 +61,10 @@ LAYERS: tuple[tuple[str, str, str], ...] = (
         "The small, safe language a configuration computes in -- and the only thing here that reads text a "
         "non-developer wrote and turns it into something that runs.",
     ),
+    ("spec", "What a flow is", "Steps, edges and the order they run in, as plain data a canvas can draw."),
+    ("rules", "Values from a rules file", "Each ${rules.*} reference spelled for the field it lands in."),
     (
-        "pipeline",
+        "loader",
         "A flow, as a data file",
         "Loading a definition into something checked: every tool named, every field typed, every edge real, "
         "before a single row moves.",
@@ -53,6 +74,8 @@ LAYERS: tuple[tuple[str, str, str], ...] = (
         "Running one",
         "Walking the steps in dependency order and leaving behind evidence of what each one did.",
     ),
+    ("walk", "Planning a run", "Which steps a partial or resumed run walks, decided before any of them runs."),
+    ("trace", "The evidence", "What a run leaves behind: one event per step and every port's shape."),
     (
         "focus",
         "Following one party",
@@ -237,11 +260,11 @@ h2 .count {{ font:500 .66rem var(--mono); color:var(--accent); background:var(--
         <p class="says">Every module imported in a fresh subprocess, asserting that nothing outside this
         library reaches it -- and its sources scanned for any caller's vocabulary.</p>
         <button data-open="tests/test_dantron_etl_boundary.py">read the code</button></article>
-      <article class="item" data-path="src/dantron_etl/tool.py">
+      <article class="item" data-path="src/dantron_etl/conformance.py">
         <h3>Conformance</h3>
         <p class="says">Every tool's worked examples are executed on every check, so an example that stops
         being true stops the build rather than misleading a reader.</p>
-        <button data-open="src/dantron_etl/tool.py">read the code</button></article>
+        <button data-open="src/dantron_etl/conformance.py">read the code</button></article>
       <article class="item" data-path="scripts/mrr_period_oracle.py">
         <h3>Identity against an engine</h3>
         <p class="says">A converted flow compared step by step against the code it replaces, over real
