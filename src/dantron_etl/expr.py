@@ -46,33 +46,16 @@ whether it compiles, at compile time rather than at row time.
 this language wants: ``0x10`` is sixteen, ``1_000`` carries a separator this language does not have,
 ``1e400`` is silently infinity and ``1e-400`` is silently zero. All of them are refused, because
 each one arrives from an author who was thinking about something else.
-
-*One language, two targets.* The same text compiles to a column expression and, for a caller that
-can push a predicate into the database it is reading from, to a boolean SQL clause plus the values
-bound into it -- so a read can cut rows at the engine instead of dragging a table into memory to cut
-them there. Both targets come through the front door above: one size gate, one scan that lifts every
-literal out before the parser sees a character, one node whitelist, one set of type checks. There is
-no second parser, and no author-written character reaches a SQL string -- a column becomes a quoted
-identifier only by passing :data:`SQL_IDENTIFIER`, and everything else the author wrote is a bound
-parameter, where the worst a hostile value can do is match no row.
-
-*What can be pushed down is a subset, and it is published per dialect.* An engine that answers a
-function differently from the frame target turns a pushdown into a quietly different predicate, so
-every entry in :func:`sql_subset` was measured against the real engine and compared row for row --
-and the exclusions differ by engine, which is why one lowest-common-denominator subset would have
-been either wrong somewhere or poorer than it needed to be everywhere.
 """
 
 import ast
 import enum
 import math
 import operator
-import re
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
-from itertools import chain
 from typing import Any, Final, NamedTuple
 
 import polars as pl
@@ -83,17 +66,11 @@ __all__ = [
     "MAX_DEPTH",
     "MAX_NODES",
     "MAX_TEXT_LENGTH",
-    "SQL_DIALECTS",
-    "SQL_IDENTIFIER",
-    "SQL_PARAMSTYLES",
     "ExpressionError",
-    "SqlSubset",
     "compile_expr",
-    "compile_sql",
     "escape_text",
     "quote_text",
     "references",
-    "sql_subset",
 ]
 
 
@@ -182,36 +159,6 @@ ALLOWED_NODES: Final[frozenset[type[ast.AST]]] = frozenset(
         ast.IsNot,
     }
 )
-
-# The published surface of the second target. A dialect is an engine's spelling; a placeholder
-# style is a driver's way of binding a value, and the two are separate axes because two drivers for
-# one engine do not agree on the second. Both are whitelists for the same reason everything else
-# here is: a dialect nobody has run this compiler against would get confident SQL and no warning.
-SQL_DIALECTS: Final[frozenset[str]] = frozenset({"sqlite", "postgres"})
-SQL_PARAMSTYLES: Final[frozenset[str]] = frozenset({"qmark", "format"})
-
-# The grammar a column name must pass to be written into a clause, and the whole defence at that
-# boundary: an identifier is the one thing a driver cannot bind as a parameter. One grammar for
-# every dialect, deliberately -- a per-dialect quoting rule is how a name that is safe at one
-# engine ends up spliced into a statement for another -- and a name outside it is refused rather
-# than escaped, so there is no escaping rule to get wrong and no doubled quote to reason about.
-# Stricter than the frame target on purpose: [order status] filters perfectly well in memory.
-SQL_IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-class SqlSubset(NamedTuple):
-    """What one dialect can be given, as three facts that have to stay together.
-
-    ``functions`` is the language's functions this engine spells the way the frame target answers
-    them. ``ordered_families`` is the type families whose ``<`` it agrees with -- text is the one
-    that differs between engines, because a byte order and a locale order are not the same order.
-    ``paramstyle`` is what that engine's usual driver binds with.
-    """
-
-    functions: frozenset[str]
-    ordered_families: frozenset[str]
-    paramstyle: str
-
 
 # An operator refusal has to be readable by an author, who typed characters, and precise for
 # whoever reads the log, who wants the node type. So a refusal carries both spellings.
@@ -439,71 +386,6 @@ def compile_expr(text: str, columns: Mapping[str, pl.DataType] | Collection[str]
     """
     expression, _ = _build(text, columns)
     return expression
-
-
-def compile_sql(
-    text: str,
-    columns: Mapping[str, pl.DataType] | Collection[str] | None = None,
-    *,
-    dialect: str,
-    paramstyle: str | None = None,
-) -> tuple[str, tuple[Any, ...]]:
-    """Compile author-written ``text`` into a boolean SQL clause and the values to bind into it.
-
-    The clause is a self-contained condition with no ``where`` of its own, so whoever is building
-    the statement composes it -- a read tool puts its own incremental-sync condition beside the
-    author's predicate with an ``and``, and a clause whose top-level ``or`` had lost its grouping
-    would silently widen to keep rows the author excluded.
-
-    ``dialect`` is keyword-only and has no default, because there is nothing to compile for an
-    engine nobody named: the spelling of a substring test, the placeholder a driver binds, and the
-    order an engine puts text in are all the engine's, and a compiler that guessed at them would
-    emit confident SQL nobody has run. What each dialect can be given is published by
-    :func:`sql_subset`, and anything outside it is refused by name, naming the dialect, and routed
-    to a Filter step after the read -- which answers the same question in memory with the frame
-    target's exact semantics.
-
-    ``paramstyle`` is the second axis and belongs to the *driver* rather than the engine, because
-    two drivers for one engine do not agree on it. It defaults to the one that dialect's usual
-    driver publishes, and may only be named from :data:`SQL_PARAMSTYLES`, both of which bind a
-    sequence; a style that binds a mapping would take a tuple and mean something else.
-
-    ``columns`` is read exactly as :func:`compile_expr` reads it, and carries one extra duty here:
-    a WHERE clause has to be a *condition*, so an expression that produces a value instead --
-    ``[amount]`` where the author meant ``[amount] > 0`` -- is refused against the schema rather
-    than left to an engine that would answer it by truthiness or raise in a driver's vocabulary.
-
-    The values come back as the author wrote them, adapted by nobody: a date is a
-    :class:`datetime.date`, which one driver binds into a date column directly and another needs
-    converted to ISO-8601 text. Converting here for one driver would have broken the other.
-    """
-    subset = sql_subset(dialect)
-    if paramstyle is None:
-        paramstyle = subset.paramstyle
-    elif paramstyle not in SQL_PARAMSTYLES:
-        raise _unpublished("placeholder style", paramstyle, SQL_PARAMSTYLES)
-
-    tree, scanned, schema = _front_door(text, columns)
-    compiler = _Compiler(text, scanned, schema, _SqlTarget(text, dialect, paramstyle))
-    clause: _Fragment = compiler.compile_condition(tree.body)
-    return clause.sql, clause.params
-
-
-def sql_subset(dialect: str) -> SqlSubset:
-    """What one dialect can be given: its functions, what it may order, and how it binds values.
-
-    Published for the same reason :data:`ALLOWED_FUNCTIONS` is -- an author cannot design around a
-    boundary they cannot see, and a loader cannot tell them in advance which of their expressions
-    will reach the database and which will be answered in memory.
-
-    One accessor rather than three lookups keyed by dialect, because three lookups is how three
-    facts about one engine drift apart: a dialect added to the function table and forgotten in the
-    placeholder table is a mistake that only shows up as a driver error at read time.
-    """
-    published = _DIALECTS.get(dialect)
-    if published is None:
-        raise _unpublished("dialect", dialect, SQL_DIALECTS)
-    return published.subset
 
 
 def references(text: str) -> frozenset[str]:
@@ -871,7 +753,7 @@ def _refusal(text: str, node: ast.AST) -> ExpressionError:
 
 
 def _build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[pl.Expr, frozenset[str]]:
-    """The frame target: the front door, then the engine's own spelling of what survived it."""
+    """The front door, then the column expression for what survived it."""
     tree, scanned, schema = _front_door(text, columns)
     expression = _Compiler(text, scanned, schema, _FrameTarget(text)).compile(tree.body)
     return expression, frozenset(scanned.columns)
@@ -880,12 +762,7 @@ def _build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | Non
 def _front_door(
     text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None
 ) -> tuple[ast.Expression, _Scanned, dict[str, pl.DataType] | None]:
-    """Gate, scan, parse, refuse -- everything both targets must agree on, in one place.
-
-    Shared rather than mirrored, and that is the property the second target rests on: an attack
-    refused for a frame is refused for a database because it never reaches either compiler, not
-    because two lists of refusals were kept in step with one another.
-    """
+    """Gate, scan, parse, refuse: everything that happens before a tree is compiled, in one place."""
     if not text or not text.strip():
         raise _error(text, "the expression is empty")
     # In front of the parser, deliberately: see the module docstring.
@@ -1094,7 +971,7 @@ def _written_as_text(value: Any, decimals: int, thousands: str, point: str) -> s
 
 
 # ---------------------------------------------------------------------------
-# The two targets: what a checked tree is built into
+# Building the column expression
 # ---------------------------------------------------------------------------
 
 
@@ -1107,9 +984,7 @@ class _Typed(NamedTuple):
     an author told "expected text" without being told what the column holds goes to the schema to
     find out why, which is a round trip the message should have saved them.
 
-    ``expr`` is whatever the target in force builds -- a column expression for a frame, a clause
-    fragment for a database -- because everything around it here is about the *language*, and the
-    language is the same either way.
+    ``expr`` is the column expression built so far.
 
     ``dtype`` is what this value holds, where the language can work that out. The family is
     coarse on purpose: a whole number and a decimal are both numbers, and almost every check here
@@ -1131,12 +1006,11 @@ class _Typed(NamedTuple):
 
 
 class _FrameTarget:
-    """Builds a column expression: the target that answers a predicate in memory.
+    """Builds the column expression for each operation the compiler has already checked.
 
     Nothing in here refuses anything about the language -- those refusals belong to
-    :class:`_Compiler`, which does them once for both targets. What is left is this engine's
-    spelling of each operation, and the handful of places where its spelling is not the obvious
-    one.
+    :class:`_Compiler`. What is left is this engine's spelling of each operation, and the handful
+    of places where its spelling is not the obvious one.
     """
 
     __slots__ = ("_text",)
@@ -1387,373 +1261,16 @@ class _FrameTarget:
             ) from None
 
 
-class _Fragment(NamedTuple):
-    """One piece of a clause and the values bound into it, in the order its placeholders appear."""
-
-    sql: str
-    params: tuple[Any, ...]
-
-
-# The per-dialect data, and the only thing a third engine should need to add. Each spelling names
-# its operands, and a name may appear more than once -- which is the whole reason the parameters
-# are read back off the template rather than bound in the order the operands were evaluated.
-_TEMPLATE_OPERAND: Final[re.Pattern[str]] = re.compile(r"\{(\w+)\}")
-
-# coalesce and concat take any number of operands, so they have no template; every dialect here
-# spells them the same way, and a dialect that did not would need a builder rather than a string.
-_VARIADIC_FUNCTIONS: Final[frozenset[str]] = frozenset({"coalesce", "concat"})
-
-_SQLITE_SPELLINGS: Final[dict[str, str]] = {
-    "len": "length({subject})",
-    "contains": "(instr({subject}, {needle}) > 0)",
-    "starts_with": "(instr({subject}, {needle}) = 1)",
-    "ends_with": "(substr({subject}, length({subject}) - length({needle}) + 1) = {needle})",
-}
-
-_POSTGRES_SPELLINGS: Final[dict[str, str]] = {
-    "len": "length({subject})",
-    "contains": "(strpos({subject}, {needle}) > 0)",
-    "starts_with": "(strpos({subject}, {needle}) = 1)",
-    "ends_with": "(right({subject}, length({needle})) = {needle})",
-}
-
-
-class _Dialect(NamedTuple):
-    """One engine: what it is published as able to do, and how each of those is spelled there."""
-
-    subset: SqlSubset
-    spellings: dict[str, str]
-
-
-def _published(spellings: dict[str, str], ordered: frozenset[str], paramstyle: str) -> _Dialect:
-    """One dialect's published subset, derived from what it can actually spell.
-
-    Derived rather than written out a second time, because a published list of functions that
-    disagrees with the functions a target can build is a promise the compiler does not keep --
-    and it would be kept in step by hand, which is to say not kept in step.
-    """
-    return _Dialect(SqlSubset(frozenset(spellings) | _VARIADIC_FUNCTIONS, ordered, paramstyle), spellings)
-
-
-_DIALECTS: Final[dict[str, _Dialect]] = {
-    # Text ordering is SQLite's and not Postgres's, measured rather than reasoned: SQLite's BINARY
-    # collation is byte order, which is what the frame target compares, while Postgres orders text
-    # by the server's locale, where 'a' sorts before 'B'. Five of six measured ordering cases kept
-    # different rows there. Emitting COLLATE "C" would make them agree and defeat any index on a
-    # non-C column, trading a silent wrong answer for a silent table scan -- and using the index is
-    # the entire reason to push a predicate down.
-    "sqlite": _published(_SQLITE_SPELLINGS, frozenset({"text", "number", "date"}), "qmark"),
-    "postgres": _published(_POSTGRES_SPELLINGS, frozenset({"number", "date"}), "format"),
-}
-
-_PLACEHOLDERS: Final[dict[str, str]] = {"qmark": "?", "format": "%s"}
-
-_SQL_COMPARISONS: Final[dict[type[ast.AST], str]] = {
-    ast.Eq: "=",
-    ast.NotEq: "<>",
-    ast.Lt: "<",
-    ast.LtE: "<=",
-    ast.Gt: ">",
-    ast.GtE: ">=",
-}
-
-_SQL_ORDERINGS: Final[frozenset[type[ast.AST]]] = frozenset({ast.Lt, ast.LtE, ast.Gt, ast.GtE})
-
-# The families as ``ordered_families`` names them, which is not how a refusal about a value names
-# them: "a number" reads well in "[qty] is a number" and badly in "cannot order a number".
-_FAMILY_NAMES: Final[dict[_Family, str]] = {
-    _Family.TEXT: "text",
-    _Family.NUMBER: "number",
-    _Family.DATE: "date",
-    _Family.BOOLEAN: "truth values",
-}
-
-# Why an engine's order for a family is not the frame target's, where the difference has a name
-# worth putting in front of an author. Keyed by dialect as well as family, because the next engine
-# added here will be wrong in its own way rather than in this one's.
-_ORDERING_NOTES: Final[dict[tuple[str, str], str]] = {
-    ("postgres", "text"): (
-        " -- the server orders text by its own locale, where 'a' sorts before 'B', while the frame target orders it "
-        "by bytes"
-    ),
-}
-
-_PATTERN_REASON: Final[str] = (
-    "no engine here spells a pattern the way the frame target's regular expressions are spelled, leaving the same "
-    "pattern to match different rows"
-)
-
-# Every exclusion below is a measured disagreement between an engine and the frame target, or a
-# capability no engine here has at all -- never a worry about one. They are keyed by function alone
-# because each was wrong in both engines -- which is itself the argument for the per-dialect model,
-# since upper() and lower() are wrong in the two engines for entirely different reasons.
-_OUTSIDE_THE_SUBSET: Final[dict[str, str]] = {
-    "upper": (
-        "case folding belongs to the engine: 'straße' uppercases to STRASSE in the frame target and leaves the ß "
-        "alone at both engines, one of which folds nothing but ASCII in the first place"
-    ),
-    "lower": (
-        "case folding belongs to the engine: 'İstanbul' lowercases to an 'i' with a combining dot in the frame "
-        "target, to a plain 'i' at one engine and not at all at the other"
-    ),
-    "strip": (
-        "TRIM and btrim take spaces where strip() takes every kind of whitespace, leaving a tab-padded value to "
-        "survive one and not the other"
-    ),
-    "round": (
-        "a tie rounds away from zero at the engine and to even in the frame target, putting a half-cent on the other "
-        "side of the comparison"
-    ),
-    "abs": (
-        "it is arithmetic, and a whole number at the edge of the range is promoted to a decimal by one engine and "
-        "refused mid-read by the other"
-    ),
-    "year": (
-        "one engine has no EXTRACT at all and spells it as text through strftime, so the same "
-        "expression compares a number on one side against a string of digits on the other"
-    ),
-    "add_months": (
-        "each engine spells date arithmetic its own way -- one adds an interval, the other adds text to a date "
-        "function -- and they disagree with the frame target about the day a date lands on when the month it moves "
-        "into is too short to hold it, so the same shift keeps different rows"
-    ),
-    "regex_extract": _PATTERN_REASON,
-    "regex_replace": _PATTERN_REASON,
-    "regex_match": _PATTERN_REASON,
-    "format_number": (
-        "there is no portable spelling of a grouped, fixed-decimal number, and the last place is "
-        "exactly what each engine rounds its own way"
-    ),
-    "uuid5": (
-        "neither engine can be asked for it: one has no SHA-1 at all, and at the other the digest and the id "
-        "function both live behind extensions that need not be installed -- so a pushdown would either fail "
-        "mid-read or build some other 36-character id, which is compared against the frame target's and keeps no "
-        "rows while raising nothing"
-    ),
-}
-
-_ARITHMETIC_REASON: Final[str] = (
-    "integer division truncates at both engines, and a whole number that overflows is promoted to a decimal by one "
-    "engine (keeping a row the frame target drops) and refused mid-read by the other"
-)
-
-
-def _fill(template: str, **operands: _Fragment) -> _Fragment:
-    """Fill one dialect's spelling, binding each operand once per appearance, in appearance order.
-
-    The order is read off the template rather than tracked by hand, because a spelling that names
-    an operand twice -- as every ends_with does, and as SQLite's names its subject -- has to bind
-    that operand's values once per placeholder, in the order the placeholders appear and not the
-    order the operands were evaluated. A driver binds positionally, so getting that wrong raises
-    nothing: the values simply land in the wrong comparisons.
-    """
-    appearances = _TEMPLATE_OPERAND.findall(template)
-    sql = template.format(**{name: operand.sql for name, operand in operands.items()})
-    return _Fragment(sql, tuple(chain.from_iterable(operands[name].params for name in appearances)))
-
-
-class _SqlTarget:
-    """Builds a boolean clause for one dialect, with every author-written value bound beside it.
-
-    Two properties hold for every method here, and they are the reason a pushdown is defensible at
-    all. A column reaches the clause only as a quoted identifier that passed
-    :data:`SQL_IDENTIFIER`; a name outside that grammar is refused rather than escaped. Everything
-    else the author wrote becomes a parameter, so the clause a hostile literal produces is
-    character for character the clause a harmless one produces, and the worst that value can do is
-    match no row.
-
-    What this engine cannot answer the way the frame target answers it is refused here, by name and
-    naming the dialect, because "upper cannot be pushed down" invites an argument where "upper
-    cannot be pushed down to postgres" can be acted on.
-    """
-
-    __slots__ = ("_dialect", "_mark", "_spellings", "_subset", "_text")
-
-    def __init__(self, text: str, dialect: str, paramstyle: str) -> None:
-        self._text = text
-        self._dialect = dialect
-        self._subset = _DIALECTS[dialect].subset
-        self._spellings = _DIALECTS[dialect].spellings
-        self._mark = _PLACEHOLDERS[paramstyle]
-
-    # -- leaves ------------------------------------------------------------
-
-    def column(self, name: str, dtype: pl.DataType | None, family: _Family) -> _Fragment:
-        if SQL_IDENTIFIER.fullmatch(name) is None:
-            raise _error(
-                self._text,
-                f"[{name}] cannot be named in a clause read at the database, because a name written into SQL has to "
-                f"be letters, digits and underscores and cannot start with a digit -- it is the one thing a driver "
-                f"cannot bind as a value, so it is refused here rather than escaped: rename the column, or filter "
-                f"after the read",
-            )
-        return _Fragment(f'"{name}"', ())
-
-    def literal(self, value: Any) -> _Fragment:
-        """Every literal, without exception, as a placeholder and the value that belongs in it."""
-        return _Fragment(self._mark, (value,))
-
-    # -- shapes ------------------------------------------------------------
-
-    def logic(self, operands: Sequence[_Typed], *, conjunction: bool) -> _Fragment:
-        return self._joined("(", " and " if conjunction else " or ", ")", operands)
-
-    def negate(self, operand: _Typed) -> _Fragment:
-        return _fill("(not {operand})", operand=operand.expr)
-
-    def negative(self, operand: _Typed) -> _Fragment:
-        raise self._arithmetic_refusal("-")
-
-    def arithmetic(self, operation: type[ast.AST], symbol: str, left: _Typed, right: _Typed) -> _Fragment:
-        raise self._arithmetic_refusal(symbol)
-
-    def compare(self, operation: type[ast.AST], symbol: str, left: _Typed, right: _Typed) -> _Fragment:
-        if operation in _SQL_ORDERINGS:
-            self._check_ordering(symbol, left, right)
-        template = f"({{left}} {_SQL_COMPARISONS[operation]} {{right}})"
-        return _fill(template, left=left.expr, right=right.expr)
-
-    def null_test(self, operand: _Typed, *, negated: bool) -> _Fragment:
-        keyword = "is not null" if negated else "is null"
-        return _fill(f"({{operand}} {keyword})", operand=operand.expr)
-
-    def membership(self, left: _Typed, values: Sequence[Any], family: _Family, *, negated: bool) -> _Fragment:
-        """``in`` over a bound list, with the one shape every engine answers differently refused.
-
-        A null inside the list is the sharpest disagreement in this whole target: ``[code] not in
-        ('A', null)`` keeps every non-matching row in the frame and *no row at all* in SQL, because
-        a null in the list leaves NOT IN unknown for every row not already excluded. A filter that
-        quietly empties a table is the worst shape a disagreement can take, so both spellings are
-        refused -- the list is the same construct in each, and a rule that allows one but not the
-        other is a rule nobody can keep.
-        """
-        if any(value is None for value in values):
-            raise _error(
-                self._text,
-                "a null inside a list of values cannot be read at the database, because 'not in' then answers no row "
-                "at all where the frame target answers every row that does not match: write the null test on its "
-                "own, as in [code] is null or [code] in ('A')",
-            )
-        if not values:
-            raise _error(
-                self._text,
-                "an empty list of values cannot be read at the database, because there is no clause that says it: "
-                "name at least one value to match",
-            )
-        marks = ", ".join(self._mark for _ in values)
-        keyword = "not in" if negated else "in"
-        return _Fragment(f"({left.expr.sql} {keyword} ({marks}))", left.expr.params + tuple(values))
-
-    # -- calls -------------------------------------------------------------
-
-    def coalesce(self, parts: Sequence[_Typed], family: _Family) -> _Fragment:
-        return self._joined("coalesce(", ", ", ")", parts)
-
-    def concat(self, parts: Sequence[_Typed]) -> _Fragment:
-        return self._joined("(", " || ", ")", parts)
-
-    def number_function(self, name: str, subject: _Typed, digits: int | None) -> _Fragment:
-        raise self._outside(name)
-
-    def year(self, subject: _Typed) -> _Fragment:
-        raise self._outside("year")
-
-    def add_months(self, subject: _Typed, count: _Typed) -> _Fragment:
-        raise self._outside("add_months")
-
-    def text_function(self, name: str, subject: _Typed) -> _Fragment:
-        return _fill(self._spelling(name), subject=subject.expr)
-
-    def text_pair(self, name: str, subject: _Typed, other: _Typed) -> _Fragment:
-        return _fill(self._spelling(name), subject=subject.expr, needle=other.expr)
-
-    def regex_match(self, subject: _Typed, pattern: str) -> _Fragment:
-        raise self._outside("regex_match")
-
-    def regex_extract(self, subject: _Typed, pattern: str, group: int) -> _Fragment:
-        raise self._outside("regex_extract")
-
-    def regex_replace(self, subject: _Typed, pattern: str, replacement: str) -> _Fragment:
-        raise self._outside("regex_replace")
-
-    def format_number(self, subject: _Typed, decimals: int, thousands: str, point: str) -> _Fragment:
-        raise self._outside("format_number")
-
-    def uuid5(self, subject: _Typed, namespace: uuid.UUID) -> _Fragment:
-        raise self._outside("uuid5")
-
-    def check_pattern(self, name: str, pattern: str) -> None:
-        """Nothing here will ever run a pattern, so there is no engine to ask and nothing to check.
-
-        The refusal comes when the call is built, from the function's own name and this dialect's,
-        which is the message an author can act on -- a complaint about the pattern would send them
-        to fix something that was never going to run.
-        """
-
-    # -- helpers -----------------------------------------------------------
-
-    def _joined(self, opening: str, joiner: str, closing: str, parts: Sequence[_Typed]) -> _Fragment:
-        fragments = [part.expr for part in parts]
-        return _Fragment(
-            opening + joiner.join(fragment.sql for fragment in fragments) + closing,
-            tuple(chain.from_iterable(fragment.params for fragment in fragments)),
-        )
-
-    def _spelling(self, name: str) -> str:
-        """This dialect's spelling of one function, or the refusal that it has none."""
-        template = self._spellings.get(name)
-        if template is None:
-            raise self._outside(name)
-        return template
-
-    def _check_ordering(self, symbol: str, left: _Typed, right: _Typed) -> None:
-        """Refuse an ordering this engine was not measured to agree with the frame target about.
-
-        Equality, ``<>`` and ``in`` are not asked: they agree under any deterministic collation,
-        and it is only the *order* of two unequal values that an engine decides for itself.
-        """
-        family = left.family if left.family not in _WILDCARD_FAMILIES else right.family
-        if family in _WILDCARD_FAMILIES:
-            return
-        named = _FAMILY_NAMES[family]
-        if named in self._subset.ordered_families:
-            return
-        raise _error(
-            self._text,
-            f"'{symbol}' cannot order {named} at the {self._dialect} database, because that engine's order for "
-            f"{named} was not measured to be the frame target's"
-            f"{_ORDERING_NOTES.get((self._dialect, named), '')}: compare with '=', '<>' or 'in' here, and put the "
-            f"ordering in a Filter step after the read",
-        )
-
-    def _outside(self, name: str) -> ExpressionError:
-        return _error(
-            self._text,
-            f"{name}() cannot be read at the {self._dialect} database, because {_OUTSIDE_THE_SUBSET[name]} -- so "
-            f"apply it in a Filter step after the read, where the frame target's meaning is the one in force",
-        )
-
-    def _arithmetic_refusal(self, symbol: str) -> ExpressionError:
-        return _error(
-            self._text,
-            f"'{symbol}' cannot be read at the {self._dialect} database, because arithmetic is outside every subset "
-            f"here on measurement rather than on taste -- {_ARITHMETIC_REASON} -- so do it in a Formula or Filter "
-            f"step after the read, where the frame target's meaning is the one in force",
-        )
-
-
 # ---------------------------------------------------------------------------
 # Compiling the surviving nodes
 # ---------------------------------------------------------------------------
 
 
 class _Compiler:
-    """Translates a checked tree into whatever the target in force builds.
+    """Translates a checked tree into a column expression.
 
-    Every refusal about the language lives here and is therefore made once for both targets: what
-    a function may be given, what two sides of a comparison may hold, what a list of values may
-    mix. The target decides only how the surviving operation is *spelled*, and refuses only what
-    its own engine cannot answer the way the other one does.
+    Every refusal about the language lives here: what a function may be given, what two sides of
+    a comparison may hold, what a list of values may mix.
 
     Recursive, which is safe only because :func:`_check_depth` has already bounded the tree. The
     order matters: nothing in here may run before the whitelist has, so this class is private and
@@ -1767,7 +1284,7 @@ class _Compiler:
         text: str,
         scanned: _Scanned,
         schema: dict[str, pl.DataType] | None,
-        target: _FrameTarget | _SqlTarget,
+        target: _FrameTarget,
     ) -> None:
         self._text = text
         self._columns = scanned.columns
@@ -1778,27 +1295,6 @@ class _Compiler:
     def compile(self, node: ast.expr) -> Any:
         """What one node builds to, with its type discarded once it has been checked."""
         return self._typed(node).expr
-
-    def compile_condition(self, node: ast.expr) -> Any:
-        """:meth:`compile`, plus the refusal that what it built is a condition and not a value.
-
-        ``[amount]`` is what an author writes when they meant ``[amount] > 0``, and it compiles,
-        because that is exactly how a column reference is spelled. Handed to a database as a WHERE
-        clause it is answered by *truthiness* at one engine -- a non-zero amount keeps the row, a
-        zero one drops it, and nothing anywhere raises -- and refused at the other in a driver's
-        vocabulary, naming neither the field nor the text. So it is refused here, against the
-        schema, naming what the expression holds. With no schema in hand nothing can be said about
-        a column, and the hole is left open rather than papered over: whoever holds the real
-        column types is the one who can close it.
-        """
-        typed = self._typed(node)
-        if typed.family is not _Family.BOOLEAN and typed.family not in _WILDCARD_FAMILIES:
-            raise _error(
-                self._text,
-                f"{self._describe(typed)}, but a clause read at the database has to be a condition: write the "
-                f"comparison the value was meant for, as in [amount] > 0",
-            )
-        return typed.expr
 
     def _typed(self, node: ast.expr) -> _Typed:
         """The expression for one node and the family it belongs to, dispatching on its type."""
@@ -1933,8 +1429,8 @@ class _Compiler:
         reviewing the file would see coming.
 
         A mixed *family* is refused in this language's words rather than in the engine's, which
-        would leak an exception type of its own out of compilation; what a target then does with
-        one family spelled two ways is the target's business.
+        would leak an exception type of its own out of compilation. One family spelled two ways,
+        whole numbers beside decimals, is widened where the list is built.
         """
         candidates = right_node.elts if isinstance(right_node, ast.Tuple) else [right_node]
         values: list[Any] = []
@@ -2394,19 +1890,6 @@ def _check_columns(text: str, referenced: tuple[str, ...], columns: Collection[s
                 text,
                 f"[{name}] is not a column in the data: the columns are {', '.join(sorted(available))}",
             )
-
-
-def _unpublished(what: str, named: str, published: Collection[str]) -> ExpressionError:
-    """The refusal for a dialect or a placeholder style nobody has run this compiler against.
-
-    No expression is quoted, because the mistake is not in one: it is in the call, and the caller
-    is a tool rather than an author. What the message has to carry instead is the published list,
-    since the whole answer to "which do I name?" is the set of names that have been measured.
-    """
-    return ExpressionError(
-        f"{named!r} is not a {what} this compiler has been run against, so it has no measured spelling: "
-        f"the {what}s are {', '.join(sorted(published))}"
-    )
 
 
 def _error(text: str, problem: str) -> ExpressionError:

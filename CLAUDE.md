@@ -79,7 +79,7 @@ than the one you are editing. If anything looks impossible, run
 | module | what it owns |
 |---|---|
 | `tool.py` | The contract every tool meets. `Ports` (the named-frame envelope), `ConfigField`, `WorkedExample`, `ToolHelp`, the `Tool` protocol, the optional `DerivesInputPorts` member, `REGISTRY`, `run_tool` (the boundary every call goes through), `check_tool` and `check_registry` (conformance), per-row status. |
-| `expr.py` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression **or** to parameterised SQL. Never `eval`. |
+| `expr.py` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. |
 | `pipeline.py` | The YAML loader. `StepSpec`, `PortRef`, `PipelineSpec`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
 | `runner.py` | Walks a loaded flow. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
@@ -230,8 +230,8 @@ Manual §4b has the full rules and a worked before-and-after.
 
 Follow the commit that added `uuid5` (`f22c8a3`, "Work out one name for a row from the values that
 identify it") as the worked template. A function touches more than the
-whitelist: `ALLOWED_FUNCTIONS`, its arity, its result type, the polars compilation, the SQL
-compilation or an explicit refusal there, tests for both targets, and its entry in `MANUAL.md` §4.2
+whitelist: `ALLOWED_FUNCTIONS`, its arity, its result type, the polars compilation, its tests,
+and its entry in `MANUAL.md` §4.2
 (a test checks the manual lists every whitelisted function).
 
 ### Adding a tool
