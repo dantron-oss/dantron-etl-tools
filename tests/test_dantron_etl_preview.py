@@ -190,16 +190,19 @@ class TestRefusals:
 class TestRoutes:
     """One service, several flows, each at its own URL -- and what it says when asked for one it lacks."""
 
-    @pytest.fixture
-    def served(self, tmp_path: Path):
+    @pytest.fixture(scope="class")
+    def served(self, tmp_path_factory: pytest.TempPathFactory):
         """Two runs under one root, served on a port the operating system picks.
 
         Both carry panels, and both carry a step called ``read``: a panel is asked for by the step's
         own name, which is a name two flows are very likely to share.
+
+        One server for the whole class: every test here only reads from it, and stopping a server
+        waits out half a second of its polling loop.
         """
         from dantron_etl.preview import PAGE_NAME, persist_panels, serve
 
-        root = tmp_path / "runs"
+        root = tmp_path_factory.mktemp("served") / "runs"
         for name, title in (("mrr", "Monthly recurring revenue"), ("loads", "Nightly load")):
             persist_ports({"read.rows": _entries()}, root / name)
             persist_panels({step: _panel(name, step) for step in ("read", "shape")}, root / name)

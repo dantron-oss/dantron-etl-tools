@@ -80,7 +80,6 @@ from dantron_etl.tool import (
     ConfigError,
     DataError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     input_ports_for,
@@ -1447,12 +1446,10 @@ class TestWriteWorkbookInTheCatalog:
         assert "replace" in documented, "the destructive case has to be documented"
         assert "exact" in documented or "precision" in documented, "so does what a cell cannot keep"
 
-    def test_write_workbook_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_write_workbook_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "write_workbook" in REGISTRY
         assert isinstance(REGISTRY.get("write_workbook"), WriteWorkbook)
-
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------

@@ -48,7 +48,7 @@ and no credentials.
 import os
 import sqlite3
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -63,7 +63,6 @@ from dantron_etl.tool import (
     PortError,
     Ports,
     Tool,
-    check_registry,
     check_tool,
     run_tool,
 )
@@ -82,6 +81,7 @@ _BLANK = "create table blank (a integer, b text)"
 def _seed(database: Path) -> None:
     """One database with a table carrying every shape a read has to preserve, and an empty one."""
     with closing(sqlite3.connect(database)) as connection:
+        connection.execute("pragma synchronous = off")  # built once per session as a template
         connection.execute(_ENTRIES)
         connection.execute(_BLANK)
         connection.executemany(
@@ -92,11 +92,9 @@ def _seed(database: Path) -> None:
 
 
 @pytest.fixture
-def database(tmp_path: Path) -> Path:
-    """A temporary SQLite file holding the tables the tests read."""
-    path = tmp_path / "store.db"
-    _seed(path)
-    return path
+def database(tmp_path: Path, seeded_sqlite: Any) -> Path:
+    """A temporary SQLite file holding the tables the tests read: a copy of one seeded per session."""
+    return seeded_sqlite(tmp_path / "store.db", _seed)
 
 
 @pytest.fixture
@@ -107,26 +105,11 @@ def connection(database: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture
-def secretive_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def secretive_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seeded_sqlite: Any) -> str:
     """A connection whose URI carries something no refusal may ever repeat."""
-    path = tmp_path / f"{_SECRET}.db"
-    _seed(path)
+    path = seeded_sqlite(tmp_path / f"{_SECRET}.db", _seed)
     monkeypatch.setenv(_VARIABLE, f"sqlite:///{path}")
     return _VARIABLE
-
-
-@pytest.fixture
-def environment_restored() -> Iterator[None]:
-    """Undo whatever the tool's own documentation exported, by name or not.
-
-    A worked example of a source has to run against a real database, so building one exports a
-    variable this test cannot know the name of in advance. Snapshotting the whole environment is
-    what keeps that from leaking into another test.
-    """
-    before = dict(os.environ)
-    yield
-    os.environ.clear()
-    os.environ.update(before)
 
 
 def _read(connection_field: str, **overrides: Any) -> Mapping[str, Any]:
@@ -478,4 +461,3 @@ class TestReadTableInTheCatalog:
 
         assert "read_table" in REGISTRY
         assert isinstance(REGISTRY.get("read_table"), ReadTable)
-        check_registry(REGISTRY)

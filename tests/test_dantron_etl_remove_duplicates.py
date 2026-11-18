@@ -53,7 +53,6 @@ from dantron_etl.tool import (
     ConfigError,
     ConformanceError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -287,12 +286,10 @@ class TestRemoveDuplicatesInTheCatalog:
             "which member survives is the setting most likely to be copied, so it must be run"
         )
 
-    def test_remove_duplicates_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_remove_duplicates_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "remove_duplicates" in REGISTRY
         assert isinstance(REGISTRY.get("remove_duplicates"), RemoveDuplicates)
-
-        check_registry(REGISTRY)
 
 
 class _ReversingRemoveDuplicates(RemoveDuplicates):

@@ -39,7 +39,6 @@ a flaw in those tests, it is the reason the population claims are not among them
 import os
 import subprocess
 import sys
-from itertools import permutations
 from pathlib import Path
 
 import pytest
@@ -116,19 +115,20 @@ class TestShippedCatalog:
         """
         assert _catalog_after(importing) == _shipped_tool_names()
 
-    @pytest.mark.parametrize("order", ["-".join(names) for names in permutations(("package", "tools", "module"))])
-    def test_importing_the_package_and_a_tool_module_in_any_order_registers_each_tool_once(
+    @pytest.mark.parametrize("order", ["package-tools-module", "module-tools-package"])
+    def test_importing_the_package_and_a_tool_module_in_either_order_registers_each_tool_once(
         self,
         order: str,
     ) -> None:
-        """Six import orders, six identical catalogs, and no duplicate-name refusal from any of them.
+        """The package first, or a tool module first: the same catalog, and no duplicate-name refusal.
 
         Registering from a module and importing that module from a parent package is a cycle, and
         the two ways it goes wrong are opposites: a tool imported twice through two paths raises
         ``a tool named ... is already registered`` and takes the whole import down, or the cycle
-        resolves against a half-initialised package and raises before the registration runs. A
-        consumer reaching straight for a tool module is the order most likely to trip it, and it is
-        also the order nothing else in the test suite exercises.
+        resolves against a half-initialised package and raises before the registration runs. The
+        first order is the one most code uses. The second, a consumer reaching straight for a tool
+        module, is the order most likely to trip the cycle. The other four orders of the same three
+        imports add nothing these two do not cover.
         """
         first_module = _shipped_tool_names()[0]
         statements = {

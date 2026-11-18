@@ -46,7 +46,6 @@ from dantron_etl.tool import (
     REGISTRY,
     ConfigError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -274,9 +273,7 @@ class TestSelectColumnsInTheCatalog:
             "drop is the half the derived-from tool could not do, so it must be demonstrated"
         )
 
-    def test_select_columns_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_select_columns_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "select_columns" in REGISTRY
         assert isinstance(REGISTRY.get("select_columns"), SelectColumns)
-
-        check_registry(REGISTRY)

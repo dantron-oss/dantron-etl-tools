@@ -21,7 +21,6 @@ because the module under test ships as a standalone library and must carry no ca
 
 import ast
 import math
-import os
 import re
 import sqlite3
 import unicodedata
@@ -29,7 +28,6 @@ import uuid
 from collections.abc import Iterator
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
-from functools import cache
 from typing import Any
 
 import polars as pl
@@ -1869,41 +1867,11 @@ class TestConcat:
 # *value* that matches the row holding it; and the clause is a self-contained boolean expression a
 # caller may compose with.
 
-# Where a Postgres server is, if there is one. The library under test knows nothing about any of
-# this -- it never opens a connection -- so the harness looks in its own variable first and only
-# then at the host project's, and skips when neither answers. A checkout of this library on its own
-# still runs every SQLite case.
-_POSTGRES_VARIABLE = "DANTRON_TEST_POSTGRES"
 
 # The tests own this schema and nothing else. It is created, used and dropped by the fixture below.
 # The server this runs against also holds real data in schemas of its own, and no test here names
 # any schema but this one.
 _SCRATCH_SCHEMA = "dantron_etl_expr_scratch"
-
-
-@cache
-def _postgres_dsn() -> str | None:
-    """The DSN to test against, or ``None`` when there is no server to test against."""
-    # The variable and nothing else. A library that also consulted one host project's own way of
-    # naming its database would be carrying that project around in a package meant for many, and
-    # the parity tests it guards are the ones that keep the SQL target honest -- so they skip
-    # loudly on a machine with no server rather than reaching for somebody else's setting.
-    return os.environ.get(_POSTGRES_VARIABLE) or None
-
-
-@cache
-def _postgres_reachable() -> bool:
-    """Whether a Postgres accepts a connection, evaluated once per session."""
-    dsn = _postgres_dsn()
-    if dsn is None:
-        return False
-    try:
-        import psycopg
-
-        with psycopg.connect(dsn, connect_timeout=3):
-            return True
-    except Exception:
-        return False
 
 
 PUSHDOWN_DDL: str = (
@@ -2348,26 +2316,11 @@ def _records(rows: pl.DataFrame, *, dialect: str) -> list[tuple[Any, ...]]:
 
 
 @pytest.fixture(scope="session")
-def postgres_connection() -> Iterator[Any]:
-    """A Postgres session owning one scratch schema, dropped on the way out.
-
-    The server this runs against also holds real data in schemas of its own, so the fixture makes
-    a schema nothing else would name, points the search path at it, and drops it with everything
-    in it at teardown. No test here names any other schema, reads from one, or writes to one.
-    """
-    if not _postgres_reachable():
-        pytest.skip(f"no Postgres to test against: set {_POSTGRES_VARIABLE}")
-    import psycopg
-
-    connection = psycopg.connect(_postgres_dsn(), connect_timeout=5, autocommit=True)
-    try:
-        connection.execute(f"drop schema if exists {_SCRATCH_SCHEMA} cascade")
-        connection.execute(f"create schema {_SCRATCH_SCHEMA}")
-        connection.execute(f"set search_path to {_SCRATCH_SCHEMA}")
-        yield connection
-    finally:
-        connection.execute(f"drop schema if exists {_SCRATCH_SCHEMA} cascade")
-        connection.close()
+def postgres_connection(postgres_scratch: Any) -> Any:
+    """A Postgres connection owning this file's scratch schema, with the search path pointed at it."""
+    connection = postgres_scratch(_SCRATCH_SCHEMA)
+    connection.execute(f"set search_path to {_SCRATCH_SCHEMA}")
+    return connection
 
 
 @pytest.fixture(params=["sqlite", "postgres"])

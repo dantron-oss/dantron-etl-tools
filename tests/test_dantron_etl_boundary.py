@@ -1,14 +1,12 @@
 """Boundary tests for the dantron_etl package.
 
-dantron_etl is a generic, client-agnostic transformation library that will eventually ship as its
-own PyPI distribution and be reused by clients other than this repo's acme package. The one rule
-that governs it: it must never depend on client code (acme), any orchestrator (dagster, prefect),
-or heavy client-shaped dependencies (pandas) -- because that dependency would ship to every other
-consumer of the library. These tests enforce that boundary automatically as modules are added, and
-guard against client-specific vocabulary leaking into the package's source, docstrings, or comments.
+dantron_etl is a generic, client-neutral library. It must never depend on client code, an
+orchestrator (dagster, prefect) or pandas, because whatever it depends on ships to every consumer.
+These tests enforce that, and keep client vocabulary out of the package's source and shipped docs.
 """
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -37,13 +35,28 @@ FORBIDDEN_TERMS = (
     "reconcil",
 )
 
+# Imports each module named on the command line, in order, in one fresh interpreter. After each one
+# it notes any forbidden top-level package that has just appeared, so a failure names the module
+# that first pulled it in. A path ending in .py is loaded from that file instead.
 _IMPORT_CHECK_SCRIPT = """
-import importlib
-import sys
+import importlib, importlib.util, json, sys
 
-importlib.import_module("{module}")
-top_level = {{name.split(".")[0] for name in sys.modules}}
-print(",".join(sorted(top_level)))
+forbidden = set(sys.argv[1].split(","))
+seen = set()
+blame = {}
+for name in sys.argv[2:]:
+    if name.endswith(".py"):
+        spec = importlib.util.spec_from_file_location("shipped_script_under_test_" + str(len(seen)), name)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    else:
+        importlib.import_module(name)
+    arrived = {module.split(".")[0] for module in sys.modules} & forbidden
+    for package in sorted(arrived - seen):
+        blame[package] = name
+    seen |= arrived
+print(json.dumps(blame))
 """
 
 
@@ -83,12 +96,13 @@ def _imported_roots(source_path: Path) -> set[str]:
     return roots
 
 
-def _imported_top_level_packages(module_name: str) -> set[str]:
-    """Top-level packages visible in sys.modules inside a fresh subprocess that imports module_name.
+def _forbidden_packages_pulled_in(targets: list[str], forbidden: frozenset[str] = FORBIDDEN_IMPORTS) -> dict[str, str]:
+    """Import every target in one fresh interpreter; map each forbidden package to what pulled it in.
 
-    This must run in a fresh subprocess rather than in-process: the pytest session running this
-    test has already imported acme (via conftest.py and other test modules), so an in-process
-    sys.modules check would pass vacuously.
+    A fresh interpreter, because this pytest session has imported plenty already, so checking its
+    own ``sys.modules`` would prove nothing. One interpreter for all of them, because importing any
+    submodule runs ``dantron_etl/__init__``, which imports every tool: a process per module paid
+    the same start-up cost forty times to get the same answer.
     """
     env = os.environ.copy()
     src_dir = str(SRC_DIR)
@@ -96,34 +110,42 @@ def _imported_top_level_packages(module_name: str) -> set[str]:
     env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{existing_path}" if existing_path else src_dir
 
     result = subprocess.run(
-        [sys.executable, "-c", _IMPORT_CHECK_SCRIPT.format(module=module_name)],
+        [sys.executable, "-c", _IMPORT_CHECK_SCRIPT, ",".join(sorted(forbidden)), *targets],
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
         env=env,
-        timeout=30,
+        timeout=120,
     )
     assert result.returncode == 0, (
-        f"Importing {module_name!r} in a fresh subprocess failed "
+        f"Importing {targets} in a fresh subprocess failed "
         f"(exit={result.returncode}):\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
     )
-    output_lines = result.stdout.strip().splitlines()
-    last_line = output_lines[-1] if output_lines else ""
-    return set(last_line.split(",")) if last_line else set()
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 class TestDantronEtlImportBoundary:
-    """Every dantron_etl module must be importable without pulling in client code."""
+    """No dantron_etl module, and no viewer script that ships beside it, pulls in client code."""
 
-    @pytest.mark.parametrize("module_name", _discover_modules())
-    def test_module_import_has_no_client_dependencies(self, module_name: str) -> None:
-        """Importing a dantron_etl module in isolation must not import acme/dagster/prefect/pandas."""
-        imported = _imported_top_level_packages(module_name)
-        offending = imported & FORBIDDEN_IMPORTS
-        assert not offending, (
-            f"Module {module_name!r} pulled in forbidden package(s) {sorted(offending)} via its "
-            f"import graph (observed sys.modules top-level packages: {sorted(imported)})"
-        )
+    def test_no_module_or_viewer_script_imports_a_forbidden_package(self) -> None:
+        """Importing every module and every viewer script must not load acme/dagster/prefect/pandas.
+
+        This measures what actually lands in ``sys.modules``, so it also sees an import that arrives
+        through some third module. The source scan below sees imports inside functions, which this
+        cannot.
+        """
+        targets = [*_discover_modules(), *(str(SCRIPTS_DIR / name) for name in LIBRARY_SCRIPTS)]
+        blame = _forbidden_packages_pulled_in(targets)
+        assert not blame, f"forbidden package(s) were imported; each is named with what pulled it in: {blame}"
+
+    def test_the_check_names_the_module_that_pulled_a_forbidden_package_in(self) -> None:
+        """The check above can fail: with ``colorsys`` standing in for a forbidden package, it is caught.
+
+        ``colorsys`` is in the standard library, so it is always there, and nothing in the library
+        imports it. Without this, a probe that never reported anything would pass for ever.
+        """
+        blame = _forbidden_packages_pulled_in(["dantron_etl", "colorsys"], forbidden=frozenset({"colorsys"}))
+        assert blame == {"colorsys": "colorsys"}
 
     def test_at_least_one_module_is_discovered(self) -> None:
         """Guard against the discovery walk silently finding zero modules once the package exists."""
@@ -276,24 +298,15 @@ class TestTheManualDescribesTheLibraryThatExists:
 # ---------------------------------------------------------------------------
 # What ships beside the package
 #
-# The fence above walks src/dantron_etl and stops there, which was right while the package was the
-# only thing being extracted. It is no longer the whole shipment. Four viewer scripts under
-# scripts/ are the library's user interface -- they serve runs, render the walkthrough, generate the
-# catalog and draw the architecture -- and the library's own test files are the only evidence, on
-# arrival in a new repository, that any of it works. Both travel with the directory; neither is
-# fenced; each currently reaches into this client's package for a project root.
+# The viewer scripts under scripts/ and the library's own tests travel with the package. The import
+# check above already imports every viewer script. The checks below scan the source of the scripts
+# and the tests for a forbidden import at any depth, including inside a function.
 #
-# The two failures are not equally visible, which is why the test files matter more. A script that
-# cannot import is noticed the first time somebody runs it, and the person running it is holding the
-# traceback. A test file that cannot import takes the whole suite down on the first `pytest` in the
-# extracted repository -- the run whose entire purpose is to say whether the extraction worked.
-#
-# The property measured is arrival, not vocabulary: does this file import in an interpreter where
-# the client package does not exist? That is the question the extracted repository asks, and it is
-# the only form of the question that a comment, an alias, or an import arriving through some third
-# module cannot slip past. It also, correctly, permits a guarded fallback: a shipped test that says
-# "use the host project's database URL if there is a host project" inside a try/except has already
-# been written to degrade, and the branch that runs after extraction is the one that returns None.
+# An earlier version also imported every test file in a subprocess with the client package blocked,
+# one subprocess per file. That guarded the move out of the client repository. The source scan of
+# tests/ below catches the same import directly, at any depth, whether or not a client package
+# happens to be installed; anything a test imports through the library or a script is covered by
+# the import check above.
 # ---------------------------------------------------------------------------
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -325,33 +338,6 @@ SHIPPED_SCRIPT_TESTS: tuple[str, ...] = (
     "test_pipeline_walkthrough_projects.py",
 )
 
-_ARRIVAL_SCRIPT = '''
-import importlib.abc, importlib.util, sys
-
-blocked = set(sys.argv[2].split(","))
-
-
-class _Absent(importlib.abc.MetaPathFinder):
-    """An interpreter in which the client's packages simply are not installed."""
-
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname.split(".")[0] in blocked:
-            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
-        return None
-
-
-sys.meta_path.insert(0, _Absent())
-for name in [n for n in sys.modules if n.split(".")[0] in blocked]:
-    del sys.modules[name]
-
-spec = importlib.util.spec_from_file_location("shipped_under_test", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-print("imported")
-'''
-
-
 def _discover_library_test_files() -> list[Path]:
     """Every test file that belongs to the library rather than to the client.
 
@@ -369,48 +355,16 @@ def _discover_library_test_files() -> list[Path]:
     return sorted(set(TESTS_DIR.glob(LIBRARY_TEST_GLOB)) | set(named))
 
 
-def _import_with_client_code_absent(path: Path) -> subprocess.CompletedProcess[str]:
-    """Import one shipped file in a fresh interpreter where the forbidden packages do not exist.
-
-    Blocking is done with a meta path finder rather than by building a stripped sys.path: the two
-    source roots live side by side in one directory, so any PYTHONPATH that exposes dantron_etl from
-    this checkout exposes the client package with it. Refusing at the finder reproduces the extracted
-    repository exactly -- the package is not missing from the path, it does not exist.
-    """
-    env = os.environ.copy()
-    src_dir = str(SRC_DIR)
-    existing_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{existing_path}" if existing_path else src_dir
-    return subprocess.run(
-        [sys.executable, "-c", _ARRIVAL_SCRIPT, str(path), ",".join(sorted(FORBIDDEN_IMPORTS))],
-        capture_output=True,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-        env=env,
-        timeout=120,
-    )
-
-
 class TestWhatShipsBesideThePackageSurvivesExtraction:
-    """Everything that travels with the library must import where the client's code does not exist."""
+    """Everything that travels with the library is free of client imports, and the lists are not stale."""
 
-    @pytest.mark.parametrize("script_name", LIBRARY_SCRIPTS)
-    def test_a_viewer_script_imports_with_the_client_package_absent(self, script_name: str) -> None:
-        """A script that needs client code to load is a script that stops working on extraction."""
-        result = _import_with_client_code_absent(SCRIPTS_DIR / script_name)
-        assert result.returncode == 0, (
-            f"scripts/{script_name} could not be imported without {sorted(FORBIDDEN_IMPORTS)}:\n{result.stderr.strip()}"
-        )
-
-    @pytest.mark.parametrize("test_path", _discover_library_test_files(), ids=lambda p: p.name)
-    def test_a_library_test_file_imports_with_the_client_package_absent(self, test_path: Path) -> None:
-        """The suite is the only evidence the extracted package works, so it must run on arrival."""
-        result = _import_with_client_code_absent(test_path)
-        assert result.returncode == 0, (
-            f"tests/{test_path.name} could not be imported without {sorted(FORBIDDEN_IMPORTS)}, so "
-            f"collection fails and the whole suite is lost on the first run after extraction:\n"
-            f"{result.stderr.strip()}"
-        )
+    @pytest.mark.parametrize(
+        "test_path", sorted(TESTS_DIR.rglob("*.py")), ids=lambda p: str(p.relative_to(TESTS_DIR))
+    )
+    def test_no_forbidden_import_appears_anywhere_in_a_test_file(self, test_path: Path) -> None:
+        """A test that imports client code, an orchestrator or pandas cannot run where the library ships."""
+        offenders = sorted(_imported_roots(test_path) & FORBIDDEN_IMPORTS)
+        assert not offenders, f"tests/{test_path.relative_to(TESTS_DIR)} imports forbidden package(s) {offenders}"
 
     def test_every_named_viewer_script_is_where_the_list_says(self) -> None:
         """A renamed script must fail loudly here rather than silently leaving the fence."""

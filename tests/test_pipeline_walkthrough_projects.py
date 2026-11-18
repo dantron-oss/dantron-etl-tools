@@ -32,6 +32,12 @@ from scripts.pipeline_walkthrough_page import (  # noqa: E402
 _FIXTURE = PROJECT_ROOT / "pipelines" / "fixture.yaml"
 
 
+@pytest.fixture(autouse=True)
+def _runs_in_the_sandbox(fixture_flow_sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every run here starts in a scratch folder, so the fixture flow's sinks never write into the checkout."""
+    monkeypatch.chdir(fixture_flow_sandbox)
+
+
 def _project(pipelines: Path, name: str, flow: str | None = None, settings: str | None = None) -> None:
     """A project under ``pipelines``: a flow file, and a settings file when one is given."""
     pipelines.mkdir(parents=True, exist_ok=True)

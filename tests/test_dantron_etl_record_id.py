@@ -51,7 +51,6 @@ from dantron_etl.tool import (
     REGISTRY,
     ConfigError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -294,12 +293,10 @@ class TestRecordIdInTheCatalog:
             )
             assert produced.schema[example.configuration["output"]] == pl.Int64
 
-    def test_record_id_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_record_id_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "record_id" in REGISTRY
         assert isinstance(REGISTRY.get("record_id"), RecordId)
-
-        check_registry(REGISTRY)
 
 
 _INT64_MAX: Final[int] = 2**63 - 1
