@@ -56,7 +56,7 @@ from typing import Literal
 
 import polars as pl
 
-from .pipeline import PipelineSpec, PortRef
+from .spec import Pipeline, PortRef
 from .boundary import run_tool
 from .contract import Tool, input_ports_for
 from .errors import RunError, ToolError
@@ -119,7 +119,7 @@ class CachedFrame:
     Two fields because neither is any use alone. The frame without the fingerprint is a number with
     no provenance, and the danger a cache carries is not one that fails to load -- it is one that
     loads perfectly against a pipeline somebody has since edited. The fingerprint is
-    :meth:`~.pipeline.PipelineSpec.fingerprint` taken over the closure that produced the port, and
+    :meth:`~.spec.Pipeline.fingerprint` taken over the closure that produced the port, and
     :func:`run_pipeline` compares it before it walks a step.
 
     Frozen because it is evidence of a run that already happened, not a value the run holding it may
@@ -281,7 +281,7 @@ def logging_sink(logger: logging.Logger | None = None) -> Callable[[StepEvent], 
 
 
 def run_pipeline(
-    spec: PipelineSpec,
+    spec: Pipeline,
     *,
     sources: Mapping[PortRef | str, pl.DataFrame] | None = None,
     retain: Literal["all", "live"] = "all",
@@ -608,12 +608,12 @@ def _find_placeholder(value: object) -> str | None:
     return None
 
 
-def _walk_for(spec: PipelineSpec, until: str | Collection[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _walk_for(spec: Pipeline, until: str | Collection[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(the steps asked for, the steps to walk)``, both in dependency order.
 
     A whole run asks for nothing and walks everything. A truncated one walks the ancestor closure of
-    what it named, followed through :attr:`~.pipeline.StepSpec.inputs`, which is the only edge list
-    a flow has. Neither tuple is ordered here: both are :meth:`~.pipeline.PipelineSpec.order`
+    what it named, followed through :attr:`~.spec.Step.inputs`, which is the only edge list
+    a flow has. Neither tuple is ordered here: both are :meth:`~.spec.Pipeline.order`
     filtered down to a set of ids. So a step that runs sits in exactly the position it occupies in a
     whole run, a step reached from two directions is still walked once, and what the trace reports
     as asked for is in the same order as what it reports as run -- whatever order, and whatever kind
@@ -643,14 +643,7 @@ def _walk_for(spec: PipelineSpec, until: str | Collection[str] | None) -> tuple[
         if step_id not in known_ids:
             raise RunError(f"until names step {step_id!r}, which this pipeline does not have; steps are: {known}")
 
-    closure: set[str] = set()
-    pending = list(named)
-    while pending:
-        step_id = pending.pop()
-        if step_id in closure:
-            continue
-        closure.add(step_id)
-        pending.extend(ref.step for ref in spec.step(step_id).inputs.values())
+    closure = spec.ancestor_closure(named)
 
     requested = set(named)
     return (
@@ -660,7 +653,7 @@ def _walk_for(spec: PipelineSpec, until: str | Collection[str] | None) -> tuple[
 
 
 def _named_port(
-    spec: PipelineSpec,
+    spec: Pipeline,
     tools_by_step: Mapping[str, Tool],
     key: PortRef | str,
     argument: Literal["sources", "cached"],
@@ -699,7 +692,7 @@ def _named_port(
 
 
 def _resolve_sources(
-    spec: PipelineSpec,
+    spec: Pipeline,
     tools_by_step: Mapping[str, Tool],
     sources: Mapping[PortRef | str, pl.DataFrame],
 ) -> dict[PortRef, pl.DataFrame]:
@@ -725,7 +718,7 @@ def _resolve_sources(
 
 
 def _resolve_cached(
-    spec: PipelineSpec,
+    spec: Pipeline,
     tools_by_step: Mapping[str, Tool],
     cached: Mapping[PortRef | str, CachedFrame],
 ) -> dict[PortRef, CachedFrame]:
@@ -779,7 +772,7 @@ def _resolve_cached(
 
 
 def _walk_around_cache(
-    spec: PipelineSpec,
+    spec: Pipeline,
     order: tuple[str, ...],
     requested: tuple[str, ...],
     cached_steps: Collection[str],
@@ -879,13 +872,13 @@ def _outcome_message(
 
 
 def _release_schedule(
-    spec: PipelineSpec,
+    spec: Pipeline,
     tools_by_step: Mapping[str, Tool],
     order: tuple[str, ...],
 ) -> dict[str, tuple[PortRef, ...]]:
     """``step id -> ports to free once that step has finished``, for ``retain="live"``.
 
-    A port is due at the last step that still reads it -- read off :meth:`PipelineSpec.consumers`,
+    A port is due at the last step that still reads it -- read off :meth:`Pipeline.consumers`,
     a property of the wiring alone. ``order`` is what decides *last*, and under a truncated run
     that is the closure rather than the whole flow: a consumer that will never run cannot be a
     port's last use, and counting one would leave a source frame -- the largest in the run -- due
