@@ -1029,12 +1029,12 @@ class TestGroupByInTheCatalog:
 class TestFirstWhenTheFirstValueIsNull:
     """What ``first`` gives when a group's first row holds no value.
 
-    Today it gives that null; it does not skip ahead to the first real value. pandas'
+    It gives that null; it does not skip ahead to the first real value. pandas'
     ``groupby().first()`` does the opposite, so a port or a "fix" would change figures quietly.
-    Whether this is the right rule waits on the owner.
+    The owner ruled on 2026-11-18 to keep this rule: the first row as it arrives, null or not.
     """
 
-    # pins current behaviour; see finding F-02
+    # pins current behaviour, kept by the owner's ruling on finding F-02
     def test_first_returns_the_first_rows_null_rather_than_the_first_value(self) -> None:
         rows = pl.DataFrame(
             {"code": ["a", "a", "b", "b"], "amount": [None, 7.0, 3.0, None], "note": [None, "x", "y", None]},

@@ -1156,10 +1156,10 @@ class TestFirstWhenTheFirstValueIsNull:
     """What ``first`` puts in a cell whose first row holds no value: that null, as GroupBy does.
 
     pandas' ``first`` skips nulls instead, so this is the rule a port or a "fix" would change
-    quietly. Whether it is the right rule waits on the owner.
+    quietly. The owner ruled on 2026-11-18 to keep it: the first row as it arrives, null or not.
     """
 
-    # pins current behaviour; see finding F-02
+    # pins current behaviour, kept by the owner's ruling on finding F-02
     def test_first_returns_the_first_rows_null_rather_than_the_first_value(self) -> None:
         rows = pl.DataFrame(
             {"code": ["a", "a", "b", "b"], "period": ["p1"] * 4, "amount": [None, 7.0, 3.0, None]},
