@@ -40,7 +40,7 @@ The last version that has it is commit `0a79238` on `develop`. Look at:
 - `expr.py` in the package: `compile_sql`, `sql_subset`, `SQL_DIALECTS`, `SQL_PARAMSTYLES`,
   `SQL_IDENTIFIER`, the class `_SqlTarget`, the per-dialect spellings `_SQLITE_SPELLINGS` and
   `_POSTGRES_SPELLINGS`, and the refusal reasons in `_OUTSIDE_THE_SUBSET`.
-- `tests/test_dantron_etl_expr.py`, the section headed "The second compile target". Its strongest
+- `tests/expr/test_expr.py`, the section headed "The second compile target". Its strongest
   test filters the same rows in polars and in a real database and requires the same keys back.
 
 Since then, each function is defined once, in the function table in the package's

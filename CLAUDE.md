@@ -116,7 +116,7 @@ These are not style preferences. Each one was learned by getting it wrong.
 ### The library stays client-neutral
 
 - No client or product name, and no client vocabulary, in anything under `src/dantron_etl/` —
-  code, docstrings, comments, examples, the manual. `tests/test_dantron_etl_boundary.py` holds the
+  code, docstrings, comments, examples, the manual. `tests/package/test_boundary.py` holds the
   banned words (`FORBIDDEN_TERMS`) and fails the build on any of them. In `.md` files the package's
   own name is allowed; in `.py` files it is not, which is why imports are relative.
 - No import of a client package, an orchestrator, or pandas (`FORBIDDEN_IMPORTS`). The boundary

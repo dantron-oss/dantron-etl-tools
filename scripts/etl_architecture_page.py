@@ -266,11 +266,11 @@ h2 .count {{ font:500 .66rem var(--mono); color:var(--accent); background:var(--
     {tools}
     <h2 id="harness">how it is checked</h2>
     <div class="grid">
-      <article class="item" data-path="tests/test_dantron_etl_boundary.py">
+      <article class="item" data-path="tests/package/test_boundary.py">
         <h3>Independence</h3>
         <p class="says">Every module imported in a fresh subprocess, asserting that nothing outside this
         library reaches it -- and its sources scanned for any caller's vocabulary.</p>
-        <button data-open="tests/test_dantron_etl_boundary.py">read the code</button></article>
+        <button data-open="tests/package/test_boundary.py">read the code</button></article>
       <article class="item" data-path="src/dantron_etl/conformance.py">
         <h3>Conformance</h3>
         <p class="says">Every tool's worked examples are executed on every check, so an example that stops
