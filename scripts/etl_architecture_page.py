@@ -82,12 +82,26 @@ def _summary(source: str) -> str:
     return " ".join(lead.split())
 
 
-def _module_card(name: str, title: str, why: str) -> str:
+def _layer_source(name: str) -> tuple[str, str, str]:
+    """Where a layer's code starts, how to label it, and all of its source.
+
+    A layer is one module or a package of them. For a package, the path is its ``__init__.py``,
+    whose docstring is the summary, and the source is every module in it, so the line count is
+    the whole layer's.
+    """
+    package = PROJECT_ROOT / "src" / "dantron_etl" / name
+    if package.is_dir():
+        sources = [path.read_text(encoding="utf-8") for path in sorted(package.glob("*.py"))]
+        return f"src/dantron_etl/{name}/__init__.py", f"{name}/", "\n".join(sources)
     path = f"src/dantron_etl/{name}.py"
-    source = (PROJECT_ROOT / path).read_text(encoding="utf-8")
+    return path, f"{name}.py", (PROJECT_ROOT / path).read_text(encoding="utf-8")
+
+
+def _module_card(name: str, title: str, why: str) -> str:
+    path, label, source = _layer_source(name)
     return (
         f'<article class="item" data-path="{_e(path)}">'
-        f"<h3>{_e(title)}<code>{_e(name)}.py</code>"
+        f"<h3>{_e(title)}<code>{_e(label)}</code>"
         f'<span class="lines">{len(source.splitlines()):,} lines</span></h3>'
         f'<p class="why">{_e(why)}</p>'
         f'<p class="says">{_e(_summary(source))}</p>'
@@ -144,10 +158,7 @@ def build() -> str:
         + '<a href="#harness">how it is checked</a>'
     )
 
-    total = sum(
-        len((PROJECT_ROOT / f"src/dantron_etl/{name}.py").read_text(encoding="utf-8").splitlines())
-        for name, _, _ in LAYERS
-    )
+    total = sum(len(_layer_source(name)[2].splitlines()) for name, _, _ in LAYERS)
     summary = (
         f"<b>{len(REGISTRY.names())}</b> tools &middot; <b>{len(LAYERS)}</b> modules &middot; "
         f"<b>{total:,}</b> lines that reach nothing outside themselves"

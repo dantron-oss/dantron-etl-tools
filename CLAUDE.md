@@ -79,7 +79,7 @@ than the one you are editing. If anything looks impossible, run
 | module | what it owns |
 |---|---|
 | `tool.py` | The contract every tool meets. `Ports` (the named-frame envelope), `ConfigField`, `WorkedExample`, `ToolHelp`, the `Tool` protocol, the optional `DerivesInputPorts` member, `REGISTRY`, `run_tool` (the boundary every call goes through), `check_tool` and `check_registry` (conformance), per-row status. |
-| `expr.py` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. |
+| `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
 | `pipeline.py` | The YAML loader. `StepSpec`, `PortRef`, `PipelineSpec`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
 | `runner.py` | Walks a loaded flow. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
@@ -122,7 +122,7 @@ The rule that matters most. Manual §2 and §8 have the full argument. In short:
   Try two tools. Then three. Ask whether the *frame* is the problem: a "fill the blanks" request was
   really "the rows do not exist yet".
 - **A tool reshapes the frame. An expression function computes one column.** If it is one column
-  out, it is a function in `expr.py`, not a tool.
+  out, it is a function in `expr/functions.py`, not a tool.
 - **Extend the language by whitelisting a function, never by adding syntax.** No user-defined
   functions, no attribute access, no subscripts, no lambdas. That refusal is a security boundary:
   a pipeline file is edited by people who are not developers.
@@ -228,7 +228,7 @@ Manual §4b has the full rules and a worked before-and-after.
 
 ### Adding an expression function
 
-Each function is defined once, in the function table (`_DEFINITIONS` in `expr.py`). To add one:
+Each function is defined once, in the function table (`DEFINITIONS` in `expr/functions.py`). To add one:
 
 1. Write the function that builds its column from the arguments.
 2. Add one entry to the table: the name, the arguments in order and what each must hold, the

@@ -42,7 +42,9 @@ from dantron_etl.expr import (
     compile_expr,
     references,
 )
-from dantron_etl.expr import _DEFINITIONS, _FUNCTIONS, _Family, _Function, _Value
+from dantron_etl.expr.arguments import Value
+from dantron_etl.expr.families import Family
+from dantron_etl.expr.functions import DEFINITIONS, FUNCTIONS, Function
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -298,7 +300,7 @@ class TestTheFunctionTable:
     """Each function is defined once, in one entry that carries everything about it."""
 
     @staticmethod
-    def incomplete(name: str, function: _Function) -> list[str]:
+    def incomplete(name: str, function: Function) -> list[str]:
         """What is missing or inconsistent in one entry, as plain sentences. Empty when it is complete."""
         problems: list[str] = []
         if function.name != name:
@@ -307,11 +309,11 @@ class TestTheFunctionTable:
             problems.append("lists no arguments")
         if function.variadic and len(function.params) != 1:
             problems.append("is variadic, so it must list exactly one argument for all of them to meet")
-        if function.result != "common" and not isinstance(function.result, _Family):
+        if function.result != "common" and not isinstance(function.result, Family):
             problems.append(f"gives {function.result!r}, which is neither a family nor 'common'")
         if function.result == "common" and not (function.variadic and function.params[0].family is None):
             problems.append("gives the family its arguments agree on, so it must take any number of any family")
-        if function.result_dtype == "subject" and not isinstance(function.params[0], _Value):
+        if function.result_dtype == "subject" and not isinstance(function.params[0], Value):
             problems.append("hands on its first argument's type, so the first argument must be a value")
         if not callable(function.to_polars):
             problems.append("has nothing to build its column with")
@@ -328,10 +330,10 @@ class TestTheFunctionTable:
 
     def test_every_function_is_defined_completely_in_one_entry(self) -> None:
         """No entry is missing a part, no name is defined twice, and the whitelist is the table."""
-        problems = {name: found for name, function in _FUNCTIONS.items() if (found := self.incomplete(name, function))}
+        problems = {name: found for name, function in FUNCTIONS.items() if (found := self.incomplete(name, function))}
         assert not problems, problems
-        assert len(_DEFINITIONS) == len(_FUNCTIONS), "a function is defined twice"
-        assert ALLOWED_FUNCTIONS == frozenset(_FUNCTIONS)
+        assert len(DEFINITIONS) == len(FUNCTIONS), "a function is defined twice"
+        assert ALLOWED_FUNCTIONS == frozenset(FUNCTIONS)
 
     @pytest.mark.parametrize(
         ("change", "expected"),
@@ -348,7 +350,7 @@ class TestTheFunctionTable:
     )
     def test_the_check_refuses_an_entry_with_a_part_missing(self, change: dict[str, Any], expected: str) -> None:
         """The check above is itself checked: break one part of a real entry and it must say so."""
-        broken = dataclasses.replace(_FUNCTIONS["lower"], **change)
+        broken = dataclasses.replace(FUNCTIONS["lower"], **change)
         problems = self.incomplete("lower", broken)
         assert any(expected in problem for problem in problems), problems
 
