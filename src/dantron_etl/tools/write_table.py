@@ -42,12 +42,12 @@ from ..db import (
     open_connection,
     probe_columns,
     qualified_name,
+    require_matching_columns,
     resolve_connection_uri,
     validate_identifier,
 )
 from ..authoring import (
     REGISTRY,
-    ConfigError,
     ConfigField,
     DataError,
     Ports,
@@ -151,7 +151,7 @@ class WriteTable:
         with open_connection(uri) as connection:
             table_columns = probe_columns(connection, qualified)
 
-        _require_matching_columns(frame, table_columns, qualified)
+        require_matching_columns(frame.columns, table_columns, qualified)
 
         if frame.height == 0 and not config["allow_empty"]:
             raise DataError(
@@ -167,29 +167,6 @@ class WriteTable:
         with open_connection(uri) as connection:
             _write_rows(connection, config["schema"], config["table"], qualified, config["mode"], frame)
         return Ports({"rows": frame})
-
-
-def _require_matching_columns(frame: pl.DataFrame, table_columns: Sequence[str], qualified: str) -> None:
-    """Refuse rows whose columns are not exactly the table's, in either direction, case-sensitively."""
-    frame_columns = set(frame.columns)
-    table_column_set = set(table_columns)
-    if frame_columns == table_column_set:
-        return
-
-    extra = sorted(frame_columns - table_column_set)
-    missing = sorted(table_column_set - frame_columns)
-    disagreement = "; ".join(
-        part
-        for part in (
-            f"extra: {', '.join(extra)}" if extra else "",
-            f"missing: {', '.join(missing)}" if missing else "",
-        )
-        if part
-    )
-    raise ConfigError(
-        f"the rows do not match the columns of table {qualified!r} ({disagreement}); the rows "
-        f"carry: {', '.join(frame.columns)}; the table has: {', '.join(table_columns)}"
-    )
 
 
 @dataclass(frozen=True)

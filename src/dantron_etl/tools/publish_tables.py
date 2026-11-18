@@ -61,6 +61,7 @@ from ..db import (
     open_connection,
     probe_columns,
     qualified_name,
+    require_matching_columns,
     resolve_connection_uri,
     validate_identifier,
 )
@@ -434,46 +435,13 @@ def _require_a_table_these_rows_can_be_published_to(
     catalog is a name the statement can safely carry.
     """
     table_columns = probe_columns(connection, entry.qualified)
-    _require_matching_columns(frame, table_columns, stamp, entry.qualified)
+    require_matching_columns(frame.columns, table_columns, entry.qualified, stamp=stamp)
     missing = [column for column in entry.key if column not in table_columns]
     if missing:
         raise ConfigError(
             f"the merge key for table {entry.qualified!r} names column(s) nobody carries: "
             f"{', '.join(missing)}; the table has: {', '.join(table_columns)}"
         )
-
-
-def _require_matching_columns(
-    frame: pl.DataFrame,
-    table_columns: Sequence[str],
-    stamp: str | None,
-    qualified: str,
-) -> None:
-    """Refuse rows whose columns, plus the stamp, are not exactly the table's, case-sensitively.
-
-    The stamp is added to the frame's side rather than removed from the table's, which is the same
-    comparison read the way it is meant: the frames never carry it, every one of these tables does,
-    and a table that does not carry it is refused here rather than at load time.
-    """
-    carried = set(frame.columns) | ({stamp} if stamp else set())
-    expected = set(table_columns)
-    if carried == expected:
-        return
-
-    extra = sorted(carried - expected)
-    missing = sorted(expected - carried)
-    disagreement = "; ".join(
-        part
-        for part in (
-            f"extra: {', '.join(extra)}" if extra else "",
-            f"missing: {', '.join(missing)}" if missing else "",
-        )
-        if part
-    )
-    raise ConfigError(
-        f"the rows do not match the columns of table {qualified!r} ({disagreement}); the rows "
-        f"carry: {', '.join(frame.columns)}; the table has: {', '.join(table_columns)}"
-    )
 
 
 def _require_landable_columns(
