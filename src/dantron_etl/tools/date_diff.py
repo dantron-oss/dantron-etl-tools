@@ -21,7 +21,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,
@@ -31,6 +31,7 @@ from ..tool import (
     check_output_column,
     compile_for,
     compiled_dtype,
+    require_not_blank,
 )
 
 _UNIT_ENUM: Final[tuple[str, ...]] = ("months", "days")
@@ -105,8 +106,7 @@ class DateDiff:
                 "config field 'endpoints' was given with no value; write 'both' or 'elapsed', or "
                 "leave the field out entirely to take its default"
             )
-        if not config["output"].strip():
-            raise ConfigError("config field 'output' must not be blank")
+        require_not_blank(config["output"], "output")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a side that is not a date, off the schema alone."""

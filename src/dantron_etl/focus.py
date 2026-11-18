@@ -42,9 +42,9 @@ from typing import Any, Literal
 
 import polars as pl
 
-from .pipeline import PortRef
-from .runner import PipelineTrace
-from .tool import ToolError
+from .spec import PortRef
+from .trace import PipelineTrace
+from .errors import ToolError
 
 __all__ = [
     "EntityOption",

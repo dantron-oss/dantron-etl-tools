@@ -30,7 +30,7 @@ import fastexcel
 import polars as pl
 import xlsxwriter
 
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     SCRATCH_TOKEN,
     ConfigError,

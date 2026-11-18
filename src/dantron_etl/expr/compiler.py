@@ -1,0 +1,529 @@
+"""A checked tree in, one polars column expression out.
+
+This is the tree walk: operators, comparisons, ``in``, null tests, column references, literals and
+function calls. Every type check is made here, against the schema when the caller has one. Every
+refusal names the part of the expression at fault.
+"""
+
+import ast
+import operator
+from collections.abc import Callable, Collection, Mapping, Sequence
+from typing import Any, Final
+
+import polars as pl
+
+from .arguments import POSITIONS, Param, Value
+from .errors import Refusal, error
+from .families import (
+    WILDCARD_FAMILIES,
+    Family,
+    Typed,
+    arithmetic_dtype,
+    combined_dtype,
+    compatible,
+    dtype_of_value,
+    family_of_dtype,
+    family_of_value,
+    holding_phrase,
+)
+from .functions import ALLOWED_FUNCTIONS, FUNCTIONS, Function
+from .parse import front_door, node_refusal
+from .scan import COLUMN_FN, LITERAL_FN, Scanned
+from .spelling import KEYWORD_LITERALS, MISSING, OPERATOR_SYMBOLS, Spelling
+
+
+_BINARY_OPERATORS: Final[dict[type[ast.AST], Callable[[Any, Any], Any]]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+
+_COMPARISONS: Final[dict[type[ast.AST], Callable[[Any, Any], Any]]] = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+}
+
+# Two numeric bounds, both about keeping a refusal a refusal. A whole number outside the signed
+# 64-bit range has no column that could hold it, and a decimal place or capture group beyond a few
+# thousand has no meaning -- and in both cases the engine below rejects the value with an error of
+# its own type, which would escape this module and defeat the promise that every bad expression
+# raises one thing. The bound is measured on the value the author wrote, sign folded in: the most
+# negative whole number is spellable, and negating it twice is not.
+_WHOLE_NUMBER_MIN: Final[int] = -(2**63)
+_WHOLE_NUMBER_MAX: Final[int] = 2**63 - 1
+
+
+def build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[pl.Expr, frozenset[str]]:
+    """The front door, then the column expression for what survived it."""
+    tree, scanned, schema = front_door(text, columns)
+    expression = _Compiler(text, scanned, schema).compile(tree.body)
+    return expression, frozenset(scanned.columns)
+
+
+class _Compiler:
+    """Translates a checked tree into a column expression.
+
+    Every refusal about the language lives here: what a function may be given, what two sides of
+    a comparison may hold, what a list of values may mix.
+
+    Recursive, which is safe only because :func:`_check_depth` has already bounded the tree. The
+    order matters: nothing in here may run before the whitelist has, so this class is private and
+    is only ever constructed on a tree :func:`front_door` has already returned.
+    """
+
+    __slots__ = ("_schema", "_spelling", "_text")
+
+    def __init__(
+        self,
+        text: str,
+        scanned: Scanned,
+        schema: dict[str, pl.DataType] | None,
+    ) -> None:
+        self._text = text
+        self._spelling = Spelling(text, scanned)
+        self._schema = schema
+
+    def compile(self, node: ast.expr) -> Any:
+        """What one node builds to, with its type discarded once it has been checked."""
+        return self._typed(node).expr
+
+    def _typed(self, node: ast.expr) -> Typed:
+        """The expression for one node and the family it belongs to, dispatching on its type."""
+        if isinstance(node, ast.BoolOp):
+            return self._bool_op(node)
+        if isinstance(node, ast.UnaryOp):
+            return self._unary_op(node)
+        if isinstance(node, ast.BinOp):
+            return self._binary_op(node)
+        if isinstance(node, ast.Compare):
+            return self._compare(node)
+        if isinstance(node, ast.Call):
+            return self._call(node)
+        if isinstance(node, ast.Name):
+            return self._name(node)
+        if isinstance(node, ast.Constant):
+            return self._constant(node)
+        if isinstance(node, ast.Tuple):
+            raise error(
+                self._text,
+                "a list of values in parentheses is only meaningful on the right of 'in', as in [code] in ('A', 'B')",
+            )
+        raise node_refusal(self._text, node)
+
+    # -- shapes ------------------------------------------------------------
+
+    def _bool_op(self, node: ast.BoolOp) -> Typed:
+        """``and`` / ``or``, left to the engine so that its three-valued logic is the one in force.
+
+        Each operand has to be a truth value. Without that rule a logical operator applied to a
+        number would quietly become a bitwise one -- ``[qty] and [flag]`` returning arithmetic
+        instead of a truth value -- so a column of counts is refused and the author writes
+        ``[qty] > 0``, which is what they meant.
+
+        The cast is a no-op on a truth value and keeps a null null, which is what makes the logic
+        below faithful rather than merely close.
+        """
+        spelling = OPERATOR_SYMBOLS[type(node.op)]
+        operands: list[Typed] = []
+        for value in node.values:
+            part = self._typed(value)
+            self._require(part, Family.BOOLEAN, f"'{spelling}' needs a truth value on both sides")
+            operands.append(part)
+        combine = operator.and_ if isinstance(node.op, ast.And) else operator.or_
+        result = operands[0].expr.cast(pl.Boolean)
+        for operand in operands[1:]:
+            result = combine(result, operand.expr.cast(pl.Boolean))
+        return Typed(result, Family.BOOLEAN, node, "gives a truth value")
+
+    def _unary_op(self, node: ast.UnaryOp) -> Typed:
+        if isinstance(node.op, ast.Not):
+            operand = self._typed(node.operand)
+            self._require(operand, Family.BOOLEAN, "'not' needs a truth value")
+            return Typed(~operand.expr.cast(pl.Boolean), Family.BOOLEAN, node, "gives a truth value")
+
+        # A signed number is one literal, not a negation applied to one, so the bound on a whole
+        # number is measured here -- on the value the author wrote. That is what makes the most
+        # negative whole number spellable, and it holds for a doubled sign too, because folding
+        # happens before the bound is applied rather than beneath it.
+        folded = self._spelling.literal(node)
+        if isinstance(folded, (int, float)) and not isinstance(folded, bool):
+            self._check_whole_number(folded)
+            return self._typed_value(folded, node)
+
+        operand = self._typed(node.operand)
+        self._require(operand, Family.NUMBER, "a minus sign needs a number")
+        # A null of no type at all has no negation in this engine, which raises rather than
+        # answering. So the null is handed back as it stands. There is nothing in it to negate, and
+        # the answer is the same null either way.
+        negative = operand.expr if operand.dtype == pl.Null else -operand.expr
+        if operand.family is Family.NULL:
+            # A minus sign in front of a null has nothing to negate, so the answer is still null.
+            # It stays in the family that meets anything, the way the null it was written from
+            # does, and every check below reads it as the null it is.
+            return Typed(negative, Family.NULL, node, operand.holds, operand.dtype)
+        # The type comes along, because a minus sign does not change it: the negative of a whole
+        # number is a whole number, and the negative of a decimal is a decimal.
+        return Typed(negative, Family.NUMBER, node, "gives a number", operand.dtype)
+
+    def _binary_op(self, node: ast.BinOp) -> Typed:
+        operation = type(node.op)
+        if operation not in _BINARY_OPERATORS:  # pragma: no cover - the whitelist refused the rest
+            raise node_refusal(self._text, node.op)
+        symbol = OPERATOR_SYMBOLS[operation]
+        left = self._typed(node.left)
+        right = self._typed(node.right)
+        for operand in (left, right):
+            self._require_arithmetic(operand, symbol)
+        built = _BINARY_OPERATORS[operation](left.expr, right.expr)
+        dtype = arithmetic_dtype(operation, left.dtype, right.dtype)
+        return Typed(built, Family.NUMBER, node, "gives a number", dtype)
+
+    def _compare(self, node: ast.Compare) -> Typed:
+        if len(node.ops) != 1:
+            raise error(
+                self._text,
+                "a chained comparison like 1 < [qty] < 3 is not part of this language: write the two comparisons "
+                "joined with 'and', as in 1 < [qty] and [qty] < 3",
+            )
+        operation = node.ops[0]
+        right_node = node.comparators[0]
+
+        if isinstance(operation, (ast.Is, ast.IsNot)):
+            return self._null_test(node, right_node, negated=isinstance(operation, ast.IsNot))
+        if isinstance(operation, (ast.In, ast.NotIn)):
+            return self._membership(node, right_node, negated=isinstance(operation, ast.NotIn))
+
+        if type(operation) not in _COMPARISONS:  # pragma: no cover - the whitelist refused the rest
+            raise node_refusal(self._text, operation)
+        left = self._typed(node.left)
+        right = self._typed(right_node)
+        if not compatible(left.family, right.family):
+            raise error(
+                self._text,
+                f"a comparison needs both sides in the same type family, but {self._describe(left)} and "
+                f"{self._describe(right)}",
+            )
+        built = _COMPARISONS[type(operation)](left.expr, right.expr)
+        return Typed(built, Family.BOOLEAN, node, "gives a truth value")
+
+    def _null_test(self, node: ast.Compare, right_node: ast.expr, *, negated: bool) -> Typed:
+        """``is null`` / ``is not null`` -- the only expressions in this language never themselves null.
+
+        That is what makes them the escape hatch from three-valued logic: every other test against
+        a null row is null, and a filter drops it, so without these two an author could not find a
+        missing value at all.
+        """
+        if not (isinstance(right_node, ast.Name) and right_node.id == "null"):
+            raise error(
+                self._text,
+                "'is' may only be written as 'is null' or 'is not null': to compare values, use '=' or '!='",
+            )
+        left = self._typed(node.left)
+        built = left.expr.is_not_null() if negated else left.expr.is_null()
+        return Typed(built, Family.BOOLEAN, node, "gives a truth value")
+
+    def _membership(self, node: ast.Compare, right_node: ast.expr, *, negated: bool) -> Typed:
+        """``in`` / ``not in`` over a parenthesised list of literals.
+
+        Only literals: a set of values to match is a decision recorded in the file, and allowing a
+        column on the right would turn a readable membership test into a row-by-row join nobody
+        reviewing the file would see coming.
+
+        A mixed *family* is refused in this language's words rather than in the engine's, which
+        would leak an exception type of its own out of compilation.
+
+        The list handed to the engine is one this module built rather than the one the author's
+        text implies. The engine types the list from its first value and rejects the rest with an
+        exception of its own, which for a list of whole numbers and decimals together refuses
+        something an author wrote perfectly sensibly. One family spanning both number spellings is
+        therefore widened here to the one that holds them all.
+        """
+        candidates = right_node.elts if isinstance(right_node, ast.Tuple) else [right_node]
+        values: list[Any] = []
+        parts: list[Typed] = []
+        for candidate in candidates:
+            value = self._spelling.literal(candidate)
+            if value is MISSING:
+                raise error(
+                    self._text,
+                    "'in' needs a list of fixed values in parentheses, as in [code] in ('A', 'B')",
+                )
+            if isinstance(value, int) and not isinstance(value, bool):
+                self._check_whole_number(value)
+            values.append(value)
+            parts.append(self._typed_value(value, candidate))
+
+        listed = self._one_family(parts, "a list of values to match needs every value in the same type family")
+        left = self._typed(node.left)
+        if not compatible(left.family, listed):
+            raise error(
+                self._text,
+                f"a membership test needs the listed values in the same type family as what they are matched "
+                f"against, but {self._describe(left)} and the list is {listed.value}",
+            )
+        if listed is Family.NUMBER and any(isinstance(value, float) for value in values):
+            values = [value if value is None else float(value) for value in values]
+        built = left.expr.is_in(list(values))
+        if negated:
+            built = ~built
+        return Typed(built, Family.BOOLEAN, node, "gives a truth value")
+
+    # -- leaves ------------------------------------------------------------
+
+    def _name(self, node: ast.Name) -> Typed:
+        if node.id in KEYWORD_LITERALS:
+            return self._typed_value(KEYWORD_LITERALS[node.id], node)
+        raise error(
+            self._text,
+            f"{node.id!r} is not something this language knows: write a column as [{node.id}], text as 'value', or "
+            f"one of true, false and null",
+        )
+
+    def _constant(self, node: ast.Constant) -> Typed:
+        value = node.value
+        if value is None or isinstance(value, bool):
+            raise error(
+                self._text,
+                f"the Python literal {value!r} is not part of this language: write true, false or null in lower case",
+            )
+        if isinstance(value, int):
+            self._check_whole_number(value)
+        if isinstance(value, (int, float)):
+            return self._typed_value(value, node)
+        raise error(
+            self._text,
+            f"{value!r} is not a literal this language supports (it is a {type(value).__name__}): the literals are "
+            f"whole numbers, decimals, single-quoted text, true, false, null and date'2026-01-01'",
+        )
+
+    def _column(self, node: ast.Call) -> Typed:
+        name = self._spelling.column_name(node)
+        if self._schema is None:
+            return Typed(pl.col(name), Family.UNKNOWN, node, "holds an unknown type")
+        dtype = self._schema[name]
+        family = family_of_dtype(dtype)
+        # One column reference, cast at the leaf wherever the schema says it is stored compactly.
+        #
+        # Two dtypes store text compactly -- dictionary-encoded, and restricted to a fixed set of
+        # members -- and the engine's string kernels and its own coercions only work reliably
+        # against a plain string. Casting here, on the leaf, is what makes that true for every
+        # operation built on top of the reference: a call nested three deep still meets a plain
+        # string, because the column never handed back anything else. Casting inside each text
+        # function instead is not enough -- it disappears the moment the value passes through
+        # something that is not a text function, such as coalesce().
+        expression = pl.col(name)
+        if family is Family.TEXT and dtype is not None and dtype != pl.String:
+            expression = expression.cast(pl.String)
+        return Typed(expression, family, node, f"holds {dtype}", dtype)
+
+    def _typed_value(self, value: Any, node: ast.expr) -> Typed:
+        """One literal, whose family is knowable from the text with or without a schema."""
+        return Typed(
+            pl.lit(value),
+            family_of_value(value),
+            node,
+            holding_phrase(value),
+            dtype_of_value(value),
+        )
+
+    # -- calls -------------------------------------------------------------
+
+    def _call(self, node: ast.Call) -> Typed:
+        if not isinstance(node.func, ast.Name):  # pragma: no cover - the whitelist refuses any other callee
+            raise node_refusal(self._text, node.func)
+        name = node.func.id
+
+        if name == COLUMN_FN:
+            return self._column(node)
+        if name == LITERAL_FN:
+            return self._typed_value(self._spelling.interned(node), node)
+        function = FUNCTIONS.get(name)
+        if function is None:
+            available = ", ".join(sorted(ALLOWED_FUNCTIONS))
+            raise error(self._text, f"{name!r} is not a function this language has: the functions are {available}")
+
+        arguments = node.args
+        if function.variadic:
+            if len(arguments) < 2:
+                raise error(
+                    self._text,
+                    f"{name}() takes at least 2 arguments, but was given {len(arguments)}",
+                )
+        elif len(arguments) != len(function.params):
+            arity = len(function.params)
+            raise error(
+                self._text,
+                f"{name}() takes exactly {arity} argument{'s' if arity > 1 else ''}, but was given {len(arguments)}",
+            )
+        try:
+            return self._apply(function, node)
+        except Refusal as refusal:
+            raise error(self._text, refusal.problem) from None
+
+    def _apply(self, function: Function, node: ast.Call) -> Typed:
+        """One whitelisted function: every argument read and checked, then the column built.
+
+        A function with a fixed number of arguments reads them in order, and checks each one before
+        reading the next, so the first argument at fault is the one reported. A variadic function
+        compiles every argument first and then checks them, in order.
+        """
+        name = function.name
+        if function.variadic:
+            (param,) = function.params
+            params: list[Param] = [param] * len(node.args)
+            arguments = [self._typed(argument) for argument in node.args]
+            if param.family is not None:
+                for argument in arguments:
+                    self._require(argument, param.family, f"{name}() {param.requirement}")
+        else:
+            params = list(function.params)
+            arguments = [
+                self._argument(name, param, argument, position)
+                for position, (param, argument) in enumerate(zip(params, node.args, strict=True))
+            ]
+
+        operands = [argument for argument in arguments if isinstance(argument, Typed)]
+        if function.result == "common":
+            family = self._one_family(operands, f"{name}() {params[0].requirement}")
+        else:
+            family = function.result
+        built = function.to_polars(*(self._built(param, argument) for param, argument in zip(params, arguments)))
+
+        if function.result_dtype == "common":
+            dtype = combined_dtype([operand.dtype for operand in operands])
+        elif function.result_dtype == "subject":
+            dtype = operands[0].dtype
+        else:
+            dtype = function.result_dtype
+        holds = f"gives {family.value}" if family not in WILDCARD_FAMILIES else "holds an unknown type"
+        return Typed(built, family, node, holds, dtype)
+
+    def _argument(self, name: str, param: Param, node: ast.expr, position: int) -> Any:
+        """One argument of a fixed-arity function: a checked operand, or a value read from the file."""
+        if isinstance(param, Value):
+            typed = self._typed(node)
+            if param.family is not None:
+                self._require(typed, param.family, f"{name}() {param.requirement}")
+            if param.whole is not None:
+                self._require_whole(typed, f"{name}() {param.whole}")
+            return typed
+        return param.read(name, self._spelling.literal(node), POSITIONS[position])
+
+    def _built(self, param: Param, argument: Any) -> Any:
+        """What a function's builder is given for one argument.
+
+        A text operand is cast so an engine string kernel always meets a plain string. Redundant
+        whenever a schema was supplied, because the leaf column reference is already cast there --
+        this is what is left for the caller with no schema in hand, where the leaf dtype is unknown
+        and a compactly stored column would otherwise reach a string kernel uncast. The cast is a
+        no-op on a column already stored as a plain string.
+        """
+        if not isinstance(param, Value):
+            return argument
+        if param.family is Family.TEXT:
+            return argument.expr.cast(pl.String)
+        return argument.expr
+
+    # -- type requirements -------------------------------------------------
+
+    def _require(self, typed: Typed, family: Family, requirement: str) -> None:
+        """Refuse an operand outside the family an operation works in, saying all three facts.
+
+        Which operand, what it holds, and what was needed instead. A wildcard family is skipped:
+        a null meets anything, and an unchecked column is not something to refuse on.
+        """
+        if typed.family in WILDCARD_FAMILIES or typed.family is family:
+            return
+        raise error(self._text, f"{self._describe(typed)}, but {requirement}")
+
+    def _require_whole(self, typed: Typed, requirement: str) -> None:
+        """Refuse a count of months that cannot be shown to be whole.
+
+        Half a month is not a distance a date can move. A count like 1.5 is not something anyone
+        writes on purpose; it arrives because a number was divided by something, and rounding it
+        here would bury that division inside a date that looks perfectly ordinary.
+
+        The count is checked however it was built. A decimal column is refused for the same reason
+        a decimal typed into the file is: the schema says which one a column is before a row is
+        read. So is a decimal that arrives through arithmetic, or through abs(), round() or
+        coalesce(), because each of those works out what it hands back from what it was given.
+        Division is refused whatever it was given, since 3 / 2 is 1.5.
+
+        A count whose type could not be worked out is refused too. This check would rather say no
+        to an expression it cannot read than let one through and have the engine fail on a row.
+
+        Two things are not refusals. A null is not half a month: there is no count, so the date
+        comes back null. And nothing is refused when no schema was given, because then there are no
+        types to read at all, which is how every other check here behaves.
+        """
+        if typed.family in WILDCARD_FAMILIES or self._schema is None:
+            return
+        if typed.dtype is None:
+            raise error(
+                self._text,
+                f"{self._describe(typed)}, and nothing here can work out whether that is whole, but {requirement}",
+            )
+        if typed.dtype.is_integer() or typed.dtype == pl.Null:
+            return
+        raise error(self._text, f"{self._describe(typed)}, but {requirement}")
+
+    def _require_arithmetic(self, typed: Typed, symbol: str) -> None:
+        """Arithmetic needs numbers, and text is the operand worth a sentence of its own.
+
+        The engine joins two pieces of text with '+', so two amount columns that arrived from an
+        import as text add up to '10020' instead of 120. Both operands are in the same family, so
+        no other rule here would ever catch it; the only way to close it is to refuse the operator
+        and move the capability to a name that says what it does.
+        """
+        if typed.family in WILDCARD_FAMILIES or typed.family is Family.NUMBER:
+            return
+        hint = (
+            ", and to join two pieces of text use concat() rather than an arithmetic operator"
+            if typed.family is Family.TEXT
+            else ""
+        )
+        raise error(
+            self._text,
+            f"{self._describe(typed)}, but arithmetic with '{symbol}' needs numbers on both sides{hint}",
+        )
+
+    def _one_family(self, parts: Sequence[Typed], requirement: str) -> Family:
+        """The single family a list of operands agrees on, refusing the first that disagrees.
+
+        The engine would rather coerce -- it will turn a number into text to sit beside one without
+        a word -- and a number that arrives in a column of text looks like data somebody meant.
+        """
+        settled: Typed | None = None
+        for part in parts:
+            if part.family in WILDCARD_FAMILIES:
+                continue
+            if settled is None:
+                settled = part
+            elif part.family is not settled.family:
+                raise error(
+                    self._text,
+                    f"{requirement}, but {self._describe(settled)} and {self._describe(part)}",
+                )
+        if settled is not None:
+            return settled.family
+        return Family.NULL if all(part.family is Family.NULL for part in parts) else Family.UNKNOWN
+
+    def _describe(self, typed: Typed) -> str:
+        """One operand named the way its author wrote it, with what it holds."""
+        return f"{self._spelling.render(typed.node)} {typed.holds}"
+
+    # -- helpers -----------------------------------------------------------
+
+    def _check_whole_number(self, value: int | float) -> None:
+        """Refuse a whole number no column could hold, measured on the value as written."""
+        if isinstance(value, int) and not _WHOLE_NUMBER_MIN <= value <= _WHOLE_NUMBER_MAX:
+            raise error(
+                self._text,
+                f"the whole number {value} is outside the range this language holds, which is {_WHOLE_NUMBER_MIN} to "
+                f"{_WHOLE_NUMBER_MAX}",
+            )

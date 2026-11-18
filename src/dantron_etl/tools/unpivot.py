@@ -109,7 +109,7 @@ from typing import Any, Final
 import polars as pl
 
 from ..column_types import DECLARED_DTYPE, DECLARED_TYPES
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,

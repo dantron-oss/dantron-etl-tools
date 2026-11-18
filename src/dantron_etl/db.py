@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlparse
 
-from .tool import ConfigError
+from .errors import ConfigError
 
 __all__ = [
     "RowLoader",
@@ -45,6 +45,7 @@ __all__ = [
     "probe_columns",
     "qualified_name",
     "quoted_identifier",
+    "require_matching_columns",
     "resolve_connection_uri",
     "validate_identifier",
 ]
@@ -262,6 +263,40 @@ def probe_columns(connection: Any, qualified: str) -> tuple[str, ...]:
     columns = tuple(entry[0] for entry in cursor.description)
     cursor.close()
     return columns
+
+
+def require_matching_columns(
+    frame_columns: Sequence[str],
+    table_columns: Sequence[str],
+    qualified: str,
+    *,
+    stamp: str | None = None,
+) -> None:
+    """Refuse rows whose columns, plus ``stamp`` if one is given, are not exactly the table's.
+
+    Compared in both directions and case-sensitively. A column the rows carry and the table lacks is
+    refused, and so is a column the table has and the rows lack. The stamp is a column the writer
+    adds itself, so it counts on the rows' side.
+    """
+    carried = set(frame_columns) | ({stamp} if stamp else set())
+    expected = set(table_columns)
+    if carried == expected:
+        return
+
+    extra = sorted(carried - expected)
+    missing = sorted(expected - carried)
+    disagreement = "; ".join(
+        part
+        for part in (
+            f"extra: {', '.join(extra)}" if extra else "",
+            f"missing: {', '.join(missing)}" if missing else "",
+        )
+        if part
+    )
+    raise ConfigError(
+        f"the rows do not match the columns of table {qualified!r} ({disagreement}); the rows "
+        f"carry: {', '.join(frame_columns)}; the table has: {', '.join(table_columns)}"
+    )
 
 
 def quoted_identifier(name: str) -> str:

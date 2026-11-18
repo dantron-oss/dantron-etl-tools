@@ -39,10 +39,10 @@ import dantron_etl
 from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_trace
 from dantron_etl.paths import project_root
 from dantron_etl.expr import ExpressionError
-from dantron_etl.pipeline import Group, PipelineSpec, StepSpec, read_pipeline_file
+from dantron_etl import Pipeline, PipelineTrace, Step, StepFailedError, ToolError, read_pipeline, run_pipeline
+from dantron_etl.spec import Group
 from dantron_etl.preview import PAGE_NAME, PreviewError, persist_panels, persist_trace, serve
-from dantron_etl.runner import PipelineTrace, StepFailedError, run_pipeline
-from dantron_etl.tool import STATUS_LEVELS, ToolError
+from dantron_etl.status import STATUS_LEVELS
 
 # Resolved from this script's own location rather than from the library's -- see `dantron_etl.paths`.
 PROJECT_ROOT = project_root(__file__)
@@ -125,7 +125,7 @@ def _e(v: object) -> str:
     return html.escape(str(v), quote=True)
 
 
-def _depths(spec: PipelineSpec) -> dict[str, int]:
+def _depths(spec: Pipeline) -> dict[str, int]:
     """How far along the flow each step sits -- its longest path from a source."""
     depth: dict[str, int] = {}
     for step_id in spec.order():
@@ -134,19 +134,19 @@ def _depths(spec: PipelineSpec) -> dict[str, int]:
     return depth
 
 
-def _lane_index(spec: PipelineSpec) -> dict[str, int]:
+def _lane_index(spec: Pipeline) -> dict[str, int]:
     ordered = sorted(spec.lanes, key=lambda lane: lane.order)
     return {lane.id: i for i, lane in enumerate(ordered)}
 
 
-def _lane_row(step: StepSpec, lanes: dict[str, int]) -> int:
+def _lane_row(step: Step, lanes: dict[str, int]) -> int:
     """Which band a step is drawn in. A step naming no lane, or a lane the page never heard of,
     goes in the first band rather than nowhere -- the layout is not the place a bad lane is reported,
     and `_refuse_undeclared_lanes` has already refused one that came out of a file."""
     return lanes.get(step.lane or "", 0)
 
 
-def _group_parts(spec: PipelineSpec, lanes: dict[str, int]) -> list[tuple[int, tuple[str, ...]]]:
+def _group_parts(spec: Pipeline, lanes: dict[str, int]) -> list[tuple[int, tuple[str, ...]]]:
     """Each container's members, split by the lane they are in, as (lane row, members).
 
     Split rather than taken whole because `_slots` reserves cells of one lane's grid, and a lane is
@@ -158,7 +158,7 @@ def _group_parts(spec: PipelineSpec, lanes: dict[str, int]) -> list[tuple[int, t
 
     No flow read from a file can get here with one, though: `_refuse_bad_groups` refuses a group
     whose steps sit in two lanes when the document is loaded, and says to move the step or split the
-    container. What reaches this split is a `PipelineSpec` built in Python, which is how the layout's
+    container. What reaches this split is a `Pipeline` built in Python, which is how the layout's
     own cases are written. It stays because it is what makes "a claim is a rectangle of one lane's
     grid" true of every input rather than of the ones the loader happens to allow -- take it out and
     a two-lane container silently has half its members placed against the wrong lane's occupancy,
@@ -206,7 +206,7 @@ def _claimed_slots(base: int, deep: int) -> int:
     return (1 << (base + deep)) - (1 << (base - 1 if base else 0))
 
 
-def _slots(spec: PipelineSpec, depth: dict[str, int], lanes: dict[str, int]) -> dict[str, int]:
+def _slots(spec: Pipeline, depth: dict[str, int], lanes: dict[str, int]) -> dict[str, int]:
     """Where each step sits *within* its lane-and-depth cell, so two steps never share a spot.
 
     Depth and lane alone do not place a step uniquely: two sources read at the same moment into the
@@ -294,7 +294,7 @@ def _width(members: tuple[str, ...], depth: dict[str, int]) -> int:
     return max(columns) - min(columns) + 1
 
 
-def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
+def _canvas(spec: Pipeline, trace: PipelineTrace) -> str:
     """The flow as it is wired: a node per step, an edge per port-to-port connection."""
     depth, lanes = _depths(spec), _lane_index(spec)
     slot = _slots(spec, depth, lanes)
@@ -434,7 +434,7 @@ def _canvas(spec: PipelineSpec, trace: PipelineTrace) -> str:
 
 
 def _group_box(
-    spec: PipelineSpec,
+    spec: Pipeline,
     trace: PipelineTrace,
     group: Group,
     box: Callable[[str], tuple[float, float]],
@@ -687,7 +687,7 @@ def _event_if_ran(trace: PipelineTrace, step_id: str) -> Any:
     return trace.event(step_id) if any(event.step_id == step_id for event in trace.events) else None
 
 
-def _index(spec: PipelineSpec, trace: PipelineTrace) -> str:
+def _index(spec: Pipeline, trace: PipelineTrace) -> str:
     """Every step as a line, grouped by lane, in the order the run took them.
 
     Fifty-three nodes is more than a canvas can be scanned for, and a reader looking for one by name
@@ -716,7 +716,7 @@ def _index(spec: PipelineSpec, trace: PipelineTrace) -> str:
     )
 
 
-def _step_detail(spec: PipelineSpec, trace: PipelineTrace, step_id: str) -> str:
+def _step_detail(spec: Pipeline, trace: PipelineTrace, step_id: str) -> str:
     """What this step is: why it exists, how it is configured, what feeds it, what it cost."""
     step = spec.step(step_id)
     event = _event_if_ran(trace, step_id)
@@ -743,7 +743,7 @@ def _step_detail(spec: PipelineSpec, trace: PipelineTrace, step_id: str) -> str:
 
 
 def _step_data(
-    spec: PipelineSpec,
+    spec: Pipeline,
     trace: PipelineTrace,
     step_id: str,
     views: dict[str, Any],
@@ -846,7 +846,7 @@ def _views(trace: PipelineTrace, focus: FocusSpec) -> tuple[dict[str, Any], int,
     return views, len(shown), len(options)
 
 
-def build_panels(spec: PipelineSpec, trace: PipelineTrace, focus: FocusSpec) -> dict[str, str]:
+def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> dict[str, str]:
     """Every step's data panel, keyed by the step, ready to be written down and fetched one at a time.
 
     The markup is exactly what the page used to carry: same tables, same headers, same per-column
@@ -862,7 +862,7 @@ def build_panels(spec: PipelineSpec, trace: PipelineTrace, focus: FocusSpec) -> 
     return {step_id: _step_data(spec, trace, step_id, views) for step_id in spec.order()}
 
 
-def build(spec: PipelineSpec, trace: PipelineTrace, focus: FocusSpec) -> str:
+def build(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> str:
     """The run as a page: the flow, every step's configuration, and the data of the step being read.
 
     The panels are no longer in here -- they are written beside the run's ports and fetched as they
@@ -2098,7 +2098,7 @@ def write_run(project: Project, runs_root: Path = RUNS_ROOT) -> tuple[Path, Pipe
     A step that fails stops the run. What ran before it is still saved, with the page, so the rows
     that went into the failing step can be looked at. The failure is then raised as it came.
     """
-    spec = read_pipeline_file(project.pipeline, rules=project.rules)
+    spec = read_pipeline(project.pipeline, rules=project.rules)
     failure: StepFailedError | None = None
     try:
         trace = run_pipeline(spec)

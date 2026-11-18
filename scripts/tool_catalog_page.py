@@ -17,7 +17,8 @@ import orjson
 import polars as pl
 
 from dantron_etl.paths import project_root
-from dantron_etl.tool import REGISTRY, ConfigField, catalog_input_ports, ports_from_config
+from dantron_etl.authoring import REGISTRY, ConfigField
+from dantron_etl.contract import catalog_input_ports, ports_from_config
 
 # Resolved from this script's own location rather than from the library's -- see `dantron_etl.paths`.
 PROJECT_ROOT = project_root(__file__)

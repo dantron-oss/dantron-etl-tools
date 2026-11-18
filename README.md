@@ -13,10 +13,9 @@ steps:
 ```
 
 ```python
-from dantron_etl.pipeline import read_pipeline_file
-from dantron_etl.runner import run_pipeline
+from dantron_etl import PortRef, read_pipeline, run_pipeline
 
-spec = read_pipeline_file("pipelines/mine.yaml")
+spec = read_pipeline("pipelines/mine.yaml")
 trace = run_pipeline(spec)
 trace.frame(PortRef("receivable_lines", "true"))
 ```
@@ -52,9 +51,7 @@ tool's page cannot drift from the tool.
 output you can route somewhere, not a number reconstructed later.
 
 **One small expression language.** `[column]` references, a fixed set of operators and a whitelist of
-functions, compiled through `ast` to a polars expression — never `eval`. The same text compiles to
-parameterised SQL for a database read, and the two targets are pinned to agree on null handling,
-case and date literals.
+functions, compiled through `ast` to a polars expression — never `eval`.
 
 **A tool mirrors the SQL operation it is named after.** That is why `join` says two nulls are not
 equal and `group_by` says they are: each follows `=` and `GROUP BY` respectively. It is one rule with
@@ -139,7 +136,7 @@ the count correct.
 
 ```bash
 uv sync --extra dev --extra postgres
-.venv/bin/pytest tests/ -q           # about 3,800 tests
+.venv/bin/pytest tests/ -q           # about 4,000 tests, laid out by area: core, expr, tools, viewer, package, flows
 .venv/bin/ruff check src tests scripts
 ```
 

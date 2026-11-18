@@ -28,7 +28,8 @@ the manual.
 
 ```bash
 uv sync --extra dev                         # set up from uv.lock. Plain `uv sync` leaves out pytest, ruff, orjson
-.venv/bin/pytest tests/ -q                  # ~3,800 tests, 2-4 min (pyproject puts src/ and the root on the path)
+.venv/bin/pytest tests/ -q                  # ~4,000 tests, about a minute (pyproject puts src/ and the root on the path)
+.venv/bin/pytest tests/tools/test_join.py -q   # one tool's tests; one area is tests/core, tests/expr, tests/tools ...
 .venv/bin/ruff check src tests scripts      # lint. This is the gate
 .venv/bin/python scripts/tool_catalog_page.py          # writes output_files/tool_catalog.{html,json}
 .venv/bin/python scripts/pipeline_walkthrough_page.py <name>  # runs pipelines/<name>.yaml, saves the run to
@@ -36,6 +37,13 @@ uv sync --extra dev                         # set up from uv.lock. Plain `uv syn
 .venv/bin/python scripts/etl_architecture_page.py      # the architecture page, read from the library itself
 .venv/bin/python scripts/serve_runs.py                 # serves output_files/runs/ on :8899
 ```
+
+The tests are laid out by area: `core/` (the contract, config, registry, loader, runner, trace,
+focus, preview, paths, database plumbing), `expr/`, `tools/` (one file per tool, named after it),
+`viewer/` (the page builders), `package/` (what ships: the client-neutral boundary, the sdist, the
+vocabulary snapshot, the documentation examples) and `flows/` (end-to-end flows and property checks).
+Shared fixtures are in `tests/conftest.py`, data files in `tests/fixtures/`. Test file names must
+be unique across folders: there is no `__init__.py`, so pytest imports each file by its name alone.
 
 The `Makefile` holds shortcuts for all of these (`make` lists them): `make test`, `make test-all`
 (starts the test Postgres too), `make run p=<name>`, `make catalog`. Each is one command and nothing
@@ -78,22 +86,36 @@ than the one you are editing. If anything looks impossible, run
 
 | module | what it owns |
 |---|---|
-| `tool.py` | The contract every tool meets. `Ports` (the named-frame envelope), `ConfigField`, `WorkedExample`, `ToolHelp`, the `Tool` protocol, the optional `DerivesInputPorts` member, `REGISTRY`, `run_tool` (the boundary every call goes through), `check_tool` and `check_registry` (conformance), per-row status. |
-| `expr.py` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression **or** to parameterised SQL. Never `eval`. |
-| `pipeline.py` | The YAML loader. `StepSpec`, `PortRef`, `PipelineSpec`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
-| `runner.py` | Walks a loaded flow. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
+| `__init__.py` | The public API for running a flow: `read_pipeline`, `load_pipeline`, `run_pipeline`, `Pipeline`, `Step`, `PortRef`, `PipelineTrace`, `StepEvent`, `CachedFrame`, the focus names, `REGISTRY`, `get_tool`, `COLUMN_TYPES`, `project_root`, and the errors. |
+| `authoring.py` | Everything a tool author needs, gathered from the modules below. Every file in `tools/` imports from here and nowhere else in the core. |
+| `errors.py` | The error family. Everything descends from `ToolError`. |
+| `config.py` | `ConfigField`, the template a tool's settings are checked against, default filling, and finding the expressions a configuration holds. |
+| `ports.py` | `Ports`, the named-frame envelope a step reads and returns. |
+| `status.py` | Per-row status: its shape and the helpers that build one. |
+| `contract.py` | The `Tool` protocol, the optional `DerivesInputPorts` member, `ToolHelp`, `WorkedExample`, the categories, and asking which ports a step reads. |
+| `boundary.py` | `run_tool`, the boundary every call to a tool goes through. |
+| `frame_checks.py` | The helpers a tool calls to check its configuration against the frames it was given (`require_columns`, `compile_for`, `check_output_column` ...). |
+| `registry.py` | `ToolRegistry`, the shipped `REGISTRY`, and `get_tool`. |
+| `example_world.py` | The scratch directory, temporary environment and in-memory database a worked example runs in. |
+| `conformance.py` | `check_tool` and `check_registry`: every catalog rule, and every worked example run and compared. |
+| `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
+| `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Group`, the walk order, the fingerprint. |
+| `rules.py` | Resolving `${rules.*}` references in a step's configuration. |
+| `loader.py` | `read_pipeline` and `load_pipeline`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
+| `walk.py` | Works out a run before it starts: which steps `until=` and `cached=` leave to walk, the frames handed in, and when each frame can be freed. |
+| `trace.py` | What a run leaves behind: `StepEvent`, `PipelineTrace`, `CachedFrame`, and the failures that carry a partial trace. |
+| `runner.py` | `run_pipeline`. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
+| `tool.py`, `pipeline.py` | Old import paths, re-exporting the names above. Removed once consumers move to the new ones. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
 | `preview.py` | Serves a run's ports a window at a time, so a page can search all the rows, not only the drawn ones. |
-| `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. |
+| `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. The table helpers the table tools share. |
 | `paths.py` | `project_root(__file__)`. Where the caller's project is, or a refusal. |
 | `column_types.py` | The type names a flow may write (`String`, `Float64`, `Date` ...). |
-| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. |
+| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. A module whose name starts with `_` is a helper, not a tool, and is skipped: `_spreadsheet.py` holds what a cell and a tab can hold, and `_workbook_*.py` hold the parts of `write_workbook`. |
 | `scripts/` | The page builders and the run server. **Not shipped in the wheel.** They render; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
-Some module docstrings are older than the code. `pipeline.py` still says "nineteen tools"; there
-are 31. The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are
-not.
+The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are not.
 
 ## The rules
 
@@ -102,7 +124,7 @@ These are not style preferences. Each one was learned by getting it wrong.
 ### The library stays client-neutral
 
 - No client or product name, and no client vocabulary, in anything under `src/dantron_etl/` —
-  code, docstrings, comments, examples, the manual. `tests/test_dantron_etl_boundary.py` holds the
+  code, docstrings, comments, examples, the manual. `tests/package/test_boundary.py` holds the
   banned words (`FORBIDDEN_TERMS`) and fails the build on any of them. In `.md` files the package's
   own name is allowed; in `.py` files it is not, which is why imports are relative.
 - No import of a client package, an orchestrator, or pandas (`FORBIDDEN_IMPORTS`). The boundary
@@ -122,7 +144,7 @@ The rule that matters most. Manual §2 and §8 have the full argument. In short:
   Try two tools. Then three. Ask whether the *frame* is the problem: a "fill the blanks" request was
   really "the rows do not exist yet".
 - **A tool reshapes the frame. An expression function computes one column.** If it is one column
-  out, it is a function in `expr.py`, not a tool.
+  out, it is a function in `expr/functions.py`, not a tool.
 - **Extend the language by whitelisting a function, never by adding syntax.** No user-defined
   functions, no attribute access, no subscripts, no lambdas. That refusal is a security boundary:
   a pipeline file is edited by people who are not developers.
@@ -228,16 +250,21 @@ Manual §4b has the full rules and a worked before-and-after.
 
 ### Adding an expression function
 
-Follow the commit that added `uuid5` (`f22c8a3`, "Work out one name for a row from the values that
-identify it") as the worked template. A function touches more than the
-whitelist: `ALLOWED_FUNCTIONS`, its arity, its result type, the polars compilation, the SQL
-compilation or an explicit refusal there, tests for both targets, and its entry in `MANUAL.md` §4.2
-(a test checks the manual lists every whitelisted function).
+Each function is defined once, in the function table (`DEFINITIONS` in `expr/functions.py`). To add one:
+
+1. Write the function that builds its column from the arguments.
+2. Add one entry to the table: the name, the arguments in order and what each must hold, the
+   family and type of the result, the builder, a one-line summary and an example.
+   `ALLOWED_FUNCTIONS`, the arity check and the result types are all read from the entry, and a
+   test refuses an entry with a part missing.
+3. Write its tests. The tests from the commit that added `uuid5` (`f22c8a3`) are a good template.
+4. Add it to `MANUAL.md` §4.2. A test checks the manual lists every function.
 
 ### Adding a tool
 
 Only after the questions in manual §2 have been answered in writing. Then the contract in manual
-§8.2. `tools/filter.py` is the smallest complete example to copy the shape from. Checklist:
+§8.2. `tools/filter.py` is the smallest complete example to copy the shape from. A tool imports
+everything it needs from `authoring.py`. Checklist:
 
 1. One file in `tools/`, registering itself at the bottom.
 2. Every config field typed and described, required or defaulted.

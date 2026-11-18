@@ -47,8 +47,8 @@ have been emptied is not a refusal, it is a failed publish with a helpful messag
 """
 
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -61,10 +61,11 @@ from ..db import (
     open_connection,
     probe_columns,
     qualified_name,
+    require_matching_columns,
     resolve_connection_uri,
     validate_identifier,
 )
-from ..tool import (
+from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,
@@ -72,7 +73,7 @@ from ..tool import (
     Ports,
     ToolHelp,
     WorkedExample,
-    temporary_environment,
+    example_database,
 )
 
 #: Spelled so a definition file hands each of them over as the word itself.
@@ -434,46 +435,13 @@ def _require_a_table_these_rows_can_be_published_to(
     catalog is a name the statement can safely carry.
     """
     table_columns = probe_columns(connection, entry.qualified)
-    _require_matching_columns(frame, table_columns, stamp, entry.qualified)
+    require_matching_columns(frame.columns, table_columns, entry.qualified, stamp=stamp)
     missing = [column for column in entry.key if column not in table_columns]
     if missing:
         raise ConfigError(
             f"the merge key for table {entry.qualified!r} names column(s) nobody carries: "
             f"{', '.join(missing)}; the table has: {', '.join(table_columns)}"
         )
-
-
-def _require_matching_columns(
-    frame: pl.DataFrame,
-    table_columns: Sequence[str],
-    stamp: str | None,
-    qualified: str,
-) -> None:
-    """Refuse rows whose columns, plus the stamp, are not exactly the table's, case-sensitively.
-
-    The stamp is added to the frame's side rather than removed from the table's, which is the same
-    comparison read the way it is meant: the frames never carry it, every one of these tables does,
-    and a table that does not carry it is refused here rather than at load time.
-    """
-    carried = set(frame.columns) | ({stamp} if stamp else set())
-    expected = set(table_columns)
-    if carried == expected:
-        return
-
-    extra = sorted(carried - expected)
-    missing = sorted(expected - carried)
-    disagreement = "; ".join(
-        part
-        for part in (
-            f"extra: {', '.join(extra)}" if extra else "",
-            f"missing: {', '.join(missing)}" if missing else "",
-        )
-        if part
-    )
-    raise ConfigError(
-        f"the rows do not match the columns of table {qualified!r} ({disagreement}); the rows "
-        f"carry: {', '.join(frame.columns)}; the table has: {', '.join(table_columns)}"
-    )
 
 
 def _require_landable_columns(
@@ -586,28 +554,19 @@ def _receipt(entries: Sequence[_Entry], inputs: Ports, stamp: _Stamp | None) -> 
     return pl.DataFrame(counts)
 
 
-@contextmanager
-def _example_database() -> Iterator[None]:
-    """An in-memory database the examples publish into, entered around each example and torn down after.
+def _seed_example(connection: sqlite3.Connection) -> None:
+    """The tables the examples publish into."""
+    connection.execute("create table totals (period text primary key, amount real)")
+    connection.execute("create table movements (period text, change real)")
+    connection.execute("create table parties (party text primary key, label text, amount real)")
+    connection.executemany("insert into totals values (?, ?)", [("2026-01", 100.0)])
+    connection.executemany("insert into movements values (?, ?)", [("2026-01", 1.0)])
+    connection.executemany("insert into parties values (?, ?, ?)", [("a", "Alpha", 10.0)])
 
-    Built here rather than inside ``help()``, for the same reason as every sink's: the catalog page
-    generator calls ``help()`` on every tool, and a description that opened a connection or exported
-    a variable as a side effect of describing itself is exactly the disturbance ``check_tool``
-    refuses.
-    """
-    anchor = sqlite3.connect(_EXAMPLE_URI, uri=True)
-    try:
-        anchor.execute("create table totals (period text primary key, amount real)")
-        anchor.execute("create table movements (period text, change real)")
-        anchor.execute("create table parties (party text primary key, label text, amount real)")
-        anchor.executemany("insert into totals values (?, ?)", [("2026-01", 100.0)])
-        anchor.executemany("insert into movements values (?, ?)", [("2026-01", 1.0)])
-        anchor.executemany("insert into parties values (?, ?, ?)", [("a", "Alpha", 10.0)])
-        anchor.commit()
-        with temporary_environment(**{_EXAMPLE_CONNECTION: _EXAMPLE_URI}):
-            yield
-    finally:
-        anchor.close()
+
+def _example_database() -> AbstractContextManager[None]:
+    """The in-memory database the example runs against, named by its connection variable for the run."""
+    return example_database(_EXAMPLE_URI, _EXAMPLE_CONNECTION, _seed_example)
 
 
 def _together_example() -> WorkedExample:

@@ -32,7 +32,7 @@ Imports the standard library's ``json`` rather than ``orjson``, against this rep
 preference, and the reason is what this package is for: it is imported BY other projects, so every
 module-level import here is one those projects are made to carry. The rule is polars plus the
 standard library at import time, with everything else loaded inside the function that needs it --
-which is why :func:`~.pipeline.read_pipeline_file` imports ``yaml`` inside itself, and why a
+which is why :func:`~.loader.read_pipeline` imports ``yaml`` inside itself, and why a
 database driver is reached for by URI scheme rather than declared. Measured cost of keeping it:
 parsing a 625 KB run manifest takes 4.6 ms rather than 3.0, on a path that is read lazily and so is
 touched once a page rather than once a panel.
@@ -52,10 +52,10 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import polars as pl
 
-from .tool import STATUS_LEVELS
+from .status import STATUS_LEVELS
 
 if TYPE_CHECKING:  # pragma: no cover -- the trace is a type here and never a runtime dependency
-    from .runner import PipelineTrace
+    from .trace import PipelineTrace
 
 #: The most rows one request may ask for. A window is for looking at; a caller wanting everything
 #: wants the Parquet file, which is sitting right there.
@@ -146,7 +146,7 @@ def persist_ports(
     """Write every retained port to Parquet under ``directory`` and return the manifest.
 
     Keyed by ``step.port``, the same spelling the page and the query string use, so no reader has to
-    know how a :class:`~.pipeline.PortRef` is put together to ask for one.
+    know how a :class:`~.spec.PortRef` is put together to ask for one.
 
     A port's per-row status is written to a file of its own beside the port rather than as extra
     columns inside it, for the same reason it is not a column in the frame: the port file is what a
