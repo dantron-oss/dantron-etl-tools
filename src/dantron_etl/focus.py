@@ -43,7 +43,7 @@ from typing import Any, Literal
 import polars as pl
 
 from .spec import PortRef
-from .runner import PipelineTrace
+from .trace import PipelineTrace
 from .errors import ToolError
 
 __all__ = [

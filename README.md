@@ -13,10 +13,9 @@ steps:
 ```
 
 ```python
-from dantron_etl.pipeline import read_pipeline_file
-from dantron_etl.runner import run_pipeline
+from dantron_etl import PortRef, read_pipeline, run_pipeline
 
-spec = read_pipeline_file("pipelines/mine.yaml")
+spec = read_pipeline("pipelines/mine.yaml")
 trace = run_pipeline(spec)
 trace.frame(PortRef("receivable_lines", "true"))
 ```

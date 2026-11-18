@@ -64,8 +64,7 @@ where it is written; it is produced by a script in the repository, not shipped i
 **The registry, at runtime:**
 
 ```python
-import dantron_etl
-from dantron_etl.tool import REGISTRY
+from dantron_etl import REGISTRY
 
 for tool in REGISTRY.tools():
     print(tool.name, tool.category, tool.input_ports, "->", tool.output_ports)
@@ -604,7 +603,7 @@ is refused before anything runs.
 **`cached`** hands a port back to a later run so the steps behind it do not run at all:
 
 ```python
-from dantron_etl.runner import CachedFrame
+from dantron_etl import CachedFrame
 
 first = run_pipeline(spec, until="clients_joined")
 port = PortRef("clients_joined", "rows")

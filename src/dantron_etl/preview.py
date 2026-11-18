@@ -55,7 +55,7 @@ import polars as pl
 from .status import STATUS_LEVELS
 
 if TYPE_CHECKING:  # pragma: no cover -- the trace is a type here and never a runtime dependency
-    from .runner import PipelineTrace
+    from .trace import PipelineTrace
 
 #: The most rows one request may ask for. A window is for looking at; a caller wanting everything
 #: wants the Parquet file, which is sitting right there.
