@@ -698,10 +698,6 @@ class TestCatalogConformance:
         """Described, documented, validated, and its worked examples reproduce exactly."""
         check_tool(tool)
 
-    def test_the_default_registry_conforms(self) -> None:
-        """The shipped catalog is conformant, including while it is still empty."""
-        check_registry(REGISTRY)
-
     @pytest.mark.parametrize(
         ("tool", "expected_substrings", "forbidden_substrings"),
         _broken_tools(),
@@ -4075,7 +4071,6 @@ class TestAnExampleDeclaresTheWorldItNeeds:
                     f"{tool.name} is neither a source nor a sink, so its examples must need no "
                     f"prepared world, but one declares a setup"
                 )
-        check_registry(REGISTRY)
 
     def test_a_declared_world_is_not_a_configuration_field(self, process_left_as_found: None) -> None:
         """It travels on the example, so nothing that reads a configuration may ever see it.
@@ -4547,7 +4542,6 @@ class TestAnExampleIsGivenADirectoryToWorkIn:
         check_tool(braced)
 
         assert seen[-1] == {"label": "{total}"}, f"an unknown brace is ordinary text: {seen[-1]}"
-        check_registry(REGISTRY)
 
     def test_a_world_that_destroys_the_directory_is_refused_and_one_that_fills_it_is_not(
         self,

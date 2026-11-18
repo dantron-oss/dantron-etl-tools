@@ -48,7 +48,6 @@ from dantron_etl.tool import (
     REGISTRY,
     ConfigError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -422,9 +421,7 @@ class TestDateDiffInTheCatalog:
         assert any(value is not None and value < 0 for value in counts), "a backwards range must be documented"
         assert any(value is None for value in counts), "and so must a row with a missing date"
 
-    def test_date_diff_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_date_diff_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "date_diff" in REGISTRY
         assert isinstance(REGISTRY.get("date_diff"), DateDiff)
-
-        check_registry(REGISTRY)

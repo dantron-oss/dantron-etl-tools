@@ -63,7 +63,6 @@ from dantron_etl.tool import (
     PortError,
     Ports,
     Tool,
-    check_registry,
     check_tool,
     run_tool,
 )
@@ -478,4 +477,3 @@ class TestReadTableInTheCatalog:
 
         assert "read_table" in REGISTRY
         assert isinstance(REGISTRY.get("read_table"), ReadTable)
-        check_registry(REGISTRY)

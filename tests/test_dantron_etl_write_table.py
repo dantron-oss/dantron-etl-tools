@@ -66,7 +66,6 @@ from dantron_etl.tool import (
     Ports,
     Tool,
     ToolError,
-    check_registry,
     check_tool,
     run_tool,
 )
@@ -556,4 +555,3 @@ class TestWriteTableInTheCatalog:
 
         assert "write_table" in REGISTRY
         assert isinstance(REGISTRY.get("write_table"), WriteTable)
-        check_registry(REGISTRY)

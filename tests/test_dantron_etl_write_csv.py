@@ -78,7 +78,6 @@ from dantron_etl.tool import (
     ConfigError,
     Ports,
     Tool,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -619,4 +618,3 @@ class TestWriteCsvInTheCatalog:
 
         assert "write_csv" in REGISTRY
         assert isinstance(REGISTRY.get("write_csv"), WriteCsv)
-        check_registry(REGISTRY)

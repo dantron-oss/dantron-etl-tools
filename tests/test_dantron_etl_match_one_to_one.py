@@ -52,7 +52,6 @@ from dantron_etl.tool import (
     ConfigError,
     Ports,
     ToolError,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -551,7 +550,6 @@ class TestContract:
             "the refuse policy is the one most likely to surprise, so an example must show it"
         )
         assert isinstance(REGISTRY.get("match_one_to_one"), MatchOneToOne)
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------

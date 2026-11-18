@@ -84,7 +84,6 @@ from dantron_etl.tool import (
     ConfigError,
     Ports,
     apply_defaults,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -729,12 +728,10 @@ class TestJoinInTheCatalog:
             example.outputs["left_only"].height > 0 and example.outputs["right_only"].height > 0 for example in examples
         ), "the orphan ports are the reason there is no join_type, so an example must fill both"
 
-    def test_join_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_join_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "join" in REGISTRY
         assert isinstance(REGISTRY.get("join"), Join)
-
-        check_registry(REGISTRY)
 
 
 class TestHowDecidesWhichRowsReachMatched:

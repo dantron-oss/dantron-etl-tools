@@ -69,7 +69,6 @@ from dantron_etl.tool import (
     Ports,
     ToolError,
     apply_defaults,
-    check_registry,
     check_tool,
     expression_fields,
     expression_values,
@@ -1140,12 +1139,10 @@ class TestCaseWhenTemplateAndCatalog:
             f"the half that costs them data: {stated}"
         )
 
-    def test_case_when_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_case_when_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "case_when" in REGISTRY
         assert isinstance(REGISTRY.get("case_when"), CaseWhen)
-
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------

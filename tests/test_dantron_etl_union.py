@@ -29,7 +29,6 @@ from dantron_etl.tool import (
     REGISTRY,
     ConfigError,
     Ports,
-    check_registry,
     check_tool,
     run_tool,
 )
@@ -173,7 +172,6 @@ class TestUnionInTheCatalog:
 
     def test_union_is_in_the_shipped_catalog(self) -> None:
         assert REGISTRY.get("union") is not None
-        check_registry(REGISTRY)
 
 
 class TestAnAllNullColumnTakesTheOtherSidesType:

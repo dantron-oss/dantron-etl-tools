@@ -99,7 +99,6 @@ from dantron_etl.tool import (
     ConfigError,
     DataError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -1265,12 +1264,10 @@ class TestUnpivotInTheCatalog:
             for example in examples
         ), "an example must melt more than one column and pin the order they come back in"
 
-    def test_unpivot_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and adding it leaves the whole catalog conformant."""
+    def test_unpivot_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "unpivot" in REGISTRY
         assert isinstance(REGISTRY.get("unpivot"), Unpivot)
-
-        check_registry(REGISTRY)
 
 
 # ---------------------------------------------------------------------------

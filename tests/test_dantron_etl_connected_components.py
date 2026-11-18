@@ -44,7 +44,6 @@ from dantron_etl.tool import (
     REGISTRY,
     ConfigError,
     Ports,
-    check_registry,
     check_tool,
     expression_fields,
     run_tool,
@@ -404,9 +403,7 @@ class TestConnectedComponentsInTheCatalog:
         assert "null" in notes, "the null ruling must be stated in the notes"
         assert "smallest" in notes, "how a component is named must be stated in the notes"
 
-    def test_the_tool_is_in_the_shipped_catalog_and_the_catalog_still_conforms(self) -> None:
-        """Registered under its machine name, and the whole catalog stays conformant."""
+    def test_the_tool_is_in_the_shipped_catalog(self) -> None:
+        """Registered under its machine name. The whole catalog is checked once, in test_dantron_etl_registry.py."""
         assert "connected_components" in REGISTRY
         assert isinstance(REGISTRY.get("connected_components"), ConnectedComponents)
-
-        check_registry(REGISTRY)

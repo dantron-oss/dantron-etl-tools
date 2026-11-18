@@ -29,7 +29,6 @@ from dantron_etl.tool import (
     ConfigError,
     DataError,
     Ports,
-    check_registry,
     check_tool,
     run_tool,
 )
@@ -178,7 +177,6 @@ class TestCastColumnsInTheCatalog:
 
     def test_cast_columns_is_in_the_shipped_catalog(self) -> None:
         assert REGISTRY.get("cast_columns") is not None
-        check_registry(REGISTRY)
 
     def test_it_names_the_same_types_the_csv_reader_does(self) -> None:
         """One vocabulary, so a reader who knows one tool's spellings knows the other's."""
