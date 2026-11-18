@@ -37,17 +37,17 @@ build polars expressions directly.
 
 The last version that has it is commit `0a79238` on `develop`. Look at:
 
-- `src/dantron_etl/expr.py`: `compile_sql`, `sql_subset`, `SQL_DIALECTS`, `SQL_PARAMSTYLES`,
+- `expr.py` in the package: `compile_sql`, `sql_subset`, `SQL_DIALECTS`, `SQL_PARAMSTYLES`,
   `SQL_IDENTIFIER`, the class `_SqlTarget`, the per-dialect spellings `_SQLITE_SPELLINGS` and
   `_POSTGRES_SPELLINGS`, and the refusal reasons in `_OUTSIDE_THE_SUBSET`.
 - `tests/test_dantron_etl_expr.py`, the section headed "The second compile target". Its strongest
   test filters the same rows in polars and in a real database and requires the same keys back.
 
-Since then, each function is defined once, in the function table in `src/dantron_etl/expr/functions.py`.
-That table is where a SQL version would go: one more field on each function entry, holding either
-its spelling per dialect or the reason it cannot be pushed down. The compiler's tree walk would need
-a second way to build each operator (comparison, `and`/`or`, `in`, `is null`), which is what
-`_SqlTarget` did.
+Since then, each function is defined once, in the function table in the package's
+`expr/functions.py`. That table is where a SQL version would go: one more field on each function
+entry, holding either its spelling per dialect or the reason it cannot be pushed down. The
+compiler's tree walk would need a second way to build each operator (comparison, `and`/`or`, `in`,
+`is null`), which is what `_SqlTarget` did.
 
 Bring it back only when a tool needs it, such as a `read_table` with a condition field. Bring the
 agreement tests back with it: a pushdown that answers differently from the in-memory filter changes
