@@ -44,7 +44,7 @@ import polars as pl
 
 from .pipeline import PortRef
 from .runner import PipelineTrace
-from .tool import ToolError
+from .errors import ToolError
 
 __all__ = [
     "EntityOption",

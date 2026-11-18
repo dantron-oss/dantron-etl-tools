@@ -57,7 +57,11 @@ from typing import Literal
 import polars as pl
 
 from .pipeline import PipelineSpec, PortRef
-from .tool import REGISTRY, Ports, Tool, ToolError, ToolRegistry, input_ports_for, run_tool
+from .boundary import run_tool
+from .contract import Tool, input_ports_for
+from .errors import RunError, ToolError
+from .ports import Ports
+from .registry import REGISTRY, ToolRegistry
 
 __all__ = [
     "CachedFrame",
@@ -93,13 +97,6 @@ _ORIGIN_VERBS: Mapping[_Origin, str] = {
 #: The retention modes :func:`run_pipeline` accepts. Not a bare string, so the refusal below can
 #: name the two spellings that exist rather than merely say "invalid".
 _RETAIN_MODES: tuple[str, ...] = ("all", "live")
-
-
-class RunError(ToolError):
-    """A run could not proceed: a bad argument, an unresolved reference, evidence asked for that a
-    retention mode already freed. Stays inside the one family every tool boundary already raises so
-    a caller has one type to catch, whichever layer refused.
-    """
 
 
 @dataclass(frozen=True, slots=True)

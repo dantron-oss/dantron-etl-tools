@@ -29,18 +29,10 @@ from types import MappingProxyType
 from typing import Any
 
 from .expr import escape_text, quote_text, references
-from .tool import (
-    REGISTRY,
-    ConfigError,
-    ConfigField,
-    RegistryError,
-    ToolError,
-    ToolRegistry,
-    apply_defaults,
-    expression_values,
-    input_ports_for,
-    validate_against_template,
-)
+from .config import ConfigField, apply_defaults, expression_values, validate_against_template
+from .contract import input_ports_for
+from .errors import ConfigError, PipelineError, RegistryError
+from .registry import REGISTRY, ToolRegistry
 
 __all__ = [
     "Group",
@@ -61,16 +53,6 @@ _PLACEHOLDER: re.Pattern[str] = re.compile(r"\$\{([^}]*)\}")
 # end when it carries one of these -- an 'output' writes somewhere else, an 'assert' raises or not.
 # This is the tool's own published category, not a per-step flag an author could set and forget.
 _TERMINAL_CATEGORIES: frozenset[str] = frozenset({"output", "assert"})
-
-
-class PipelineError(ToolError):
-    """A wiring fault: a duplicate id, an unresolved parameter, a bad edge, a lane, or a cycle.
-
-    Distinct from :class:`~.tool.ConfigError`, which a delegated ``validate_config`` or
-    ``validate_against_template`` call raises for a configuration a tool refuses on its own terms.
-    Both descend from :class:`~.tool.ToolError`, so a driver has one family to catch, but the two
-    name different next moves: this one sends a reader to the arrows, the other to the config block.
-    """
 
 
 @dataclass(frozen=True, slots=True)

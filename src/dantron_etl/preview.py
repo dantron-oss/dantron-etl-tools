@@ -52,7 +52,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import polars as pl
 
-from .tool import STATUS_LEVELS
+from .status import STATUS_LEVELS
 
 if TYPE_CHECKING:  # pragma: no cover -- the trace is a type here and never a runtime dependency
     from .runner import PipelineTrace
