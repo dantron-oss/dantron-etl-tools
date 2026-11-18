@@ -25,6 +25,22 @@ output_files/*
 data/
 *.xlsx
 !tests/fixtures/*.xlsx
+*.parquet
+
+# Local secrets: connection strings, tokens, keys. A template of names with no values,
+# .env.example, is meant to be shared and is kept.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+.netrc
+.pypirc
 
 # Editors
 .vscode/
