@@ -36,6 +36,7 @@ from ..authoring import (
     WorkedExample,
     check_output_column,
     compile_for,
+    require_not_blank,
 )
 
 
@@ -111,8 +112,7 @@ class Formula:
         seen: set[str] = set()
         for index, entry in enumerate(columns):
             name = entry["name"]
-            if not name.strip():
-                raise ConfigError(f"config field 'columns[{index}].name' must not be blank")
+            require_not_blank(name, f"columns[{index}].name")
             if name in seen:
                 raise ConfigError(f"config field 'columns' writes column {name!r} more than once")
             seen.add(name)

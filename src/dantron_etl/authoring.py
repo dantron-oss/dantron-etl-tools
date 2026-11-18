@@ -8,7 +8,7 @@ example of a tool.
 """
 
 from .boundary import run_tool
-from .config import FIELD_TYPES, ConfigField
+from .config import FIELD_TYPES, ConfigField, require_not_blank
 from .conformance import YAML_UNSAFE_VALUES, check_registry, check_tool
 from .contract import CATEGORIES, TERMINAL_CATEGORIES, DerivesInputPorts, Tool, ToolHelp, WorkedExample
 from .errors import (
@@ -21,7 +21,7 @@ from .errors import (
     RegistryError,
     ToolError,
 )
-from .example_world import SCRATCH_TOKEN, scratch_path, temporary_environment
+from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
 from .frame_checks import (
     REPLACE_FIELD,
     check_output_column,
@@ -60,6 +60,7 @@ __all__ = [
     "compile_predicate_for",
     "compiled_dtype",
     "require_columns",
+    "require_not_blank",
     # per-row status
     "STATUS_LEVELS",
     "STATUS_REASON",
@@ -79,6 +80,7 @@ __all__ = [
     "ToolError",
     # the world a worked example runs in
     "SCRATCH_TOKEN",
+    "example_database",
     "scratch_path",
     "temporary_environment",
     # registering, running and checking a tool

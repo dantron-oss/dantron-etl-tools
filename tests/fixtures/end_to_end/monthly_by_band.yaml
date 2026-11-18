@@ -1,4 +1,4 @@
-# A small neutral flow, checked figure by figure in tests/test_dantron_etl_end_to_end.py.
+# A small neutral flow, checked figure by figure in tests/flows/test_end_to_end.py.
 # Paths are relative to the folder the test runs it from (a scratch folder holding these CSVs).
 name: Monthly amount by tier band
 

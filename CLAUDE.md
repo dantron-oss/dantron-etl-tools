@@ -28,7 +28,8 @@ the manual.
 
 ```bash
 uv sync --extra dev                         # set up from uv.lock. Plain `uv sync` leaves out pytest, ruff, orjson
-.venv/bin/pytest tests/ -q                  # ~3,800 tests, 2-4 min (pyproject puts src/ and the root on the path)
+.venv/bin/pytest tests/ -q                  # ~4,000 tests, about a minute (pyproject puts src/ and the root on the path)
+.venv/bin/pytest tests/tools/test_join.py -q   # one tool's tests; one area is tests/core, tests/expr, tests/tools ...
 .venv/bin/ruff check src tests scripts      # lint. This is the gate
 .venv/bin/python scripts/tool_catalog_page.py          # writes output_files/tool_catalog.{html,json}
 .venv/bin/python scripts/pipeline_walkthrough_page.py <name>  # runs pipelines/<name>.yaml, saves the run to
@@ -36,6 +37,13 @@ uv sync --extra dev                         # set up from uv.lock. Plain `uv syn
 .venv/bin/python scripts/etl_architecture_page.py      # the architecture page, read from the library itself
 .venv/bin/python scripts/serve_runs.py                 # serves output_files/runs/ on :8899
 ```
+
+The tests are laid out by area: `core/` (the contract, config, registry, loader, runner, trace,
+focus, preview, paths, database plumbing), `expr/`, `tools/` (one file per tool, named after it),
+`viewer/` (the page builders), `package/` (what ships: the client-neutral boundary, the sdist, the
+vocabulary snapshot, the documentation examples) and `flows/` (end-to-end flows and property checks).
+Shared fixtures are in `tests/conftest.py`, data files in `tests/fixtures/`. Test file names must
+be unique across folders: there is no `__init__.py`, so pytest imports each file by its name alone.
 
 The `Makefile` holds shortcuts for all of these (`make` lists them): `make test`, `make test-all`
 (starts the test Postgres too), `make run p=<name>`, `make catalog`. Each is one command and nothing
@@ -88,7 +96,7 @@ than the one you are editing. If anything looks impossible, run
 | `boundary.py` | `run_tool`, the boundary every call to a tool goes through. |
 | `frame_checks.py` | The helpers a tool calls to check its configuration against the frames it was given (`require_columns`, `compile_for`, `check_output_column` ...). |
 | `registry.py` | `ToolRegistry`, the shipped `REGISTRY`, and `get_tool`. |
-| `example_world.py` | The scratch directory and temporary environment a worked example runs in. |
+| `example_world.py` | The scratch directory, temporary environment and in-memory database a worked example runs in. |
 | `conformance.py` | `check_tool` and `check_registry`: every catalog rule, and every worked example run and compared. |
 | `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
 | `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Group`, the walk order, the fingerprint. |
@@ -100,10 +108,10 @@ than the one you are editing. If anything looks impossible, run
 | `tool.py`, `pipeline.py` | Old import paths, re-exporting the names above. Removed once consumers move to the new ones. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
 | `preview.py` | Serves a run's ports a window at a time, so a page can search all the rows, not only the drawn ones. |
-| `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. |
+| `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. The table helpers the table tools share. |
 | `paths.py` | `project_root(__file__)`. Where the caller's project is, or a refusal. |
 | `column_types.py` | The type names a flow may write (`String`, `Float64`, `Date` ...). |
-| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. |
+| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. A module whose name starts with `_` is a helper, not a tool, and is skipped: `_spreadsheet.py` holds what a cell and a tab can hold, and `_workbook_*.py` hold the parts of `write_workbook`. |
 | `scripts/` | The page builders and the run server. **Not shipped in the wheel.** They render; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
@@ -116,7 +124,7 @@ These are not style preferences. Each one was learned by getting it wrong.
 ### The library stays client-neutral
 
 - No client or product name, and no client vocabulary, in anything under `src/dantron_etl/` —
-  code, docstrings, comments, examples, the manual. `tests/test_dantron_etl_boundary.py` holds the
+  code, docstrings, comments, examples, the manual. `tests/package/test_boundary.py` holds the
   banned words (`FORBIDDEN_TERMS`) and fails the build on any of them. In `.md` files the package's
   own name is allowed; in `.py` files it is not, which is why imports are relative.
 - No import of a client package, an orchestrator, or pandas (`FORBIDDEN_IMPORTS`). The boundary
