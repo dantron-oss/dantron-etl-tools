@@ -1,0 +1,2073 @@
+{
+  "expression_functions": {
+    "abs": 1,
+    "add_months": 2,
+    "coalesce": "two or more",
+    "concat": "two or more",
+    "contains": 2,
+    "ends_with": 2,
+    "format_number": 4,
+    "len": 1,
+    "lower": 1,
+    "regex_extract": 3,
+    "regex_match": 2,
+    "regex_replace": 3,
+    "round": 2,
+    "starts_with": 2,
+    "strip": 1,
+    "upper": 1,
+    "uuid5": 2,
+    "year": 1
+  },
+  "pipeline_file_keys": {
+    "document": [
+      "groups",
+      "lanes",
+      "name",
+      "steps"
+    ],
+    "entry": [
+      "config",
+      "group",
+      "id",
+      "inputs",
+      "label",
+      "lane",
+      "order",
+      "stage",
+      "title",
+      "tool",
+      "why"
+    ]
+  },
+  "tools": {
+    "assemble_date": {
+      "category": "transform",
+      "config": {
+        "day": {
+          "default": "1",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "expression"
+        },
+        "month": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "on_invalid": {
+          "default": "error",
+          "enum": [
+            "clamp",
+            "empty",
+            "error"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "year": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "assert_rows": {
+      "category": "assert",
+      "config": {
+        "allow_empty": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "label": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "predicate": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "case_when": {
+      "category": "transform",
+      "config": {
+        "otherwise": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "expression"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "replace": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "rules": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "then": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "expression"
+              },
+              "when": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "expression"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": false,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "cast_columns": {
+      "category": "preparation",
+      "config": {
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "column": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "type": {
+                "default": null,
+                "enum": [
+                  "String",
+                  "Int64",
+                  "Float64",
+                  "Boolean",
+                  "Date",
+                  "Datetime",
+                  "Time"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "on_invalid": {
+          "default": "error",
+          "enum": [
+            "error",
+            "empty"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "connected_components": {
+      "category": "transform",
+      "config": {
+        "component_column": {
+          "default": "component",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "left": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "node_column": {
+          "default": "node",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "right": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "edges"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "cross_tab": {
+      "category": "transform",
+      "config": {
+        "aggregate": {
+          "default": null,
+          "enum": [
+            "count",
+            "count_values",
+            "first",
+            "join_text",
+            "max",
+            "min",
+            "n_unique",
+            "sum"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "columns_from": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "index": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "values": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "date_diff": {
+      "category": "transform",
+      "config": {
+        "end": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "endpoints": {
+          "default": "both",
+          "enum": [
+            "both",
+            "elapsed"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "start": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "unit": {
+          "default": null,
+          "enum": [
+            "months",
+            "days"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "expand_date_range": {
+      "category": "transform",
+      "config": {
+        "end": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "interval": {
+          "default": "month",
+          "enum": [
+            "month"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "period_column": {
+          "default": "period_start",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "start": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows",
+        "unexpanded"
+      ]
+    },
+    "filter": {
+      "category": "preparation",
+      "config": {
+        "nulls": {
+          "default": "exclude",
+          "enum": [
+            "exclude",
+            "include"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "predicate": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "true",
+        "false"
+      ]
+    },
+    "formula": {
+      "category": "transform",
+      "config": {
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "name": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              },
+              "replace": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "boolean"
+              },
+              "value": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "expression"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": false,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "group_by": {
+      "category": "transform",
+      "config": {
+        "aggregations": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "function": {
+                "default": null,
+                "enum": [
+                  "count",
+                  "count_values",
+                  "first",
+                  "join_text",
+                  "max",
+                  "min",
+                  "n_unique",
+                  "sum"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              },
+              "name": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              },
+              "separator": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
+              },
+              "value": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "expression"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "join": {
+      "category": "combine",
+      "config": {
+        "how": {
+          "default": "inner",
+          "enum": [
+            "inner",
+            "left"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "keys": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": false,
+          "type": "array"
+        },
+        "left_on": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": false,
+          "type": "array"
+        },
+        "right_on": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": false,
+          "type": "array"
+        },
+        "suffix": {
+          "default": "_right",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "left",
+        "right"
+      ],
+      "output_ports": [
+        "matched",
+        "left_only",
+        "right_only"
+      ]
+    },
+    "limit_rows": {
+      "category": "preparation",
+      "config": {
+        "count": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "integer"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows",
+        "dropped"
+      ]
+    },
+    "match_one_to_one": {
+      "category": "preparation",
+      "config": {
+        "left": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "priority": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "column": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "direction": {
+                "default": null,
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "right": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "ties": {
+          "default": "first",
+          "enum": [
+            "first",
+            "refuse"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "candidates"
+      ],
+      "output_ports": [
+        "accepted",
+        "rejected"
+      ]
+    },
+    "normalize_text": {
+      "category": "text",
+      "config": {
+        "operations": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": [
+              "fold_accents",
+              "lower",
+              "remove_punctuation",
+              "strip_suffixes",
+              "collapse_whitespace"
+            ],
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "source": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "strip_suffixes": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "publish_tables": {
+      "category": "output",
+      "config": {
+        "connection": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "schema": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "stamp": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "tables": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "allow_empty": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "boolean"
+              },
+              "key": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": {
+                  "default": null,
+                  "enum": null,
+                  "fields": null,
+                  "items": null,
+                  "non_empty": true,
+                  "required": false,
+                  "type": "string"
+                },
+                "non_empty": true,
+                "required": false,
+                "type": "array"
+              },
+              "mode": {
+                "default": null,
+                "enum": [
+                  "replace",
+                  "append",
+                  "merge"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              },
+              "port": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "table": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": "from config",
+      "output_ports": [
+        "receipt"
+      ]
+    },
+    "read_csv": {
+      "category": "input",
+      "config": {
+        "column_types": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "column": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "format": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": false,
+                "type": "string"
+              },
+              "type": {
+                "default": null,
+                "enum": [
+                  "String",
+                  "Int64",
+                  "Float64",
+                  "Boolean",
+                  "Date",
+                  "Datetime",
+                  "Time"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": false,
+          "required": false,
+          "type": "array"
+        },
+        "delimiter": {
+          "default": ",",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "encoding": {
+          "default": "utf8",
+          "enum": [
+            "utf8",
+            "utf-8",
+            "utf-8-sig",
+            "latin1",
+            "latin-1",
+            "iso-8859-1",
+            "cp1252",
+            "windows-1252",
+            "ascii",
+            "utf-16",
+            "utf-16-le",
+            "utf-16-be"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "has_header": {
+          "default": true,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "path": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "skip_rows": {
+          "default": 0,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "input_ports": [],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "read_excel": {
+      "category": "input",
+      "config": {
+        "as_text": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "has_header": {
+          "default": true,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "path": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "sheet": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "sheet_column": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "sheets_matching": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "skip_rows": {
+          "default": 0,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "input_ports": [],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "read_table": {
+      "category": "input",
+      "config": {
+        "connection": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "schema": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "table": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "record_id": {
+      "category": "preparation",
+      "config": {
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "start": {
+          "default": 1,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "regex_extract_groups": {
+      "category": "text",
+      "config": {
+        "all_matches": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "match_number_column": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "pattern": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "position_column": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "source": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "remove_duplicates": {
+      "category": "preparation",
+      "config": {
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": false,
+          "required": false,
+          "type": "array"
+        },
+        "keep": {
+          "default": "first",
+          "enum": [
+            "first",
+            "last"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "unique",
+        "duplicate"
+      ]
+    },
+    "rename_columns": {
+      "category": "preparation",
+      "config": {
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "from": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              },
+              "to": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": true,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "select_columns": {
+      "category": "preparation",
+      "config": {
+        "action": {
+          "default": "keep",
+          "enum": [
+            "keep",
+            "drop"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "sort": {
+      "category": "preparation",
+      "config": {
+        "by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "column": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "direction": {
+                "default": null,
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
+              },
+              "nulls": {
+                "default": null,
+                "enum": [
+                  "first",
+                  "last"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "union": {
+      "category": "combine",
+      "config": {},
+      "input_ports": [
+        "top",
+        "bottom"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "unpivot": {
+      "category": "transform",
+      "config": {
+        "exclude_nulls": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "index": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "into": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "on_invalid": {
+          "default": null,
+          "enum": [
+            "error",
+            "empty"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "values": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "values_type": {
+          "default": null,
+          "enum": [
+            "String",
+            "Int64",
+            "Float64",
+            "Boolean",
+            "Date",
+            "Datetime",
+            "Time"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "write_csv": {
+      "category": "output",
+      "config": {
+        "delimiter": {
+          "default": ",",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "path": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "replace": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "write_excel": {
+      "category": "output",
+      "config": {
+        "path": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "replace": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "sheet": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "write_table": {
+      "category": "output",
+      "config": {
+        "allow_empty": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "connection": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "mode": {
+          "default": null,
+          "enum": [
+            "replace",
+            "append"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "schema": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "table": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "write_workbook": {
+      "category": "output",
+      "config": {
+        "path": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "replace": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "sheets": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "fit_widths": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "boolean"
+              },
+              "formats": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": {
+                  "default": null,
+                  "enum": null,
+                  "fields": {
+                    "column": {
+                      "default": null,
+                      "enum": null,
+                      "fields": null,
+                      "items": null,
+                      "non_empty": true,
+                      "required": false,
+                      "type": "string"
+                    },
+                    "format": {
+                      "default": null,
+                      "enum": null,
+                      "fields": null,
+                      "items": null,
+                      "non_empty": true,
+                      "required": true,
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": null,
+                      "enum": [
+                        "String",
+                        "Int64",
+                        "Float64",
+                        "Boolean",
+                        "Date",
+                        "Datetime",
+                        "Time"
+                      ],
+                      "fields": null,
+                      "items": null,
+                      "non_empty": false,
+                      "required": false,
+                      "type": "string"
+                    }
+                  },
+                  "items": null,
+                  "non_empty": false,
+                  "required": false,
+                  "type": "object"
+                },
+                "non_empty": false,
+                "required": false,
+                "type": "array"
+              },
+              "header": {
+                "default": null,
+                "enum": null,
+                "fields": {
+                  "bold": {
+                    "default": null,
+                    "enum": null,
+                    "fields": null,
+                    "items": null,
+                    "non_empty": false,
+                    "required": false,
+                    "type": "boolean"
+                  },
+                  "size": {
+                    "default": null,
+                    "enum": null,
+                    "fields": null,
+                    "items": null,
+                    "non_empty": false,
+                    "required": false,
+                    "type": "number"
+                  }
+                },
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "object"
+              },
+              "port": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "sheet": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "table": {
+                "default": null,
+                "enum": null,
+                "fields": {
+                  "name": {
+                    "default": null,
+                    "enum": null,
+                    "fields": null,
+                    "items": null,
+                    "non_empty": true,
+                    "required": false,
+                    "type": "string"
+                  },
+                  "style": {
+                    "default": null,
+                    "enum": null,
+                    "fields": null,
+                    "items": null,
+                    "non_empty": true,
+                    "required": false,
+                    "type": "string"
+                  }
+                },
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "object"
+              },
+              "widths": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": {
+                  "default": null,
+                  "enum": null,
+                  "fields": {
+                    "column": {
+                      "default": null,
+                      "enum": null,
+                      "fields": null,
+                      "items": null,
+                      "non_empty": true,
+                      "required": false,
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": null,
+                      "enum": [
+                        "String",
+                        "Int64",
+                        "Float64",
+                        "Boolean",
+                        "Date",
+                        "Datetime",
+                        "Time"
+                      ],
+                      "fields": null,
+                      "items": null,
+                      "non_empty": false,
+                      "required": false,
+                      "type": "string"
+                    },
+                    "width": {
+                      "default": null,
+                      "enum": null,
+                      "fields": null,
+                      "items": null,
+                      "non_empty": false,
+                      "required": true,
+                      "type": "number"
+                    }
+                  },
+                  "items": null,
+                  "non_empty": false,
+                  "required": false,
+                  "type": "object"
+                },
+                "non_empty": false,
+                "required": false,
+                "type": "array"
+              },
+              "wrap": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": {
+                  "default": null,
+                  "enum": null,
+                  "fields": {
+                    "column": {
+                      "default": null,
+                      "enum": null,
+                      "fields": null,
+                      "items": null,
+                      "non_empty": true,
+                      "required": false,
+                      "type": "string"
+                    },
+                    "type": {
+                      "default": null,
+                      "enum": [
+                        "String",
+                        "Int64",
+                        "Float64",
+                        "Boolean",
+                        "Date",
+                        "Datetime",
+                        "Time"
+                      ],
+                      "fields": null,
+                      "items": null,
+                      "non_empty": false,
+                      "required": false,
+                      "type": "string"
+                    }
+                  },
+                  "items": null,
+                  "non_empty": false,
+                  "required": false,
+                  "type": "object"
+                },
+                "non_empty": false,
+                "required": false,
+                "type": "array"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "template": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": "from config",
+      "output_ports": []
+    }
+  }
+}
