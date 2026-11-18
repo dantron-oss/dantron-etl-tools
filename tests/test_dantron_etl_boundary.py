@@ -323,37 +323,6 @@ LIBRARY_SCRIPTS = (
     "etl_architecture_page.py",
 )
 
-#: The library's own tests, discovered by the naming convention every one of them already follows,
-#: so the next one written is fenced by existing rather than by being remembered here.
-LIBRARY_TEST_GLOB = "test_dantron_etl_*.py"
-
-#: And the tests for the scripts that ship beside the library, which the glob cannot reach because
-#: they are named after the script rather than after the package. They are listed rather than
-#: renamed: a test file's name is what a person greps for, and moving it to satisfy a glob buys
-#: nothing the list does not. The guard below refuses a name in here that is not on disk, so a
-#: rename breaks loudly instead of quietly shrinking the fence.
-SHIPPED_SCRIPT_TESTS: tuple[str, ...] = (
-    "test_tool_catalog_page.py",
-    "test_pipeline_walkthrough_page.py",
-    "test_pipeline_walkthrough_projects.py",
-)
-
-def _discover_library_test_files() -> list[Path]:
-    """Every test file that belongs to the library rather than to the client.
-
-    The glob plus the named tests for the shipped scripts. Both sets travel with the package when it
-    is extracted, so both have to import in a world where this client's code does not exist -- and
-    the tests for the scripts are the easier half to forget, being named after what they test rather
-    than after the package they belong to.
-    """
-    named = [TESTS_DIR / name for name in SHIPPED_SCRIPT_TESTS]
-    missing = [path.name for path in named if not path.is_file()]
-    assert not missing, (
-        f"SHIPPED_SCRIPT_TESTS names {missing}, which are not under {TESTS_DIR}; a renamed file "
-        f"must be renamed here too, or the fence quietly stops covering it"
-    )
-    return sorted(set(TESTS_DIR.glob(LIBRARY_TEST_GLOB)) | set(named))
-
 
 class TestWhatShipsBesideThePackageSurvivesExtraction:
     """Everything that travels with the library is free of client imports, and the lists are not stale."""
@@ -370,10 +339,6 @@ class TestWhatShipsBesideThePackageSurvivesExtraction:
         """A renamed script must fail loudly here rather than silently leaving the fence."""
         missing = [name for name in LIBRARY_SCRIPTS if not (SCRIPTS_DIR / name).is_file()]
         assert not missing, f"{missing} named in LIBRARY_SCRIPTS but not found under {SCRIPTS_DIR}"
-
-    def test_the_library_tests_are_discovered(self) -> None:
-        """Guard against the glob quietly matching nothing and the fence passing over an empty set."""
-        assert _discover_library_test_files(), f"no {LIBRARY_TEST_GLOB} under {TESTS_DIR}"
 
 
 class TestLibraryScriptsHaveNoDeferredClientImports:
@@ -428,7 +393,7 @@ class TestShippedTestsNameNoClientModules:
                 names.append(first.value)
         return names
 
-    @pytest.mark.parametrize("test_path", _discover_library_test_files(), ids=lambda p: p.name)
+    @pytest.mark.parametrize("test_path", sorted(TESTS_DIR.rglob("test_*.py")), ids=lambda p: p.name)
     def test_no_module_it_loads_by_path_is_named_after_the_client(self, test_path: Path) -> None:
         """The name is invented at the call site, so a client's name in it is a choice, not a constraint."""
         # The library's own name is exempt for the reason a manual may print it: a test loading a

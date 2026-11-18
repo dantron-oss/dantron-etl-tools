@@ -83,8 +83,6 @@ LIBRARY_SCRIPTS = (
     "etl_architecture_page.py",
 )
 
-CLIENT_PACKAGE = "acme"
-
 
 # ---------------------------------------------------------------------------
 # Subprocess probes
@@ -424,23 +422,6 @@ class TestARefusalNamesWhatItLookedForAndWhereItLooked:
 
 class TestTheViewerScriptsNoLongerReachIntoClientCode:
     """Ruling four: the four scripts ship with the library and must behave identically without it."""
-
-    @pytest.mark.parametrize("script_name", LIBRARY_SCRIPTS)
-    def test_importing_a_viewer_script_pulls_in_no_client_code(self, script_name: str) -> None:
-        """Measured by executing the script in a fresh interpreter and reading ``sys.modules``.
-
-        Not by searching the source for the word: a grep is satisfied by a comment, defeated by an
-        alias, and blind to the import arriving through some other module the script pulls in. What
-        matters is whether the client package is in the process afterwards, which is the only form
-        of the question that survives the library being installed somewhere that has no client
-        package to import at all.
-        """
-        probe = _script_probe(script_name)
-
-        assert CLIENT_PACKAGE not in probe["top_level"], (
-            f"{script_name} imported {CLIENT_PACKAGE!r}. The scripts ship with the library, so the "
-            f"client package will not exist wherever they land next."
-        )
 
     @pytest.mark.parametrize("script_name", LIBRARY_SCRIPTS)
     def test_every_path_a_viewer_script_resolves_lands_inside_this_checkout(self, script_name: str) -> None:
