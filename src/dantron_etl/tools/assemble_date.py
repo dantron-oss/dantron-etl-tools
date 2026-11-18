@@ -34,6 +34,7 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
+    require_not_blank,
 )
 
 _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("clamp", "empty", "error")
@@ -118,8 +119,7 @@ class AssembleDate:
                 "config field 'day' was given with no value; leave it out to default to the first "
                 "of the month, or write an expression for it"
             )
-        if not config["output"].strip():
-            raise ConfigError("config field 'output' must not be blank")
+        require_not_blank(config["output"], "output")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a part that is not a whole number or digit text, off the schema alone."""

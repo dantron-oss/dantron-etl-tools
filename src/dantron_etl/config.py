@@ -29,6 +29,7 @@ __all__ = [
     "apply_defaults",
     "expression_fields",
     "expression_values",
+    "require_not_blank",
     "validate_against_template",
 ]
 
@@ -194,6 +195,12 @@ def apply_defaults(template: Mapping[str, ConfigField], config: Mapping[str, Any
 def _joined(prefix: str, name: str) -> str:
     """A field's reportable path: ``name`` at the top level, ``rules[0].when`` inside a value."""
     return f"{prefix}.{name}" if prefix else name
+
+
+def require_not_blank(value: str, field: str) -> None:
+    """Refuse a name that is empty or nothing but whitespace, naming the field that holds it."""
+    if not value.strip():
+        raise ConfigError(f"config field '{field}' must not be blank")
 
 
 def validate_against_template(template: Mapping[str, ConfigField], config: Mapping[str, Any]) -> None:
