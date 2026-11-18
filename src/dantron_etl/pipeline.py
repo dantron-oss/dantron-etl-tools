@@ -16,6 +16,7 @@ belongs to :func:`~.tool.run_tool`, once a runner holds real frames to check the
 this module publishes but cannot itself resolve.
 """
 
+import difflib
 import hashlib
 import heapq
 import json
@@ -317,7 +318,7 @@ def load_pipeline(
     """Build a :class:`PipelineSpec` from ``document``, refusing everything reachable without a frame.
 
     Refused in this order, because each phase needs the one before it to have already succeeded:
-    a duplicate id (an edge cannot name its far end unambiguously otherwise), a tool nobody
+    a key the file format does not have, or a required one missing (see :func:`_refuse_bad_shape`), a duplicate id (an edge cannot name its far end unambiguously otherwise), a tool nobody
     registered (its template is what says how a rule value is spelled into each field, and a port
     check needs a tool to ask), a parameter nobody defined (a configuration cannot be read until it
     is resolved, and resolution still finishes before anything validates it), a lane nobody
@@ -333,8 +334,10 @@ def load_pipeline(
     rules = rules if rules is not None else {}
     active_registry = registry if registry is not None else REGISTRY
 
-    raw_steps: list[Mapping[str, Any]] = list(document.get("steps", ()))
-    raw_lanes: list[Mapping[str, Any]] = list(document.get("lanes", ()))
+    _refuse_bad_shape(document)
+
+    raw_steps: list[Mapping[str, Any]] = list(document["steps"])
+    raw_lanes: list[Mapping[str, Any]] = list(document.get("lanes") or ())
 
     _refuse_duplicate_ids(raw_steps)
 
@@ -446,6 +449,94 @@ def _canonical_scalar(value: Any) -> str:
         f"so what produced a port cannot be fingerprinted; write the value as text in the pipeline "
         f"or rules file"
     )
+
+
+# ---------------------------------------------------------------------------
+# The shape of the file
+# ---------------------------------------------------------------------------
+
+# The keys each part of a pipeline file may hold. A key outside these is refused, because the loader
+# reads only the keys it knows: a misspelt one would otherwise be dropped without a word.
+_DOCUMENT_KEYS: tuple[str, ...] = ("name", "steps", "lanes", "groups")
+_STEP_KEYS: tuple[str, ...] = ("id", "tool", "config", "inputs", "lane", "stage", "group", "why")
+_LANE_KEYS: tuple[str, ...] = ("id", "label", "order")
+_GROUP_KEYS: tuple[str, ...] = ("id", "title")
+
+# The keys that must be there. A group's title is checked by _read_groups, which says why it matters.
+_DOCUMENT_REQUIRED: tuple[str, ...] = ("name", "steps")
+_STEP_REQUIRED: tuple[str, ...] = ("id", "tool")
+_LANE_REQUIRED: tuple[str, ...] = ("id", "label", "order")
+_GROUP_REQUIRED: tuple[str, ...] = ("id",)
+
+
+def _refuse_bad_shape(document: Any) -> None:
+    """Refuse a file whose keys are not the ones this format has, before anything else is read.
+
+    Checks the top level, every step, every lane and every group: no unknown key, no missing
+    required key. Also refuses a flow with no steps, and two lanes or two groups sharing an id.
+    """
+    if not isinstance(document, Mapping):
+        raise PipelineError(
+            f"a pipeline file must hold a mapping with the keys {', '.join(_DOCUMENT_KEYS)}; "
+            f"this one holds a {type(document).__name__}"
+        )
+    _refuse_unknown_keys(document, _DOCUMENT_KEYS, "the pipeline file", "the top level of a pipeline file")
+    _refuse_missing_keys(document, _DOCUMENT_REQUIRED, "the pipeline file")
+
+    steps = _entries(document, "steps")
+    if not steps:
+        raise PipelineError("the pipeline file has no steps; a flow needs at least one")
+
+    for kind, keys, required in (
+        ("steps", _STEP_KEYS, _STEP_REQUIRED),
+        ("lanes", _LANE_KEYS, _LANE_REQUIRED),
+        ("groups", _GROUP_KEYS, _GROUP_REQUIRED),
+    ):
+        singular = kind[:-1]
+        seen: set[Any] = set()
+        for position, entry in enumerate(_entries(document, kind), start=1):
+            if not isinstance(entry, Mapping):
+                raise PipelineError(
+                    f"{singular} number {position} under '{kind}' must be a mapping of keys; "
+                    f"it is a {type(entry).__name__}"
+                )
+            where = f"{singular} {entry['id']!r}" if "id" in entry else f"{singular} number {position}"
+            _refuse_unknown_keys(entry, keys, where, f"a {singular}")
+            _refuse_missing_keys(entry, required, where)
+            # Duplicate step ids are refused by _refuse_duplicate_ids, with the reason that matters
+            # for steps. A lane or group with a second definition would never be drawn.
+            if kind != "steps" and entry["id"] in seen:
+                raise PipelineError(
+                    f"duplicate {singular} id {entry['id']!r}: only the first would be used, so the "
+                    f"second would never be drawn"
+                )
+            seen.add(entry["id"])
+
+
+def _entries(document: Mapping[str, Any], kind: str) -> list[Any]:
+    """The list under ``kind``. An empty or absent one is an empty list; anything else is refused."""
+    value = document.get(kind)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise PipelineError(f"'{kind}' must be a list; this file has a {type(value).__name__} there")
+    return value
+
+
+def _refuse_unknown_keys(entry: Mapping[str, Any], allowed: tuple[str, ...], where: str, kind: str) -> None:
+    unknown = [key for key in entry if key not in allowed]
+    if not unknown:
+        return
+    key = unknown[0]
+    near = difflib.get_close_matches(str(key), allowed, n=1)
+    guess = f"; did you mean {near[0]!r}?" if near else "."
+    raise PipelineError(f"{where} has an unknown key {key!r}{guess} The keys {kind} may hold are: {', '.join(allowed)}")
+
+
+def _refuse_missing_keys(entry: Mapping[str, Any], required: tuple[str, ...], where: str) -> None:
+    missing = [key for key in required if key not in entry]
+    if missing:
+        raise PipelineError(f"{where} is missing the key {missing[0]!r}; it needs: {', '.join(required)}")
 
 
 # ---------------------------------------------------------------------------
