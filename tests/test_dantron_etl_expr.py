@@ -20,12 +20,11 @@ because the module under test ships as a standalone library and must carry no ca
 """
 
 import ast
+import dataclasses
 import math
 import re
-import sqlite3
 import unicodedata
 import uuid
-from collections.abc import Iterator
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
@@ -39,15 +38,13 @@ from dantron_etl.expr import (
     MAX_DEPTH,
     MAX_NODES,
     MAX_TEXT_LENGTH,
-    SQL_DIALECTS,
-    SQL_IDENTIFIER,
-    SQL_PARAMSTYLES,
     ExpressionError,
     compile_expr,
-    compile_sql,
     references,
-    sql_subset,
 )
+from dantron_etl.expr.arguments import Value
+from dantron_etl.expr.families import Family
+from dantron_etl.expr.functions import DEFINITIONS, FUNCTIONS, Function
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -297,6 +294,65 @@ class TestFunctions:
         assert evaluate(frame, "contains([label], 'a.p')") == [False, False, False, None]
         assert evaluate(frame, "contains([label], 'lph')") == [True, False, False, None]
         assert evaluate(frame, "regex_extract([label], 'a(.)p', 1)") == ["l", None, None, None]
+
+
+class TestTheFunctionTable:
+    """Each function is defined once, in one entry that carries everything about it."""
+
+    @staticmethod
+    def incomplete(name: str, function: Function) -> list[str]:
+        """What is missing or inconsistent in one entry, as plain sentences. Empty when it is complete."""
+        problems: list[str] = []
+        if function.name != name:
+            problems.append(f"is filed under {name!r} but named {function.name!r}")
+        if not function.params:
+            problems.append("lists no arguments")
+        if function.variadic and len(function.params) != 1:
+            problems.append("is variadic, so it must list exactly one argument for all of them to meet")
+        if function.result != "common" and not isinstance(function.result, Family):
+            problems.append(f"gives {function.result!r}, which is neither a family nor 'common'")
+        if function.result == "common" and not (function.variadic and function.params[0].family is None):
+            problems.append("gives the family its arguments agree on, so it must take any number of any family")
+        if function.result_dtype == "subject" and not isinstance(function.params[0], Value):
+            problems.append("hands on its first argument's type, so the first argument must be a value")
+        if not callable(function.to_polars):
+            problems.append("has nothing to build its column with")
+        if not function.summary.strip() or "\n" in function.summary or not function.summary.endswith("."):
+            problems.append("has no one-line summary ending in a full stop")
+        if not function.example.startswith(f"{name}("):
+            problems.append(f"has no example calling {name}()")
+        else:
+            try:
+                compile_expr(function.example)
+            except ExpressionError as error:
+                problems.append(f"has an example that does not compile: {error}")
+        return problems
+
+    def test_every_function_is_defined_completely_in_one_entry(self) -> None:
+        """No entry is missing a part, no name is defined twice, and the whitelist is the table."""
+        problems = {name: found for name, function in FUNCTIONS.items() if (found := self.incomplete(name, function))}
+        assert not problems, problems
+        assert len(DEFINITIONS) == len(FUNCTIONS), "a function is defined twice"
+        assert ALLOWED_FUNCTIONS == frozenset(FUNCTIONS)
+
+    @pytest.mark.parametrize(
+        ("change", "expected"),
+        [
+            ({"summary": ""}, "summary"),
+            ({"summary": "Two lines.\nOf summary."}, "summary"),
+            ({"example": "upper([code])"}, "example"),
+            ({"example": "lower([code]"}, "does not compile"),
+            ({"params": ()}, "no arguments"),
+            ({"result": "text"}, "neither a family"),
+            ({"result": "common"}, "agree on"),
+            ({"to_polars": None}, "build"),
+        ],
+    )
+    def test_the_check_refuses_an_entry_with_a_part_missing(self, change: dict[str, Any], expected: str) -> None:
+        """The check above is itself checked: break one part of a real entry and it must say so."""
+        broken = dataclasses.replace(FUNCTIONS["lower"], **change)
+        problems = self.incomplete("lower", broken)
+        assert any(expected in problem for problem in problems), problems
 
 
 class TestNullSemantics:
@@ -1824,185 +1880,103 @@ class TestConcat:
 
 
 # ---------------------------------------------------------------------------
-# The second compile target: a clause read at the database, per dialect
+# The rows a predicate keeps, on a frame built to tell rules apart
 # ---------------------------------------------------------------------------
 #
-# One language, two targets. The same text a Filter compiles to a frame expression, a read compiles
-# to a boolean SQL clause plus the values bound into it -- so a step can cut rows at the database
-# instead of dragging a whole table into memory and cutting them there. That buys what a ``query``
-# field would have bought, without the thing that makes a ``query`` field indefensible: no author
-# character ever reaches the SQL string.
-#
-# **The target is a dialect, not "SQL".** A compiler that emitted one spelling for every engine is
-# stuck at the lowest common denominator, and the lowest common denominator is how a wrong spelling
-# gets chosen: ``LIKE`` looks like the portable way to ask "does this text contain that text" and
-# is case-insensitive in SQLite, so it would have answered a different question from the Filter it
-# is meant to match. The definition stays portable because the YAML stays portable -- the
-# *compiler* knows the engine, which is a compiler doing its job. So the subset is published per
-# dialect, and a refusal names the dialect, because "upper cannot be pushed down" invites an
-# argument where "upper cannot be pushed down to postgres" can be acted on.
-#
-# **Nothing is in a subset on reasoning alone.** Every translation below was run against the real
-# engine and its rows compared against the frame target's rows, and every exclusion is a measured
-# disagreement rather than a worry. What that measurement found, in both directions:
-#
-#   proven equal, both engines : = <> IS NULL IN, and/or/not, coalesce, concat, len, and
-#                                contains/starts_with/ends_with spelled literally
-#   proven equal, SQLite only  : < <= > >= on text -- SQLite's BINARY collation is byte order,
-#                                which is what polars compares, while Postgres orders by locale,
-#                                where 'a' sorts before 'B'; five of six ordering cases measured
-#                                kept different rows
-#   refused in both            : upper/lower (SQLite folds ASCII only; Postgres leaves the 'ss' in
-#                                'strasse' where polars folds it -- the same function wrong two
-#                                different ways), strip (TRIM and btrim take spaces, strip() takes
-#                                all whitespace), round (ties away from zero, polars to even),
-#                                regex_* (no portable spelling), and arithmetic (integer division
-#                                truncates in both, and an overflowing whole number silently
-#                                promotes in SQLite while Postgres raises mid-read)
-#   refused everywhere         : a null inside an 'in' list -- NOT IN answers no row at all
-#
-# Three properties carry the rest of the design, unchanged by the dialect split: only an identifier
-# that passed a grammar reaches the clause (a refusal, never an escape, and stricter than the frame
-# target, which allows any character but ``]``); every literal is bound, so a hostile string is a
-# *value* that matches the row holding it; and the clause is a self-contained boolean expression a
-# caller may compose with.
+# These cases were first written to prove that a compile target for SQL kept exactly the rows the
+# frame keeps. That target has been removed (see docs/design/sql-target.md). What the frame keeps
+# is pinned here instead, because several cases are the only test of a rule: a null inside a
+# membership list, an empty needle, a needle holding a wildcard character, case-sensitive matching,
+# and text compared in byte order, where 'B' sorts before 'a'.
 
 
-# The tests own this schema and nothing else. It is created, used and dropped by the fixture below.
-# The server this runs against also holds real data in schemas of its own, and no test here names
-# any schema but this one.
-_SCRATCH_SCHEMA = "dantron_etl_expr_scratch"
-
-
-PUSHDOWN_DDL: str = (
-    'create table {table} ("key" integer, "code" text, "label" text, '
-    '"amount" {real}, "qty" {whole}, "flag" {truth}, "seen" {day})'
+# The rows each predicate keeps, by key. Every case splits the table, except the few that pin
+# "this matches nothing" or "this matches everything".
+KEPT_ROWS: tuple[tuple[str, list[int]], ...] = (
+    ("[code] = 'A'", [1, 7]),
+    ("[code] != 'A'", [2, 3, 5, 6, 8, 9, 10]),
+    ("[code] = 'a'", [6]),
+    ("[code] = ''", [5]),
+    ("[label] = 'é'", [5]),
+    ('[amount] > 0', [1, 5, 6, 7, 8, 9, 10]),
+    ('[amount] >= 0', [1, 3, 5, 6, 7, 8, 9, 10]),
+    ('[amount] < 0', [2]),
+    ('[amount] = 0', [3]),
+    ('[amount] != 0', [1, 2, 5, 6, 7, 8, 9, 10]),
+    ('[qty] <= 2', [1, 2]),
+    ('[flag]', [1, 3, 6, 9]),
+    ('not [flag]', [2, 5, 8, 10]),
+    ('[flag] = true', [1, 3, 6, 9]),
+    ('[flag] = false', [2, 5, 8, 10]),
+    ('[flag] != true', [2, 5, 8, 10]),
+    ('[qty] > 1.5', [2, 3, 5, 7, 8, 9, 10]),
+    ('[qty] = 3.0', [3, 5, 7]),
+    ('[amount] = 3', [5]),
+    ('[qty] in (1, 3.0)', [1, 3, 5, 7]),
+    ("[seen] >= date'2026-01-01'", [1, 2, 5, 7, 8, 9, 10]),
+    ("[seen] < date'2026-01-01'", [3]),
+    ("[seen] = date'2026-01-01'", [1, 5]),
+    ('[seen] is null', [4, 6]),
+    ('[code] is null', [4]),
+    ('[code] is not null', [1, 2, 3, 5, 6, 7, 8, 9, 10]),
+    ('[code] = null', []),
+    ("[code] in ('A', 'B')", [1, 2, 7]),
+    ("[code] not in ('A', 'B')", [3, 5, 6, 8, 9, 10]),
+    ('[qty] in (1, 3)', [1, 3, 5, 7]),
+    ('[qty] not in (1, 3)', [2, 8, 9, 10]),
+    ("not ([code] in ('A', 'B'))", [3, 5, 6, 8, 9, 10]),
+    ("[code] = 'X' and false", []),
+    ("[code] = 'X' or true", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+    ("[code] = 'X' and true", []),
+    ("[code] = 'X' or false", []),
+    ("not ([code] = 'A')", [2, 3, 5, 6, 8, 9, 10]),
+    ('not (not [flag])', [1, 3, 6, 9]),
+    ("[code] = 'A' and [qty] = 1", [1]),
+    ("[code] = 'A' or [code] = 'B'", [1, 2, 7]),
+    ('[qty] > 2 and not [flag]', [5, 8, 10]),
+    ("[code] = 'A' and [qty] > 0 and [seen] is not null", [1, 7]),
+    ("([code] = 'A' or [code] = 'B') and [flag] = false", [2]),
+    ("[code] = 'A' or ([code] = 'B' and [flag] = false)", [1, 2, 7]),
+    ("coalesce([code], 'Z') = 'Z'", [4]),
+    ('coalesce([qty], 0) > 2', [3, 5, 7, 8, 9, 10]),
+    ('coalesce([code], [label]) is null', [4]),
+    ("contains([label], 'lph')", [1]),
+    ("contains([label], 'ALPHA')", [6]),
+    ("contains([label], 'a.p')", []),
+    ("contains([label], '%')", []),
+    ("contains([label], 'é')", [5]),
+    ("contains([label], '')", [1, 2, 3, 5, 6, 7, 8, 9, 10]),
+    ("not contains([label], 'a')", [5, 6, 8]),
+    ('contains([label], [code])', [2, 5]),
+    ("contains(coalesce([label], 'zz'), 'z')", [4]),
+    ("starts_with([label], 'al')", [1]),
+    ("starts_with([label], 'AL')", [6]),
+    ("starts_with([label], 'é')", [5]),
+    ("starts_with([code], '')", [1, 2, 3, 5, 6, 7, 8, 9, 10]),
+    ('starts_with([label], [code])', [2, 5]),
+    ("ends_with([label], 'ha')", [1]),
+    ("ends_with([label], 'A')", [6]),
+    ("ends_with([label], 'IR')", [8]),
+    ("ends_with([label], '')", [1, 2, 3, 5, 6, 7, 8, 9, 10]),
+    ("ends_with([label], 'zzzzzzzzzz')", []),
+    ('ends_with([label], [code])', [5]),
+    ("ends_with(coalesce([label], 'zz'), 'z')", [4]),
+    ('len([label]) = 6', [8, 9]),
+    ('len([label]) = 1', [5]),
+    ('len([code]) = 0', [5]),
+    ("concat([code], 'x') = 'Ax'", [1, 7]),
+    ("concat([code], 'x') is null", [4]),
+    ("concat([code], [label]) = 'ahaa'", []),
+    ("[code] < 'B'", [1, 5, 7]),
+    ("[code] >= 'B'", [2, 3, 6, 8, 9, 10]),
+    ("[code] > 'A'", [2, 3, 6, 8, 9, 10]),
+    ("[label] < 'z'", [1, 2, 3, 6, 7, 9]),
+    ("[label] > 'ALPHA'", [1, 2, 3, 5, 8, 9, 10]),
+    ("[label] < 'beta'", [1, 2, 6, 7]),
 )
 
-# Postgres text cannot hold a NUL byte at all -- its driver refuses the value before the server
-# sees it -- so that one hostile literal is compiled and bound in both dialects but round-tripped
-# only through SQLite. That is the driver's rule about data, not this target's rule about clauses.
-UNSTORABLE_IN_POSTGRES: frozenset[str] = frozenset({"null byte \x00 here"})
-
-# One expression per shape the pushdown has to answer identically in both places.
-AGREEMENT_CORPUS: tuple[str, ...] = (
-    # equality and the orderings that are not text, on every family
-    "[code] = 'A'",
-    "[code] != 'A'",
-    "[code] = 'a'",
-    "[code] = ''",
-    "[label] = 'é'",
-    "[amount] > 0",
-    "[amount] >= 0",
-    "[amount] < 0",
-    "[amount] = 0",
-    "[amount] != 0",
-    "[qty] <= 2",
-    "[flag]",
-    "not [flag]",
-    "[flag] = true",
-    "[flag] = false",
-    "[flag] != true",
-    # a number is one family spelled two ways, in both targets
-    "[qty] > 1.5",
-    "[qty] = 3.0",
-    "[amount] = 3",
-    "[qty] in (1, 3.0)",
-    # dates, which SQLite holds as text and Postgres holds as dates
-    "[seen] >= date'2026-01-01'",
-    "[seen] < date'2026-01-01'",
-    "[seen] = date'2026-01-01'",
-    "[seen] is null",
-    # null tests, and the '= null' that is not one
-    "[code] is null",
-    "[code] is not null",
-    "[code] = null",
-    # membership
-    "[code] in ('A', 'B')",
-    "[code] not in ('A', 'B')",
-    "[qty] in (1, 3)",
-    "[qty] not in (1, 3)",
-    "not ([code] in ('A', 'B'))",
-    # three-valued and / or / not
-    "[code] = 'X' and false",
-    "[code] = 'X' or true",
-    "[code] = 'X' and true",
-    "[code] = 'X' or false",
-    "not ([code] = 'A')",
-    "not (not [flag])",
-    "[code] = 'A' and [qty] = 1",
-    "[code] = 'A' or [code] = 'B'",
-    "[qty] > 2 and not [flag]",
-    "[code] = 'A' and [qty] > 0 and [seen] is not null",
-    # precedence: these two keep different rows, so a clause that loses its grouping is caught
-    "([code] = 'A' or [code] = 'B') and [flag] = false",
-    "[code] = 'A' or ([code] = 'B' and [flag] = false)",
-    # the functions in the subset: literal, case-sensitive, null-propagating
-    "coalesce([code], 'Z') = 'Z'",
-    "coalesce([qty], 0) > 2",
-    "coalesce([code], [label]) is null",
-    "contains([label], 'lph')",
-    "contains([label], 'ALPHA')",
-    "contains([label], 'a.p')",
-    "contains([label], '%')",
-    "contains([label], 'é')",
-    "contains([label], '')",
-    "not contains([label], 'a')",
-    "contains([label], [code])",
-    "contains(coalesce([label], 'zz'), 'z')",
-    "starts_with([label], 'al')",
-    "starts_with([label], 'AL')",
-    "starts_with([label], 'é')",
-    "starts_with([code], '')",
-    "starts_with([label], [code])",
-    "ends_with([label], 'ha')",
-    "ends_with([label], 'A')",
-    "ends_with([label], 'IR')",
-    "ends_with([label], '')",
-    "ends_with([label], 'zzzzzzzzzz')",
-    "ends_with([label], [code])",
-    # an ends_with names its needle twice, and its subject twice in one dialect, so a
-    # sub-expression carrying its own literal has to be bound once per placeholder
-    "ends_with(coalesce([label], 'zz'), 'z')",
-    "len([label]) = 6",
-    "len([label]) = 1",
-    "len([code]) = 0",
-    "concat([code], 'x') = 'Ax'",
-    "concat([code], 'x') is null",
-    "concat([code], [label]) = 'ahaa'",
-)
-
-# Ordering text is in SQLite's subset and out of Postgres's, so these run as agreement cases
-# against one engine and as refusals against the other -- the per-dialect model doing the only
-# thing that matters about it.
-TEXT_ORDERING_CORPUS: tuple[str, ...] = (
-    "[code] < 'B'",
-    "[code] >= 'B'",
-    "[code] > 'A'",
-    "[label] < 'z'",
-    "[label] > 'ALPHA'",
-    "[label] < 'beta'",
-)
-
-# The corpus entries that cannot discriminate, named so that every other entry must.
-NON_DISCRIMINATING: frozenset[str] = frozenset(
-    {
-        "[code] = null",
-        "[code] = 'X' and false",
-        "[code] = 'X' or true",
-        "[code] = 'X' and true",
-        "[code] = 'X' or false",
-        "concat([code], [label]) = 'ahaa'",
-        # ... and the three that pin "this matches nothing": a needle that is a regex
-        # metacharacter, a needle that is a LIKE wildcard, and a needle longer than any value.
-        "contains([label], 'a.p')",
-        "contains([label], '%')",
-        "ends_with([label], 'zzzzzzzzzz')",
-    }
-)
-
-# What the frame target answers on the row that is null in every column, and therefore whether
-# that row survives a filter in any engine. Only true keeps a row: null and false both drop it.
+# What a predicate answers on the row that is null in every column, and therefore whether that row
+# survives a filter. Only true keeps a row: null and false both drop it.
 NULL_LOGIC_CASES: tuple[tuple[str, Any], ...] = (
     ("[code] = 'A'", None),
     ("[code] != 'A'", None),
@@ -2026,231 +2000,15 @@ NULL_LOGIC_CASES: tuple[tuple[str, Any], ...] = (
     ("coalesce([code], 'Z') = 'Z'", True),
 )
 
-# A string literal an attacker would write, in the only place author text is still author text: a
-# value. Note what is absent -- a single quote, which this language cannot spell at all, because
-# there is no escape syntax and a quote simply ends the literal.
-HOSTILE_LITERALS: tuple[str, ...] = (
-    "; drop table entries; --",
-    " or 1=1 --",
-    " union select 1, 2, 3, 4, 5, 6, 7 --",
-    "/* comment */",
-    '"; drop table entries; --',
-    "`tick`",
-    "]bracket[",
-    "back\\slash",
-    "percent% and under_score",
-    "null byte \x00 here",
-    "line\nbreak",
-    "0x41",
-    "?",
-    "%s",
-)
-
-# The plain-identifier grammar, seen from both sides. A reserved word sits on the accepted side on
-# purpose: quoting is exactly what makes ``[order]`` safe, and an implementation that refused
-# keywords instead would be maintaining a dialect's word list forever.
-IDENTIFIER_CASES: tuple[tuple[str, bool], ...] = (
-    ("code", True),
-    ("_private", True),
-    ("x1", True),
-    ("order", True),
-    ("select", True),
-    ("GROUP", True),
-    ("a_b_9", True),
-    ("order status", False),
-    ("gl.account", False),
-    ("part-number", False),
-    ("1code", False),
-    ("cøde", False),
-    ('co"de', False),
-    ("co`de", False),
-    ("co[de", False),
-    ("co\x00de", False),
-    ("co\nde", False),
-    ("code--", False),
-    ("code;", False),
-    ("code)", False),
-    ("*", False),
-)
-
-# One snippet per function the language has, so no subset can fail open. The keys are checked
-# against ``ALLOWED_FUNCTIONS``: a function added to the language breaks that check until somebody
-# decides, per dialect, which side of the line it falls on. Every snippet is a valid frame
-# expression, so a refusal can only ever be the subset's doing.
-FUNCTION_SNIPPETS: dict[str, str] = {
-    "coalesce": "coalesce([code], 'Z') = 'Z'",
-    "concat": "concat([code], 'x') = 'Ax'",
-    "contains": "contains([label], 'lph')",
-    "starts_with": "starts_with([label], 'al')",
-    "ends_with": "ends_with([label], 'ha')",
-    "len": "len([label]) = 5",
-    "round": "round([amount], 0) = 10",
-    "abs": "abs([amount]) > 1",
-    "lower": "lower([label]) = 'éclair'",
-    "upper": "upper([label]) = 'ÉCLAIR'",
-    "strip": "strip([label]) = 'spaced'",
-    "regex_extract": "regex_extract([label], '(a)', 1) = 'a'",
-    "regex_replace": "regex_replace([label], 'a', 'X') = 'X'",
-    "regex_match": "regex_match([label], 'a')",
-    "format_number": "format_number([amount], 2, ',', '.') = '10.50'",
-    # Outside every subset, so these snippets are only ever read by the completeness check below --
-    # but they are real expressions, so that the day a dialect can push one down it already works.
-    "year": "year([seen]) = 2026",
-    "add_months": "add_months([seen], 1) = date'2026-02-01'",
-    # The right-hand side is the real id of 'A' in that namespace, computed by the standard
-    # library, so this snippet keeps a row rather than merely compiling.
-    "uuid5": "uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', [code]) = '9759785f-95f6-554a-ba7a-c3e586ec5609'",
-}
-
-# Arithmetic is outside every subset, as a family rather than one operator at a time, and on
-# measurement rather than on taste: integer division truncates in both engines, and a whole number
-# that overflows is promoted to a float by SQLite -- keeping rows the frame target drops -- while
-# Postgres raises 'bigint out of range' from inside the read.
-ARITHMETIC_SNIPPETS: tuple[tuple[str, str], ...] = (
-    ("[qty] + 1 > 2", "+"),
-    ("[qty] - 1 > 2", "-"),
-    ("[qty] * 2 > 2", "*"),
-    ("[qty] / 2 > 1", "/"),
-    ("-[qty] > 1", "-"),
-)
-
-# The translation a well-meaning implementation would emit, and the proof it would have changed
-# the answer. Two kinds sit here together on purpose. Where the feature is refused, the naive SQL
-# is what refusing avoided. Where the feature is IN the subset, the naive SQL is the *other*
-# spelling somebody would have reached for -- LIKE -- and the test demands both that our clause
-# agrees with the frame target and that LIKE does not, which is the whole argument for spelling
-# contains() with instr and strpos instead.
-# 'İ' lowercases to an 'i' plus a combining dot in polars, to a plain 'i' in Postgres, and not at
-# all in SQLite: one function, three answers, which is why it is refused everywhere.
-DOTTED_I: str = "i\u0307stanbul"
-
-# The translation a well-meaning implementation would emit, the dialects it is proven to disagree
-# with the frame target in, and whether this target refuses the feature outright. Two kinds sit
-# here together on purpose. Where the feature is refused, the naive SQL is what refusing avoided.
-# Where the feature is IN the subset, the naive SQL is the *other* spelling somebody would reach
-# for -- LIKE -- and the test demands that ours agrees while pinning exactly where LIKE does not.
-# LIKE folds case in SQLite and does not in Postgres, so the case row disagrees in one engine
-# only: that it happens to be right in Postgres is luck, and the wildcard row underneath is why
-# luck is not a reason to use it.
-NAIVE_TRANSLATIONS: tuple[tuple[str, str, str, tuple[Any, ...], bool, frozenset[str]], ...] = (
-    # (expression, sqlite naive, postgres naive, params, refused here, dialects it disagrees in)
-    (
-        "upper([label]) = 'STRASSE'",
-        'upper("label") = ?',
-        'upper("label") = %s',
-        ("STRASSE",),
-        True,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    (
-        f"lower([label]) = '{DOTTED_I}'",
-        'lower("label") = ?',
-        'lower("label") = %s',
-        (DOTTED_I,),
-        True,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    (
-        "strip([label]) = 'spaced'",
-        'trim("label") = ?',
-        'btrim("label") = %s',
-        ("spaced",),
-        True,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    (
-        "round([amount], 0) = 10",
-        'round("amount", ?) = ?',
-        'round("amount"::numeric, %s) = %s',
-        (0, 10),
-        True,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    (
-        "[qty] / 2 > 1",
-        '"qty" / ? > ?',
-        '"qty" / %s > %s',
-        (2, 1),
-        True,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    (
-        "[qty] + 1 > 2",
-        '"qty" + ? > ?',
-        '"qty" + %s > %s',
-        (1, 2),
-        True,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    # ... and the ones that are in the subset, spelled the way that looks obvious.
-    (
-        "contains([label], 'alpha')",
-        '"label" like ?',
-        '"label" like %s',
-        ("%alpha%",),
-        False,
-        frozenset({"sqlite"}),
-    ),
-    (
-        "contains([label], '%')",
-        '"label" like ?',
-        '"label" like %s',
-        ("%%%",),
-        False,
-        frozenset({"sqlite", "postgres"}),
-    ),
-    (
-        "starts_with([label], '%')",
-        '"label" like ?',
-        '"label" like %s',
-        ("%%",),
-        False,
-        frozenset({"sqlite", "postgres"}),
-    ),
-)
-
-# Thirteen attacks the frame target already refuses, re-run through this target. Any that compiled
-# here would be a hole opened by the second target rather than inherited from the first.
-ATTACKS_REFUSED_BY_BOTH_TARGETS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("__import__('os').system('id')", ("__import__", "attribute")),
-    ("().__class__.__bases__[0].__subclasses__()", ("Attribute", "attribute", "syntax", "understood")),
-    ("open('/etc/passwd')", ("open",)),
-    ("globals()", ("globals",)),
-    ("[code].str.to_uppercase()", ("to_uppercase", "attribute")),
-    ("lambda: 1", ("Lambda",)),
-    ("(x := 1)", ("NamedExpr", "syntax", "understood")),
-    ("round(*(1, 2))", ("Starred",)),
-    ("round([amount], decimals=2)", ("keyword", "decimals")),
-    ("f'{code}'", ("JoinedStr", "FormattedValue")),
-    ("pl.col('code')", ("Attribute", "attribute", "pl")),
-    ("{'a': 1}", ("Dict",)),
-    ("1 if true else 2", ("IfExp",)),
-)
-
-# The same attacks written in SQL rather than in Python, and the two resource limits.
-SQL_SHAPED_ATTACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("[code] = 'A'; drop table entries", ("understood", "syntax")),
-    ("[code] = 'A' or 1=1; --", ("understood", "syntax")),
-    ("1=1 union select 1, 2", ("understood", "syntax", "union")),
-    ("[code] = 'A' /* comment */", ("understood", "syntax")),
-    ("[code] = 'A' -- comment", ("understood", "syntax", "comment")),
-    ("1+" * 20_000 + "1", (str(MAX_TEXT_LENGTH),)),
-    ("not " * (MAX_DEPTH + 5) + "true", (str(MAX_DEPTH),)),
-)
-
 
 @pytest.fixture
 def rows() -> pl.DataFrame:
-    """Eight rows carrying every family, every null shape, and the values that discriminate.
+    """Ten rows carrying every family, every null shape, and the values that tell rules apart.
 
     Key 4 is null in every column. Key 5 holds an empty string and a non-ASCII label. Key 6 holds
     the lowercase twin of key 1's code, so a case-insensitive comparison shows up as a row count.
-    Key 7 holds tab-padded text, so TRIM and ``strip()`` can be told apart. Key 8 holds an
-    uppercase non-ASCII label, so SQLite's ASCII-only folding shows up as a row count, and the
-    largest whole number a column can hold, so an overflowing sum does too. Keys 9 and 10 are
-    there for the two case-folding rules Postgres gets wrong rather than SQLite: 'straße'
-    uppercases to STRASSE in polars and to STRAßE in Postgres, and 'İstanbul' lowercases to an
-    'i' with a combining dot in polars and to a plain 'i' in Postgres.
+    Key 7 holds tab-padded text. Key 8 holds an uppercase non-ASCII label and the largest whole
+    number a column can hold. Keys 9 and 10 hold text whose case folding is unusual.
     """
     return pl.DataFrame(
         {
@@ -2276,630 +2034,35 @@ def rows() -> pl.DataFrame:
     )
 
 
-class _Engine:
-    """One real database to read a compiled clause out of, and the dialect it is compiled for."""
-
-    def __init__(self, dialect: str, connection: Any, table: str) -> None:
-        self.dialect = dialect
-        self.connection = connection
-        self.table = table
-        self.placeholder = "?" if dialect == "sqlite" else "%s"
-
-    def keys(self, clause: str, params: tuple[Any, ...]) -> list[int]:
-        """The keys a clause and its parameters select, read straight out of the database."""
-        result = self.connection.execute(f'select "key" from {self.table} where {clause}', params)
-        return sorted(row[0] for row in result.fetchall())
-
-    def insert(self, key: int, code: str) -> None:
-        marks = f"{self.placeholder}, {self.placeholder}"
-        self.connection.execute(f'insert into {self.table} ("key", "code") values ({marks})', (key, code))
-
-    def count(self) -> int:
-        return self.connection.execute(f"select count(*) from {self.table}").fetchall()[0][0]
-
-
-def _records(rows: pl.DataFrame, *, dialect: str) -> list[tuple[Any, ...]]:
-    """The frame's rows as the dialect stores them: SQLite has no date type and no boolean type."""
-    native = dialect == "postgres"
-    return [
-        (
-            row["key"],
-            row["code"],
-            row["label"],
-            row["amount"],
-            row["qty"],
-            row["flag"] if native or row["flag"] is None else int(row["flag"]),
-            row["seen"] if native or row["seen"] is None else row["seen"].isoformat(),
-        )
-        for row in rows.to_dicts()
-    ]
-
-
-@pytest.fixture(scope="session")
-def postgres_connection(postgres_scratch: Any) -> Any:
-    """A Postgres connection owning this file's scratch schema, with the search path pointed at it."""
-    connection = postgres_scratch(_SCRATCH_SCHEMA)
-    connection.execute(f"set search_path to {_SCRATCH_SCHEMA}")
-    return connection
-
-
-@pytest.fixture(params=["sqlite", "postgres"])
-def engine(request: pytest.FixtureRequest, rows: pl.DataFrame) -> Iterator[_Engine]:
-    """The frame's rows in one real database, for whichever dialect this run is about.
-
-    SQLite is here because a worked example has to run with no server at all, which is what keeps
-    the catalog's conformance rule absolute. Postgres is here because it is the engine a pushdown
-    will actually meet, and a subset declared against an engine nobody ran is a subset nobody can
-    trust -- so a run with no server skips that half loudly rather than quietly declaring it
-    proven.
-    """
-    dialect = request.param
-    if dialect == "sqlite":
-        connection = sqlite3.connect(":memory:")
-        connection.execute(
-            PUSHDOWN_DDL.format(table="entries", real="real", whole="integer", truth="integer", day="text")
-        )
-        connection.executemany("insert into entries values (?, ?, ?, ?, ?, ?, ?)", _records(rows, dialect=dialect))
-        connection.commit()
-        try:
-            yield _Engine(dialect, connection, "entries")
-        finally:
-            connection.close()
-        return
-
-    connection = request.getfixturevalue("postgres_connection")
-    table = f"{_SCRATCH_SCHEMA}.entries"
-    connection.execute(f"drop table if exists {table}")
-    connection.execute(
-        PUSHDOWN_DDL.format(
-            table=table,
-            real="double precision",
-            whole="bigint",
-            truth="boolean",
-            day="date",
-        )
-    )
-    connection.cursor().executemany(
-        f"insert into {table} values (%s, %s, %s, %s, %s, %s, %s)", _records(rows, dialect=dialect)
-    )
-    try:
-        yield _Engine(dialect, connection, table)
-    finally:
-        connection.execute(f"drop table if exists {table}")
-
-
-def bound(params: tuple[Any, ...], dialect: str) -> tuple[Any, ...]:
-    """The parameters as this dialect's driver can bind them -- the caller's job, not the module's.
-
-    Exactly one conversion exists and only one driver needs it: ``sqlite3`` no longer carries a
-    :class:`datetime.date`, its default adapter being deprecated and scheduled for removal, so
-    whoever holds that driver turns a date into ISO-8601 text -- which is also what makes the
-    comparison right, because SQLite stores a date as text and only the ISO spelling sorts
-    chronologically. ``psycopg`` binds a real date into a real date column and needs nothing. That
-    one tuple of parameters serves both drivers unchanged is the reason the compiler hands back
-    the author's own value rather than guessing at a wire format.
-    """
-    if dialect == "postgres":
-        return params
-    return tuple(value.isoformat() if isinstance(value, date) else value for value in params)
-
-
-def placeholder_count(clause: str, paramstyle: str) -> int:
-    """How many placeholders the clause carries.
-
-    Counting is meaningful only because no author text reaches the clause: an identifier cannot
-    hold a ``?`` or a ``%``, and a literal is never spelled there at all, so every occurrence
-    found here is one the compiler put there.
-    """
-    return clause.count("?" if paramstyle == "qmark" else "%s")
-
-
 def kept_by_frame(rows: pl.DataFrame, text: str) -> list[int]:
-    """The keys the frame target keeps, filtering in memory."""
+    """The keys a filter on ``text`` keeps."""
     return sorted(rows.filter(compile_expr(text, rows.schema))["key"].to_list())
 
 
-def kept_by_push(engine: _Engine, rows: pl.DataFrame, text: str) -> list[int]:
-    """The keys the SQL target keeps, compiled against the same schema the frame target sees."""
-    clause, params = compile_sql(text, rows.schema, dialect=engine.dialect)
-    return engine.keys(clause, bound(params, engine.dialect))
+class TestTheRowsAPredicateKeeps:
+    """Which rows a predicate keeps, including the null row and the edge cases of text matching."""
 
-
-def sql_message(text: str, columns: Any = None, *, dialect: str = "sqlite", **kwargs: Any) -> str:
-    """The error from compiling ``text`` for a database; fails the test if it compiles."""
-    with pytest.raises(ExpressionError) as caught:
-        compile_sql(text, columns, dialect=dialect, **kwargs)
-    return str(caught.value)
-
-
-class TestSqlSubset:
-    """Each dialect publishes what it can be given, and refuses the rest by name."""
-
-    def test_the_sql_target_is_published_per_dialect(self, rows: pl.DataFrame) -> None:
-        """``SQL_DIALECTS`` and ``sql_subset`` are the contract, and the subsets really differ.
-
-        Published for the same reason ``ALLOWED_FUNCTIONS`` is: an author cannot design around a
-        boundary they cannot see, and a loader cannot tell them which of their expressions will
-        push down. One accessor carries all three things a caller needs -- the functions, the type
-        families the engine orders the way polars does, and the placeholder style its usual driver
-        publishes -- because three parallel lookups keyed by dialect is how the three drift apart.
-
-        The asymmetry is the justification for the whole per-dialect model: SQLite can order text
-        and Postgres cannot, because SQLite's BINARY collation is byte order while Postgres orders
-        by locale. One global subset would have had to drop text ordering for everybody, or keep
-        it for everybody and be wrong on the engine that matters.
-        """
-        assert SQL_DIALECTS == {"sqlite", "postgres"}
-        assert SQL_PARAMSTYLES == {"qmark", "format"}
-        assert re.fullmatch(SQL_IDENTIFIER, "code") is not None
-        assert re.fullmatch(SQL_IDENTIFIER, "order status") is None
-
-        for dialect in sorted(SQL_DIALECTS):
-            subset = sql_subset(dialect)
-            assert subset.functions < ALLOWED_FUNCTIONS
-            assert subset.paramstyle in SQL_PARAMSTYLES
-            assert subset.ordered_families <= {"text", "number", "date"}
-            for name in sorted(subset.functions):
-                clause, params = compile_sql(FUNCTION_SNIPPETS[name], rows.schema, dialect=dialect)
-                assert placeholder_count(clause, subset.paramstyle) == len(params)
-
-        assert sql_subset("sqlite").paramstyle == "qmark"
-        assert sql_subset("postgres").paramstyle == "format"
-        assert "text" in sql_subset("sqlite").ordered_families
-        assert "text" not in sql_subset("postgres").ordered_families
-        assert {"number", "date"} <= sql_subset("postgres").ordered_families
-
-        # The corpus must name every function the language has, so adding one forces a decision
-        # per dialect rather than defaulting to either answer.
-        assert set(FUNCTION_SNIPPETS) == ALLOWED_FUNCTIONS
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    @pytest.mark.parametrize(
-        ("text", "named"),
-        [(snippet, name) for name, snippet in sorted(FUNCTION_SNIPPETS.items())] + list(ARITHMETIC_SNIPPETS),
-    )
-    def test_everything_outside_a_dialects_subset_is_refused_naming_the_dialect(
-        self, rows: pl.DataFrame, dialect: str, text: str, named: str
-    ) -> None:
-        """A whitelist that fails open has bitten this library once already; these fail closed.
-
-        Every function the language has is tried against every dialect, and that dialect's subset
-        decides: inside it the expression compiles, outside it the refusal names the function,
-        names the dialect, and says where the capability went -- a Filter step after the read
-        still does all of it, in memory, with the frame target's exact semantics. Naming the
-        dialect is what makes the message actionable rather than arguable, because the same
-        function can be fine at one engine and wrong at another.
-
-        Each case is asserted to be a valid frame expression first, so a refusal here can only
-        ever be the subset's doing and never a pre-existing mistake in the snippet.
-        """
-        assert compile_expr(text, rows.schema) is not None
-        if named in sql_subset(dialect).functions:
-            clause, _ = compile_sql(text, rows.schema, dialect=dialect)
-            assert clause
-            return
-        message_text = sql_message(text, rows.schema, dialect=dialect)
-        assert named in message_text, f"{named!r} missing from {message_text!r}"
-        assert dialect in message_text, f"{dialect!r} missing from {message_text!r}"
-        assert "filter" in message_text.lower(), f"no route to a Filter step in {message_text!r}"
-
-    @pytest.mark.parametrize(("text", "lite_sql", "pg_sql", "params", "refused", "differs_in"), NAIVE_TRANSLATIONS)
-    def test_a_translation_that_looks_obvious_would_have_changed_the_answer(
-        self,
-        rows: pl.DataFrame,
-        engine: _Engine,
-        text: str,
-        lite_sql: str,
-        pg_sql: str,
-        params: tuple[Any, ...],
-        refused: bool,
-        differs_in: frozenset[str],
-    ) -> None:
-        """The measurement behind every entry in every subset, kept as a test.
-
-        Two kinds of case, and the second is what this round turned on. Where the feature is
-        refused, the SQL somebody would have written keeps different rows from the frame target --
-        so refusing was not caution, it was the only answer that leaves the predicate meaning one
-        thing. Where the feature is *in* the subset, the case pins the spelling: ``LIKE`` is the
-        obvious translation of ``contains`` and is the wrong one, because it folds case in SQLite
-        and because its wildcards would need an ESCAPE clause the dialects spell differently,
-        while ``instr`` and ``strpos`` are literal exactly as the frame target's ``contains`` is
-        literal. The test demands that ours agrees and the obvious one does not, on the same rows,
-        in the same engine.
-        """
-        naive = lite_sql if engine.dialect == "sqlite" else pg_sql
-        expected = kept_by_frame(rows, text)
-        try:
-            naive_keys: Any = engine.keys(naive, params)
-        except Exception as failure:  # an engine that refuses it outright is also a disagreement
-            naive_keys = f"refused by the engine: {type(failure).__name__}"
-        if engine.dialect in differs_in:
-            assert naive_keys != expected, f"{naive!r} agreed, so it no longer shows why the spelling matters"
-        else:
-            # Pinned as agreement rather than left out, because "it happens to be right here" is
-            # a fact with a shelf life: if this ever stops being true, the note above is wrong.
-            assert naive_keys == expected
-
-        if refused:
-            assert sql_message(text, rows.schema, dialect=engine.dialect)
-        else:
-            assert kept_by_push(engine, rows, text) == expected
-
-
-class TestSqlInjectionBoundary:
-    """No author character reaches the SQL string: an identifier passes a grammar, a value is bound."""
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    @pytest.mark.parametrize(("name", "accepted"), IDENTIFIER_CASES)
-    def test_a_column_reference_becomes_a_quoted_identifier_or_is_refused(
-        self, dialect: str, name: str, accepted: bool
-    ) -> None:
-        """The grammar is the whole defence, because an identifier cannot be bound as a parameter.
-
-        An accepted name is double-quoted into the clause, reserved word and all -- quoting is
-        exactly what makes ``[order]`` safe. A name outside the grammar produces no clause: a
-        quote, a backtick, a bracket, a null byte, a newline, a comment marker, a semicolon and a
-        non-ASCII letter are all refused rather than escaped, so there is no escaping rule to get
-        wrong and no doubled quote to reason about. One grammar serves every dialect,
-        deliberately: a per-dialect quoting rule is how a name that is safe in one place gets
-        written into a statement in another. This is stricter than the frame target on purpose --
-        ``[order status]`` filters perfectly well in memory -- and the refusal names the column so
-        an author knows to rename it or to filter after the read.
-        """
-        text = f"[{name}] is null"
-        if accepted:
-            clause, params = compile_sql(text, {name: pl.String}, dialect=dialect)
-            assert f'"{name}"' in clause
-            assert params == ()
-            assert re.fullmatch(SQL_IDENTIFIER, name) is not None
-        else:
-            assert name in sql_message(text, {name: pl.String}, dialect=dialect)
-            assert re.fullmatch(SQL_IDENTIFIER, name) is None
-
-    def test_a_hostile_literal_is_bound_as_a_parameter_and_never_reaches_the_clause(self, engine: _Engine) -> None:
-        """A quote, a semicolon, a comment, a UNION and a DROP all come back as a *value*.
-
-        Two things are pinned and the second is the stronger. The clause is identical to the one a
-        harmless value produces, so the value cannot have influenced it. And the round trip finds
-        the row holding the hostile value, which can only happen if the value was bound -- a
-        string assertion alone would be satisfied by an implementation that escaped instead. The
-        table is counted afterwards, because the interesting failure of a spliced literal is not a
-        wrong row, it is a missing table. Run against both engines, because "it was bound" is a
-        claim about a driver as much as about a clause.
-        """
-        dialect = engine.dialect
-        style = sql_subset(dialect).paramstyle
-        skeleton, _ = compile_sql("[code] = 'benign'", {"code": pl.String}, dialect=dialect)
-        assert placeholder_count(skeleton, style) == 1
-        for forbidden in ("'", ";", "--", "/*"):
-            assert forbidden not in skeleton, f"{forbidden!r} reached the clause {skeleton!r}"
-
-        storable = [value for value in HOSTILE_LITERALS if dialect == "sqlite" or value not in UNSTORABLE_IN_POSTGRES]
-        before = engine.count()
-        for offset, value in enumerate(storable):
-            engine.insert(100 + offset, value)
-
-        for offset, value in enumerate(storable):
-            clause, params = compile_sql(f"[code] = '{value}'", {"code": pl.String}, dialect=dialect)
-            assert clause == skeleton, f"the clause changed shape with {value!r} in it: {clause!r}"
-            assert params == (value,)
-            assert engine.keys(clause, bound(params, dialect)) == [100 + offset]
-
-        assert engine.count() == before + len(storable)
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("[code] = 'A'", ("A",)),
-            ("[code] is null", ()),
-            ("[code] = 'A' and [qty] = 1", ("A", 1)),
-            ("[qty] = 1 and [code] = 'A'", (1, "A")),
-            # The scan interns a repeated literal into one table slot; the parameters must not be
-            # interned with it. Two placeholders and one parameter is a silent wrong answer.
-            ("[code] = 'A' or [code] = 'A'", ("A", "A")),
-            ("[qty] in (1, 1, 2)", (1, 1, 2)),
-            ("[code] in ('A', 'B') and [code] != 'A'", ("A", "B", "A")),
-            ("[flag] = true and [amount] > -1.5", (True, -1.5)),
-            # A sign is folded into the literal before any operator exists, so refusing arithmetic
-            # must not refuse a negative bound value.
-            ("[amount] > -5", (-5,)),
-            ("coalesce([code], 'Z') = 'Z'", ("Z", "Z")),
-            ("[seen] >= date'2026-01-01' and [seen] < date'2026-06-15'", (date(2026, 1, 1), date(2026, 6, 15))),
-            # ends_with names its needle twice in both dialects, so the needle is bound twice.
-            ("ends_with([label], 'x')", ("x", "x")),
-            # ... and SQLite names the *subject* twice as well. When that subject carries a
-            # literal of its own, evaluation order and placeholder order come apart, and binding
-            # in evaluation order silently compares the wrong values. The two dialects therefore
-            # want different tuples, which is the whole reason this case is spelled per dialect.
-            (
-                "ends_with(coalesce([label], 'zz'), 'z')",
-                {"sqlite": ("zz", "zz", "z", "z"), "postgres": ("zz", "z", "z")},
-            ),
-        ],
-    )
-    def test_the_clause_carries_one_placeholder_per_parameter_in_author_order(
-        self, rows: pl.DataFrame, dialect: str, text: str, expected: tuple[Any, ...] | dict[str, tuple[Any, ...]]
-    ) -> None:
-        """Count and order, both pinned: an off-by-one here is a wrong answer, not an error.
-
-        A driver binds positionally, so a clause with one placeholder too many raises, one with
-        too few binds the *next* value into the wrong comparison, and one whose parameters are out
-        of order compares the right values against the wrong columns. Only the first of the three
-        is visible without reading the rows that came back. A translation that names a
-        sub-expression more than once -- which ``ends_with`` does in both dialects, and does twice
-        over in SQLite -- has to bind its parameters once per placeholder, in the order the
-        placeholders appear, and that is the case most likely to get this wrong.
-        """
-        subset = sql_subset(dialect)
-        wanted = expected[dialect] if isinstance(expected, dict) else expected
-        clause, params = compile_sql(text, rows.schema, dialect=dialect)
-        assert params == wanted
-        assert placeholder_count(clause, subset.paramstyle) == len(params)
-        if subset.paramstyle == "format":
-            # A '%' that is not a placeholder is a landmine for anything that formats the clause.
-            assert clause.count("%") == len(params)
-            assert "?" not in clause
-        else:
-            assert "%" not in clause
-
-    @pytest.mark.parametrize(
-        ("dialect", "paramstyle", "named"),
-        [
-            ("mysql", None, "mysql"),
-            ("oracle", None, "oracle"),
-            ("SQLITE", None, "SQLITE"),
-            ("", None, ""),
-            ("postgresql", None, "postgresql"),
-            ("sqlite", "named", "named"),
-            ("sqlite", "pyformat", "pyformat"),
-            ("sqlite", "numeric", "numeric"),
-            ("postgres", "QMARK", "QMARK"),
-            ("postgres", "", ""),
-            ("sqlite", "qmark ", "qmark "),
-        ],
-    )
-    def test_an_unpublished_dialect_or_placeholder_style_is_refused(
-        self, dialect: str, paramstyle: str | None, named: str
-    ) -> None:
-        """A dialect nobody has run, and a placeholder style nobody has bound, are both refused.
-
-        Two axes, deliberately not one. The *dialect* decides the SQL spelling and belongs to the
-        engine; the *placeholder style* decides how values are bound and belongs to the driver,
-        and two drivers for one engine do not agree on it. So the style defaults to the one that
-        dialect's usual driver publishes and may still be named explicitly -- but only from the
-        published pair, both of which bind a tuple. ``named`` and ``pyformat`` bind a mapping, so
-        a tuple handed to them is not merely untested but wrong; ``numeric`` is positional yet
-        numbers its placeholders. An unpublished dialect is the worse of the two mistakes, because
-        it would emit confident SQL that nobody has ever run against the engine it names -- which
-        is precisely the gap the parity sweep exists to close, and a gap no amount of reasoning
-        about a dialect's documentation closes on its own.
-        """
-        message_text = sql_message("[code] = 'A'", {"code": pl.String}, dialect=dialect, paramstyle=paramstyle)
-        assert repr(named) in message_text
-        for name in sorted(SQL_DIALECTS if paramstyle is None else SQL_PARAMSTYLES):
-            assert name in message_text
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    @pytest.mark.parametrize(
-        ("text", "alternatives"),
-        list(ATTACKS_REFUSED_BY_BOTH_TARGETS)
-        + list(SQL_SHAPED_ATTACKS)
-        + [(snippet, ()) for snippet in sorted(DISALLOWED_NODE_SNIPPETS.values())],
-    )
-    def test_every_attack_the_frame_target_refuses_is_refused_by_this_target_too(
-        self, dialect: str, text: str, alternatives: tuple[str, ...]
-    ) -> None:
-        """The second target inherits the first target's whitelist rather than reopening the question.
-
-        Both targets go through the same front door -- the size gate, the scan that lifts every
-        literal out before the parser sees the text, the node whitelist, the dtype checks -- so a
-        hole here would mean the SQL target had grown a parser of its own, which is the single
-        most valuable thing this file can look for. Run for every dialect, because a per-dialect
-        compiler is exactly the shape of code in which one branch quietly skips the front door.
-        The list carries the classic sandbox escapes, the same attacks written in SQL rather than
-        Python, the two resource limits, and the shared node-type corpus -- shared rather than
-        copied, so that a language grown by one node breaks every sweep together.
-        """
-        # The node corpus is compiled against an empty column list, exactly as the frame target's
-        # own sweep does, so a snippet the bracket rule turns into a column reference is refused
-        # rather than quietly compiling. The named attacks are compiled with no column list at
-        # all, so the refusal each earns is the one it is named for and not "unknown column".
-        message_text = sql_message(text, columns=() if alternatives == () else None, dialect=dialect)
-        assert alternatives == () or any(fragment in message_text for fragment in alternatives), (
-            f"none of {alternatives} appeared in {message_text!r}"
-        )
-
-
-class TestSqlAgreesWithTheFrameTarget:
-    """A predicate that means one thing in memory and another in the database is a wrong number."""
-
-    @pytest.mark.parametrize("text", AGREEMENT_CORPUS + TEXT_ORDERING_CORPUS)
-    def test_the_sql_target_keeps_exactly_the_rows_the_frame_target_keeps(
-        self, rows: pl.DataFrame, engine: _Engine, text: str
-    ) -> None:
-        """The invariant the whole design rests on, checked against every engine it claims.
-
-        For each expression: filter the frame in memory with the frame target, read the same rows
-        out of a real table through the SQL target, and demand the same keys. This is worth more
-        than any collection of single cases, because it is the property a reviewer actually wants
-        -- *the pushdown does not change the answer* -- rather than a set of examples somebody
-        hopes covers it. Every column carries nulls, so every case is also a null case, and every
-        case must split the table so none can pass by keeping everything or nothing.
-
-        The ordering cases are the per-dialect model in one assertion: against SQLite they are
-        agreement cases, and against Postgres they must be *refused*, because the server orders
-        text by locale -- where 'a' sorts before 'B' -- while the frame target orders it by bytes.
-        Five of the six kept different rows when measured, so the difference is not theoretical.
-        """
-        expected = kept_by_frame(rows, text)
-        if text in TEXT_ORDERING_CORPUS and "text" not in sql_subset(engine.dialect).ordered_families:
-            message_text = sql_message(text, rows.schema, dialect=engine.dialect)
-            assert "text" in message_text and engine.dialect in message_text
-            return
-        assert kept_by_push(engine, rows, text) == expected
-        assert text in NON_DISCRIMINATING or 0 < len(expected) < rows.height
+    @pytest.mark.parametrize(("text", "kept"), KEPT_ROWS)
+    def test_a_predicate_keeps_exactly_these_rows(self, rows: pl.DataFrame, text: str, kept: list[int]) -> None:
+        """Each case keeps the rows listed. A wildcard or a dot in a needle is a plain character."""
+        assert kept_by_frame(rows, text) == kept
 
     @pytest.mark.parametrize(("text", "on_the_null_row"), NULL_LOGIC_CASES)
-    def test_three_valued_null_logic_keeps_the_same_rows_in_every_engine(
-        self, rows: pl.DataFrame, engine: _Engine, text: str, on_the_null_row: Any
+    def test_the_row_that_is_null_everywhere_follows_three_valued_logic(
+        self, rows: pl.DataFrame, text: str, on_the_null_row: Any
     ) -> None:
-        """Null follows the engine in every target, and only ``true`` keeps a row in any of them.
+        """``and`` with false is false and ``or`` with true is true, even beside an unknown.
 
-        The row that is null in every column is the one place the engines could differ without
-        anybody noticing, so it is pinned three ways: the value the frame target computes for it,
-        whether the frame target keeps it, and whether the database keeps it. ``and`` with a false
-        operand is false and ``or`` with a true one is true even when the other side is unknown --
-        Kleene logic, identical in polars, SQLite and Postgres -- while ``and true`` and ``or
-        false`` leave the row unknown, and unknown is dropped by a filter and by a WHERE alike.
-        The text functions are in the list because a null subject has to make the whole test null
-        rather than false, which is what ``instr``, ``strpos``, ``substr``, ``right`` and ``||``
-        all do.
+        Every other test against a null is null, and a filter drops a null row. The text functions
+        are listed because a null subject has to make the whole test null rather than false.
         """
         values = rows.select(compile_expr(text, rows.schema).alias("out"))["out"].to_list()
         assert values[3] is on_the_null_row
+        assert (4 in kept_by_frame(rows, text)) is (on_the_null_row is True)
 
-        kept = kept_by_frame(rows, text)
-        assert (4 in kept) is (on_the_null_row is True)
-        assert kept_by_push(engine, rows, text) == kept
-
-    def test_a_null_inside_a_membership_list_is_refused_because_not_in_would_disagree(
-        self, rows: pl.DataFrame, engine: _Engine
-    ) -> None:
-        """The one construct where the engines differ outright, so it is refused, not translated.
-
-        ``[code] not in ('A', null)`` keeps seven rows in polars and *no row at all* in SQL,
-        because a null in the list makes ``NOT IN`` unknown for every row not already excluded.
-        That is the worst shape a disagreement can take: a filter that quietly empties a table.
-        Both spellings are refused rather than only the one that misbehaves, because the list is
-        the same construct in each and a rule that allows one but not the other is a rule nobody
-        can keep. The refusal says what to write instead, and the disagreement is demonstrated
-        against each engine rather than asserted.
-        """
-        for text in ("[code] in ('A', null)", "[code] not in ('A', null)"):
-            message_text = sql_message(text, rows.schema, dialect=engine.dialect)
-            assert "null" in message_text
-            assert "is null" in message_text
-
-        marks = f"{engine.placeholder}, {engine.placeholder}"
+    def test_a_null_inside_a_not_in_list_still_keeps_every_row_that_does_not_match(self, rows: pl.DataFrame) -> None:
+        """``[code] not in ('A', null)`` keeps the seven rows whose code is neither 'A' nor null."""
         assert kept_by_frame(rows, "[code] not in ('A', null)") == [2, 3, 5, 6, 8, 9, 10]
-        assert engine.keys(f'"code" not in ({marks})', ("A", None)) == []
-
-    def test_a_date_literal_is_bound_as_the_authors_date_for_each_driver_to_adapt(
-        self, rows: pl.DataFrame, engine: _Engine
-    ) -> None:
-        """A date parameter is a ``date``, and the two drivers need opposite things from it.
-
-        The sharpest edge in the design, and the dialect split is what makes the ruling obvious
-        rather than arbitrary. The compiler knows no driver, so it hands back the value the author
-        wrote: ``psycopg`` binds that straight into a real ``date`` column, while ``sqlite3``
-        cannot bind one at all -- its default adapter is deprecated and scheduled for removal --
-        so whoever holds that driver converts it to ISO-8601 text. One parameter tuple, two
-        drivers, each doing what it needs; a compiler that had converted for one would have broken
-        the other.
-
-        Two consequences for SQLite, both load-bearing: the comparison is right *only* because ISO
-        text sorts chronologically, so a column holding '15/06/2026' would compare as text and
-        answer nonsense with nothing in this library able to see it; and a column of dates read
-        back out of SQLite arrives as a string, so the frame target would refuse the very
-        predicate the SQL target just answered.
-        """
-        clause, params = compile_sql("[seen] >= date'2026-01-01'", rows.schema, dialect=engine.dialect)
-        assert params == (date(2026, 1, 1),)
-
-        if engine.dialect == "sqlite":
-            # With no adapter registered for a date -- the state a future Python arrives in -- the
-            # driver cannot bind one. The registry is emptied and restored here rather than
-            # trusted, because it is process-global and another module may have registered one.
-            saved = dict(sqlite3.adapters)
-            try:
-                for key in [key for key in sqlite3.adapters if key[0] is date]:
-                    del sqlite3.adapters[key]
-                with pytest.raises(sqlite3.Error):
-                    engine.keys(clause, params)
-            finally:
-                sqlite3.adapters.clear()
-                sqlite3.adapters.update(saved)
-
-        expected = kept_by_frame(rows, "[seen] >= date'2026-01-01'")
-        assert engine.keys(clause, bound(params, engine.dialect)) == expected
-
-        # Everything else needs no adaptation from anybody: str, int, float, bool and None are
-        # what every DBAPI driver binds without an adapter registry.
-        _, plain = compile_sql(
-            "[code] = 'A' or [qty] = 1 or [amount] > 1.5 or [flag] = true", rows.schema, dialect=engine.dialect
-        )
-        assert plain == ("A", 1, 1.5, True)
-        assert bound(plain, engine.dialect) == plain
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "[code] = 'A' or [code] = 'B'",
-            "[code] = 'A' or [flag] = false",
-            "[code] = 'A' and [flag]",
-            "not [flag]",
-            "[code] in ('A', 'B')",
-            "[code] is null",
-            "contains([label], 'a') or [code] = 'B'",
-        ],
-    )
-    def test_a_clause_stays_correct_when_the_caller_conjoins_another_condition(
-        self, rows: pl.DataFrame, engine: _Engine, text: str
-    ) -> None:
-        """A clause is a self-contained boolean expression, so a caller may AND its own onto it.
-
-        The read tool will do exactly that -- its own incremental-sync condition beside the
-        author's predicate -- and a clause whose top-level ``or`` has lost its grouping silently
-        widens to keep rows the author excluded. The clause carries no ``where`` keyword of its
-        own for the same reason: composing the statement belongs to whoever is building it.
-        """
-        clause, params = compile_sql(text, rows.schema, dialect=engine.dialect)
-        expected = sorted(
-            rows.filter(compile_expr(text, rows.schema) & compile_expr("[qty] = 3", rows.schema))["key"].to_list()
-        )
-        assert engine.keys(f'{clause} and "qty" = 3', bound(params, engine.dialect)) == expected
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    @pytest.mark.parametrize(
-        ("text", "with_schema", "holds"),
-        [
-            ("[amount]", True, "Float64"),
-            ("[code]", True, "String"),
-            ("[seen]", True, "Date"),
-            ("'x'", True, "text"),
-            ("42", True, "whole number"),
-            ("date'2026-01-01'", True, "date"),
-            ("coalesce([code], 'Z')", True, "text"),
-            # A literal's family is knowable from the text, so it is refused with no schema at all.
-            ("42", False, "whole number"),
-            # A column's is not, and unknown means unchecked here exactly as it does for the frame
-            # target: a caller validating a definition against a template has no frame to consult.
-            ("[amount]", False, None),
-        ],
-    )
-    def test_a_clause_that_is_not_a_condition_is_refused_before_a_driver_sees_it(
-        self, rows: pl.DataFrame, dialect: str, text: str, with_schema: bool, holds: str | None
-    ) -> None:
-        """``[amount]`` is what an author writes when they meant ``[amount] > 0``.
-
-        A WHERE clause has to be a condition. Handed a value instead, SQLite answers by
-        *truthiness* -- a non-zero amount keeps a row and a zero one drops it -- which is not an
-        error anywhere, merely a filter that means something else; Postgres raises, in the
-        driver's vocabulary, naming neither the field nor the text. So the refusal happens here,
-        against the schema, and names what the expression holds, mirroring ``compile_predicate_for``
-        on the frame side. The last case states the hole rather than papering over it: with no
-        schema in hand nothing can be said about a column, so a definition-time check cannot catch
-        ``where: [amount]`` and the read tool holding the real column types must.
-        """
-        columns = rows.schema if with_schema else None
-        if holds is None:
-            clause, params = compile_sql(text, columns, dialect=dialect)
-            assert '"amount"' in clause and params == ()
-            return
-        message_text = sql_message(text, columns, dialect=dialect)
-        assert "condition" in message_text
-        assert holds in message_text
 
 
 class TestYearReadsThePartOfADate:
@@ -3128,30 +2291,6 @@ class TestAddMonthsShiftsADateByWholeMonths:
         """
         assert scalar("add_months(date'2026-01-31', 1)") == date(2026, 2, 28)
         assert scalar("add_months(date'2026-01-31', -1)") == date(2025, 12, 31)
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    def test_no_database_here_can_be_given_add_months(self, rows: pl.DataFrame, dialect: str) -> None:
-        """Date arithmetic is spelled differently by every engine, so it is not pushed down.
-
-        One engine adds an interval, another adds text to a date function, and they do not agree
-        with each other about the end of a short month either. A pushdown that got that wrong would
-        not raise anything; it would return a different set of rows, quietly. So it is refused,
-        with a reason of its own in the published table, and the same predicate runs in memory
-        after the read instead.
-
-        The message has to name the function and the dialect. "This cannot be pushed down" is
-        something an author can only argue with; "add_months cannot be read at the postgres
-        database, apply it in a Filter step after the read" is something they can act on.
-        """
-        assert "add_months" not in sql_subset(dialect).functions
-
-        text = "add_months([seen], 1) = date'2026-02-01'"
-        assert compile_expr(text, rows.schema) is not None
-
-        message_text = sql_message(text, rows.schema, dialect=dialect)
-        assert "add_months" in message_text
-        assert dialect in message_text
-        assert "filter" in message_text.lower()
 
 
 class TestAddMonthsCountsThatArriveThroughAnExpression:
@@ -3622,8 +2761,7 @@ class TestFormatNumberWritesANumberAsText:
     * a negative that rounds away to zero still shows its sign;
     * a column holding an exact decimal and one holding a double disagree in the last place, and
       both are written faithfully to what they hold;
-    * the figures do not move when the process-wide decimal context does;
-    * and it has no portable SQL, so it is outside every dialect's subset.
+    * and the figures do not move when the process-wide decimal context does.
     """
 
     @pytest.mark.parametrize(
@@ -3912,26 +3050,6 @@ class TestFormatNumberWritesANumberAsText:
         """A function that is not on the list is refused with the list, so the new name is findable."""
         assert "format_number" in ALLOWED_FUNCTIONS
         assert "format_number" in message("to_string([amount], 2)")
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    def test_no_database_here_can_be_given_format_number(self, rows: pl.DataFrame, dialect: str) -> None:
-        """Outside every subset, and the refusal names the dialect and says where to do it instead.
-
-        There is no portable spelling of a grouped, fixed-decimal number -- and the rounding of the
-        last place is exactly what each engine decides for itself, which is the whole disagreement
-        this function had to rule on. So a flow is told at compile time to format *after* the read
-        rather than during it, where the frame target's meaning is the one in force. Nothing is
-        lost: this is a formatting call, and a predicate that needed it was already a predicate
-        about text.
-        """
-        assert "format_number" not in sql_subset(dialect).functions
-        text = "format_number([amount], 2, ',', '.') = '10.50'"
-        assert compile_expr(text, rows.schema) is not None
-
-        reported = sql_message(text, rows.schema, dialect=dialect)
-        assert "format_number" in reported, f"the refusal does not name the function: {reported!r}"
-        assert dialect in reported, f"the refusal does not name the dialect: {reported!r}"
-        assert "filter" in reported.lower(), f"no route to a Filter step in {reported!r}"
 
     @pytest.mark.parametrize(
         "text",
@@ -4455,32 +3573,6 @@ class TestUuid5:
         reported = schema_message(frame, text)
         assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
         assert "text" in reported.lower(), f"the refusal does not say the value has to be text: {reported!r}"
-
-    @pytest.mark.parametrize("dialect", sorted(SQL_DIALECTS))
-    def test_an_id_is_never_pushed_down_to_an_engine(self, rows: pl.DataFrame, dialect: str) -> None:
-        """Outside every subset, refused by name, naming the dialect, and saying why.
-
-        This is the one exclusion where a wrong answer would not look wrong. An engine's own
-        ``uuid_generate_v5`` or digest function is reachable in one dialect and absent in the
-        other, and a pushdown that produced *some* 36-character id would be compared against the
-        frame target's id and silently keep no rows -- or, worse, be written as a key. So it is
-        refused the way the regex functions are, and the author's predicate is answered by a
-        Filter step after the read, in memory, with the frame target's exact semantics.
-        """
-        text = FUNCTION_SNIPPETS["uuid5"]
-
-        assert "uuid5" not in sql_subset(dialect).functions
-        assert compile_expr(text, rows.schema) is not None
-
-        reported = sql_message(text, rows.schema, dialect=dialect)
-        assert "uuid5" in reported, f"the refusal does not name the function: {reported!r}"
-        assert dialect in reported, f"the refusal does not name the dialect: {reported!r}"
-        assert "filter" in reported.lower(), f"no route to a Filter step in {reported!r}"
-
-        lowered = reported.lower()
-        assert any(word in lowered for word in ("sha", "hash", "digest")), (
-            f"the refusal does not say what the engine would have had to compute: {reported!r}"
-        )
 
     @pytest.mark.parametrize("namespace", [NAMESPACE, OTHER_NAMESPACE])
     def test_the_value_is_hashed_as_utf8_whatever_script_it_is_written_in(

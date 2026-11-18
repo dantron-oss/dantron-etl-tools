@@ -90,7 +90,7 @@ than the one you are editing. If anything looks impossible, run
 | `registry.py` | `ToolRegistry`, the shipped `REGISTRY`, and `get_tool`. |
 | `example_world.py` | The scratch directory and temporary environment a worked example runs in. |
 | `conformance.py` | `check_tool` and `check_registry`: every catalog rule, and every worked example run and compared. |
-| `expr.py` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression **or** to parameterised SQL. Never `eval`. |
+| `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
 | `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Group`, the walk order, the fingerprint. |
 | `rules.py` | Resolving `${rules.*}` references in a step's configuration. |
 | `loader.py` | `read_pipeline` and `load_pipeline`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
@@ -136,7 +136,7 @@ The rule that matters most. Manual §2 and §8 have the full argument. In short:
   Try two tools. Then three. Ask whether the *frame* is the problem: a "fill the blanks" request was
   really "the rows do not exist yet".
 - **A tool reshapes the frame. An expression function computes one column.** If it is one column
-  out, it is a function in `expr.py`, not a tool.
+  out, it is a function in `expr/functions.py`, not a tool.
 - **Extend the language by whitelisting a function, never by adding syntax.** No user-defined
   functions, no attribute access, no subscripts, no lambdas. That refusal is a security boundary:
   a pipeline file is edited by people who are not developers.
@@ -242,11 +242,15 @@ Manual §4b has the full rules and a worked before-and-after.
 
 ### Adding an expression function
 
-Follow the commit that added `uuid5` (`f22c8a3`, "Work out one name for a row from the values that
-identify it") as the worked template. A function touches more than the
-whitelist: `ALLOWED_FUNCTIONS`, its arity, its result type, the polars compilation, the SQL
-compilation or an explicit refusal there, tests for both targets, and its entry in `MANUAL.md` §4.2
-(a test checks the manual lists every whitelisted function).
+Each function is defined once, in the function table (`DEFINITIONS` in `expr/functions.py`). To add one:
+
+1. Write the function that builds its column from the arguments.
+2. Add one entry to the table: the name, the arguments in order and what each must hold, the
+   family and type of the result, the builder, a one-line summary and an example.
+   `ALLOWED_FUNCTIONS`, the arity check and the result types are all read from the entry, and a
+   test refuses an entry with a part missing.
+3. Write its tests. The tests from the commit that added `uuid5` (`f22c8a3`) are a good template.
+4. Add it to `MANUAL.md` §4.2. A test checks the manual lists every function.
 
 ### Adding a tool
 
