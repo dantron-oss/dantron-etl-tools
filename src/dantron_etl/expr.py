@@ -54,9 +54,10 @@ import math
 import operator
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 import polars as pl
 
@@ -93,32 +94,6 @@ class ExpressionError(ValueError):
 MAX_TEXT_LENGTH: Final[int] = 2_000
 MAX_DEPTH: Final[int] = 40
 MAX_NODES: Final[int] = 500
-
-# Extending this language means adding a name to this set and a branch to the compiler below. It
-# never means adding grammar: an author-facing operator has to be spelled, documented, reviewed in
-# a file and read by a non-developer, whereas one more named function is free of all of that.
-ALLOWED_FUNCTIONS: Final[frozenset[str]] = frozenset(
-    {
-        "coalesce",
-        "round",
-        "year",
-        "add_months",
-        "abs",
-        "lower",
-        "upper",
-        "strip",
-        "len",
-        "starts_with",
-        "ends_with",
-        "contains",
-        "regex_extract",
-        "regex_replace",
-        "regex_match",
-        "concat",
-        "format_number",
-        "uuid5",
-    }
-)
 
 # The whitelist. ``Expression`` and ``Load`` are housekeeping: the root of an eval tree, and the
 # context flag every name carries. Everything else here is either a shape the language uses or an
@@ -233,33 +208,6 @@ _OPERATOR_SYMBOLS: Final[dict[type[ast.AST], str]] = {
     ast.Or: "or",
 }
 
-# Arity is fixed, with no defaulted arguments: one spelling per call keeps a configuration file
-# reviewable, and a reviewer should not have to know a default to know what a line does.
-_FUNCTION_ARITY: Final[dict[str, int]] = {
-    "coalesce": -1,  # variadic, at least two
-    "round": 2,
-    "year": 1,
-    "add_months": 2,
-    "abs": 1,
-    "lower": 1,
-    "upper": 1,
-    "strip": 1,
-    "len": 1,
-    "starts_with": 2,
-    "ends_with": 2,
-    "contains": 2,
-    "regex_extract": 3,
-    "regex_replace": 3,
-    "regex_match": 2,
-    "concat": -1,  # variadic, at least two
-    "format_number": 4,
-    "uuid5": 2,
-}
-
-_NUMBER_FUNCTIONS: Final[frozenset[str]] = frozenset({"abs", "round"})
-_PATTERN_FUNCTIONS: Final[frozenset[str]] = frozenset({"regex_extract", "regex_replace", "regex_match"})
-_TEXT_PAIR_FUNCTIONS: Final[frozenset[str]] = frozenset({"starts_with", "ends_with", "contains"})
-
 # Two numeric bounds, both about keeping a refusal a refusal. A whole number outside the signed
 # 64-bit range has no column that could hold it, and a decimal place or capture group beyond a few
 # thousand has no meaning -- and in both cases the engine below rejects the value with an error of
@@ -271,6 +219,9 @@ _WHOLE_NUMBER_MAX: Final[int] = 2**63 - 1
 _SMALL_NUMBER_LIMIT: Final[int] = 65_535
 
 _DIGITS: Final[str] = "0123456789"
+
+# How a refusal names an argument by where it sits.
+_POSITIONS: Final[tuple[str, ...]] = ("first", "second", "third", "fourth")
 
 _MISSING: Final[Any] = object()
 _QUOTED_TEXT_ADVICE: Final[str] = "write text in single quotes, like 'PAID'"
@@ -319,43 +270,6 @@ class _Family(enum.Enum):
 # The two families that meet anything: a null value belongs to every family, and an unchecked one
 # cannot be argued with. Both are skipped by every requirement below.
 _WILDCARD_FAMILIES: Final[frozenset[_Family]] = frozenset({_Family.NULL, _Family.UNKNOWN})
-
-# What each function hands back, so that nesting is checked rather than assumed. Without this,
-# ``upper(len([label]))`` compiles and fails in the engine: checking a column reference while
-# treating every call's result as unknown leaves exactly that hole. ``coalesce`` is absent because
-# its result is whatever family its arguments agree on.
-_FUNCTION_RESULTS: Final[dict[str, _Family]] = {
-    "round": _Family.NUMBER,
-    "year": _Family.NUMBER,
-    "abs": _Family.NUMBER,
-    "len": _Family.NUMBER,
-    "lower": _Family.TEXT,
-    "upper": _Family.TEXT,
-    "strip": _Family.TEXT,
-    "regex_extract": _Family.TEXT,
-    "regex_replace": _Family.TEXT,
-    "concat": _Family.TEXT,
-    "add_months": _Family.DATE,
-    "starts_with": _Family.BOOLEAN,
-    "ends_with": _Family.BOOLEAN,
-    "contains": _Family.BOOLEAN,
-    "regex_match": _Family.BOOLEAN,
-    "format_number": _Family.TEXT,
-    "uuid5": _Family.TEXT,
-}
-
-
-# What four of those functions hand back exactly, beside the family. year() and len() always give
-# a whole number, so a count of months may be built out of either, and format_number() and uuid5()
-# always give a plain string. abs() and round() are not here: they hand back whatever their subject
-# holds, which is passed in from where the subject is in view.
-_FUNCTION_RESULT_DTYPES: Final[dict[str, pl.DataType]] = {
-    "year": pl.Int32(),
-    "len": pl.UInt32(),
-    "format_number": pl.String(),
-    "uuid5": pl.String(),
-}
-
 
 def compile_expr(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None = None) -> pl.Expr:
     """Compile author-written ``text`` into a column expression.
@@ -755,7 +669,7 @@ def _refusal(text: str, node: ast.AST) -> ExpressionError:
 def _build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[pl.Expr, frozenset[str]]:
     """The front door, then the column expression for what survived it."""
     tree, scanned, schema = _front_door(text, columns)
-    expression = _Compiler(text, scanned, schema, _FrameTarget(text)).compile(tree.body)
+    expression = _Compiler(text, scanned, schema, _FrameTarget()).compile(tree.body)
     return expression, frozenset(scanned.columns)
 
 
@@ -1013,10 +927,7 @@ class _FrameTarget:
     of places where its spelling is not the obvious one.
     """
 
-    __slots__ = ("_text",)
-
-    def __init__(self, text: str) -> None:
-        self._text = text
+    __slots__ = ()
 
     # -- leaves ------------------------------------------------------------
 
@@ -1086,179 +997,503 @@ class _FrameTarget:
         result = left.expr.is_in(list(values))
         return ~result if negated else result
 
-    # -- calls -------------------------------------------------------------
 
-    def coalesce(self, parts: Sequence[_Typed], family: _Family) -> pl.Expr:
-        return pl.coalesce([part.expr for part in parts])
+# ---------------------------------------------------------------------------
+# The functions: one definition each
+# ---------------------------------------------------------------------------
 
-    def concat(self, parts: Sequence[_Typed]) -> pl.Expr:
-        """Null in, null out, like everything else here -- and the safer of the two behaviours.
 
-        Where a joined value is a key for matching, dropping a missing part builds a *shorter* key
-        that matches the wrong rows, whereas a null key matches nothing and shows up as a null in
-        a count. An author who wants the other behaviour writes it: concat(coalesce([code], ''), '-x').
-        """
-        return pl.concat_str([self._as_text(part) for part in parts], separator="", ignore_nulls=False)
+class _Refusal(Exception):
+    """A refusal found where the expression's text is not in view. The compiler adds the text."""
 
-    def number_function(self, name: str, subject: _Typed, digits: int | None) -> pl.Expr:
-        return subject.expr.abs() if name == "abs" else subject.expr.round(digits)
+    def __init__(self, problem: str) -> None:
+        super().__init__(problem)
+        self.problem = problem
 
-    def year(self, subject: _Typed) -> pl.Expr:
-        return subject.expr.dt.year()
 
-    def add_months(self, subject: _Typed, count: _Typed) -> pl.Expr:
-        """Move a date by a count of months, landing on the last day of a month that is too short.
+def _probe_pattern(name: str, pattern: str, build: Callable[[pl.Expr], pl.Expr]) -> None:
+    """Compile one pattern against this engine, in both directions.
 
-        The count is built into the engine's own offset text -- '3mo', '-1mo' -- rather than
-        passed as a number, because the count can come out of a column and so is not known here.
-        The engine clamps in both directions, which is the behaviour wanted: 31 January plus one
-        month is 28 February, not 3 March.
+    It has to be the engine's own judgement: look-behind is legal in the standard library's
+    regular expressions and illegal in this engine, and a unicode script class is the reverse
+    -- so validating against the wrong one is worse than not validating, because it either
+    passes a pattern that fails at row time or refuses one that works.
+    """
+    try:
+        pl.select(build(pl.lit("", dtype=pl.String)))
+    except Exception as failure:
+        raise _Refusal(f"{name}() was given a pattern the engine cannot compile: '{pattern}' ({failure})") from None
 
-        A null on either side gives a null. The offset text is null when the count is null, and an
-        offset of null leaves a null date behind.
-        """
-        offset = pl.concat_str([count.expr.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
-        return subject.expr.dt.offset_by(offset)
 
-    def format_number(self, subject: _Typed, decimals: int, thousands: str, point: str) -> pl.Expr:
-        """A number written as text: grouped in threes, to exactly ``decimals`` places.
+@dataclass(frozen=True)
+class _Value:
+    """An argument worked out for each row: a column, a literal, or another expression.
 
-        **Rounding follows the value the column holds, not the decimal somebody typed.** -15.215 at
-        two places is -15.21, for three reasons worth stating together:
+    ``family`` is the type family the argument must belong to. ``None`` accepts any family, and
+    then the arguments have to agree with one another instead, which is what coalesce() needs.
+    ``requirement`` finishes the sentence a refusal starts with the function's name, as in
+    "lower() works on text". ``whole`` is set where the value must also be a whole number, and
+    finishes that refusal's sentence the same way.
 
-        * it is what the figure this library is measured against says, because that figure is
-          formatted by the same rule;
-        * it is the more honest reading -- an amount summed out of decimals *is* the decimal, and
-          -15.215 as one is -15.21499999999999985789..., which is below the half;
-        * and it is a disagreement with round() in this same language, which takes the other view
-          and gives -15.22. The two are written side by side here, and in the manual, so that a
-          reader meets the disagreement in the catalog rather than in a finished report.
+    A text argument reaches the function cast to a plain string (see :meth:`_Compiler._built`).
+    """
 
-        **This works a row at a time, which is a cost nothing here pays without an argument.**
-        The alternatives were measured rather than assumed: round(), a cast to a 2-place decimal
-        type and the obvious scale-then-round all answer -15.22, and a very wide decimal type lands
-        on the right side of this tie by luck and drifts the other way at wider scales still. There
-        is no route through the engine's own kernels that keeps the rule above. What makes the cost
-        payable is where this belongs: it writes a figure for somebody to read, so it runs at the
-        end of a flow on the rows that reach a report, not in the middle of one on a million rows.
-        Put it last, after the filtering and the joining, and the cost is the rows a person sees.
+    family: _Family | None
+    requirement: str
+    whole: str | None = None
 
-        A null is left null, the way it is everywhere else here: a formatted 0.00 where nothing was
-        measured cannot be told from a real zero by whoever reads the column.
-        """
-        return subject.expr.map_elements(
-            lambda value: _written_as_text(value, decimals, thousands, point),
-            return_dtype=pl.String,
-        )
 
-    def uuid5(self, subject: _Typed, namespace: uuid.UUID) -> pl.Expr:
-        """A stable id derived from a namespace and a value: RFC 4122 version 5, verbatim.
+class _WholeNumber:
+    """A whole number written in the file, between 0 and :data:`_SMALL_NUMBER_LIMIT`."""
 
-        The whole worth of this function is that the derivation is not this library's, so it is the
-        standard library's own that runs, rather than a SHA-1 and a bit-twiddle written out here
-        that would have to be kept equal to it by review. A hand-rolled digest measured 2.4x
-        quicker and was refused at that price: an id only this library can reproduce is not a key,
-        and the contract here is equality with uuid.uuid5 rather than resemblance to it.
+    def read(self, name: str, value: Any, position: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _SMALL_NUMBER_LIMIT:
+            raise _Refusal(f"{name}() needs a whole number between 0 and {_SMALL_NUMBER_LIMIT} as its {position} argument")
+        return value
 
-        **This works a row at a time, like format_number, and here the engine leaves no choice.**
-        There is no SHA-1 in it -- its hash() is a fast non-cryptographic one, which is a different
-        number -- so there is no kernel to vectorise against. A batch-at-a-time map measured 6%
-        quicker and would have to skip the nulls by hand, which is not a trade worth making. The
-        cost is about 5 microseconds a row, so a build over tens of thousands of rows spends a
-        fraction of a second here. Derive the id once, where the key is built, rather than
-        recomputing it in each step that joins on it.
 
-        A null value gives a null id, left to the engine's own skipping rather than written here. A
-        missing value hashed as some stand-in would put every row that is missing a part under one
-        real-looking id, which reads downstream as a legitimate key with several rows behind it
-        instead of as data that was never there. An author who wants the other behaviour writes
-        uuid5('...', coalesce([code], 'missing')), where the choice is visible.
-        """
-        return self._as_text(subject).map_elements(
-            lambda value: str(uuid.uuid5(namespace, value)),
-            return_dtype=pl.String,
-        )
+@dataclass(frozen=True)
+class _QuotedText:
+    """Quoted text, for an argument that has to be a decision in the file rather than data.
 
-    def text_function(self, name: str, subject: _Typed) -> pl.Expr:
-        text = self._as_text(subject)
-        if name == "lower":
-            return text.str.to_lowercase()
-        if name == "upper":
-            return text.str.to_uppercase()
-        if name == "strip":
-            return text.str.strip_chars()
-        # Characters in a piece of text, not rows in a frame: an expression here is one column's
-        # worth of values, so a row count would have no meaning an author could use.
-        return text.str.len_chars()
+    The reason travels with the argument rather than with this method, because the argument is
+    what an author has to change: a replacement and a separator are refused by the same rule
+    and for two different-sounding versions of the same worry.
+    """
 
-    def text_pair(self, name: str, subject: _Typed, other: _Typed) -> pl.Expr:
-        text = self._as_text(subject)
-        needle = self._as_text(other)
-        if name == "starts_with":
-            return text.str.starts_with(needle)
-        if name == "ends_with":
-            return text.str.ends_with(needle)
-        # literal=True, deliberately. A substring test that quietly accepted patterns would make a
-        # dot in an account code mean "any character", and the wrong rows would match without
-        # anyone noticing. The regex functions are the only door to regular expressions.
-        return text.str.contains(needle, literal=True)
+    reason: str = _REWRITE_REASON
 
-    def regex_match(self, subject: _Typed, pattern: str) -> pl.Expr:
-        # Unanchored, like the extract beside it: does the pattern occur anywhere. contains()
-        # cannot answer this, because contains() is literal by design, which leaves no way at all
-        # to ask a pattern question and get a truth value back -- and a filter needs one.
-        return self._as_text(subject).str.contains(pattern)
+    def read(self, name: str, value: Any, position: str) -> str:
+        if not isinstance(value, str):
+            raise _Refusal(f"{name}() needs quoted text as its {position} argument: {self.reason}")
+        return value
 
-    def regex_extract(self, subject: _Typed, pattern: str, group: int) -> pl.Expr:
-        return self._as_text(subject).str.extract(pattern, group)
 
-    def regex_replace(self, subject: _Typed, pattern: str, replacement: str) -> pl.Expr:
-        """A rewrite whose replacement is text, verbatim, whatever the engine reads into it.
+class _Pattern:
+    """The pattern for one of the regex functions: quoted text, checked, or nothing.
 
-        The engine underneath reads '$name' in a replacement as a capture group and deletes it
-        when no such group exists, so a replacement of '$5.00' lands as '.00' -- a hidden
-        mini-language inside a string literal, in a language for amounts. Doubling the sign is how
-        that engine spells a literal one. The pattern is wrapped so the engine takes its expansion
-        path for every pattern rather than only for some, which keeps the doubling meaning one
-        thing: a single-character pattern is otherwise handled by a fast path that would leave the
-        doubled sign in the result.
-        """
-        engine_pattern = f"(?:{pattern})"
-        engine_replacement = replacement.replace("$", "$$")
-        self._probe("regex_replace", pattern, lambda probe: probe.str.replace_all(engine_pattern, engine_replacement))
-        return self._as_text(subject).str.replace_all(engine_pattern, engine_replacement)
+    A literal and not a column, which is what makes a check before the run possible at all: a
+    pattern that varies row by row can be neither read in the file nor validated up front.
+    """
 
-    def check_pattern(self, name: str, pattern: str) -> None:
-        """Ask the engine that will run the pattern whether it compiles, before any row is read."""
-        self._probe(name, pattern, lambda probe: probe.str.contains(pattern))
+    def read(self, name: str, value: Any, position: str) -> str:
+        if not isinstance(value, str):
+            raise _Refusal(
+                f"{name}() needs a quoted pattern as its {position} argument, as in {name}([label], '[a-z]+'...): a "
+                f"pattern is a fixed decision recorded in the file, so it cannot come out of a column"
+            )
+        # Ask the engine that will run the pattern whether it compiles, before any row is read.
+        _probe_pattern(name, value, lambda probe: probe.str.contains(value))
+        return value
 
-    # -- helpers -----------------------------------------------------------
 
-    def _as_text(self, typed: _Typed) -> pl.Expr:
-        """A text operand, cast so an engine string kernel always meets a plain string.
+class _Namespace:
+    """uuid5()'s first argument: quoted text in the file, and a UUID, checked before any row.
 
-        Redundant whenever a schema was supplied, because the leaf column reference is already
-        cast there -- this is what is left for the caller with no schema in hand, where the leaf
-        dtype is unknown and a compactly stored column would otherwise reach a string kernel
-        uncast. The cast is a no-op on a column already stored as a plain string.
-        """
-        return typed.expr.cast(pl.String)
+    Parsed rather than pattern-matched, and parsed by the same library that will derive the
+    ids, so what is accepted here is exactly what works there -- a rule of this module's own
+    would either refuse a namespace that derives perfectly good ids or pass one that fails at
+    row time, and both defeat the point of checking at all.
+    """
 
-    def _probe(self, name: str, pattern: str, build: Callable[[pl.Expr], pl.Expr]) -> None:
-        """Compile one pattern against this engine, in both directions.
-
-        It has to be the engine's own judgement: look-behind is legal in the standard library's
-        regular expressions and illegal in this engine, and a unicode script class is the reverse
-        -- so validating against the wrong one is worse than not validating, because it either
-        passes a pattern that fails at row time or refuses one that works.
-        """
+    def read(self, name: str, value: Any, position: str) -> uuid.UUID:
+        written = _QuotedText(_NAMESPACE_REASON).read(name, value, position)
         try:
-            pl.select(build(pl.lit("", dtype=pl.String)))
-        except Exception as failure:
-            raise _error(
-                self._text,
-                f"{name}() was given a pattern the engine cannot compile: '{pattern}' ({failure})",
+            return uuid.UUID(written)
+        except ValueError as failure:
+            raise _Refusal(
+                f"{name}() was given a namespace that is not a UUID: {written!r} ({failure}) -- write one as "
+                f"'{_UUID_EXAMPLE}'"
             ) from None
+
+
+_Param = _Value | _WholeNumber | _QuotedText | _Pattern | _Namespace
+
+
+@dataclass(frozen=True)
+class _Function:
+    """Everything about one function, in one place.
+
+    ``params`` lists the arguments in order. Their number is fixed, with no defaulted arguments:
+    one spelling per call keeps a configuration file reviewable, and a reviewer should not have to
+    know a default to know what a line does. A ``variadic`` function has a single entry, which
+    every argument it is given must meet, and it needs at least two.
+
+    ``result`` is the family the function hands back, so that nesting is checked rather than
+    assumed. Without it, ``upper(len([label]))`` compiles and fails in the engine. ``"common"``
+    means the family its arguments agree on, which is what coalesce() gives.
+
+    ``result_dtype`` is what the result holds exactly, beside the family, where that is known.
+    year() and len() always give a whole number, so a count of months may be built out of either,
+    and format_number() and uuid5() always give a plain string. ``"subject"`` means whatever the
+    first argument holds, which is what abs() and round() give. ``"common"`` means worked out from
+    all the arguments, which is what coalesce() gives.
+
+    ``to_polars`` builds the column expression. It is given a column expression for each value
+    argument and the Python value for each argument written in the file, in order.
+
+    ``summary`` says in one line what the function gives. ``example`` is one call, as an author
+    would write it.
+    """
+
+    name: str
+    params: tuple[_Param, ...]
+    result: _Family | Literal["common"]
+    to_polars: Callable[..., pl.Expr]
+    summary: str
+    example: str
+    variadic: bool = False
+    result_dtype: pl.DataType | Literal["subject", "common"] | None = None
+
+
+def _coalesce(*parts: pl.Expr) -> pl.Expr:
+    return pl.coalesce(list(parts))
+
+
+def _concat(*parts: pl.Expr) -> pl.Expr:
+    """Null in, null out, like everything else here -- and the safer of the two behaviours.
+
+    Where a joined value is a key for matching, dropping a missing part builds a *shorter* key
+    that matches the wrong rows, whereas a null key matches nothing and shows up as a null in
+    a count. An author who wants the other behaviour writes it: concat(coalesce([code], ''), '-x').
+    """
+    return pl.concat_str(list(parts), separator="", ignore_nulls=False)
+
+
+def _round(subject: pl.Expr, digits: int) -> pl.Expr:
+    return subject.round(digits)
+
+
+def _abs(subject: pl.Expr) -> pl.Expr:
+    return subject.abs()
+
+
+def _year(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.year()
+
+
+def _add_months(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+    """Move a date by a count of months, landing on the last day of a month that is too short.
+
+    The count is built into the engine's own offset text -- '3mo', '-1mo' -- rather than
+    passed as a number, because the count can come out of a column and so is not known here.
+    The engine clamps in both directions, which is the behaviour wanted: 31 January plus one
+    month is 28 February, not 3 March.
+
+    A null on either side gives a null. The offset text is null when the count is null, and an
+    offset of null leaves a null date behind.
+    """
+    offset = pl.concat_str([count.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
+    return subject.dt.offset_by(offset)
+
+
+def _format_number(subject: pl.Expr, decimals: int, thousands: str, point: str) -> pl.Expr:
+    """A number written as text: grouped in threes, to exactly ``decimals`` places.
+
+    **Rounding follows the value the column holds, not the decimal somebody typed.** -15.215 at
+    two places is -15.21, for three reasons worth stating together:
+
+    * it is what the figure this library is measured against says, because that figure is
+      formatted by the same rule;
+    * it is the more honest reading -- an amount summed out of decimals *is* the decimal, and
+      -15.215 as one is -15.21499999999999985789..., which is below the half;
+    * and it is a disagreement with round() in this same language, which takes the other view
+      and gives -15.22. The two are written side by side here, and in the manual, so that a
+      reader meets the disagreement in the catalog rather than in a finished report.
+
+    **This works a row at a time, which is a cost nothing here pays without an argument.**
+    The alternatives were measured rather than assumed: round(), a cast to a 2-place decimal
+    type and the obvious scale-then-round all answer -15.22, and a very wide decimal type lands
+    on the right side of this tie by luck and drifts the other way at wider scales still. There
+    is no route through the engine's own kernels that keeps the rule above. What makes the cost
+    payable is where this belongs: it writes a figure for somebody to read, so it runs at the
+    end of a flow on the rows that reach a report, not in the middle of one on a million rows.
+    Put it last, after the filtering and the joining, and the cost is the rows a person sees.
+
+    A null is left null, the way it is everywhere else here: a formatted 0.00 where nothing was
+    measured cannot be told from a real zero by whoever reads the column.
+
+    The width and both separators are read out of the file and never out of a row. How many
+    places a figure is written to is a decision a reviewer reads in the line, the way round()'s
+    digits and regex_extract()'s group are -- a width that varied row by row would not be a width
+    at all.
+    """
+    return subject.map_elements(
+        lambda value: _written_as_text(value, decimals, thousands, point),
+        return_dtype=pl.String,
+    )
+
+
+def _uuid5(namespace: uuid.UUID, subject: pl.Expr) -> pl.Expr:
+    """A stable id derived from a namespace and a value: RFC 4122 version 5, verbatim.
+
+    The whole worth of this function is that the derivation is not this library's, so it is the
+    standard library's own that runs, rather than a SHA-1 and a bit-twiddle written out here
+    that would have to be kept equal to it by review. A hand-rolled digest measured 2.4x
+    quicker and was refused at that price: an id only this library can reproduce is not a key,
+    and the contract here is equality with uuid.uuid5 rather than resemblance to it.
+
+    **This works a row at a time, like format_number, and here the engine leaves no choice.**
+    There is no SHA-1 in it -- its hash() is a fast non-cryptographic one, which is a different
+    number -- so there is no kernel to vectorise against. A batch-at-a-time map measured 6%
+    quicker and would have to skip the nulls by hand, which is not a trade worth making. The
+    cost is about 5 microseconds a row, so a build over tens of thousands of rows spends a
+    fraction of a second here. Derive the id once, where the key is built, rather than
+    recomputing it in each step that joins on it.
+
+    A null value gives a null id, left to the engine's own skipping rather than written here. A
+    missing value hashed as some stand-in would put every row that is missing a part under one
+    real-looking id, which reads downstream as a legitimate key with several rows behind it
+    instead of as data that was never there. An author who wants the other behaviour writes
+    uuid5('...', coalesce([code], 'missing')), where the choice is visible.
+
+    The namespace is read first, and out of the file rather than out of a row, so that a
+    malformed one is refused in the line the author wrote instead of inside a select that has
+    already written ids for every row before it.
+    """
+    return subject.map_elements(
+        lambda value: str(uuid.uuid5(namespace, value)),
+        return_dtype=pl.String,
+    )
+
+
+def _lower(subject: pl.Expr) -> pl.Expr:
+    return subject.str.to_lowercase()
+
+
+def _upper(subject: pl.Expr) -> pl.Expr:
+    return subject.str.to_uppercase()
+
+
+def _strip(subject: pl.Expr) -> pl.Expr:
+    return subject.str.strip_chars()
+
+
+def _len(subject: pl.Expr) -> pl.Expr:
+    # Characters in a piece of text, not rows in a frame: an expression here is one column's
+    # worth of values, so a row count would have no meaning an author could use.
+    return subject.str.len_chars()
+
+
+def _starts_with(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
+    return subject.str.starts_with(needle)
+
+
+def _ends_with(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
+    return subject.str.ends_with(needle)
+
+
+def _contains(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
+    # literal=True, deliberately. A substring test that quietly accepted patterns would make a
+    # dot in an account code mean "any character", and the wrong rows would match without
+    # anyone noticing. The regex functions are the only door to regular expressions.
+    return subject.str.contains(needle, literal=True)
+
+
+def _regex_match(subject: pl.Expr, pattern: str) -> pl.Expr:
+    # Unanchored, like the extract beside it: does the pattern occur anywhere. contains()
+    # cannot answer this, because contains() is literal by design, which leaves no way at all
+    # to ask a pattern question and get a truth value back -- and a filter needs one.
+    return subject.str.contains(pattern)
+
+
+def _regex_extract(subject: pl.Expr, pattern: str, group: int) -> pl.Expr:
+    return subject.str.extract(pattern, group)
+
+
+def _regex_replace(subject: pl.Expr, pattern: str, replacement: str) -> pl.Expr:
+    """A rewrite whose replacement is text, verbatim, whatever the engine reads into it.
+
+    The engine underneath reads '$name' in a replacement as a capture group and deletes it
+    when no such group exists, so a replacement of '$5.00' lands as '.00' -- a hidden
+    mini-language inside a string literal, in a language for amounts. Doubling the sign is how
+    that engine spells a literal one. The pattern is wrapped so the engine takes its expansion
+    path for every pattern rather than only for some, which keeps the doubling meaning one
+    thing: a single-character pattern is otherwise handled by a fast path that would leave the
+    doubled sign in the result.
+    """
+    engine_pattern = f"(?:{pattern})"
+    engine_replacement = replacement.replace("$", "$$")
+    _probe_pattern("regex_replace", pattern, lambda probe: probe.str.replace_all(engine_pattern, engine_replacement))
+    return subject.str.replace_all(engine_pattern, engine_replacement)
+
+
+_ON_TEXT: Final[_Value] = _Value(_Family.TEXT, "works on text")
+_ON_NUMBERS: Final[_Value] = _Value(_Family.NUMBER, "works on numbers")
+_AGAINST_TEXT: Final[_Value] = _Value(_Family.TEXT, "compares text against text")
+
+# The table. Adding a function to the language means adding one entry here, and the function that
+# builds it above. It never means adding grammar: an author-facing operator has to be spelled,
+# documented, reviewed in a file and read by a non-developer, whereas one more named function is
+# free of all of that. The manual's list of functions (MANUAL.md section 4.2) is checked against
+# this table by a test.
+_DEFINITIONS: Final[tuple[_Function, ...]] = (
+    _Function(
+        "coalesce",
+        params=(_Value(None, "needs every value it chooses between in the same type family"),),
+        variadic=True,
+        result="common",
+        result_dtype="common",
+        to_polars=_coalesce,
+        summary="The first of its arguments that is not null.",
+        example="coalesce([discount], 0.0)",
+    ),
+    _Function(
+        "round",
+        params=(_ON_NUMBERS, _WholeNumber()),
+        result=_Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_round,
+        summary="A number rounded to a given number of decimal places.",
+        example="round([amount], 2)",
+    ),
+    _Function(
+        "year",
+        params=(_Value(_Family.DATE, "reads the year of a date"),),
+        result=_Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_year,
+        summary="The year of a date, as a whole number.",
+        example="year([starts_on])",
+    ),
+    _Function(
+        "add_months",
+        params=(
+            _Value(_Family.DATE, "moves a date"),
+            _Value(_Family.NUMBER, "moves a date by a count of months", whole="moves a date by whole months"),
+        ),
+        result=_Family.DATE,
+        to_polars=_add_months,
+        summary="A date moved by a whole number of months, kept inside a month that is too short.",
+        example="add_months([starts_on], [months] - 1)",
+    ),
+    _Function(
+        "abs",
+        params=(_ON_NUMBERS,),
+        result=_Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_abs,
+        summary="A number without its sign.",
+        example="abs([amount])",
+    ),
+    _Function(
+        "lower",
+        params=(_ON_TEXT,),
+        result=_Family.TEXT,
+        to_polars=_lower,
+        summary="Text in lower case.",
+        example="lower([name])",
+    ),
+    _Function(
+        "upper",
+        params=(_ON_TEXT,),
+        result=_Family.TEXT,
+        to_polars=_upper,
+        summary="Text in upper case.",
+        example="upper([code])",
+    ),
+    _Function(
+        "strip",
+        params=(_ON_TEXT,),
+        result=_Family.TEXT,
+        to_polars=_strip,
+        summary="Text without the whitespace at its start and end.",
+        example="strip([name])",
+    ),
+    _Function(
+        "len",
+        params=(_ON_TEXT,),
+        result=_Family.NUMBER,
+        result_dtype=pl.UInt32(),
+        to_polars=_len,
+        summary="The number of characters in a piece of text.",
+        example="len([code])",
+    ),
+    _Function(
+        "starts_with",
+        params=(_ON_TEXT, _AGAINST_TEXT),
+        result=_Family.BOOLEAN,
+        to_polars=_starts_with,
+        summary="Whether text starts with other text, matched exactly.",
+        example="starts_with([code], 'AB-')",
+    ),
+    _Function(
+        "ends_with",
+        params=(_ON_TEXT, _AGAINST_TEXT),
+        result=_Family.BOOLEAN,
+        to_polars=_ends_with,
+        summary="Whether text ends with other text, matched exactly.",
+        example="ends_with([file_name], '.csv')",
+    ),
+    _Function(
+        "contains",
+        params=(_ON_TEXT, _AGAINST_TEXT),
+        result=_Family.BOOLEAN,
+        to_polars=_contains,
+        summary="Whether text contains other text, matched exactly rather than as a pattern.",
+        example="contains([note], 'refund')",
+    ),
+    _Function(
+        "regex_extract",
+        params=(_ON_TEXT, _Pattern(), _WholeNumber()),
+        result=_Family.TEXT,
+        to_polars=_regex_extract,
+        summary="The part of text that one group of a regular expression matched, or null.",
+        example="regex_extract([reference], '([0-9]+)', 1)",
+    ),
+    _Function(
+        "regex_replace",
+        params=(_ON_TEXT, _Pattern(), _QuotedText(_REWRITE_REASON)),
+        result=_Family.TEXT,
+        to_polars=_regex_replace,
+        summary="Text with every match of a regular expression replaced by fixed text.",
+        example="regex_replace(lower([name]), '[^a-z0-9]+', ' ')",
+    ),
+    _Function(
+        "regex_match",
+        params=(_ON_TEXT, _Pattern()),
+        result=_Family.BOOLEAN,
+        to_polars=_regex_match,
+        summary="Whether a regular expression matches anywhere in text.",
+        example="regex_match([code], '^[A-Z]{3}$')",
+    ),
+    _Function(
+        "concat",
+        params=(_Value(_Family.TEXT, "joins text"),),
+        variadic=True,
+        result=_Family.TEXT,
+        to_polars=_concat,
+        summary="Pieces of text joined end to end; null if any piece is null.",
+        example="concat('order ', [number])",
+    ),
+    _Function(
+        "format_number",
+        params=(
+            _Value(_Family.NUMBER, "writes a number as text"),
+            _WholeNumber(),
+            _QuotedText(_SEPARATOR_REASON),
+            _QuotedText(_SEPARATOR_REASON),
+        ),
+        result=_Family.TEXT,
+        result_dtype=pl.String(),
+        to_polars=_format_number,
+        summary="A number written as text, to a fixed number of places, with the separators stated.",
+        example="format_number([total], 2, ',', '.')",
+    ),
+    _Function(
+        "uuid5",
+        params=(_Namespace(), _Value(_Family.TEXT, "derives an id from text")),
+        result=_Family.TEXT,
+        result_dtype=pl.String(),
+        to_polars=_uuid5,
+        summary="A stable id (RFC 4122 version 5) derived from a namespace and a piece of text.",
+        example="uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))",
+    ),
+)
+
+_FUNCTIONS: Final[dict[str, _Function]] = {function.name: function for function in _DEFINITIONS}
+
+ALLOWED_FUNCTIONS: Final[frozenset[str]] = frozenset(_FUNCTIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -1516,129 +1751,92 @@ class _Compiler:
             return self._column(node)
         if name == _LITERAL_FN:
             return self._typed_value(self._interned(node), node)
-        if name not in ALLOWED_FUNCTIONS:
+        function = _FUNCTIONS.get(name)
+        if function is None:
             available = ", ".join(sorted(ALLOWED_FUNCTIONS))
             raise _error(self._text, f"{name!r} is not a function this language has: the functions are {available}")
 
-        arity = _FUNCTION_ARITY[name]
         arguments = node.args
-        if arity == -1:
+        if function.variadic:
             if len(arguments) < 2:
                 raise _error(
                     self._text,
                     f"{name}() takes at least 2 arguments, but was given {len(arguments)}",
                 )
-        elif len(arguments) != arity:
+        elif len(arguments) != len(function.params):
+            arity = len(function.params)
             raise _error(
                 self._text,
                 f"{name}() takes exactly {arity} argument{'s' if arity > 1 else ''}, but was given {len(arguments)}",
             )
-        return self._apply(name, node)
+        try:
+            return self._apply(function, node)
+        except _Refusal as refusal:
+            raise _error(self._text, refusal.problem) from None
 
-    def _apply(self, name: str, node: ast.Call) -> _Typed:
-        """One whitelisted function: its operands checked here, its spelling left to the target.
+    def _apply(self, function: _Function, node: ast.Call) -> _Typed:
+        """One whitelisted function: every argument read and checked, then the column built.
 
-        The named branches come first because the tail under them is not a fallback that raises --
-        it takes argument 0 as a text subject and ends at text_function(), which answers a name it
-        does not know with a character count. So a function whose first argument is not its
-        subject, as uuid5's namespace is not, is not merely better placed above the tail: reaching
-        the tail would compile it to the length of its own literal and raise nothing.
+        A function with a fixed number of arguments reads them in order, and checks each one before
+        reading the next, so the first argument at fault is the one reported. A variadic function
+        compiles every argument first and then checks them, in order.
         """
-        arguments = node.args
+        name = function.name
+        if function.variadic:
+            (param,) = function.params
+            params: list[_Param] = [param] * len(node.args)
+            arguments = [self._typed(argument) for argument in node.args]
+            if param.family is not None:
+                for argument in arguments:
+                    self._require(argument, param.family, f"{name}() {param.requirement}")
+        else:
+            params = list(function.params)
+            arguments = [
+                self._argument(name, param, argument, position)
+                for position, (param, argument) in enumerate(zip(params, node.args, strict=True))
+            ]
 
-        if name == "coalesce":
-            parts = [self._typed(argument) for argument in arguments]
-            family = self._one_family(parts, "coalesce() needs every value it chooses between in the same type family")
-            holds = f"gives {family.value}" if family not in _WILDCARD_FAMILIES else "holds an unknown type"
-            dtype = _combined_dtype([part.dtype for part in parts])
-            return _Typed(self._target.coalesce(parts, family), family, node, holds, dtype)
+        operands = [argument for argument in arguments if isinstance(argument, _Typed)]
+        if function.result == "common":
+            family = self._one_family(operands, f"{name}() {params[0].requirement}")
+        else:
+            family = function.result
+        built = function.to_polars(*(self._built(param, argument) for param, argument in zip(params, arguments)))
 
-        if name == "concat":
-            parts = [self._typed(argument) for argument in arguments]
-            for part in parts:
-                self._require(part, _Family.TEXT, "concat() joins text")
-            return self._result(name, self._target.concat(parts), node)
+        if function.result_dtype == "common":
+            dtype = _combined_dtype([operand.dtype for operand in operands])
+        elif function.result_dtype == "subject":
+            dtype = operands[0].dtype
+        else:
+            dtype = function.result_dtype
+        holds = f"gives {family.value}" if family not in _WILDCARD_FAMILIES else "holds an unknown type"
+        return _Typed(built, family, node, holds, dtype)
 
-        if name == "year":
-            subject = self._typed(arguments[0])
-            self._require(subject, _Family.DATE, "year() reads the year of a date")
-            return self._result(name, self._target.year(subject), node)
+    def _argument(self, name: str, param: _Param, node: ast.expr, position: int) -> Any:
+        """One argument of a fixed-arity function: a checked operand, or a value read from the file."""
+        if isinstance(param, _Value):
+            typed = self._typed(node)
+            if param.family is not None:
+                self._require(typed, param.family, f"{name}() {param.requirement}")
+            if param.whole is not None:
+                self._require_whole(typed, f"{name}() {param.whole}")
+            return typed
+        return param.read(name, self._literal(node), _POSITIONS[position])
 
-        if name == "add_months":
-            subject = self._typed(arguments[0])
-            self._require(subject, _Family.DATE, "add_months() moves a date")
-            count = self._typed(arguments[1])
-            self._require(count, _Family.NUMBER, "add_months() moves a date by a count of months")
-            self._require_whole_months(count)
-            return self._result(name, self._target.add_months(subject, count), node)
+    def _built(self, param: _Param, argument: Any) -> Any:
+        """What a function's builder is given for one argument.
 
-        if name == "format_number":
-            subject = self._typed(arguments[0])
-            self._require(subject, _Family.NUMBER, "format_number() writes a number as text")
-            # The width and both separators are read out of the file and never out of a row. How
-            # many places a figure is written to is a decision a reviewer reads in the line, the
-            # way round()'s digits and regex_extract()'s group are -- a width that varied row by
-            # row would not be a width at all.
-            decimals = self._whole_number(name, arguments[1], "second")
-            thousands = self._text_literal(name, arguments[2], "third", _SEPARATOR_REASON)
-            point = self._text_literal(name, arguments[3], "fourth", _SEPARATOR_REASON)
-            built = self._target.format_number(subject, decimals, thousands, point)
-            return self._result(name, built, node)
-
-        if name == "uuid5":
-            # The namespace is read first, and out of the file rather than out of a row, so that a
-            # malformed one is refused in the line the author wrote instead of inside a select
-            # that has already written ids for every row before it.
-            namespace = self._namespace(arguments[0])
-            value = self._typed(arguments[1])
-            self._require(value, _Family.TEXT, "uuid5() derives an id from text")
-            return self._result(name, self._target.uuid5(value, namespace), node)
-
-        if name in _NUMBER_FUNCTIONS:
-            subject = self._typed(arguments[0])
-            self._require(subject, _Family.NUMBER, f"{name}() works on numbers")
-            digits = None if name == "abs" else self._whole_number(name, arguments[1], "second")
-            built = self._target.number_function(name, subject, digits)
-            return self._result(name, built, node, subject.dtype)
-
-        subject = self._typed(arguments[0])
-        self._require(subject, _Family.TEXT, f"{name}() works on text")
-
-        if name in _TEXT_PAIR_FUNCTIONS:
-            other = self._typed(arguments[1])
-            self._require(other, _Family.TEXT, f"{name}() compares text against text")
-            return self._result(name, self._target.text_pair(name, subject, other), node)
-
-        if name in _PATTERN_FUNCTIONS:
-            return self._regex(name, subject, node)
-
-        return self._result(name, self._target.text_function(name, subject), node)
-
-    def _regex(self, name: str, subject: _Typed, node: ast.Call) -> _Typed:
-        """The three pattern functions, each checked against the engine that will run the pattern."""
-        arguments = node.args
-        pattern = self._pattern(name, arguments[1])
-
-        if name == "regex_match":
-            return self._result(name, self._target.regex_match(subject, pattern), node)
-        if name == "regex_extract":
-            group = self._whole_number(name, arguments[2], "third")
-            return self._result(name, self._target.regex_extract(subject, pattern, group), node)
-
-        replacement = self._text_literal(name, arguments[2], "third")
-        return self._result(name, self._target.regex_replace(subject, pattern, replacement), node)
-
-    def _result(self, name: str, built: Any, node: ast.Call, dtype: pl.DataType | None = None) -> _Typed:
-        """One function's result, carrying the family it hands on so that nesting is checked.
-
-        Some functions know what they hand back exactly, and that is carried too. year() and len()
-        always give a whole number. abs() and round() give back whatever their subject holds, which
-        is passed in, because the subject is not in view here. The rest leave it unknown.
+        A text operand is cast so an engine string kernel always meets a plain string. Redundant
+        whenever a schema was supplied, because the leaf column reference is already cast there --
+        this is what is left for the caller with no schema in hand, where the leaf dtype is unknown
+        and a compactly stored column would otherwise reach a string kernel uncast. The cast is a
+        no-op on a column already stored as a plain string.
         """
-        family = _FUNCTION_RESULTS[name]
-        if dtype is None:
-            dtype = _FUNCTION_RESULT_DTYPES.get(name)
-        return _Typed(built, family, node, f"gives {family.value}", dtype)
+        if not isinstance(param, _Value):
+            return argument
+        if param.family is _Family.TEXT:
+            return argument.expr.cast(pl.String)
+        return argument.expr
 
     # -- type requirements -------------------------------------------------
 
@@ -1652,7 +1850,7 @@ class _Compiler:
             return
         raise _error(self._text, f"{self._describe(typed)}, but {requirement}")
 
-    def _require_whole_months(self, typed: _Typed) -> None:
+    def _require_whole(self, typed: _Typed, requirement: str) -> None:
         """Refuse a count of months that cannot be shown to be whole.
 
         Half a month is not a distance a date can move. A count like 1.5 is not something anyone
@@ -1677,12 +1875,11 @@ class _Compiler:
         if typed.dtype is None:
             raise _error(
                 self._text,
-                f"{self._describe(typed)}, and nothing here can work out whether that is whole, but add_months() "
-                f"moves a date by whole months",
+                f"{self._describe(typed)}, and nothing here can work out whether that is whole, but {requirement}",
             )
         if typed.dtype.is_integer() or typed.dtype == pl.Null:
             return
-        raise _error(self._text, f"{self._describe(typed)}, but add_months() moves a date by whole months")
+        raise _error(self._text, f"{self._describe(typed)}, but {requirement}")
 
     def _require_arithmetic(self, typed: _Typed, symbol: str) -> None:
         """Arithmetic needs numbers, and text is the operand worth a sentence of its own.
@@ -1765,61 +1962,6 @@ class _Compiler:
         return "that value"  # pragma: no cover - every whitelisted shape is rendered above
 
     # -- helpers -----------------------------------------------------------
-
-    def _pattern(self, name: str, node: ast.expr) -> str:
-        """The pattern for one of the regex functions: quoted text, checked, or nothing.
-
-        A literal and not a column, which is what makes a check before the run possible at all: a
-        pattern that varies row by row can be neither read in the file nor validated up front.
-        """
-        pattern = self._literal(node)
-        if not isinstance(pattern, str):
-            raise _error(
-                self._text,
-                f"{name}() needs a quoted pattern as its second argument, as in {name}([label], '[a-z]+'...): a "
-                f"pattern is a fixed decision recorded in the file, so it cannot come out of a column",
-            )
-        self._target.check_pattern(name, pattern)
-        return pattern
-
-    def _text_literal(self, name: str, node: ast.expr, position: str, reason: str = _REWRITE_REASON) -> str:
-        """Quoted text, for an argument that has to be a decision in the file rather than data.
-
-        The reason travels with the argument rather than with this method, because the argument is
-        what an author has to change: a replacement and a separator are refused by the same rule
-        and for two different-sounding versions of the same worry.
-        """
-        value = self._literal(node)
-        if not isinstance(value, str):
-            raise _error(self._text, f"{name}() needs quoted text as its {position} argument: {reason}")
-        return value
-
-    def _namespace(self, node: ast.expr) -> uuid.UUID:
-        """uuid5()'s first argument: quoted text in the file, and a UUID, checked before any row.
-
-        Parsed rather than pattern-matched, and parsed by the same library that will derive the
-        ids, so what is accepted here is exactly what works there -- a rule of this module's own
-        would either refuse a namespace that derives perfectly good ids or pass one that fails at
-        row time, and both defeat the point of checking at all.
-        """
-        written = self._text_literal("uuid5", node, "first", _NAMESPACE_REASON)
-        try:
-            return uuid.UUID(written)
-        except ValueError as failure:
-            raise _error(
-                self._text,
-                f"uuid5() was given a namespace that is not a UUID: {written!r} ({failure}) -- write one as "
-                f"'{_UUID_EXAMPLE}'",
-            ) from None
-
-    def _whole_number(self, name: str, node: ast.expr, position: str) -> int:
-        value = self._literal(node)
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _SMALL_NUMBER_LIMIT:
-            raise _error(
-                self._text,
-                f"{name}() needs a whole number between 0 and {_SMALL_NUMBER_LIMIT} as its {position} argument",
-            )
-        return value
 
     def _check_whole_number(self, value: int | float) -> None:
         """Refuse a whole number no column could hold, measured on the value as written."""

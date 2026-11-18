@@ -77,7 +77,7 @@ def _pipeline_file_keys() -> dict[str, list[str]]:
 def current_vocabulary() -> dict[str, Any]:
     """Every word a pipeline file can use, read from the live library."""
     import dantron_etl  # noqa: F401 -- importing the package fills the registry
-    from dantron_etl.expr import _FUNCTION_ARITY, ALLOWED_FUNCTIONS
+    from dantron_etl.expr import _FUNCTIONS, ALLOWED_FUNCTIONS
     from dantron_etl.tool import REGISTRY, ports_from_config
 
     tools = {
@@ -90,7 +90,7 @@ def current_vocabulary() -> dict[str, Any]:
         for tool in REGISTRY.tools()
     }
     functions = {
-        name: "two or more" if _FUNCTION_ARITY[name] == -1 else _FUNCTION_ARITY[name]
+        name: "two or more" if _FUNCTIONS[name].variadic else len(_FUNCTIONS[name].params)
         for name in sorted(ALLOWED_FUNCTIONS)
     }
     return {"tools": tools, "expression_functions": functions, "pipeline_file_keys": _pipeline_file_keys()}

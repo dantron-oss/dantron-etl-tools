@@ -228,11 +228,15 @@ Manual §4b has the full rules and a worked before-and-after.
 
 ### Adding an expression function
 
-Follow the commit that added `uuid5` (`f22c8a3`, "Work out one name for a row from the values that
-identify it") as the worked template. A function touches more than the
-whitelist: `ALLOWED_FUNCTIONS`, its arity, its result type, the polars compilation, its tests,
-and its entry in `MANUAL.md` §4.2
-(a test checks the manual lists every whitelisted function).
+Each function is defined once, in the function table (`_DEFINITIONS` in `expr.py`). To add one:
+
+1. Write the function that builds its column from the arguments.
+2. Add one entry to the table: the name, the arguments in order and what each must hold, the
+   family and type of the result, the builder, a one-line summary and an example.
+   `ALLOWED_FUNCTIONS`, the arity check and the result types are all read from the entry, and a
+   test refuses an entry with a part missing.
+3. Write its tests. The tests from the commit that added `uuid5` (`f22c8a3`) are a good template.
+4. Add it to `MANUAL.md` §4.2. A test checks the manual lists every function.
 
 ### Adding a tool
 

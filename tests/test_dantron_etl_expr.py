@@ -20,6 +20,7 @@ because the module under test ships as a standalone library and must carry no ca
 """
 
 import ast
+import dataclasses
 import math
 import re
 import unicodedata
@@ -41,6 +42,7 @@ from dantron_etl.expr import (
     compile_expr,
     references,
 )
+from dantron_etl.expr import _DEFINITIONS, _FUNCTIONS, _Family, _Function, _Value
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -290,6 +292,65 @@ class TestFunctions:
         assert evaluate(frame, "contains([label], 'a.p')") == [False, False, False, None]
         assert evaluate(frame, "contains([label], 'lph')") == [True, False, False, None]
         assert evaluate(frame, "regex_extract([label], 'a(.)p', 1)") == ["l", None, None, None]
+
+
+class TestTheFunctionTable:
+    """Each function is defined once, in one entry that carries everything about it."""
+
+    @staticmethod
+    def incomplete(name: str, function: _Function) -> list[str]:
+        """What is missing or inconsistent in one entry, as plain sentences. Empty when it is complete."""
+        problems: list[str] = []
+        if function.name != name:
+            problems.append(f"is filed under {name!r} but named {function.name!r}")
+        if not function.params:
+            problems.append("lists no arguments")
+        if function.variadic and len(function.params) != 1:
+            problems.append("is variadic, so it must list exactly one argument for all of them to meet")
+        if function.result != "common" and not isinstance(function.result, _Family):
+            problems.append(f"gives {function.result!r}, which is neither a family nor 'common'")
+        if function.result == "common" and not (function.variadic and function.params[0].family is None):
+            problems.append("gives the family its arguments agree on, so it must take any number of any family")
+        if function.result_dtype == "subject" and not isinstance(function.params[0], _Value):
+            problems.append("hands on its first argument's type, so the first argument must be a value")
+        if not callable(function.to_polars):
+            problems.append("has nothing to build its column with")
+        if not function.summary.strip() or "\n" in function.summary or not function.summary.endswith("."):
+            problems.append("has no one-line summary ending in a full stop")
+        if not function.example.startswith(f"{name}("):
+            problems.append(f"has no example calling {name}()")
+        else:
+            try:
+                compile_expr(function.example)
+            except ExpressionError as error:
+                problems.append(f"has an example that does not compile: {error}")
+        return problems
+
+    def test_every_function_is_defined_completely_in_one_entry(self) -> None:
+        """No entry is missing a part, no name is defined twice, and the whitelist is the table."""
+        problems = {name: found for name, function in _FUNCTIONS.items() if (found := self.incomplete(name, function))}
+        assert not problems, problems
+        assert len(_DEFINITIONS) == len(_FUNCTIONS), "a function is defined twice"
+        assert ALLOWED_FUNCTIONS == frozenset(_FUNCTIONS)
+
+    @pytest.mark.parametrize(
+        ("change", "expected"),
+        [
+            ({"summary": ""}, "summary"),
+            ({"summary": "Two lines.\nOf summary."}, "summary"),
+            ({"example": "upper([code])"}, "example"),
+            ({"example": "lower([code]"}, "does not compile"),
+            ({"params": ()}, "no arguments"),
+            ({"result": "text"}, "neither a family"),
+            ({"result": "common"}, "agree on"),
+            ({"to_polars": None}, "build"),
+        ],
+    )
+    def test_the_check_refuses_an_entry_with_a_part_missing(self, change: dict[str, Any], expected: str) -> None:
+        """The check above is itself checked: break one part of a real entry and it must say so."""
+        broken = dataclasses.replace(_FUNCTIONS["lower"], **change)
+        problems = self.incomplete("lower", broken)
+        assert any(expected in problem for problem in problems), problems
 
 
 class TestNullSemantics:
