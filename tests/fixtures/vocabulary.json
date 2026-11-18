@@ -715,7 +715,7 @@
           "required": false,
           "type": "array"
         },
-        "left_on": {
+        "left_keys": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -732,7 +732,7 @@
           "required": false,
           "type": "array"
         },
-        "right_on": {
+        "right_keys": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -764,7 +764,7 @@
         "right"
       ],
       "output_ports": [
-        "matched",
+        "joined",
         "left_only",
         "right_only"
       ]

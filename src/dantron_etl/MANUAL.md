@@ -176,14 +176,14 @@ The ports that surprise people:
 | tool | in | out |
 |---|---|---|
 | `filter` | `rows` | `true`, `false` |
-| `join` | `left`, `right` | `matched`, `left_only`, `right_only` |
+| `join` | `left`, `right` | `joined`, `left_only`, `right_only` |
 | `remove_duplicates` | `rows` | `unique`, `duplicate` |
 | `expand_date_range` | `rows` | `rows`, `unexpanded` |
 | `limit_rows` | `rows` | `rows`, `dropped` |
 | `union` | `top`, `bottom` | `rows` |
 
-`join` with `how: left` still writes to `matched` — `how` decides only which rows reach `matched`,
-and the orphan ports answer their own question either way. So a left join reads `matched`; the rows
+`join` with `how: left` still writes to `joined` — `how` decides only which rows reach `joined`,
+and the orphan ports answer their own question either way. So a left join reads `joined`; the rows
 that paired with nothing are *also* on `left_only`, which is where an orphan check comes from free.
 
 `expand_date_range`'s second port is not tidiness. A row it cannot expand does not disappear — the

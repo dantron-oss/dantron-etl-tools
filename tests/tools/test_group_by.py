@@ -55,7 +55,7 @@ written down where a reader looking for it will find it -- the two differ becaus
 what joining nothing produces, while a zero is a measured amount nobody measured. It takes a
 ``separator`` of its own, and that field is refused beside any other aggregate rather than ignored:
 a separator that silently does nothing is the class of mistake this library refuses everywhere, and
-it is refused the same way Join refuses ``keys`` beside ``left_on``. Its value has to be text,
+it is refused the same way Join refuses ``keys`` beside ``left_keys``. Its value has to be text,
 refused on the schema, because a number or a date joined into a string is an author error that
 otherwise ships as a plausible-looking string of digits.
 
@@ -803,7 +803,7 @@ class TestGroupByRefusals:
     ) -> None:
         """A field that would do nothing is refused, naming where it sits and what it sits beside.
 
-        This is Join's ``keys``-beside-``left_on`` ruling applied to the same shape of mistake: a
+        This is Join's ``keys``-beside-``left_keys`` ruling applied to the same shape of mistake: a
         configuration whose fields are individually valid and jointly say two things. Accepting it
         would mean an author who wrote ``function: min`` where they meant ``join_text`` gets a
         separator that vanishes, and a column of single values where they expected a list, with

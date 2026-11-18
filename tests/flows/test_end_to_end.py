@@ -59,7 +59,7 @@ def test_the_left_join_keeps_every_revenue_row_once_and_pairs_no_null_key(run: t
     """
     trace, _ = run
     _same(
-        trace.frames[PortRef("with_party", "matched")],
+        trace.frames[PortRef("with_party", "joined")],
         pl.DataFrame(
             {
                 "entry_id": [1, 2, 3, 5, 6, 7],

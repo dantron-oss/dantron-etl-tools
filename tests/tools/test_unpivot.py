@@ -50,7 +50,7 @@ many, out of how many, and what share, which raises the step to a warning. The c
 the values are replaced, because afterwards a null that failed to convert and a null that was always
 there are the same null. And ``on_invalid`` is refused without ``values_type``: there is nothing for
 it to govern, and a field that silently does nothing is the class of field this library kills on
-sight. That is the shape Join uses for ``keys`` against ``left_on``, and GroupBy for a separator
+sight. That is the shape Join uses for ``keys`` against ``left_keys``, and GroupBy for a separator
 beside the wrong function.
 
 **Row order is column-major.** All the rows of the first melted column, then all the rows of the

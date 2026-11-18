@@ -49,7 +49,7 @@ def _show(**frames: pl.DataFrame) -> str:
 
 @pytest.mark.parametrize("how", ["inner", "left"])
 def test_join_pairs_exactly_the_rows_whose_keys_are_equal_and_not_null(how: str) -> None:
-    """Every (left row, right row) pair in ``matched`` is one the keys allow, and none is missing.
+    """Every (left row, right row) pair in ``joined`` is one the keys allow, and none is missing.
 
     A null key pairs with nothing, under either ``how``. Under ``left``, a left row that paired with
     nothing is kept once, with nothing from the right. The orphan ports hold exactly the rows that
@@ -70,9 +70,9 @@ def test_join_pairs_exactly_the_rows_whose_keys_are_equal_and_not_null(how: str)
         right_alone = [rid for rid in right["r_id"] if rid not in {pair[1] for pair in pairs}]
         expected = Counter(pairs + ([(lid, None) for lid in left_alone] if how == "left" else []))
 
-        got = Counter(zip(result["matched"]["l_id"].to_list(), result["matched"]["r_id"].to_list(), strict=True))
+        got = Counter(zip(result["joined"]["l_id"].to_list(), result["joined"]["r_id"].to_list(), strict=True))
         context = _show(left=left, right=right)
-        assert got == expected, f"how={how}: matched pairs {got} != {expected}\n{context}"
+        assert got == expected, f"how={how}: joined pairs {got} != {expected}\n{context}"
         assert sorted(result["left_only"]["l_id"].to_list()) == left_alone, context
         assert sorted(result["right_only"]["r_id"].to_list()) == right_alone, context
 

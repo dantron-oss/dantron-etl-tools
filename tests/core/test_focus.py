@@ -84,7 +84,7 @@ PORTS: tuple[PortRef, ...] = (
     PortRef("vetted", "rows"),
     PortRef("kept", "true"),
     PortRef("kept", "false"),
-    PortRef("paired", "matched"),
+    PortRef("paired", "joined"),
     PortRef("paired", "left_only"),
     PortRef("paired", "right_only"),
     PortRef("totals", "rows"),
@@ -98,7 +98,7 @@ ROSTER = PortRef("roster", "rows")
 VETTED = PortRef("vetted", "rows")
 KEPT_TRUE = PortRef("kept", "true")
 KEPT_FALSE = PortRef("kept", "false")
-MATCHED = PortRef("paired", "matched")
+MATCHED = PortRef("paired", "joined")
 LEFT_ONLY = PortRef("paired", "left_only")
 RIGHT_ONLY = PortRef("paired", "right_only")
 TOTALS = PortRef("totals", "rows")
@@ -170,7 +170,7 @@ def _document() -> dict[str, Any]:
                     "by": ["region"],
                     "aggregations": [{"name": "total", "function": "sum", "value": "[amount]"}],
                 },
-                "inputs": {"rows": "paired.matched"},
+                "inputs": {"rows": "paired.joined"},
             },
             {
                 "id": "rated",
@@ -430,7 +430,7 @@ class TestThreeWaysOfHavingNothingToShow:
         # A port reached through a key needs the frame the key is learned at, and says which one.
         through_a_key = focused.slice(TOTALS)
         assert through_a_key.status == "not_retained"
-        assert "paired.matched" in through_a_key.reason
+        assert "paired.joined" in through_a_key.reason
         assert "not retained" in through_a_key.reason.lower()
 
         # No grain is knowable from the shape alone, so it is still the more useful answer.
@@ -492,7 +492,7 @@ class TestReachingAGrainThatNamesNoEntity:
         assert (reduced.rows_focused, reduced.rows_at_port) == (2, 3)
         assert_frame_equal(reduced.frame, pl.DataFrame({"region": ["north", "south"], "total": [13.0, 7.5]}))
         assert "region" in reduced.reason
-        assert "paired.matched" in reduced.reason, "where the values came from is part of the answer"
+        assert "paired.joined" in reduced.reason, "where the values came from is part of the answer"
         assert "party" in reduced.reason, "and that the figure is not this party's alone"
 
         # The derived column downstream of it is followed the same way.
@@ -682,7 +682,7 @@ class TestATraceIsEvidence:
             slice_trace(partial, FOCUS, "brightwater")
         message = str(raised.value)
         assert "regions.rows" in message, "the port that cannot be shown"
-        assert "paired.matched" in message, "the port its key would have come from"
+        assert "paired.joined" in message, "the port its key would have come from"
         assert "entries.rows" in message, "and what the run did produce, so the focus can be pointed at it"
         assert isinstance(raised.value, FocusError) and isinstance(raised.value, ToolError)
         assert not isinstance(raised.value, KeyError), "a bare lookup failure is not an account of anything"

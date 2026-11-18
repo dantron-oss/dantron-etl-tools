@@ -2200,7 +2200,7 @@ class TestRefusalsAboutHowNumbersAreShown:
         """Each of the three refusals names the part the author has to change.
 
         Exactly one of ``type`` and ``column``, never both and never neither, is the same cross-field
-        shape ``join`` uses for ``keys`` against ``left_on``. Both is two rules written as one, and
+        shape ``join`` uses for ``keys`` against ``left_keys``. Both is two rules written as one, and
         which of them was meant is not this tool's guess to make. Neither is a format with nothing to
         apply it to. A mistyped type name is refused with the whole vocabulary listed, because the
         author's next move is to pick one of them and a refusal that does not list them sends a

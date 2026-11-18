@@ -47,7 +47,7 @@ tool's page cannot drift from the tool.
 ## Ideas worth knowing before you use it
 
 **Ports, not steps.** A step's inputs and outputs are *named* frames. `filter` has `true` and
-`false`; `join` has `matched`, `left_only` and `right_only`. Rows a step sets aside are a first-class
+`false`; `join` has `joined`, `left_only` and `right_only`. Rows a step sets aside are a first-class
 output you can route somewhere, not a number reconstructed later.
 
 **One small expression language.** `[column]` references, a fixed set of operators and a whitelist of

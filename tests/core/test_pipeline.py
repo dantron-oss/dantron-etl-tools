@@ -136,7 +136,7 @@ def _document() -> dict[str, Any]:
                 "lane": "shaping",
                 "stage": "publish",
                 "config": {"path": "{scratch}/paired.csv"},
-                "inputs": {"rows": "paired.matched"},
+                "inputs": {"rows": "paired.joined"},
             },
         ],
     }
@@ -420,7 +420,7 @@ class TestTheWiringIsRefusedBeforeARowMoves:
                     "id": "published",
                     "tool": "write_csv",
                     "config": {"path": str(paired)},
-                    "inputs": {"rows": "paired.matched"},
+                    "inputs": {"rows": "paired.joined"},
                 },
             ],
         }
@@ -447,7 +447,7 @@ class TestTheWiringIsRefusedBeforeARowMoves:
                 "inputs": {"left": "loop_b.true", "right": "loop_b.false"},
             }
         )
-        document["steps"].append(_filter_step("loop_b", "loop_a.matched"))
+        document["steps"].append(_filter_step("loop_b", "loop_a.joined"))
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -905,7 +905,7 @@ class TestARuleValueIsSpelledForTheFieldItLandsIn:
                 "id": "workbook",
                 "tool": "write_excel",
                 "config": {"path": "{scratch}/figures.xlsx", "sheet": "Figures ${rules.period}"},
-                "inputs": {"rows": "paired.matched"},
+                "inputs": {"rows": "paired.joined"},
             },
             {"period": "2026-09"},
         )

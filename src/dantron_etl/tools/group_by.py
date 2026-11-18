@@ -57,7 +57,7 @@ ruling ``sum`` makes about the same group. Joining no strings together produces 
 any language that has both, while adding no numbers together produces a total nobody measured.
 
 ``separator`` is refused beside any other aggregate rather than ignored -- the way Join refuses
-``keys`` beside ``left_on`` -- because an author who wrote ``min`` where they meant ``join_text``
+``keys`` beside ``left_keys`` -- because an author who wrote ``min`` where they meant ``join_text``
 would otherwise get a separator that vanishes and a column of single values where they expected a
 list. What is joined has to be text, refused on the schema, because a number or a date joined into a
 string ships as a plausible-looking string of digits that is unsortable and unsummable from there on.
