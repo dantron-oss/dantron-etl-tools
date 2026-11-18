@@ -2292,6 +2292,26 @@ class TestAddMonthsShiftsADateByWholeMonths:
         assert scalar("add_months(date'2026-01-31', 1)") == date(2026, 2, 28)
         assert scalar("add_months(date'2026-01-31', -1)") == date(2025, 12, 31)
 
+
+class TestAddMonthsCountsThatArriveThroughAnExpression:
+    """The count of months is checked however it was built, not only when it is written out.
+
+    The rule itself is settled: half a month is not a distance a date can move, so a decimal count
+    is refused. What was not settled is where the check happens. A decimal count was caught when
+    the author typed one, and when it came from a decimal column, and nowhere else. Every other
+    route to a decimal -- arithmetic, abs(), round(), coalesce(), a division of two whole numbers
+    -- compiled against the schema and then failed inside the engine.
+
+    That is the thing this file's sweep exists to forbid. With a schema in hand a bad expression
+    raises ExpressionError and a good one runs, and nothing sits in between. An engine error at
+    select time is the in-between case: it names the engine's problem, arrives too late to point at
+    the line of the file, and reaches whoever is running the pipeline rather than whoever wrote it.
+
+    So these tests take the rule the other way round from the first round. Rather than listing the
+    counts that are wrong, they pin that no route to the count can escape: each one is refused
+    where it is written, or it runs.
+    """
+
     @pytest.mark.parametrize(
         "text",
         [
