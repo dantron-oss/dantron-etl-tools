@@ -14,8 +14,9 @@ What comes back is what the sheet holds, not what somebody once put in. A column
 written as floats comes back whole. The engine decides each column's type from its first 100 rows,
 so text inside those rows makes the column text. Text further down a column of figures would read
 as null, and so would a word the engine treats as missing (``n/a``, ``#N/A``); the read stops
-instead and points to ``as_text``. A header row is a sheet's schema, so a repeated heading or a blank one is refused rather
-than repaired: this library's own vocabulary for either -- ``key_1``, ``__UNNAMED__1`` -- would
+instead and points to ``as_text``. A header row is a sheet's schema, so a repeated heading, a blank one, or one that is a date
+or a truth value is refused rather than repaired. Two headings that read the same count as repeated,
+such as the number 2026 and the text "2026": this library's own vocabulary for either -- ``key_1``, ``__UNNAMED__1`` -- would
 otherwise leak into a flow's own column names, silently, the moment a downstream step names the
 column that came first.
 """
@@ -137,7 +138,9 @@ class ReadExcel:
                 "is a different name, not a near match.",
                 "has_header defaults to true, since a spreadsheet's first row is a header until an "
                 "author says otherwise; a duplicated or a blank heading is refused rather than "
-                "repaired, because a sheet's header row is its schema.",
+                "repaired, because a sheet's header row is its schema. Two headings that read the "
+                "same (the number 2026 and the text 2026) are a duplicate, and a heading that is a "
+                "date or a truth value is refused, because it cannot name a column.",
                 "There is no cell range: skip_rows reaches a header sitting below a title block, "
                 "and everything else about narrowing a read -- which columns, which rows -- is a "
                 "SelectColumns or a Filter put after this tool.",
@@ -317,6 +320,9 @@ def _read_sheet(
     """One sheet, read exactly as naming it in ``sheet`` reads it."""
     try:
         raw_header = reader.load_sheet_by_name(sheet, header_row=None, skip_rows=skip_rows, n_rows=1).to_polars()
+        header_text = reader.load_sheet_by_name(
+            sheet, header_row=None, skip_rows=skip_rows, n_rows=1, dtypes="string"
+        ).to_polars()
     except Exception as error:
         raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
@@ -325,6 +331,7 @@ def _read_sheet(
 
     if has_header:
         _validate_header_row(raw_header.row(0), sheet)
+        _refuse_headings_the_reader_would_rename(raw_header.row(0), header_text.row(0), sheet)
 
     read_options: dict[str, Any] = {"header_row": skip_rows if has_header else None}
     if not has_header:
@@ -506,6 +513,31 @@ def _validate_header_row(raw_header: Sequence[Any], sheet: str) -> None:
                 "duplicate cannot be told apart by guessing"
             )
         seen.add(value)
+
+
+def _refuse_headings_the_reader_would_rename(raw_header: Sequence[Any], header_text: Sequence[Any], sheet: str) -> None:
+    """Refuse a heading that cannot name its column as the sheet shows it.
+
+    A heading must be text or a number. The engine cannot name a column after a date, a time or a
+    truth value, and invents a name instead. And two headings that read the same, such as the
+    number 2026 and the text "2026", would have the second one renamed. Both are refused here,
+    before any name is invented.
+    """
+    seen: dict[str, int] = {}
+    for index, (value, text) in enumerate(zip(raw_header, header_text, strict=True), start=1):
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            raise ConfigError(
+                f"read_excel refuses sheet {sheet!r}: header cell {index} holds {text!r}, which is "
+                f"not text or a number and cannot name a column. Type the heading as text in the "
+                f"sheet, or set has_header: false and name the columns with rename_columns"
+            )
+        if text in seen:
+            raise ConfigError(
+                f"read_excel refuses sheet {sheet!r}: header cells {seen[text]} and {index} both "
+                f"read {text!r}, and a duplicate cannot be told apart by guessing. Make the two "
+                f"headings differ in the sheet, or set has_header: false"
+            )
+        seen[text] = index
 
 
 @contextmanager

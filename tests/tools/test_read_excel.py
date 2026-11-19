@@ -430,6 +430,45 @@ class TestRefusalsAnAuthorCanActOn:
         assert "Figures" in message, "and which tab it is on"
 
     @pytest.mark.parametrize(
+        ("header_row", "named"),
+        [
+            pytest.param(["key", 2026, "2026"], "'2026'", id="a_year_typed_once_as_a_number_and_once_as_text"),
+            pytest.param(["key", dt.date(2026, 1, 31), "code"], "2", id="a_date_as_a_heading"),
+            pytest.param(["key", True, "code"], "2", id="a_truth_value_as_a_heading"),
+        ],
+    )
+    @pytest.mark.parametrize("as_text", [False, True], ids=["typed", "as_text"])
+    def test_a_heading_the_reader_would_have_to_rename_is_refused(
+        self,
+        tmp_path: Path,
+        header_row: list[Any],
+        named: str,
+        as_text: bool,
+    ) -> None:
+        """A heading is refused when the column could not be named by what the cell shows.
+
+        The number 2026 and the text "2026" are two different cells that read the same, so the
+        engine would rename the second one. A date or a truth value cannot name a column at all,
+        and the engine would invent a name for it. Either way a step downstream names a column the
+        sheet does not show, so the read stops before that name exists.
+        """
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": [header_row, ["r1", 10.25, "A"]]})
+
+        with pytest.raises(ConfigError) as caught:
+            _read({"path": str(target), "sheet": "Figures", "as_text": as_text})
+
+        message = str(caught.value)
+        assert named in message and "'Figures'" in message, message
+        assert "UNNAMED" not in message and "2026_1" not in message, f"no invented name: {message}"
+
+    def test_a_number_as_a_heading_names_its_column_as_the_sheet_shows_it(self, tmp_path: Path) -> None:
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": [["key", 2026, 1.5], ["r1", 10.25, 3]]})
+
+        rows = _read({"path": str(target), "sheet": "Figures"})
+
+        assert rows.columns == ["key", "2026", "1.5"]
+
+    @pytest.mark.parametrize(
         "name",
         [
             pytest.param("extract.csv", id="a_delimited_text_file_is_a_different_tool"),
