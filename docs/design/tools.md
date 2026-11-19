@@ -342,3 +342,19 @@ carried over from an older tool is refused as a missing column, by name.
 **Order is kept within each port.** polars' `unique` does not promise order, so the tool uses a per-row
 mask (`is_first_distinct` / `is_last_distinct`) filtered in place, which keeps order and gives both
 ports from one pass.
+
+## record_id
+
+**The numbering follows arrival order.** The tool sorts nothing and decides nothing, which is why it
+is worth something only after a sort step: then the numbers follow an order someone wrote down. The
+numbers are built from the frame's height alone, never from the data.
+
+**The column is declared Int64.** A frame with no rows has nothing to infer a type from, and a column
+typed Null would break the next join on the day an upstream filter matched nothing.
+
+**A name already in use is refused.** The author of the step may not know every column of the frame;
+a collision taken quietly destroys a column and reports success. There is no overwrite option.
+
+**Overflow is refused twice.** A start outside Int64 is wrong whatever the frame, so it is refused
+from the configuration. A start that fits but would pass the ceiling part way down depends on the row
+count, so it is refused when the frame arrives; left alone it would wrap to large negative numbers.
