@@ -37,21 +37,15 @@ FORBIDDEN_TERMS = (
 
 # Imports each module named on the command line, in order, in one fresh interpreter. After each one
 # it notes any forbidden top-level package that has just appeared, so a failure names the module
-# that first pulled it in. A path ending in .py is loaded from that file instead.
+# that first pulled it in.
 _IMPORT_CHECK_SCRIPT = """
-import importlib, importlib.util, json, sys
+import importlib, json, sys
 
 forbidden = set(sys.argv[1].split(","))
 seen = set()
 blame = {}
 for name in sys.argv[2:]:
-    if name.endswith(".py"):
-        spec = importlib.util.spec_from_file_location("shipped_script_under_test_" + str(len(seen)), name)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    else:
-        importlib.import_module(name)
+    importlib.import_module(name)
     arrived = {module.split(".")[0] for module in sys.modules} & forbidden
     for package in sorted(arrived - seen):
         blame[package] = name
@@ -125,17 +119,16 @@ def _forbidden_packages_pulled_in(targets: list[str], forbidden: frozenset[str] 
 
 
 class TestDantronEtlImportBoundary:
-    """No dantron_etl module, and no viewer script that ships beside it, pulls in client code."""
+    """No dantron_etl module, the viewer and the command included, pulls in client code."""
 
-    def test_no_module_or_viewer_script_imports_a_forbidden_package(self) -> None:
-        """Importing every module and every viewer script must not load acme/dagster/prefect/pandas.
+    def test_no_module_imports_a_forbidden_package(self) -> None:
+        """Importing every module must not load acme/dagster/prefect/pandas.
 
         This measures what actually lands in ``sys.modules``, so it also sees an import that arrives
         through some third module. The source scan below sees imports inside functions, which this
         cannot.
         """
-        targets = [*_discover_modules(), *(str(SCRIPTS_DIR / name) for name in LIBRARY_SCRIPTS)]
-        blame = _forbidden_packages_pulled_in(targets)
+        blame = _forbidden_packages_pulled_in(_discover_modules())
         assert not blame, f"forbidden package(s) were imported; each is named with what pulled it in: {blame}"
 
     def test_the_check_names_the_module_that_pulled_a_forbidden_package_in(self) -> None:
@@ -298,34 +291,22 @@ class TestTheManualDescribesTheLibraryThatExists:
 # ---------------------------------------------------------------------------
 # What ships beside the package
 #
-# The viewer scripts under scripts/ and the library's own tests travel with the package. The import
-# check above already imports every viewer script. The checks below scan the source of the scripts
-# and the tests for a forbidden import at any depth, including inside a function.
+# The library's own tests travel with the package. The check below scans their source for a
+# forbidden import at any depth, including inside a function. The viewer and the command live
+# inside the package, so the checks above already cover them.
 #
 # An earlier version also imported every test file in a subprocess with the client package blocked,
 # one subprocess per file. That guarded the move out of the client repository. The source scan of
 # tests/ below catches the same import directly, at any depth, whether or not a client package
-# happens to be installed; anything a test imports through the library or a script is covered by
-# the import check above.
+# happens to be installed; anything a test imports through the library is covered by the import
+# check above.
 # ---------------------------------------------------------------------------
 
 TESTS_DIR = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = TESTS_DIR.parent / "scripts"
-
-#: The viewer scripts that ship with the library. Listed rather than discovered, because there is no
-#: marker on disk that separates them from the client's own scripts -- several of which import
-#: dantron_etl legitimately and must go on importing client code, being client code themselves. A
-#: list that a rename would rot is guarded by the existence test below.
-LIBRARY_SCRIPTS = (
-    "serve_runs.py",
-    "pipeline_walkthrough_page.py",
-    "tool_catalog_page.py",
-    "etl_architecture_page.py",
-)
 
 
 class TestWhatShipsBesideThePackageSurvivesExtraction:
-    """Everything that travels with the library is free of client imports, and the lists are not stale."""
+    """The tests that travel with the library are free of client imports."""
 
     @pytest.mark.parametrize(
         "test_path", sorted(TESTS_DIR.rglob("*.py")), ids=lambda p: str(p.relative_to(TESTS_DIR))
@@ -335,34 +316,6 @@ class TestWhatShipsBesideThePackageSurvivesExtraction:
         offenders = sorted(_imported_roots(test_path) & FORBIDDEN_IMPORTS)
         assert not offenders, f"tests/{test_path.relative_to(TESTS_DIR)} imports forbidden package(s) {offenders}"
 
-    def test_every_named_viewer_script_is_where_the_list_says(self) -> None:
-        """A renamed script must fail loudly here rather than silently leaving the fence."""
-        missing = [name for name in LIBRARY_SCRIPTS if not (SCRIPTS_DIR / name).is_file()]
-        assert not missing, f"{missing} named in LIBRARY_SCRIPTS but not found under {SCRIPTS_DIR}"
-
-
-class TestLibraryScriptsHaveNoDeferredClientImports:
-    """A viewer script's forbidden import counts wherever it sits, unlike the class above.
-
-    The arrival check sees only what runs at import, and a script's work happens in ``main`` -- which
-    is precisely where a deferred import would sit, and precisely when it would fail: not on the
-    first `pytest` in the extracted repository, but the first time a person tries to look at a run.
-    Parsing catches it at any depth.
-
-    The library's test files are deliberately held to the looser rule instead. A guarded import in a
-    shipped test is a documented degradation with a branch that runs after extraction; the same line
-    in a script is a script with a hole in it.
-    """
-
-    @pytest.mark.parametrize("script_name", LIBRARY_SCRIPTS)
-    def test_no_forbidden_import_appears_anywhere_in_a_viewer_script(self, script_name: str) -> None:
-        """No forbidden package may be imported at module scope, in a function, or in a branch."""
-        offenders = sorted(_imported_roots(SCRIPTS_DIR / script_name) & FORBIDDEN_IMPORTS)
-        assert not offenders, (
-            f"scripts/{script_name} imports forbidden package(s) {offenders}. Deferred into a "
-            f"function it still fails, later and in front of a reader rather than in the suite."
-        )
-
 
 class TestShippedTestsNameNoClientModules:
     """A module name a shipped test invents is an identifier it creates, and it travels as source.
@@ -370,7 +323,7 @@ class TestShippedTestsNameNoClientModules:
     Narrow on purpose. The vocabulary fence over the package's own source cannot be pointed at test
     files: they are full of ordinary English -- a test that reconciles two frames says so -- and
     sample data has to be about something. What is checked here is not prose but the name a test
-    registers in ``sys.modules`` when it loads a shipping script by path, which today carries this
+    registers in ``sys.modules`` when it loads a file by path, which today carries this
     client's name in a file destined for a repository where no such thing exists. Nothing imports
     those names -- they are keys chosen at the call site -- so the rename is free, and the only cost
     of leaving them is a reader of the extracted library being told it belongs to a client they have

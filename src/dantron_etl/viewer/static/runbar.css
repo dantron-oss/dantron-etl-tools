@@ -1,0 +1,26 @@
+/* The run buttons, the progress line and the real-run dialog. */
+.runbar { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:0 0 .8rem; }
+[data-run] { font:500 .8rem var(--sans); padding:.3rem .8rem; border:1px solid var(--accent);
+  background:var(--accent); color:var(--surface); border-radius:6px; cursor:pointer; }
+[data-run].real, dialog.confirm button.real { background:var(--surface); color:var(--bad); border-color:var(--bad); }
+[data-run]:disabled, dialog.confirm button:disabled { opacity:.45; cursor:default; }
+.progress { font-size:.8rem; color:var(--muted); }
+td .progress { display:block; margin-top:.3rem; }
+.runbar ol.steps { flex-basis:100%; margin:0; padding-left:1.4rem; font:400 .74rem var(--mono);
+  color:var(--muted); max-height:9rem; overflow:auto; }
+.runbar ol.steps:empty { display:none; }
+.runbar ol.steps li.error { color:var(--bad); }
+.runbar .banner.kept { flex-basis:100%; margin:0; }
+.runbar .banner.kept a { color:var(--accent); font-weight:600; }
+dialog.confirm { max-width:min(56rem, 94vw); border:1px solid var(--line); border-radius:9px;
+  background:var(--surface); color:var(--ink); padding:1rem 1.2rem; }
+dialog.confirm::backdrop { background:rgba(0,0,0,.4); }
+dialog.confirm h2 { font-size:1rem; margin:0 0 .7rem; }
+dialog.confirm table { border-collapse:collapse; font-size:.8rem; margin-bottom:1rem; width:100%; }
+dialog.confirm th, dialog.confirm td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--line);
+  vertical-align:top; word-break:break-all; }
+dialog.confirm input { font:inherit; padding:.25rem .5rem; border:1px solid var(--line); border-radius:5px; }
+dialog.confirm .said { color:var(--bad); font-size:.82rem; min-height:1em; }
+dialog.confirm .buttons { display:flex; gap:.5rem; justify-content:flex-end; margin:0; }
+dialog.confirm button { font:500 .8rem var(--sans); padding:.3rem .8rem; border:1px solid var(--line);
+  background:var(--surface); color:var(--ink); border-radius:6px; cursor:pointer; }

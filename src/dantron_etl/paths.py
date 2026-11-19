@@ -1,9 +1,9 @@
 """Where the project is, answered from the caller's location or refused by name.
 
-Every script that ships beside this library writes a file somewhere and reads a file from somewhere,
-and all of those places hang off one directory: the root of whichever project the caller belongs to.
+Every caller that writes or reads a project's files -- the viewer, the command, a client's own
+code -- hangs those places off one directory: the root of whichever project the caller belongs to.
 This module is the only place that question is answered, because it has exactly one dangerous wrong
-answer and answering it in four scripts means writing that wrong answer four times.
+answer, and answering it in several places means writing that wrong answer several times.
 
 **The wrong answer, measured.** A library that resolves the root by walking up from its own file::
 
@@ -54,6 +54,8 @@ Markers are matched as files *or* directories, which is not a detail: a linked w
 a file containing a ``gitdir:`` line, so an implementation testing ``is_dir()`` refuses every checkout
 that is a worktree.
 
+A folder holding ``etl-project.yaml`` is a project even with no ``pyproject.toml`` and no ``.git``.
+
     from <this package>.paths import project_root
 
     ROOT = project_root(__file__)
@@ -67,10 +69,10 @@ from pathlib import Path
 #: move available to a reader who is looking at one.
 ROOT_ENV_VAR = "ETL_PROJECT_ROOT"
 
-#: What makes a directory a project. Two, because either alone is wrong somewhere real: a source
+#: What makes a directory a project. Either of the first two alone is wrong somewhere real: a source
 #: checkout that has not been packaged has no ``pyproject.toml``, and an exported or vendored tree has
-#: no ``.git``.
-ROOT_MARKERS = ("pyproject.toml", ".git")
+#: no ``.git``. A folder holding the project settings file is a project too.
+ROOT_MARKERS = ("pyproject.toml", ".git", "etl-project.yaml")
 
 
 class ProjectRootNotFound(RuntimeError):  # noqa: N818 -- the sentence a reader wants beats the suffix

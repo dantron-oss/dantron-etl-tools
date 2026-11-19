@@ -40,7 +40,6 @@ The vocabulary here is deliberately generic -- parts, labels, seeds -- because t
 no caller's nouns.
 """
 
-import importlib.util
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -682,14 +681,9 @@ class TestTheCatalogWithNoConfigurationInHand:
 
     def test_the_generated_catalog_shows_those_ports_and_says_where_they_came_from(self) -> None:
         """The page's data carries both halves: the port names, and whether a configuration chose them."""
-        spec = importlib.util.spec_from_file_location(
-            "library_tests.config_ports_catalog_page", PROJECT_ROOT / "scripts" / "tool_catalog_page.py"
-        )
-        assert spec is not None and spec.loader is not None, "tool_catalog_page.py is not where the project root says"
-        catalog_page = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(catalog_page)
+        from dantron_etl.catalog import catalog
 
-        entries = {entry["name"]: entry for entry in catalog_page.catalog()["tools"]}
+        entries = {entry["name"]: entry for entry in catalog()["tools"]}
         assert entries, "the registry is empty, so this claim would hold vacuously"
 
         for tool in REGISTRY.tools():
