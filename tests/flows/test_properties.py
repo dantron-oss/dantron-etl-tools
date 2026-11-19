@@ -249,8 +249,9 @@ def test_sort_keeps_tied_rows_in_arrival_order_whatever_the_keys_hold(seed: int)
 
     The keys are drawn missing on every row, missing on some, never missing, or one repeated value,
     in each direction and with missing values placed first or last, one to three keys at a time.
-    polars once handed rows back in reverse when the only key was missing on every row and sorted
-    descending, which a record number taken after the sort would have carried forward.
+    polars reorders the rows when every key is missing on every row and one of them sorts
+    descending (with one key, it reverses them), which a record number taken after the sort would
+    carry forward.
     """
     rng = random.Random(100 + seed)
     for _ in range(CASES):

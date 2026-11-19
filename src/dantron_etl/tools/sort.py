@@ -155,10 +155,11 @@ class Sort:
         # The arrival position is the final key, always ascending. Rows that tie on every key the
         # author wrote are then ordered by where they arrived, which is what stability means.
         #
-        # Do not replace it with polars' own stability flag alone. With one key that is missing on
-        # every row, sorted descending, polars 1.38 hands the rows back in reverse even when asked
-        # to keep their order. record_id numbers rows after a sort, so the reversal would reach the
-        # identifiers. The flag stays as well: it costs nothing and says what is meant.
+        # Do not replace it with polars' own stability flag alone. When every key is missing on
+        # every row and at least one key sorts descending, polars 1.38 reorders the rows (one key:
+        # in reverse) even when asked to keep their order. record_id numbers rows after a sort, so
+        # the reordering would reach the identifiers. The flag stays as well: it costs nothing and
+        # says what is meant.
         arrival = pl.int_range(pl.len())
         return Ports(
             {
