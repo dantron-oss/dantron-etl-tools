@@ -418,3 +418,37 @@ catch. `allow_empty` says in writing that a branch may be empty.
 **A null result always fails.** filter has a `nulls` setting because both choices are valid when
 selecting rows. For a rule that must hold, "could not tell" is never a pass, and a setting to allow it
 would exist only to silence the check.
+
+## cast_columns
+
+**A type is stated by someone who knows.** A CSV has no types; an old database column holds digits as
+text; two branches about to be stacked disagree because one only saw whole numbers. The fix is the
+same each time: say what the column is.
+
+**A step, not a setting on other tools.** It could have been a field on union, read_table and
+read_excel, written four times and drifting apart. As a step it serves all of them, and a type change
+becomes a box on the canvas with a `why` beside it.
+
+**A value that will not convert stops the run by default.** Making it null by default gives a frame
+that looks right and is not: the column has the right type, the row is there, and the value is gone.
+The refusal is a `DataError` (the values stopped it, not the configuration) naming the column, the
+type and the rows. Owner's ruling (2026-11-18, finding E-01): a decimal becomes a whole number only
+when it already is one, because polars would cut 1.99 to 1 silently.
+
+**`set_null` reports and marks.** It suits a large messy source, where three bad values in 46,000
+should not stop a nightly build. It counts the failures out of the total and their share, which makes
+the step a warning, so the fact travels into the log and onto the canvas. The count is taken before
+the values are replaced, because afterwards a failed value and an original null look the same. Each
+emptied row also gets a status mark naming the column and quoting the value: a count alone cannot tell
+a lost figure from a name that was never a figure. A blank gets no mark. The value is spelled
+`set_null` because an unquoted `null` in YAML is no value at all.
+
+**A cast to the type already there is refused.** It does nothing, and the usual cause is a
+configuration edited halfway.
+
+**Text is not cast to true/false.** Sources spell it many ways (true, T, Y, 1); case_when decides that
+in the open.
+
+**A zone-aware timestamp needs `in_zone` to become a Date** (owner's ruling 2026-11-18, finding E-02).
+The day depends on the zone, so there is no default; the migration wrote `UTC` into the client steps
+that needed it.

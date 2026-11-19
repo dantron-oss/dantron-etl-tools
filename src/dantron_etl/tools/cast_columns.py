@@ -1,43 +1,9 @@
-"""CastColumns: one input, one output, and a column's type stated rather than inferred.
+"""CastColumns: change named columns to the types the flow states.
 
-A type comes from wherever the data came from, and sometimes that is not the type the data *is*. A
-CSV has no types at all. A database column defined years ago holds digits as text. Two branches of
-one flow, about to be stacked, disagree about a column because one of them happened to see only
-whole numbers. In each case the fix is the same: somebody who knows says what the column is.
+A value that will not convert stops the run, or with `on_invalid: set_null` becomes null and is
+counted and marked. Rows and column positions never move.
 
-**This is a step, not a setting on another tool.** It could have been a field on Union, and on
-ReadTable, and on ReadExcel, and then the same words would be written down four times and drift. As
-a step it serves all of them, and -- the part that matters more -- a type change becomes a node on
-the canvas with a `why` beside it, rather than a line of configuration inside a step that appears to
-be doing something else. A column that changes type is worth seeing.
-
-**A value that will not convert stops the run, unless the flow says otherwise.** Turning it into a
-null by default would produce a frame that looks right and is not: the column has the declared type,
-the row is still there, and the value is simply gone. So ``on_invalid`` defaults to ``error``, and
-the refusal names the column, the type asked for, and the offending rows. A decimal with a
-fraction is one such value when the type is a whole number: the engine would cut 1.99 to 1 without
-a word, so it is refused, or emptied under 'set_null'. Round it first.
-
-``on_invalid: set_null`` is the other honest answer, and it is the one a large messy source usually
-wants: three unreadable values out of forty-six thousand should not stop a nightly build. It leaves
-them null and **reports how many, out of how many, and what share** -- which raises the step to a
-warning, so the run carries on and the fact travels with it, into the log and onto the canvas. The
-count is taken *before* the values are replaced, because afterwards the evidence is gone: a null
-that failed to convert and a null that was always there look identical.
-
-**It also marks the rows it emptied**, one status row per data row, each naming the column and
-quoting what the cell held. The count alone is not enough to act on: a reader told that 595 of 692
-values were emptied cannot tell a lost figure from a client name that was never a figure, and the
-column afterwards is 692 nulls either way. The marks are built from the same mask as the count, at
-the same moment, so the two cannot come to disagree. A blank gets no mark, because a blank never
-failed to read. The note carries the first offending value as an example, which is usually enough
-to settle the question without opening anything.
-
-**Casting a column to the type it already has is refused**, like every other declaration here that
-does nothing. The usual cause is a configuration edited halfway, and saying so beats agreeing.
-
-**Nothing moves.** Same rows, same order, same column positions -- only the type changes, which is
-what makes this safe to put anywhere in a flow.
+Why: docs/design/tools.md#cast_columns
 """
 
 from collections.abc import Mapping
@@ -63,17 +29,15 @@ from ..authoring import (
     unreadable_report,
 )
 
-# 'set_null' rather than 'null': `null` unquoted in a definition file IS the null value, so an author
-# reaching for the obvious word would hand over None and the boundary would read it as unset. Spelled
-# the same way AssembleDate spells the same choice.
+# 'set_null', not 'null': YAML reads an unquoted null as no value at all.
 _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "set_null")
 
 
 class CastColumns:
-    """Read named columns of `rows` as the types the flow says they are."""
+    """Change named columns of `rows` to the types the flow states."""
 
     name = "cast_columns"
-    description = "Read named columns of `rows` as the types the flow states, leaving every row where it is."
+    description = "Change the type of columns, such as text to number or text to date."
     category = "preparation"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -82,38 +46,38 @@ class CastColumns:
         return {
             "columns": ConfigField(
                 type="array",
-                description="The columns to read as a stated type, one entry each.",
+                description="The columns to change, one entry each, with the type each should be.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="object",
-                    description="One column's type: which column, and what it is.",
+                    description="One column and its new type.",
                     fields={
                         "column": ConfigField(
                             type="string",
-                            description="The column to read as a stated type.",
+                            description="The column to change, such as 'amount'.",
                             required=True,
                             non_empty=True,
                         ),
                         "type": ConfigField(
                             type="string",
-                            description="The type the column is, spelled the way the query engine spells it.",
+                            description="The new type, such as 'Float64' for decimals, 'Int64' for "
+                            "whole numbers, 'Date' or 'String'.",
                             required=True,
                             enum=DECLARED_TYPES,
                         ),
                         "in_zone": ConfigField(
                             type="string",
-                            description="For a timestamp that carries a time zone, read as a 'Date': "
-                            "the zone whose calendar decides the day, such as UTC. Required then, "
-                            "refused anywhere else; no default.",
+                            description="Only when turning a timestamp with a time zone into a 'Date': "
+                            "the zone whose calendar decides the day, such as 'UTC'.",
                         ),
                     },
                 ),
             ),
             "on_invalid": ConfigField(
                 type="string",
-                description="What a value that will not convert does: 'error' stops the run "
-                "(default), 'set_null' leaves it null and reports how many, out of how many.",
+                description="What to do with a value that will not convert: 'error' stops the run; "
+                "'set_null' makes it null and reports how many.",
                 default="error",
                 enum=_ON_INVALID_ENUM,
             ),
@@ -122,38 +86,43 @@ class CastColumns:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Each named column is read as the type stated for it. Every row stays, in its own "
-                "order, and every column keeps its position -- only the type changes. A value that "
-                "will not convert stops the run rather than becoming a null."
+                "Use cast_columns to say what type a column really is: numbers that arrived as text "
+                "from a CSV, dates stored as text, or a column two tables disagree about before a "
+                "union. `rows` comes out with the same rows and columns in the same order; only the "
+                "types change. A value that will not convert stops the run unless 'on_invalid' is "
+                "'set_null'."
             ),
             examples=(_settles_a_text_number(), _two_columns_at_once()),
             notes=(
-                "Put this in front of a Union whose two sides disagree about a column: the union "
-                "refuses rather than choosing which side to rewrite, and this is where the flow "
-                "says which one was right.",
-                "A value that will not convert stops the run by default. 'on_invalid: set_null' "
-                "leaves it null instead and reports how many out of how many, raising the step to "
-                "a warning -- the run carries on, and the size of the problem carries on with it.",
-                "Casting a column to the type it already has is refused: it is a declaration that "
-                "does nothing, and the usual cause is a configuration edited halfway.",
-                "Not every pair converts. Text does not become a truth value here, because the "
-                "spellings a source might use for one -- true, T, Y, 1 -- are a decision a flow "
-                "should make in the open with CaseWhen rather than have a cast guess at. That pair "
-                "is refused when the step runs, not when the pipeline loads.",
-                "A decimal becomes a whole number only when it already is one. 12.0 reads as 12, "
-                "but 1.99 does not read as Int64: it stops the run, naming the column and the "
-                "values, or is emptied and counted under 'set_null'. Round it first.",
-                "A timestamp that carries a time zone becomes a Date only with 'in_zone' beside "
-                "it, because which day it falls on depends on the zone: 23:30 on 31 January in "
-                "Toronto is 1 February in UTC. 'in_zone: UTC' reads the UTC date. There is no default.",
-                "A date cast to a number gives the days since 1 January 1970. A timestamp cast to "
-                "Int64 gives a count in the column's own time unit: microseconds for a timestamp "
-                "this library typed, but a source may hand over nanoseconds or milliseconds. To "
-                "count the days or months between two dates, date_diff says what it counts.",
+                "Put this in front of a union whose two sides disagree about a column's type. union "
+                "refuses rather than choosing which side to change.",
+                "A value that will not convert stops the run by default, naming the column, the type "
+                "and the rows.",
+                "With 'on_invalid: set_null', such a value becomes null, and the step reports how "
+                "many out of how many as a warning; the run carries on.",
+                "With 'set_null', each emptied row is also marked with the column and the value it "
+                "held. A blank is not marked, because it did not fail.",
+                "Changing a column to the type it already has is refused. It usually means a "
+                "configuration edited halfway.",
+                "A column named twice is refused.",
+                "Text does not become true/false here, because sources spell it many ways (true, T, "
+                "Y, 1). Use case_when to decide. That pair is refused when the step runs, not when "
+                "the pipeline loads.",
+                "A decimal becomes a whole number only when it already is one: 12.0 becomes 12, but "
+                "1.99 stops the run, or is emptied and counted under 'set_null'. Round it first.",
+                "A timestamp with a time zone becomes a Date only with 'in_zone', because the day "
+                "depends on the zone: 23:30 on 31 January in Toronto is 1 February in UTC. There is "
+                "no default.",
+                "A date cast to a number gives the days since 1 January 1970.",
+                "A timestamp cast to Int64 gives a count in the column's own time unit: microseconds "
+                "for a timestamp this library made, but a source may give nanoseconds or "
+                "milliseconds. To count days or months between dates, use date_diff.",
             ),
             field_help={
-                "columns": "Order does not matter; each entry names a different column, and a "
-                "column named twice is refused rather than resolved by whichever came last.",
+                "columns": "For example [{column: amount, type: Float64}, {column: opened_on, type: "
+                "Date}]. The order of the entries does not matter.",
+                "on_invalid": "Use 'set_null' for a large, messy source where a few bad values should "
+                "not stop a nightly run.",
             },
         )
 
@@ -206,9 +175,7 @@ class CastColumns:
         frame = inputs["rows"]
         lenient = config["on_invalid"] == "set_null"
         notes: list[str] = []
-        # One entry per column that emptied something, carrying a reason for each row it emptied.
-        # Gathered in the order the columns were cast, so a row degraded twice reads in the order
-        # the work was done rather than in whatever order a set iterated.
+        # One entry per column that emptied a value, in the order the columns were cast.
         marks: list[tuple[str, pl.Series]] = []
 
         for entry in config["columns"]:
@@ -218,11 +185,8 @@ class CastColumns:
                 frame = frame.with_columns(as_calendar_date(pl.col(column), frame.schema[column], entry["in_zone"]))
                 continue
             if lenient:
-                # Taken before the values are replaced, because afterwards the evidence is gone:
-                # a null that failed to convert and a null that was always there look identical, and
-                # the whole point of this mode is to say how many of the first there were. The
-                # sentence and the marks are the same mask read once, in one call, so there is no
-                # second reading of the column for the two of them to disagree over.
+                # Counted before the values are replaced; afterwards a failed value and a null look
+                # alike. The count and the row marks come from the same mask.
                 cut = cut_fractions(frame[column], DECLARED_DTYPE[declared])
                 read = frame.select(pl.col(column).cast(DECLARED_DTYPE[declared], strict=False)).to_series()
                 read = pl.select(pl.when(cut).then(None).otherwise(read)).to_series().alias(column)
@@ -243,14 +207,8 @@ class CastColumns:
             try:
                 frame = frame.with_columns(pl.col(column).cast(DECLARED_DTYPE[declared]))
             except Exception as error:
-                # Named as a data refusal rather than a configuration one: the configuration is a
-                # legal thing to ask for, and what stopped it is the values. That is the difference
-                # between "go and look at the flow" and "go and look at the rows".
-                #
-                # The examples are gathered with a non-strict cast, which answers null for the values
-                # that would not convert -- and is itself wrapped, because a pair the engine refuses
-                # outright rather than value by value would otherwise throw here, turning a refusal
-                # into a crash inside the reporting of it.
+                # A data refusal: the values stopped it, not the configuration. The sample rows are
+                # best effort, so a type pair polars refuses outright does not crash the report.
                 try:
                     offending = inputs["rows"].filter(
                         pl.col(column).is_not_null()
@@ -271,10 +229,10 @@ def _settles_a_text_number() -> WorkedExample:
     inputs = Ports({"rows": pl.DataFrame({"code": ["A1", "B2"], "amount": ["10.5", "-3"]})})
     outputs = Ports({"rows": pl.DataFrame({"code": ["A1", "B2"], "amount": [10.5, -3.0]})})
     return WorkedExample(
-        scenario="read a column of digits as the numbers they are",
+        scenario="turn a column of digits held as text into numbers",
         configuration={"columns": [{"column": "amount", "type": "Float64"}]},
-        explanation="`amount` arrived as text, which is what a source with no types gives. It stays "
-        "the second column and every row stays where it was; only the type changes.",
+        explanation="'amount' arrived as text, as it does from a CSV. It becomes Float64 and stays the second "
+        "column; nothing else changes.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -287,17 +245,15 @@ def _two_columns_at_once() -> WorkedExample:
         {"rows": pl.DataFrame({"count": [2, 5], "opened_on": [date(2026, 1, 1), date(2026, 2, 1)]})}
     )
     return WorkedExample(
-        scenario="settle two columns in one step",
+        scenario="change two columns in one step",
         configuration={
             "columns": [
                 {"column": "count", "type": "Int64"},
                 {"column": "opened_on", "type": "Date"},
             ]
         },
-        explanation="Each entry names one column and the type it is. The order entries are written "
-        "in does not matter, since no column is named twice. A date is read in the order the engine "
-        "reads it -- a source writing its digits in another order wants AssembleDate, where the "
-        "order is stated.",
+        explanation="Each entry names a column and its type. A date is read as year-month-day; for digits in "
+        "another order, use assemble_date.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
