@@ -203,3 +203,22 @@ table over its headings and one empty row, the smallest a spreadsheet accepts.
 
 **Tab names are refused, not repaired.** People write dates with slashes and headings with colons
 into tab names. Renaming quietly delivers a tab nobody can find under the name the flow uses.
+
+## filter
+
+**Two output ports, nothing dropped.** A filter that kept only matching rows would turn the rest into
+something a reader rebuilds later with an anti join, if they remember. Every row goes to exactly one
+of `true` or `false`, so `true.height + false.height == rows.height` always.
+
+**A null condition goes to `false` by default.** A comparison with a null is null, as in SQL, and
+SQL's WHERE drops it. `nulls: include` sends it to `true`. There is no third port for null rows: the
+split is one step away (`[column] is null` on `false`), and a third output would put an almost
+always empty edge on every flow.
+
+**The setting values are `exclude` and `include`, not `false` and `true`.** YAML turns an unquoted
+`true` into a boolean, so `nulls: true` would be refused with a type error unrelated to what was meant.
+
+**A condition must give true or false, checked on its type.** `[amount]` on a number column is a
+valid expression but not a condition; polars would fail with a type error from a library the author
+never heard of. A bare true/false column is a valid condition, because filtering on a status flag is
+a real use.
