@@ -1,38 +1,11 @@
-"""Narrowing a finished run to one entity, so a wrong figure can be traced to the step that made it.
+"""Narrow a finished run to one entity, such as one client, so a wrong figure can be followed step by step.
 
-The runner leaves a trace: every frame a flow produced, keyed by the port that produced it. That
-answers "what happened". It does not answer *show me this one thing, at every step* -- and that is
-what slicing answers. A slice reads a finished run and hands back a parallel view of it, one entry
-per port, filtered to the rows that belong to one value. It never re-runs anything: a reduction sums
-over siblings and a pairing matches across a whole frame, so a flow re-run over one entity's rows
-would answer a different question, with numbers that look entirely reasonable. Reading rather than
-re-running is also what lets the same finished run be sliced again for the next entity and answer
-the same way both times.
+Describe the entity with a :class:`FocusSpec`, then call ``slice_trace(trace, focus, value)``. You
+get a :class:`FocusedTrace`: every port of the run, each filtered to that entity's rows, with a
+status that says how the port was matched. ``available_entities(trace, focus)`` lists the values
+you can pick. Nothing is re-run; the run's own frames are read and left unchanged.
 
-Identity is a tuple of candidate column names, tried first-present at every port, because a detailed
-frame and a reduced one often name the same entity differently. There is deliberately no per-port
-column override: a slice applies one value, the entity's own, and naming a key column at a reduced
-grain would filter that column for a value it never holds and match nothing, silently. The only
-per-port declaration a focus may make is a :class:`RelatedKey`, which reaches a grain that names no
-entity at all by learning, at a port where the entity does resolve, the values of some other column
--- so the value a related port is matched on is always learned, never the one a reader typed.
-
-Four different answers exist at a port, and conflating any two of them produces a believable wrong
-number. A port that names the entity and holds none of its rows is a fact about the entity
-(``matched``, ``rows_focused=0``). A port that holds no column naming any entity at all is a fact
-about the port, not the entity -- reporting it as nought rows would send a reader hunting a filter
-that never fired (``no_grain``, ``rows_focused=None``). A port reached only through a related key is
-its own status because the value it is matched on is not the reader's own (``related``). And a port
-a live run already released its frame for is a fact about the run, not about what the entity held
-there (``not_retained``, ``rows_focused=None``) -- what is still knowable without the frame, namely
-its size and its columns, is still reported. No-grain is checked ahead of not-retained, because
-whether a port names an entity at all is knowable from its shape alone, with no frame required.
-
-An entity value nobody's rows hold is refused, because a view reporting nought rows at every single
-port is indistinguishable, by eye, from an entity a flow genuinely dropped at its very first step --
-which is the wrong answer this module exists to prevent. That refusal only fires when it can be
-backed up: it needs at least one column-resolved port with a retained frame to check against, so a
-live run, which retains none, can refute nothing and must not try.
+Why: docs/design/loading-and-running.md#focus
 """
 
 from collections.abc import Mapping
@@ -61,54 +34,47 @@ __all__ = [
     "slice_trace",
 ]
 
-#: What a port's slice reports. ``matched`` names the entity directly and its row count is a fact
-#: about the entity; ``related`` is matched through a learned key rather than the entity's own
-#: value; ``no_grain`` is a fact about the port, which carries no column naming any entity at all;
-#: ``not_retained`` is a fact about the run, whose frame a live run already released.
+#: How one port was matched to the entity:
+#: ``matched``: the port has an identity column; its row count is the entity's (it may be 0).
+#: ``related``: matched through a :class:`RelatedKey` learned at another port.
+#: ``no_grain``: the port has no column naming any entity, so there is nothing to count.
+#: ``not_retained``: the run freed this port's frame under ``retain="live"``.
 SliceStatus = Literal["matched", "related", "no_grain", "not_retained"]
 
 
 class FocusError(ToolError):
-    """The base of every refusal this module raises, so a caller has one family to catch.
-
-    Shares its base with every other tool boundary in this library rather than inventing a second
-    hierarchy for the one module that reads a trace instead of running one.
-    """
+    """Raised when a focus cannot be built or applied. Every refusal in this module is one."""
 
 
 class UnknownEntityError(FocusError):
-    """A value was asked for that no column-resolved, retained port holds anywhere on the trace.
+    """Raised when no kept frame with an identity column holds the value asked for.
 
-    Distinct from a value that some ports hold and others do not -- that is an ordinary slice, not a
-    refusal. This fires only where it can be backed up by evidence; see :func:`slice_trace`.
+    A value that some ports hold and others do not is an ordinary slice. See :func:`slice_trace`.
     """
 
 
 class MissingEvidenceError(FocusError):
-    """A slice needs a port, or a frame, that this run never produced or already let go of.
+    """Raised when the run never produced a port the focus needs, or kept no frame to count from.
 
-    Raised for a related key whose origin port a partial run never reached at all -- as opposed to a
-    port that ran but whose frame a live run later released, which is reported as the ``not_retained``
-    status on the slice itself rather than as a refusal, because that is a fact worth showing rather
-    than a request that cannot be answered.
+    A port that ran but whose frame was freed is not refused: its slice has status
+    ``not_retained``.
     """
 
 
 class RelatedKeyError(FocusError):
-    """A :class:`RelatedKey` names a port and column pairing that cannot actually be resolved.
+    """Raised when a :class:`RelatedKey` is declared wrongly.
 
-    Distinct from :class:`MissingEvidenceError`: this is a mis-declaration -- the key is absent as a
-    column at one end, or the origin names no entity at all -- and the fix is to correct the focus,
-    not to re-run the flow.
+    The key column is missing at one end, or the port it learns from has no identity column. Fix
+    the focus; re-running the flow will not help.
     """
 
 
 @dataclass(frozen=True, slots=True)
 class RelatedKey:
-    """Reach a port at a grain that names no entity, through a column learned somewhere else.
+    """A way to reach a port that has no identity column, through a key column it shares with another port.
 
-    ``from_port`` is where the key's values are learned, filtered to the entity's own rows there --
-    so the value ultimately applied at the port this key resolves is never the one a reader typed.
+    At ``from_port`` the entity's rows are found and the values of ``key`` read from them. The
+    target port is then filtered to rows whose ``key`` holds one of those values.
     """
 
     from_port: PortRef
@@ -117,17 +83,17 @@ class RelatedKey:
 
 @dataclass(frozen=True, slots=True)
 class FocusSpec:
-    """What identifies one entity, and which ports can only be reached through a learned key.
+    """Says which columns identify an entity, and which ports to reach through a related key.
 
-    ``identity`` is tried first-present, in declaration order, at every port that is not named in
-    ``via`` -- the first candidate a port's own columns actually carry, not the first one that
-    happens to hold the value being sliced for, and never more than one at once. This rule is
-    unenforced across ports: nothing here checks that two candidates never appear together on one
-    port, because a slice cannot detect a rule no fixture ever exercises the failure of.
+    - ``label``: what the entity is called in messages, such as ``"client"``.
+    - ``identity``: candidate column names. At each port the first one the port has is used, and
+      only that one. A detailed frame and a summary often name the entity differently.
+    - ``via``: ``{PortRef: RelatedKey}`` for ports with no identity column.
 
-    ``via`` is the only per-port thing a focus may say, and it may only say "reach this one through
-    a :class:`RelatedKey`" -- naming a plain column here instead is refused, because a slice applies
-    one value and a column named at a reduced grain would filter for a value it never holds.
+    Refused when built: an empty ``identity``; a ``via`` key that is not a :class:`PortRef`; a
+    ``via`` value that is not a :class:`RelatedKey`; a related key that learns from its own port.
+
+    Why: docs/design/loading-and-running.md#one-value-and-no-per-port-column
     """
 
     label: str
@@ -159,12 +125,7 @@ class FocusSpec:
         object.__setattr__(self, "via", MappingProxyType(dict(self.via)))
 
     def identity_column(self, columns: tuple[str, ...]) -> str | None:
-        """The first candidate in :attr:`identity` that ``columns`` carries, or ``None``.
-
-        ``None`` means this port names no entity at all, which is a fact about the port and never a
-        reason to fall back to matching every row or none of them -- both are the plausible wrong
-        answer this module exists to prevent.
-        """
+        """Return the first candidate in :attr:`identity` that ``columns`` has, or ``None`` if none."""
         for candidate in self.identity:
             if candidate in columns:
                 return candidate
@@ -173,15 +134,17 @@ class FocusSpec:
 
 @dataclass(frozen=True, slots=True)
 class PortSlice:
-    """One port's frame narrowed to one entity, and everything it took to narrow it.
+    """One port of the run, narrowed to one entity.
 
-    ``rows_at_port`` and ``columns`` come from the trace's own shapes, so they are reported even for
-    a released port -- how large a port was and what it carried is knowable without holding its
-    frame. ``rows_focused`` is ``0`` when the entity's row count there truly is nought, and ``None``
-    when there is no such question at this port to answer at all: no column names an entity there,
-    or no frame survived to be asked. ``frame`` is ``None`` under exactly those same two conditions,
-    so a shared reference row is never drawn under one entity's name, and a released frame is never
-    fabricated. ``reason`` is empty for a plain, column-matched slice, which has nothing to explain.
+    - ``status``: how the port was matched (see :data:`SliceStatus`).
+    - ``rows_focused``: the entity's row count here. ``0`` means none; ``None`` means the question
+      has no answer here (status ``no_grain`` or ``not_retained``).
+    - ``rows_at_port`` and ``columns``: the whole port's size and columns, known even when its
+      frame was freed.
+    - ``matched_on``: the column filtered on. ``related`` and ``related_values``: the related key
+      and the values learned for it.
+    - ``reason``: a sentence explaining any status other than ``matched``.
+    - ``frame``: the entity's rows, or ``None`` when ``rows_focused`` is ``None``.
     """
 
     port: PortRef
@@ -198,10 +161,9 @@ class PortSlice:
 
 @dataclass(frozen=True, slots=True)
 class FocusedTrace:
-    """A whole run seen through one entity: one slice per port the run produced, in its own order.
+    """A whole run seen through one entity: one :class:`PortSlice` per port, in run order.
 
-    Reading, never writing: every slice is a fresh frame, so the run this was built from is left
-    exactly as it was and can be sliced again for the next entity with the same answer both times.
+    :func:`slice_trace` returns it. Look up one port with ``focused.slice(PortRef(step, port))``.
     """
 
     pipeline: str
@@ -210,7 +172,7 @@ class FocusedTrace:
     slices: tuple[PortSlice, ...]
 
     def slice(self, port: PortRef) -> PortSlice:
-        """The slice for ``port``, or a refusal naming the ports this focused trace actually has."""
+        """Return the slice for ``port``. Refuses a port that is not here, listing those that are."""
         for one in self.slices:
             if one.port == port:
                 return one
@@ -220,12 +182,10 @@ class FocusedTrace:
 
 @dataclass(frozen=True, slots=True)
 class EntityOption:
-    """One entity a finished run can be sliced to, and where it was seen while counting.
+    """One entity value a run can be narrowed to, with the ports it appeared on.
 
-    ``rows_by_port`` and :meth:`rows_at` are all there is: an entity's count is only ever meaningful
-    against one named port, because the same entity is one row at a parent grain and several at a
-    child grain, and any single number spanning two of those would be wrong at every other grain than
-    the one it happened to be taken from. There is deliberately no scalar row count here at all.
+    ``rows_by_port`` (or :meth:`rows_at`) gives its row count at each port. There is no single
+    total, because one entity can be one row in a summary and many in the detail.
     """
 
     value: Any
@@ -233,7 +193,7 @@ class EntityOption:
     rows_by_port: Mapping[PortRef, int] = field(default_factory=lambda: MappingProxyType({}))
 
     def rows_at(self, port: PortRef) -> int:
-        """How many of this entity's rows ``port`` carried, or ``0`` if it never appeared there."""
+        """Return this entity's row count at ``port``, or ``0`` if it never appeared there."""
         return self.rows_by_port.get(port, 0)
 
 
@@ -243,21 +203,20 @@ class EntityOption:
 
 
 def slice_trace(trace: PipelineTrace, focus: FocusSpec, value: Any) -> FocusedTrace:
-    """Narrow every port ``trace`` produced to the rows carrying ``value``, one slice per port.
+    """Narrow every port of ``trace`` to the rows where the entity's column equals ``value``.
 
-    ``trace`` is read, never written: every slice is built from a fresh, filtered frame, so the same
-    finished run can be sliced again for the next entity and the run's own frames are untouched.
-    Ports are visited in the order the run produced them -- a partial run from a failure slices to
-    exactly the ports it reached.
+    Call it as ``slice_trace(trace, focus, "C-104")``. Returns a :class:`FocusedTrace` with one
+    slice per port, in the order the run produced them; a run that failed part way gives the ports
+    it reached. The trace is not changed.
 
-    Refuses, before building anything, a ``value`` that no column-resolved and retained port holds
-    anywhere on the trace: a view of nought rows everywhere is indistinguishable, by eye, from an
-    entity a flow dropped at its very first step, which is the wrong answer this function exists to
-    prevent. That refusal only fires where it can be backed up by at least one such port; a live run,
-    which retains none, can refute nothing and is sliced as-is.
+    Refuses:
 
-    Raises :class:`RelatedKeyError` for a related key absent as a column at either end, and
-    :class:`MissingEvidenceError` for a related key whose origin port this run never reached at all.
+    - :class:`UnknownEntityError`: no kept frame with an identity column holds ``value``. Checked
+      only when at least one such frame exists.
+    - :class:`RelatedKeyError`: a related key column is missing at either end.
+    - :class:`MissingEvidenceError`: a related key learns from a port the run never produced.
+
+    Why: docs/design/loading-and-running.md#a-value-nobody-holds-is-refused
     """
     _refuse_unheld_value(trace, focus, value)
     slices = tuple(_build_slice(trace, focus, port, value) for port in trace.shapes)
@@ -281,10 +240,9 @@ def _refuse_unheld_value(trace: PipelineTrace, focus: FocusSpec, value: Any) -> 
 
 
 def _failure_first(trace: PipelineTrace) -> str:
-    """The step failure that ended ``trace``, as the opening sentence of a refusal, or nothing.
+    """Return the failure that ended ``trace`` as the opening of a refusal, or ``""``.
 
-    A focus refusal on a run that failed is almost always caused by the failure: the ports the focus
-    needed were never reached. So the failure is what the reader is told first.
+    On a failed run the failure is usually the cause of the focus refusal, so it is said first.
     """
     last = trace.events[-1] if trace.events else None
     if last is None or last.level != "error":
@@ -430,7 +388,7 @@ def _related_slice(
 
 
 def _sort_key(value: Any) -> tuple[str, Any]:
-    """Order a picker's list by value, grouped by type name first so mixed grains stay comparable."""
+    """Sort key for a picker's list: by type name first, so values of mixed types can be compared."""
     return type(value).__name__, value
 
 
@@ -440,14 +398,14 @@ def available_entities(
     *,
     port: PortRef | None = None,
 ) -> tuple[EntityOption, ...]:
-    """Every entity a finished run can be sliced to, each counted once and against a named port.
+    """List the entity values a run can be narrowed to, as sorted :class:`EntityOption` items.
 
-    ``port`` narrows the question to one port; left unset, every column-resolved port on the trace
-    is scanned. A port reached only through a related key offers nobody to pick, because a row there
-    belongs to several entities at once and attributing it to one would double-count the picker.
+    Scans every kept port that has an identity column, or only ``port`` when given. Null values are
+    skipped. Ports reached only through a related key are not scanned, because a row there belongs
+    to several entities.
 
-    Raises :class:`MissingEvidenceError` when no column-resolved port this call would scan still
-    holds a retained frame -- a live run holds none, and nothing here can be counted without one.
+    Refuses a ``port`` the run did not produce (:class:`FocusError`), and raises
+    :class:`MissingEvidenceError` when no scanned port has a kept frame with an identity column.
     """
     if port is not None and port not in trace.shapes:
         available = ", ".join(str(p) for p in trace.shapes) or "none"
