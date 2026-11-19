@@ -1,0 +1,55 @@
+"""The page templates, stylesheets and scripts that ship inside the package, and filling them in.
+
+A template is an HTML file with markers like ``@@canvas@@``. Python fills each marker with markup it
+built from the run. The stylesheet and the script are separate files, read here and written into the
+page, so a saved page is still one file that opens on its own.
+
+Markers are filled in one pass. Text put in for one marker is never searched for another, so a value
+from the data that happens to contain ``@@`` stays as it is.
+"""
+
+from __future__ import annotations
+
+import html
+import re
+from functools import cache
+from importlib import resources
+
+__all__ = ["escape", "page", "read_asset"]
+
+_MARKER = re.compile(r"@@([a-z_]+)@@")
+
+
+def escape(value: object) -> str:
+    """``value`` as text that is safe inside HTML, quotes included."""
+    return html.escape(str(value), quote=True)
+
+
+@cache
+def read_asset(name: str) -> str:
+    """One file from ``templates/`` or ``static/``, read from the installed package."""
+    folder = "templates" if name.endswith(".html") else "static"
+    return resources.files(__package__).joinpath(folder, name).read_text(encoding="utf-8")
+
+
+def fill(template: str, values: dict[str, str]) -> str:
+    """``template`` with every ``@@name@@`` replaced by ``values[name]``.
+
+    A marker with no value, or a value with no marker, is a mistake in this package, so both refuse.
+    """
+    wanted = set(_MARKER.findall(template))
+    missing = sorted(wanted - set(values))
+    unused = sorted(set(values) - wanted)
+    if missing or unused:
+        raise ValueError(f"template markers and values differ: missing {missing}, unused {unused}")
+    return _MARKER.sub(lambda found: values[found.group(1)], template)
+
+
+def page(kind: str, /, **values: str) -> str:
+    """The page ``kind``: its template filled in, with the shared theme, its stylesheet and its script."""
+    values = {
+        "css": read_asset("theme.css") + read_asset(f"{kind}.css"),
+        "script": read_asset(f"{kind}.js"),
+        **values,
+    }
+    return fill(read_asset(f"{kind}.html"), values)

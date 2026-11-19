@@ -35,7 +35,8 @@ PROJECT_ROOT = project_root(__file__)
 # the real flow reads a database this suite has no access to. Where the layout *is* reachable
 # through the page -- the fixture flow -- the cases above go through `build`, and this is the seam
 # for the one flow that cannot.
-from scripts.pipeline_walkthrough_page import _canvas, build  # noqa: E402 -- needs PROJECT_ROOT first
+from dantron_etl.viewer import build  # noqa: E402
+from dantron_etl.viewer.layout import canvas as _canvas  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -54,7 +55,7 @@ def panels(fixture_flow_sandbox: Path) -> dict[str, str]:
     Imported here rather than at the top of the file so that a suite run before the panels exist
     fails on the cases that are about them, rather than collecting nothing at all.
     """
-    from scripts.pipeline_walkthrough_page import build_panels
+    from dantron_etl.viewer import build_panels
 
     spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
     with chdir(fixture_flow_sandbox):
@@ -213,7 +214,8 @@ class TestTheFlowIsTheIndex:
 
 def test_the_page_declares_its_encoding(page: str) -> None:
     """Undeclared, a browser guesses, and a client's accented name arrives as three letters."""
-    assert page.lstrip().startswith('<meta charset="utf-8">')
+    # A browser only honours the declaration within the first 1,024 bytes.
+    assert '<meta charset="utf-8">' in page[:1024]
 
 
 def test_no_control_character_reaches_the_page(page: str) -> None:
@@ -1861,7 +1863,7 @@ class TestThePanelOpensOnTheEntityTheReaderChose:
         case: the page is written once and the panels are written beside it, and it is the second
         pass drifting from the first that does this.
         """
-        from scripts.pipeline_walkthrough_page import build_panels
+        from dantron_etl.viewer import build_panels
 
         spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
         with chdir(fixture_flow_sandbox):

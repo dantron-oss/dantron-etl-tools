@@ -208,7 +208,7 @@ def store(written: Path) -> PortStore:
 
 @pytest.fixture(scope="module")
 def page(trace: PipelineTrace) -> str:
-    from scripts.pipeline_walkthrough_page import build
+    from dantron_etl.viewer import build
 
     return build(_flow(), trace, FOCUS)
 
@@ -220,7 +220,7 @@ def panels(trace: PipelineTrace) -> dict[str, str]:
     Imported inside the fixture, in the shape the existing page tests use: a suite run before any of
     this exists fails on the cases that are about it rather than collecting nothing at all.
     """
-    from scripts.pipeline_walkthrough_page import build_panels
+    from dantron_etl.viewer import build_panels
 
     return build_panels(_flow(), trace, FOCUS)
 

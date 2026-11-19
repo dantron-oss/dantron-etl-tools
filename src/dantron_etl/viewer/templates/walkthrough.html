@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>@@name@@</title>
+<style>@@css@@</style>
+<div class="wrap" data-first="@@first@@">
+  <header class="top"><button class="rail" title="show or hide the list of steps">&#9776;</button>
+    <h1>@@name@@</h1><p>@@summary@@</p>@@picker@@
+    <div class="folds"><button data-fold="flow" aria-pressed="true">flow</button>
+      <button data-fold="detail" aria-pressed="true">config</button>
+      <button data-fold="data" aria-pressed="true">data</button></div></header>
+  <div class="body">
+  @@index@@
+  <div class="panes">
+    <div class="pane flowpane">
+      <div class="bar"><div class="zoom"><button data-zoom="out" title="zoom out">&minus;</button>
+        <span class="level">100%</span>
+        <button data-zoom="in" title="zoom in">+</button>
+        <button data-zoom="fit" title="fit the whole flow">fit</button>
+        <button data-zoom="reset" title="back to actual size">1:1</button></div>
+        <button class="tclear" data-trace="clear"
+          title="clear the trace and light the whole flow again">&#9678;</button></div>
+      @@canvas@@</div>
+    <div class="grip grip-v" title="drag to widen either side"></div>
+    <div class="pane detailpane">@@details@@</div>
+    <div class="grip grip-h" title="drag to raise or lower the data"></div>
+    <div class="pane datapane">@@panel@@</div>
+  </div>
+  </div>
+</div>
+<script>@@script@@</script>

@@ -447,7 +447,7 @@ class TestTheViewerScriptsNoLongerReachIntoClientCode:
             ("serve_runs.py", ("", "output_files/runs")),
             (
                 "tool_catalog_page.py",
-                ("output_files", "output_files/tool_catalog.html", "output_files/tool_catalog.json"),
+                ("output_files",),
             ),
             ("etl_architecture_page.py", ("output_files/runs/architecture",)),
         ),
