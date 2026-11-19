@@ -11,10 +11,10 @@ words this library already uses for a column that is not on a port, and a near m
 a trailing space -- is not a match.
 
 What comes back is what the sheet holds, not what somebody once put in. A column of whole numbers
-written as floats comes back whole, and a column mixing text and figures comes back entirely as
-text, because a cell that once held ``10.25`` next to a cell that holds ``"not a number"`` cannot be
-un-mixed by guessing -- a reader that tried would be right most months and wrong in a way no run
-reports. A header row is a sheet's schema, so a repeated heading or a blank one is refused rather
+written as floats comes back whole. The engine decides each column's type from its first 100 rows,
+so text inside those rows makes the column text. Text further down a column of figures would read
+as null, and so would a word the engine treats as missing (``n/a``, ``#N/A``); the read stops
+instead and points to ``as_text``. A header row is a sheet's schema, so a repeated heading or a blank one is refused rather
 than repaired: this library's own vocabulary for either -- ``key_1``, ``__UNNAMED__1`` -- would
 otherwise leak into a flow's own column names, silently, the moment a downstream step names the
 column that came first.
@@ -35,6 +35,7 @@ from ..authoring import (
     SCRATCH_TOKEN,
     ConfigError,
     ConfigField,
+    DataError,
     Ports,
     ToolHelp,
     WorkedExample,
@@ -117,8 +118,8 @@ class ReadExcel:
         return ToolHelp(
             detailed_description=(
                 "The named sheet arrives on `rows` with the columns and the dtypes the sheet "
-                "itself holds: a column of round figures comes back whole, a column mixing text "
-                "and figures comes back entirely as text, and a blank cell comes back null rather "
+                "itself holds: a column of round figures comes back whole, a column with text in "
+                "its first 100 rows comes back as text, and a blank cell comes back null rather "
                 "than an empty string. The sheet is always named, in `sheet`, or found by a pattern, "
                 'in `sheets_matching`. It is never an index: "the first tab" silently reads the '
                 "wrong sheet the moment a delivered pack puts a cover sheet in front of the figures. "
@@ -126,6 +127,11 @@ class ReadExcel:
             ),
             examples=(_reads_a_sheet_example(), _reads_matching_sheets_example(), _reads_as_text_example()),
             notes=(
+                "Each column's type is decided from its first 100 rows. A cell that holds something "
+                "but would read as null is refused, naming the column and the row: text further "
+                "down a column of figures, or a word the engine treats as missing, such as n/a, "
+                "#N/A or null, anywhere in it. A cell of only spaces reads as null. Set as_text to "
+                "read every cell as its text and convert the columns with cast_columns after.",
                 "A sheet named in the configuration that is not in the workbook is refused with "
                 "the sheet names that are there; a name differing only in case or a trailing space "
                 "is a different name, not a near match.",
@@ -324,21 +330,62 @@ def _read_sheet(
     if not has_header:
         read_options["skip_rows"] = skip_rows
 
-    try:
-        if as_text:
-            return _read_sheet_as_text(path, sheet, has_header, read_options)
-        frame = pl.read_excel(
+    def read(options: Mapping[str, Any]) -> pl.DataFrame:
+        return pl.read_excel(
             path,
             sheet_name=sheet,
             has_header=has_header,
-            read_options=read_options,
+            read_options=dict(options),
+            drop_empty_rows=False,
             drop_empty_cols=False,
             raise_if_empty=False,
         )
+
+    try:
+        if as_text:
+            return _read_sheet_as_text(path, sheet, has_header, read_options)
+        frame = read(read_options)
+        text = read({**read_options, "dtypes": "string"})
     except Exception as error:
         raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
-    return frame
+    _refuse_text_the_typed_read_lost(frame, text, sheet, has_header)
+    if frame.width == 0:
+        return frame
+    # A row blank in every column is layout, dropped here as the engine's own option would drop it.
+    # It is dropped after the check above, so a row whose only value was lost is still seen there.
+    return frame.filter(~pl.all_horizontal(pl.all().is_null()))
+
+
+def _refuse_text_the_typed_read_lost(frame: pl.DataFrame, text: pl.DataFrame, sheet: str, has_header: bool) -> None:
+    """Refuse a cell that holds something but reads as null, naming the first one.
+
+    The engine decides a column's type from its first 100 rows and forces every cell into it. Text
+    further down a column of figures then reads as null. So do a few words it treats as missing
+    (``n/a``, ``#N/A``, ``null``), wherever they sit. ``text`` is the same sheet read as text, row
+    for row, so a cell present there and null in ``frame`` was lost. A cell of nothing but spaces
+    loses nothing and is let through.
+    """
+    lost = [
+        frame.get_column(name).is_null() & text.get_column(name).str.strip_chars().str.len_chars().gt(0)
+        for name in frame.columns
+    ]
+    if not lost or not any(mask.any() for mask in lost):
+        return
+    where = pl.DataFrame({name: mask for name, mask in zip(frame.columns, lost, strict=True)})
+    offending_rows = where.select(pl.any_horizontal(pl.all())).to_series()
+    first_row = offending_rows.arg_true()[0]
+    column = next(name for name in frame.columns if where[name][first_row])
+    written = text[column][first_row]
+    position = f"row {first_row + 1} under the heading" if has_header else f"row {first_row + 1} read"
+    raise DataError(
+        f"read_excel refuses sheet {sheet!r}: column {column!r} holds {written!r} on {position}, but "
+        f"the column reads as {frame.schema[column]}, so that cell would arrive as null. Set "
+        f"as_text: true to read every cell as the text it holds, then convert the columns with "
+        f"cast_columns",
+        offending=text.filter(offending_rows),
+        total=text.height,
+    )
 
 
 def _read_sheet_as_text(path: str, sheet: str, has_header: bool, read_options: Mapping[str, Any]) -> pl.DataFrame:

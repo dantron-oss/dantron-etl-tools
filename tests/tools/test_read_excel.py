@@ -54,6 +54,7 @@ from polars.testing import assert_frame_equal
 from dantron_etl.authoring import (
     CATEGORIES,
     ConfigError,
+    DataError,
     ExecutionError,
     Ports,
     REGISTRY,
@@ -456,6 +457,103 @@ class TestRefusalsAnAuthorCanActOn:
             _read({"path": str(target), "sheet": "Figures"})
 
         assert ".xlsx" in str(caught.value), "the refusal names the format this tool handles"
+
+
+# ---------------------------------------------------------------------------
+# Text far down a column of figures
+# ---------------------------------------------------------------------------
+
+
+def _figures_then(tail: Sequence[Any], *, above: int = 150) -> list[list[Any]]:
+    """A heading row, ``above`` rows of figures, then ``tail`` as one more row."""
+    return [["key", "amount", "code"], *([f"r{i}", i + 0.25, 1000 + i] for i in range(1, above + 1)), list(tail)]
+
+
+class TestTextFarDownAColumnOfFigures:
+    """The engine types a column from its first 100 rows. A cell further down that does not fit
+    would read as null. The read stops instead, naming the cell and pointing to as_text."""
+
+    def test_text_below_the_first_hundred_rows_of_figures_stops_the_read_naming_the_cell(
+        self, tmp_path: Path
+    ) -> None:
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": _figures_then(["r151", "n/a", "A123"])})
+
+        with pytest.raises(DataError) as caught:
+            _read({"path": str(target), "sheet": "Figures"})
+
+        message = str(caught.value)
+        assert "'Figures'" in message, f"names the tab: {message}"
+        assert "'amount'" in message, f"names the first column that lost a value: {message}"
+        assert "'n/a'" in message, f"names what the cell holds: {message}"
+        assert "151" in message, f"says how far down the cell is: {message}"
+        assert "as_text" in message, f"points to the option that reads it: {message}"
+
+    def test_the_same_sheet_read_as_text_keeps_every_cell(self, tmp_path: Path) -> None:
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": _figures_then(["r151", "n/a", "A123"])})
+
+        rows = _read({"path": str(target), "sheet": "Figures", "as_text": True})
+
+        assert rows.row(-1) == ("r151", "n/a", "A123")
+
+    def test_text_inside_the_first_hundred_rows_still_makes_the_column_text(self, tmp_path: Path) -> None:
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": _figures_then(["r51", "pending", 1051], above=50)})
+
+        rows = _read({"path": str(target), "sheet": "Figures"})
+
+        assert rows.schema["amount"] == pl.String
+        assert rows["amount"][-1] == "pending"
+
+    @pytest.mark.parametrize("word", ["n/a", "N/A", "#N/A", "NA", "null", "None"])
+    def test_a_word_the_engine_reads_as_missing_is_refused_wherever_it_sits(self, tmp_path: Path, word: str) -> None:
+        """The engine reads a few words as a missing value, even near the top of a column of figures.
+
+        The word is in the sheet and would arrive as null with nothing said, so it is refused like
+        any other text the typed read would lose.
+        """
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": _figures_then(["r3", word, 1003], above=2)})
+
+        with pytest.raises(DataError) as caught:
+            _read({"path": str(target), "sheet": "Figures"})
+
+        assert repr(word) in str(caught.value)
+
+    def test_a_sheet_with_no_header_is_refused_the_same_way_naming_its_column(self, tmp_path: Path) -> None:
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": _figures_then(["r151", 1.5, "A123"])[1:]})
+
+        with pytest.raises(DataError) as caught:
+            _read({"path": str(target), "sheet": "Figures", "has_header": False})
+
+        assert "'column_3'" in str(caught.value)
+        assert "'A123'" in str(caught.value)
+
+    def test_a_tab_found_by_a_pattern_is_refused_naming_that_tab(self, tmp_path: Path) -> None:
+        target = _workbook(
+            tmp_path / "pack.xlsx",
+            {"Jan 2026": _figures_then(["r0", 1.5, 1]), "Feb 2026": _figures_then(["r151", "n/a", 1])},
+        )
+
+        with pytest.raises(DataError) as caught:
+            _matching(target)
+
+        assert "'Feb 2026'" in str(caught.value)
+
+    @pytest.mark.parametrize(
+        ("tail", "expected"),
+        [
+            pytest.param(["r151", None, None], (None, None), id="a_blank_cell_is_nothing_to_lose"),
+            pytest.param(["r151", "   ", 7], (None, 7), id="a_cell_of_spaces_is_nothing_to_lose_either"),
+            pytest.param(["r151", 99, 7], (99.0, 7), id="a_whole_figure_in_a_column_of_fractions_fits"),
+        ],
+    )
+    def test_a_cell_that_loses_nothing_is_read_as_before(
+        self, tmp_path: Path, tail: list[Any], expected: tuple[Any, Any]
+    ) -> None:
+        target = _workbook(tmp_path / "pack.xlsx", {"Figures": _figures_then(tail)})
+
+        rows = _read({"path": str(target), "sheet": "Figures"})
+
+        assert rows.height == 151
+        assert rows.select("amount", "code").row(-1) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1378,7 +1476,7 @@ class TestTheDefaultReadIsUnchanged:
                 "Figures": [
                     ["key", "amount", "count", "on", "flag", "mixed"],
                     ["r1", 10.25, 3, dt.date(2026, 1, 31), True, 10.25],
-                    ["r2", -5.5, 4, dt.date(2026, 2, 28), False, "n/a"],
+                    ["r2", -5.5, 4, dt.date(2026, 2, 28), False, "pending"],
                 ]
             },
         )

@@ -516,6 +516,9 @@ Every one of these was measured, most of them the hard way.
   else, and nothing about that failure looks like a failure. A column of numbers that a number
   would change stops the read instead of being guessed: `02134` would lose its zero, and a whole
   number past 64 bits would be rounded. Declare it `String` to keep it as written.
+- **A workbook column takes its type from its first 100 rows.** `read_excel` stops when a cell
+  holds something the column's type would turn into null: text far down a column of figures, or a
+  word such as `n/a` or `#N/A` anywhere in one. Set `as_text: true` and convert with `cast_columns`.
 
 ### How a figure is shown
 
