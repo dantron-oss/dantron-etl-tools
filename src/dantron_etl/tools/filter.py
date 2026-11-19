@@ -66,7 +66,7 @@ class Filter:
                 "A true/false column can be the whole condition, such as '[is_active]'.",
                 "A condition that does not give true or false, such as '[amount]' on a number "
                 "column, is refused before any row is read.",
-                "Not-a-number (what 0/0 gives) counts as larger than every number and equal to "
+                "A not-a-number value (what 0/0 gives) counts as larger than every number and equal to "
                 "itself, so '[ratio] > 0.5' sends it to `true`. Guard a division with case_when if "
                 "that matters.",
             ),
