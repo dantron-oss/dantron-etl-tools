@@ -76,6 +76,8 @@ _SECRET = "p4ssw0rd-not-for-a-log"
 
 _ENTRIES = "create table entries (key integer, label text, amount real, flag integer)"
 _BLANK = "create table blank (a integer, b text)"
+_TYPED_BLANK = "create table typed_blank (i bigint, r real, s text, v varchar(10), d date, n numeric, f double)"
+_SPARSE = "create table sparse (key integer, never_set text, maybe real)"
 
 
 def _seed(database: Path) -> None:
@@ -84,6 +86,9 @@ def _seed(database: Path) -> None:
         connection.execute("pragma synchronous = off")  # built once per session as a template
         connection.execute(_ENTRIES)
         connection.execute(_BLANK)
+        connection.execute(_TYPED_BLANK)
+        connection.execute(_SPARSE)
+        connection.executemany("insert into sparse values (?, ?, ?)", [(1, None, None), (2, None, None)])
         connection.executemany(
             "insert into entries values (?, ?, ?, ?)",
             [(1, "first", 10.5, 1), (2, None, -3.0, 0), (3, "third", 0.0, None)],
@@ -164,6 +169,71 @@ class TestReadTableReadsATable:
         assert frame.height == 0
         assert frame.columns == ["a", "b"]
         assert frame.width == 2, "an output port must carry its schema even when it carries no rows"
+
+
+    def test_an_empty_table_takes_each_column_s_type_from_the_table_where_the_values_would_be_sure_of_it(
+        self, connection: str
+    ) -> None:
+        """With no row to read, the types come from the table's own definition.
+
+        Each column gets the type a row of it would have arrived as. Where that depends on the
+        value rather than the column, as it does for a SQLite numeric or date column, the column
+        stays Null: guessing would hand an empty night a type a full night does not have.
+        """
+        frame = run_tool(ReadTable(), Ports({}), _read(connection, table="typed_blank"))["rows"]
+
+        assert frame.height == 0
+        assert dict(frame.schema) == {
+            "i": pl.Int64,
+            "r": pl.Float64,
+            "s": pl.String,
+            "v": pl.String,
+            "d": pl.Null,
+            "n": pl.Null,
+            "f": pl.Float64,
+        }
+
+    def test_an_empty_table_named_with_its_schema_is_typed_the_same_way(self, connection: str) -> None:
+        frame = run_tool(ReadTable(), Ports({}), _read(connection, schema="main", table="blank"))["rows"]
+
+        assert dict(frame.schema) == {"a": pl.Int64, "b": pl.String}
+
+    def test_a_table_with_rows_keeps_exactly_the_types_its_values_gave_even_a_column_never_set(
+        self, connection: str
+    ) -> None:
+        """Only an empty table is typed from its definition, so no read that has rows changes."""
+        frame = run_tool(ReadTable(), Ports({}), _read(connection, table="sparse"))["rows"]
+
+        assert dict(frame.schema) == {"key": pl.Int64, "never_set": pl.Null, "maybe": pl.Null}
+
+
+class TestReadTableOnPostgres:
+    """The same rule on the other engine, where the driver decides what each column's values become."""
+
+    def test_an_empty_table_takes_the_types_a_row_would_have_arrived_as(
+        self, postgres_scratch: Any, postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = postgres_scratch("read_table_scratch")
+        session.execute(
+            "create table read_table_scratch.typed_blank (i integer, b bigint, s text, v varchar(10), "
+            "f double precision, ok boolean, d date, t timestamp(3), n numeric(12, 2), z timestamptz)"
+        )
+        monkeypatch.setenv(_VARIABLE, postgres_dsn)
+
+        frame = run_tool(ReadTable(), Ports({}), _read(_VARIABLE, schema="read_table_scratch", table="typed_blank"))["rows"]
+
+        assert dict(frame.schema) == {
+            "i": pl.Int64,
+            "b": pl.Int64,
+            "s": pl.String,
+            "v": pl.String,
+            "f": pl.Float64,
+            "ok": pl.Boolean,
+            "d": pl.Date,
+            "t": pl.Datetime("us"),
+            "n": pl.Null,
+            "z": pl.Null,
+        }
 
 
 # ---------------------------------------------------------------------------

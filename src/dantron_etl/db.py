@@ -329,6 +329,40 @@ def declared_type_of(sql_type: str) -> str | None:
     return _SQL_TYPE_NAMES.get(name.strip())
 
 
+# What a postgres column's values arrive as through psycopg, for the types where that never varies.
+_POSTGRES_VALUE_TYPES: Final[dict[str, str]] = {
+    "smallint": "Int64",
+    "integer": "Int64",
+    "bigint": "Int64",
+    "real": "Float64",
+    "double precision": "Float64",
+    "text": "String",
+    "character varying": "String",
+    "character": "String",
+    "boolean": "Boolean",
+    "date": "Date",
+    "timestamp without time zone": "Datetime",
+    "time without time zone": "Time",
+}
+
+
+def _bare_type_name(spelling: str) -> str:
+    """A type's name without its width or precision: ``timestamp(3) without time zone`` -> ``timestamp without time zone``."""
+    return re.sub(r"\(\s*\d+(\s*,\s*\d+)?\s*\)", "", spelling).strip().lower()
+
+
+def _sqlite_value_type(spelling: str) -> str | None:
+    """Which kind of value a SQLite column stores, by the engine's rule on its declared type."""
+    name = spelling.upper()
+    if "INT" in name:
+        return "Int64"
+    if any(word in name for word in ("CHAR", "CLOB", "TEXT")):
+        return "String"
+    if any(word in name for word in ("REAL", "FLOA", "DOUB")):
+        return "Float64"
+    return None
+
+
 def _merge_statement(qualified: str, staging: str, columns: Sequence[str], key: Sequence[str]) -> str:
     """Upsert every staged row into ``qualified``, keeping what the incoming row is silent about.
 
@@ -427,6 +461,14 @@ class RowLoader:
         An optimisation in the same sense as :meth:`table_rules`: the empty answer costs a caller
         the type check it wanted and never a wrong refusal, so a loader that has not written this
         one is allowed to decline the whole question rather than guess at it.
+        """
+        return {}
+
+    def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
+        """The type each column's values arrive as when read, from the table's definition alone.
+
+        For a read with no rows to look at. ``None`` where the answer depends on the value rather
+        than the column. The empty answer is allowed, and costs a reader the types, never a wrong one.
         """
         return {}
 
@@ -535,6 +577,17 @@ class _SqliteLoader(RowLoader):
         prefix = f"{quoted_identifier(schema)}." if schema else ""
         info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
         return {entry[_TABLE_INFO_NAME]: declared_type_of(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
+
+    def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
+        """By the engine's own rule for which kind of value a declared type stores.
+
+        A type naming INT stores whole numbers, CHAR, CLOB or TEXT stores text, and REAL, FLOA or
+        DOUB stores figures. Any other column (numeric, date, boolean, none) stores whatever kind
+        of value it was given, so it has no answer here.
+        """
+        prefix = f"{quoted_identifier(schema)}." if schema else ""
+        info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
+        return {entry[_TABLE_INFO_NAME]: _sqlite_value_type(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
 
     def merge_rows(
         self,
@@ -675,6 +728,24 @@ class _PostgresLoader(RowLoader):
                 (qualified,),
             )
             return {name: declared_type_of(spelling) for name, spelling in cursor.fetchall()}
+        finally:
+            cursor.close()
+
+    def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
+        """Only the types this driver always hands back as one kind of Python value.
+
+        A numeric arrives as a decimal of its own precision, a zone-aware timestamp carries a zone,
+        and a uuid or json column has no declared type here, so each of those has no answer.
+        """
+        qualified = qualified_name(schema, table)
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "select attname, format_type(atttypid, atttypmod) from pg_attribute "
+                "where attrelid = %s::regclass and attnum > 0 and not attisdropped",
+                (qualified,),
+            )
+            return {name: _POSTGRES_VALUE_TYPES.get(_bare_type_name(spelling)) for name, spelling in cursor.fetchall()}
         finally:
             cursor.close()
 
