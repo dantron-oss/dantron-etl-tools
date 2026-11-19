@@ -1301,6 +1301,33 @@ class TestRefusalsAboutTheFrames:
         assert str(MAX_DATA_ROWS) in message or f"{MAX_DATA_ROWS:,}" in message, "the refusal names the limit"
         assert not target.exists(), "nothing was written on the way to finding out"
 
+    @pytest.mark.parametrize("on_second_port", [False, True], ids=["first_tab", "second_tab"])
+    def test_text_longer_than_a_cell_holds_is_refused_rather_than_cut(self, tmp_path: Path, on_second_port: bool) -> None:
+        """A cell holds at most 32,767 characters, and the engine would cut a longer value silently."""
+        target = tmp_path / "pack.xlsx"
+        long_note = pl.DataFrame({"key": ["r1", "r2"], "note": ["short", "x" * 40_000]})
+        frames = {"one": _rows("a"), "two": long_note} if on_second_port else {"one": long_note, "two": _rows("a")}
+
+        with pytest.raises(DataError) as caught:
+            _write(
+                frames,
+                {"path": str(target), "sheets": [{"port": "one", "sheet": "First"}, {"port": "two", "sheet": "Second"}]},
+            )
+
+        message = str(caught.value)
+        assert "'note'" in message and "32,767" in message, message
+        assert ("'two'" if on_second_port else "'one'") in message, message
+        assert "1 of 2 row(s)" in message and "40000" in message, message
+        assert len(message) < 2_000, "the refusal does not repeat the whole text"
+        assert not target.exists()
+
+    def test_text_exactly_as_long_as_a_cell_holds_is_written_whole(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+
+        _write({"one": pl.DataFrame({"note": ["x" * 32_767]})}, {"path": str(target), "sheets": [{"port": "one", "sheet": "F"}]})
+
+        assert len(_read_back(target, "F")["note"][0]) == 32_767
+
     def test_a_refused_write_leaves_the_template_and_an_existing_pack_exactly_as_it_found_them(
         self,
         tmp_path: Path,

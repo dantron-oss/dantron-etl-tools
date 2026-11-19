@@ -72,6 +72,7 @@ from ..authoring import (
 )
 from ..column_types import DECLARED_TYPES
 from ._spreadsheet import (
+    MAX_CELL_TEXT,
     MAX_DATA_ROWS,
     MAX_EXACT_INTEGER,
     MAX_SHEET_ROWS,
@@ -341,6 +342,8 @@ class WriteExcel:
                 "A Time, a Duration, a Decimal, a list or a nested record is refused rather than "
                 "stringified: each has a plausible-looking wrong answer in a cell, and none of them "
                 "is the value it started as.",
+                "Text longer than 32,767 characters, the most a cell holds, is refused naming the "
+                "column, rather than cut short.",
                 "A frame taller than a tab -- more than 1,048,575 rows of data -- is refused rather "
                 "than truncated, because a truncated total is the worst outcome a delivered figure "
                 "can have.",
@@ -503,6 +506,23 @@ class WriteExcel:
                         f"write_excel cannot write column {name!r} of dtype {dtype} on port "
                         f"{port!r}: {reason}; format it into something a cell can hold, one step "
                         f"upstream"
+                    )
+
+            for name, dtype in frame.schema.items():
+                if dtype != pl.String:
+                    continue
+                too_long = frame.filter(pl.col(name).str.len_chars() > MAX_CELL_TEXT)
+                if too_long.height:
+                    raise DataError(
+                        f"write_excel refuses column {name!r} on port {port!r}, bound for tab "
+                        f"{sheet!r}: a cell holds at most {MAX_CELL_TEXT:,} characters, and a longer "
+                        f"text would be cut short without a word. Shorten or split the text upstream "
+                        f"(each text below shows its first 40 characters and its length)",
+                        offending=too_long.with_columns(
+                            pl.col(name).str.slice(0, 40),
+                            pl.col(name).str.len_chars().alias(f"{name} length"),
+                        ),
+                        total=frame.height,
                     )
 
             for name, dtype in frame.schema.items():
