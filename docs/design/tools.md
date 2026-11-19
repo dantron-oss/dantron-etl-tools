@@ -47,3 +47,60 @@ fails later with a duplicate-column error that names neither the setting nor the
 the types compare, so the check accepts exactly what a join accepts (Int32 with Int64 yes, Int64 with
 Float64 no). A key column typed Null, as an empty branch gives, takes the other side's type so
 `joined` keeps its usual columns; none of its rows pair.
+
+## group_by
+
+**Aggregates are settings, not expression functions.** The expression language works one row at a
+time and does not list `sum`. Allowing `sum([amount])` in one setting only would make a second
+dialect a reader has to learn from where a string sits. So group_by has its own short list,
+`AGGREGATE_FUNCTIONS`, and the `function` setting's allowed values are built from it, so the two
+cannot drift. cross_tab imports the same list, so adding an aggregate adds it to both.
+
+**No `mean`.** No flow has wanted it, and its denominator depends on how nulls are counted, which is
+the kind of question this tool refuses to answer quietly.
+
+**Groups keep first-appearance order.** A key of several columns has no obvious sort order, and the
+order the input already has is the one a reader knows. polars promises no group order unless asked,
+so `maintain_order=True` is set.
+
+**A null key is a group.** This follows SQL's `GROUP BY` and agrees with remove_duplicates. Dropping
+those rows would delete their amounts from every later total with nothing left to say they were
+there. join decides the other way because it follows `=`.
+
+**A sum of nothing is null.** polars sums an all-null group to 0. Passed on, that is a figure nobody
+measured, and nothing later can tell it from a real zero. Nulls are still skipped in a group with
+any value, so all-null is the only case that gives null.
+
+**`first` and `join_text` read arrival order.** `first` exists for a column that is the same on every
+row of a group (a document number on its lines), where any row's value is all of them. When the
+column does vary, `first` answers with whichever row came first, a fact about order, not data. A
+flow that needs a repeatable answer sorts first, and can add `count_distinct` beside it to check the
+column really is constant. Owner's ruling (2026-11-18): `first` keeps the first row's value even when
+it is null; `first_non_null` was added for the other reading.
+
+**`count_distinct` skips nulls**, as SQL's `COUNT(DISTINCT v)` does (owner's ruling 2026-11-18). To
+count a blank as a value, count `coalesce([v], '(blank)')`.
+
+**`count` and `count_non_null` are two names, not one name and a flag.** `count` counts rows and takes
+no `value`; `count_non_null` needs one. pandas spells the non-null count `count`, so someone porting
+a step would otherwise get the other number without being told.
+
+**`join_text` is SQL's `string_agg`.** Values are joined in arrival order with `separator` (default
+`", "`). Nulls are skipped, so `a, null, b` gives `"a, b"`, not `"a, , b"`, which would read as a blank
+value instead of a missing one. A group with nothing to join gives the empty string, the opposite of
+`sum`: joining no strings gives an empty string in every language, while adding no numbers gives a
+total nobody measured. A `separator` beside another aggregate is refused, not ignored, so `min`
+written for `join_text` does not quietly give single values. Only text is joined: a number joined
+into a string becomes a string of digits that can no longer be sorted or added.
+
+**A value that reads no column is refused.** polars works out a fixed value once per group, so
+`sum` of 1 gives 1 for every group, not a row count.
+
+**Narrow integer sums do not wrap.** polars sums Int32 and UInt32 into the same type and wraps round
+past the limit without a word. Those sums are worked out as Int64, checked against the type's limits,
+and cast back, so the column keeps its type and a total that does not fit stops the run. Smaller
+integer types already sum into Int64.
+
+**Every aggregate has its own branch, and an unknown name raises.** A dispatcher that ended by
+returning one aggregate once computed cross_tab's `first` as `max`, a plausible number under the
+wrong name.

@@ -1,73 +1,10 @@
-"""GroupBy: one row per distinct key, carrying only the columns the configuration asks for.
+"""GroupBy: one row per group, with the summaries the configuration names.
 
-**An aggregate is configuration; the thing aggregated is an expression.** The expression language is
-row-wise, and its own whitelist deliberately excludes aggregates, so widening it to accept
-``sum([amount])`` would make that spelling legal in exactly one config field and meaningless in
-every other -- a second dialect a reader has to learn from where a string happens to sit. So this
-tool publishes its own small whitelist, :data:`AGGREGATE_FUNCTIONS`, and ``aggregations[].function``
-is an enum *derived* from it, so the two cannot drift apart and the whitelist cannot fail open.
+The summaries (sum, count, max ...) are chosen from a fixed list, `AGGREGATE_FUNCTIONS`, and each
+reads an expression. A null 'by' value is a group of its own, as in SQL's GROUP BY. A sum of nothing
+but nulls is null. Groups keep the order they first appear in.
 
-**Group order follows first appearance**, not a sort: a multi-column key has no obvious total
-order, and first appearance is the order the reader of the input already holds. polars promises
-nothing about group order unless asked, so this needs ``maintain_order=True`` rather than trusting
-an accident of the engine.
-
-**A null in a ``by`` column is a group of its own**, agreeing with RemoveDuplicates and mirroring
-what this tool is named after -- SQL's ``GROUP BY``, which groups nulls together. Dropping such rows
-would delete their figures from every total downstream with nothing left in the output to say a row
-had been there. This is the opposite of Join's ruling for the same-looking question, because a join
-mirrors ``=``, under which a null pairs with nothing.
-
-**A sum of nothing is null, not zero.** polars sums an all-null group to ``0``; passed on, that would
-put a figure nobody measured into a report, and nothing downstream could tell it from a real zero.
-Nulls are still skipped within a group holding any value at all, so ``[10, null]`` sums to ``10`` --
-which is what makes "every value missing" the one case that produces null.
-
-**``first`` and ``join_text`` depend on the order rows arrived in**, and they are the two
-aggregates that can give two answers for the same data. ``first`` exists because a group sometimes
-carries a column that is the same on every row of it -- a document number on the lines of one
-document -- and taking any of them is taking all of them. When that is true, ``first``, ``min`` and ``max`` agree and
-the choice does not matter.
-
-``first`` is the first row's value, null included: a group whose first row is blank answers null.
-``first_non_null`` is the first value that is there, and null only for a group of blanks.
-
-When it is *not* true, ``first`` answers with whichever row happens to be first, which is a fact
-about the order and not about the data. So a flow using it on a column that might vary should say so,
-and a flow that needs the answer to be repeatable puts a Sort in front of this step -- exactly as
-everywhere else here. A group whose supposedly-constant column is not constant is worth counting with
-``count_distinct`` beside it, which is how that assumption gets checked instead of assumed.
-
-**``count_distinct`` follows SQL's ``COUNT(DISTINCT v)``**: a missing value is not a value, so
-``["a", "a", null, "b"]`` counts 2 and a group whose values are all missing counts 0. To count a
-blank as a value too, write ``count_distinct`` of ``coalesce([v], '(blank)')``.
-
-**``count`` counts rows; ``count_non_null`` counts the values that are there.** The two differ and get
-two names rather than one name and a flag: ``count`` takes no ``value`` at all, because a row count
-cannot depend on a column, and ``count_non_null`` requires one and ignores its nulls. The legacy
-dataframe library spells the non-null count ``count``, so an author porting a step from it would
-otherwise get the other number without being told.
-
-**Every column that is neither grouped nor aggregated disappears.** ``min`` and ``max`` are the only
-way to carry forward a column that is constant within a group, which is why those two ship even
-though nothing else needs them for arithmetic.
-
-**``join_text`` makes one string out of a group's several**, which is how a group's detail survives
-a step whose whole job is to throw detail away. It is SQL's ``string_agg``: the values in the order
-the rows arrived -- so it reads that order exactly as ``first`` does, and a flow wanting another one
-puts a Sort in front -- joined by a ``separator`` that defaults to ``", "``. Missing values are
-skipped, so ``["a", null, "b"]`` joins to ``"a, b"`` rather than ``"a, , b"``, which would read as a
-value that is blank instead of one that is absent.
-
-**A group with nothing to join is the empty string**, which is deliberately the opposite of the
-ruling ``sum`` makes about the same group. Joining no strings together produces the empty string in
-any language that has both, while adding no numbers together produces a total nobody measured.
-
-``separator`` is refused beside any other aggregate rather than ignored -- the way Join refuses
-``keys`` beside ``left_keys`` -- because an author who wrote ``min`` where they meant ``join_text``
-would otherwise get a separator that vanishes and a column of single values where they expected a
-list. What is joined has to be text, refused on the schema, because a number or a date joined into a
-string ships as a plausible-looking string of digits that is unsortable and unsummable from there on.
+Why: docs/design/tools.md#group_by
 """
 
 from collections.abc import Mapping
@@ -91,38 +28,24 @@ from ..authoring import (
     require_not_blank,
 )
 
-# The published aggregate whitelist, mirroring how ``expr.ALLOWED_FUNCTIONS`` is published: a
-# template author reads this rather than discovering the boundary by trial and error, and the
-# enum below is derived from it rather than typed out beside it, so the two cannot drift apart.
-# It is read outside this module too: CrossTab offers the same aggregates by importing this set
-# rather than keeping a second copy, so adding or removing one here changes both tools.
-# ``mean`` is absent on purpose -- no step wants it, and its denominator silently depends on how
-# nulls are treated, which is exactly the kind of question this tool refuses to answer quietly.
+# The aggregates a flow may name. cross_tab offers the same list. Why no mean:
+# docs/design/tools.md#group_by
 AGGREGATE_FUNCTIONS: Final[frozenset[str]] = frozenset(
     {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "first_non_null", "join_text"}
 )
 
-# The one aggregate that reads no column at all: a row count is a property of the group, not of any
-# value in it, so it is the sole member excluded from "needs a value".
+# The one aggregate that reads no column.
 _NO_VALUE_FUNCTION: Final[str] = "count"
 
-# The one aggregate that reads a second field: the name is here so the rules about it read as rules
-# rather than as a string compared in four places.
+# The one aggregate that reads a second field, 'separator'.
 _JOINING_FUNCTION: Final[str] = "join_text"
 
-# The only place the separator's default is written down. A default declared inside a template
-# element is never filled in -- defaults are filled at the top level of a configuration alone -- so
-# writing ``", "`` there as well would be two defaults that can disagree. CrossTab reads this one
-# too, for the same reason it reads the whitelist above rather than keeping a second copy: a reader
-# who learned what a joined cell looks like from one tool gets the same thing from the other.
+# The default separator for join_text, shared with cross_tab. Defaults inside a list element are
+# never filled in by the config template, so this is the only place it is written.
 DEFAULT_SEPARATOR: Final[str] = ", "
 
-# The whole-number types polars adds up into themselves, and the totals each can hold. polars
-# lets a total past these limits wrap round to a wrong number without a word. So a sum of one of
-# these is worked out as Int64, checked against the limits, and handed back in its own type: the
-# column keeps the type it always had, and a total that does not fit stops the run. The smaller
-# whole-number types are not here because polars already adds those up into Int64. CrossTab reads
-# this too.
+# The whole-number types polars sums into themselves, where a large total wraps round silently.
+# Their sums are worked out as Int64, checked against these limits, and cast back. Shared with cross_tab.
 NARROW_SUM_LIMITS: Final[dict[pl.DataType, tuple[int, int]]] = {
     pl.Int32: (-(2**31), 2**31 - 1),
     pl.UInt32: (0, 2**32 - 1),
@@ -141,10 +64,10 @@ def totals_that_do_not_fit(frame: pl.DataFrame, column: str, dtype: pl.DataType)
 
 
 class GroupBy:
-    """One row per distinct combination of ``by``, carrying the aggregations named in config."""
+    """One row per distinct combination of `by`, with the aggregations named in the configuration."""
 
     name = "group_by"
-    description = "Collapse `rows` to one row per distinct key, carrying only what is named."
+    description = "Make one row per group, with totals, counts or other summaries for each group."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -153,41 +76,40 @@ class GroupBy:
         return {
             "by": ConfigField(
                 type="array",
-                description="Column names forming the group key; a null value groups with other nulls.",
+                description="The columns to group by. Rows with the same values here become one row.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="string",
-                    description="One column name; naming the same column twice counts it once.",
+                    description="One column to group by. Naming a column twice counts it once.",
                 ),
             ),
             "aggregations": ConfigField(
                 type="array",
-                description="One element per output column beyond the key: how it is computed.",
+                description="The columns to work out for each group, one entry per output column.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="object",
-                    description="One aggregation: its output name, which aggregate it uses, and what it reads.",
+                    description="One output column: its name, the function, and what the function reads.",
                     fields={
                         "name": ConfigField(type="string", description="The output column's name.", required=True),
                         "function": ConfigField(
                             type="string",
-                            description="Which aggregate this element computes, drawn from the aggregates that ship.",
+                            description="What to work out, such as 'sum', 'count' or 'max'.",
                             required=True,
                             enum=tuple(sorted(AGGREGATE_FUNCTIONS)),
                         ),
                         "value": ConfigField(
                             type="expression",
-                            description="What is aggregated; omit it for 'count', which counts rows "
-                            "and reads no column at all.",
+                            description="The column or expression the function reads, such as "
+                            "'[amount]'. Leave it out for 'count', which counts rows.",
                             required=False,
                         ),
                         "separator": ConfigField(
                             type="string",
-                            description="What goes between the values 'join_text' joins, defaulting "
-                            "to a comma and a space; only 'join_text' reads it, and giving it beside "
-                            "any other aggregate is refused.",
+                            description="For 'join_text' only: what goes between the joined values. "
+                            "The default is a comma and a space.",
                             required=False,
                         ),
                     },
@@ -198,60 +120,57 @@ class GroupBy:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "One row per distinct key, in the order each key first appeared -- not sorted, "
-                "because a key spanning several columns has no obvious total order. Every column "
-                "neither named in 'by' nor produced by an aggregation disappears; 'min' and 'max' "
-                "are the only way to carry one forward unchanged. A null key groups with other "
-                "nulls rather than being dropped, matching what this tool is named after."
+                "Use group_by for subtotals: one row per customer, per month, or per any mix of "
+                "columns, like a pivot table's row labels or SQL's GROUP BY. The output `rows` has "
+                "the 'by' columns, then one column per aggregation. Every other column is dropped. "
+                "Groups come out in the order each one first appears in the input, not sorted."
             ),
             examples=(_total_and_count_example(), _carried_column_example(), _joined_text_example()),
             notes=(
-                "'sum' of an all-null group is null, not zero: zero is a measured amount and null "
-                "is the absence of one, and nothing downstream can tell a fabricated zero from a "
-                "real one. Nulls are still skipped within a group holding any value at all.",
-                "'first' reads the order rows arrived in, so it can answer differently for the same "
-                "data, as 'join_text' can. Use it for a column that is the same on every "
-                "row of a group -- and count the distinct values beside it if that is an assumption "
-                "rather than a certainty.",
-                "'first' is the first row's value as the rows arrive, null or not: a group whose "
-                "first row is blank answers null even when a later row has a value. "
-                "'first_non_null' skips the blanks and answers with the first value that is there; "
-                "only a group of blanks gives null.",
-                "'count' counts every row of a group and reads no column; 'count_non_null' reads one "
-                "and ignores its nulls. Porting a step from a library that spells the non-null count "
-                "'count' would otherwise silently swap the two numbers.",
-                "'count_distinct' counts the different values in a group and skips nulls, as SQL's "
-                "COUNT(DISTINCT) does: a, a, null, b counts 2, and a group of nulls counts 0. To "
-                "count a blank as a value, count coalesce([v], '(blank)') instead.",
-                "'join_text' joins a group's text in the order the rows arrived, separated by "
-                "'separator' or by a comma and a space where none is given, and skips the values "
-                "that are missing. A group whose values are all missing joins to the empty string, "
-                "which is the opposite of the ruling 'sum' makes about the same group: joining no "
-                "strings produces the empty string, while adding no numbers produces a total nobody "
-                "measured. What is joined has to be text, and a separator beside any other "
-                "aggregate is refused rather than ignored.",
-                "A 'value' that reads no column, such as '1', is refused. A fixed value is worked "
-                "out once per group, not once per row, so 'sum' of 1 would not count the rows. Use "
-                "'count' for that.",
-                "A 'sum' keeps the type of what it adds up. A total of Int32 or UInt32 values that "
-                "does not fit in that type stops the run, naming the aggregation, rather than "
-                "wrapping round to a wrong number. Cast the column to Int64 first if totals can be "
-                "that large.",
+                "Rows whose 'by' value is null form one group of their own, as in SQL's GROUP BY. "
+                "They are never dropped.",
+                "To keep a column that is the same on every row of a group, take its 'min' or 'max'.",
+                "'sum' of a group where every value is null is null, not zero. A zero would look "
+                "like a measured amount.",
+                "'sum' skips nulls in a group that has at least one value: 10 and null sum to 10.",
+                "'first' and 'join_text' depend on the order the rows arrive in, so the same data "
+                "in another order can give another answer. Sort first if that matters.",
+                "Use 'first' for a column that is the same on every row of a group. If you are not "
+                "sure it is, add a 'count_distinct' of it beside to check.",
+                "'first' takes the first row's value, even when it is null and a later row has a value.",
+                "'first_non_null' skips nulls and takes the first value there is. Only a group of "
+                "nulls gives null.",
+                "'count' counts the rows of a group and reads no column. 'count_non_null' counts the "
+                "values of one column that are not null.",
+                "Some other libraries call the non-null count 'count'. Check which one you mean "
+                "when copying a step from them.",
+                "'count_distinct' counts the different values and skips nulls, as SQL's "
+                "COUNT(DISTINCT) does: a, a, null, b counts 2, and a group of nulls counts 0.",
+                "To count a blank as a value too, count coalesce([v], '(blank)') instead.",
+                "'join_text' joins a group's text into one cell, in the order the rows arrived, "
+                "with 'separator' between (a comma and a space if none is given).",
+                "'join_text' skips null values. A group where every value is null gives empty text, "
+                "not null.",
+                "That is the opposite of 'sum' on purpose: joining no text gives empty text, while "
+                "adding no numbers gives a total nobody measured.",
+                "'join_text' only joins text. Turn numbers or dates into text in an earlier step.",
+                "A 'separator' on any function other than 'join_text' is refused, not ignored.",
+                "A 'value' that reads no column, such as '1', is refused. It would be worked out "
+                "once per group, so 'sum' of 1 would not count rows. Use 'count' for that.",
+                "'sum' keeps the type of the column it adds up. If an Int32 or UInt32 total is too "
+                "big for that type, the run stops and names the aggregation, instead of giving a "
+                "wrong number. Cast the column to Int64 first if totals can be that large.",
             ),
             field_help={
-                "by": "The group key; repeating a column counts it once and does not duplicate it on the output.",
-                "aggregations": "Every output column beyond the key comes from here; nothing else survives the group.",
+                "by": "For example ['customer_id', 'month']. Each different combination of these "
+                "values becomes one output row.",
+                "aggregations": "For example {name: total, function: sum, value: '[amount]'}. Only "
+                "these columns and the 'by' columns are kept.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Every rule a template alone cannot express, answered from the configuration alone.
-
-        None of these needs the frame in front of it: a name colliding with the key, two
-        aggregations sharing a name, a row count given something to count, an aggregate with
-        nothing to aggregate, and a separator with nothing to separate are all questions the
-        configuration answers about itself.
-        """
+        """Refuse what the configuration alone shows is wrong: clashing names, a misplaced separator, a missing or extra value."""
         by_columns = set(config["by"])
         seen_names: set[str] = set()
         for index, aggregation in enumerate(config["aggregations"]):
@@ -285,8 +204,7 @@ class GroupBy:
             elif value is None:
                 raise ConfigError(f"aggregation {name!r} declares function {function!r} but no 'value' to aggregate")
             elif not references(value):
-                # polars aggregates a fixed value once per group, not once per row, so sum of 1
-                # would give 1 for every group instead of its row count.
+                # polars works out a fixed value once per group, so sum of 1 would give 1, not a row count.
                 raise ConfigError(
                     f"config field 'aggregations[{index}].value' holds `{value}`, which reads no column; "
                     f"{function!r} of a fixed value is worked out once per group, not once per row. To "
@@ -295,13 +213,10 @@ class GroupBy:
                 )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """The columns this configuration names, checked against the frame that actually arrived.
+        """Check the named columns against the frame's schema.
 
-        Read off the schema alone, so a frame of a million rows and one of none are refused
-        identically: a 'by' column that is not there, a 'value' expression naming one that is not,
-        a 'sum' asked to add up something that is not a number, and a 'join_text' asked to join
-        something that is not text. The two dtype rulings need the schema because an empty frame
-        would otherwise sum nothing and join nothing, and raise neither.
+        Refuses a missing 'by' column, a 'value' naming a missing column, a 'sum' of something that is not a
+        number, and a 'join_text' of something that is not text. An empty frame is refused the same way.
         """
         frame = inputs["rows"]
         require_columns(frame, _by_columns(config), "by", "rows")
@@ -403,12 +318,7 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
         return expression.str.join(separator).alias(name)
     if function == "max":
         return expression.max().alias(name)
-    # Every published aggregate has a branch of its own, and this line is what makes that a fact
-    # rather than a claim. A dispatcher that ends by returning one of the aggregates answers a name
-    # it does not recognise with a plausible number under the wrong name -- CrossTab's ``first``,
-    # computed as ``max`` because it had no branch, is that failure as it actually happened.
-    # ``validate_config`` has already whitelisted the name against AGGREGATE_FUNCTIONS, so reaching
-    # here means the set grew and this function did not.
+    # Reached only if AGGREGATE_FUNCTIONS grew without a branch here. Never fall through to a default.
     raise AssertionError(f"unreachable aggregate function {function!r}")  # pragma: no cover
 
 
@@ -435,7 +345,7 @@ def _total_and_count_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a per-group total and a row count, in first-appearance order",
+        scenario="a total and a row count for each code",
         configuration={
             "by": ["code"],
             "aggregations": [
@@ -443,8 +353,8 @@ def _total_and_count_example() -> WorkedExample:
                 {"name": "lines", "function": "count"},
             ],
         },
-        explanation="'code' groups the rows in the order 'A' and 'B' first appear; 'total' adds "
-        "'amount' within each group and 'lines' counts how many rows joined it.",
+        explanation="The rows are grouped by 'code', in the order A and B first appear. 'total' adds "
+        "up 'amount' in each group and 'lines' counts the group's rows.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -475,7 +385,7 @@ def _carried_column_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a null key is its own group, and 'min' carries a constant column forward",
+        scenario="a blank code is its own group, and 'min' keeps a column that does not vary",
         configuration={
             "by": ["code"],
             "aggregations": [
@@ -483,10 +393,9 @@ def _carried_column_example() -> WorkedExample:
                 {"name": "region_of_group", "function": "min", "value": "[region]"},
             ],
         },
-        explanation="The row with no 'code' is a group of its own rather than being dropped; group "
-        "'B' sums to null because its only 'amount' is missing. 'region' is constant within every "
-        "group here, and 'min' is how it survives even though 'region' is neither a key nor an "
-        "ordinary aggregate.",
+        explanation="The row with no 'code' becomes a group of its own; it is not dropped. Group B's "
+        "total is null because its only amount is missing. 'region' is the same on every row of a "
+        "group, so taking its 'min' keeps it on the output.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -515,7 +424,7 @@ def _joined_text_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a group's notes kept as one string, including the group that said nothing",
+        scenario="join each group's notes into one cell",
         configuration={
             "by": ["code"],
             "aggregations": [
@@ -523,14 +432,9 @@ def _joined_text_example() -> WorkedExample:
                 {"name": "lines", "function": "count"},
             ],
         },
-        explanation="'join_text' joins each group's notes in the order the rows arrived, with the "
-        "separator written down rather than assumed. Group A's missing note is skipped instead of "
-        "joined in as a blank, which is why 'notes' reads 'late' while 'lines' still counts two "
-        "rows -- the count beside the join is how a reader tells one note from one note and a gap. "
-        "Group C had a row and no note on it, so there was nothing to join and the answer is the "
-        "empty string, not null. That is deliberately the opposite of what 'sum' says about the "
-        "same group: joining no strings together produces a string, while adding no numbers "
-        "together produces a total nobody measured.",
+        explanation="Each group's notes are joined in the order the rows arrived, with '; ' between. "
+        "A's missing note is skipped, so 'notes' reads 'late' while 'lines' still counts two rows. "
+        "C has a row but no note, so its notes are empty text, not null.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
