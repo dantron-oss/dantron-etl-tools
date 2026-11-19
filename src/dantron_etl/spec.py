@@ -374,9 +374,39 @@ def toposort(
                 heapq.heappush(heap, position[downstream])
 
     if len(ordered) != len(step_ids):
-        cycle_steps = sorted((s for s in step_ids if s not in ordered), key=lambda s: position[s])
+        placed = set(ordered)
+        unplaced = [s for s in step_ids if s not in placed]
+        loop = _one_loop(unplaced, inputs_by_step)
+        path = " -> ".join([*(f"{ref.step}.{ref.port} -> {reader}" for reader, ref in loop)])
+        stuck = len(unplaced) - len(loop)
+        tail = (
+            f" {stuck} more step(s) could not be placed either: each is in a loop too, or reads from one."
+            if stuck
+            else ""
+        )
         raise PipelineError(
-            f"a cycle among steps: {', '.join(cycle_steps)}; a flow is walked from its sources, so a "
-            f"loop can never reach a consumer"
+            f"a cycle among steps: {', '.join(reader for reader, _ in loop)}. The loop is {path}. A flow "
+            f"is walked from its sources, so a loop can never reach a consumer.{tail}"
         )
     return tuple(ordered)
+
+
+def _one_loop(unplaced: list[str], inputs_by_step: Mapping[str, Mapping[str, PortRef]]) -> list[tuple[str, PortRef]]:
+    """One loop among the steps the sort could not place, as ``(step, the edge it reads)`` pairs.
+
+    Every unplaced step reads at least one other unplaced step (that is why it could not be placed),
+    so walking upstream along such edges must come back to a step already seen. The steps from that
+    point on are the loop, and nothing that merely depends on it.
+    """
+    stuck = set(unplaced)
+    seen: dict[str, int] = {}
+    walk: list[tuple[str, PortRef]] = []
+    current = unplaced[0]
+    while current not in seen:
+        seen[current] = len(walk)
+        edge = next(ref for ref in inputs_by_step.get(current, {}).values() if ref.step in stuck)
+        walk.append((current, edge))
+        current = edge.step
+    loop = walk[seen[current] :]
+    # Written in the direction the rows flow: from the step read to the step reading it.
+    return list(reversed(loop))

@@ -12,21 +12,21 @@ check the column references the loaded pipeline publishes but cannot itself reso
 """
 
 import difflib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from .config import apply_defaults, validate_against_template
-from .contract import TERMINAL_CATEGORIES, input_ports_for
-from .errors import ConfigError, PipelineError, RegistryError, ToolError, name_choices
+from .contract import TERMINAL_CATEGORIES, call_tool_code, input_ports_for
+from .errors import ConfigError, ExecutionError, PipelineError, RegistryError, ToolError, name_choices
 from .expr import ExpressionError
 from .registry import REGISTRY, ToolRegistry
 from .renames import MIGRATE_COMMAND, find_renames, rename_document, summarise
 from .rules import resolve_rules
 from .spec import Container, Lane, Pipeline, PortRef, Step, toposort
 
-__all__ = ["load_pipeline", "read_pipeline"]
+__all__ = ["dead_ends", "load_pipeline", "read_pipeline"]
 
 
 def load_pipeline(
@@ -115,7 +115,7 @@ def _load_pipeline(
             # before the configuration is final, so a template that consulted its own config would
             # be a cycle rather than an ordering to get right.
             "config": resolve_rules(
-                tools_by_step[raw["id"]].config_template(),
+                _template(raw["id"], tools_by_step[raw["id"]]),
                 raw.get("config", {}) or {},
                 rules,
                 raw["id"],
@@ -216,6 +216,7 @@ def _refuse_bad_shape(document: Any) -> None:
         )
     _refuse_unknown_keys(document, _DOCUMENT_KEYS, "the pipeline file", "the top level of a pipeline file")
     _refuse_missing_keys(document, _DOCUMENT_REQUIRED, "the pipeline file")
+    _refuse_wrong_types(document, {"name": (str,)}, "the pipeline file")
 
     steps = _entries(document, "steps")
     if not steps:
@@ -237,6 +238,9 @@ def _refuse_bad_shape(document: Any) -> None:
             where = f"{singular} {entry['id']!r}" if "id" in entry else f"{singular} number {position}"
             _refuse_unknown_keys(entry, keys, where, f"a {singular}")
             _refuse_missing_keys(entry, required, where)
+            _refuse_wrong_types(entry, _VALUE_TYPES[kind], where)
+            if kind == "steps":
+                _refuse_bad_step_id(entry["id"], where)
             # Duplicate step ids are refused by _refuse_duplicate_ids, with the reason that matters
             # for steps. A lane or container with a second definition would never be drawn.
             if kind != "steps" and entry["id"] in seen:
@@ -245,6 +249,57 @@ def _refuse_bad_shape(document: Any) -> None:
                     f"second would never be drawn"
                 )
             seen.add(entry["id"])
+
+
+# What each key's value must be. A value of another type would otherwise escape later as a raw
+# Python error (a KeyError, a TypeError) that names neither the step nor the key.
+_TEXT_OR_NONE: tuple[type, ...] = (str, type(None))
+_VALUE_TYPES: dict[str, dict[str, tuple[type, ...]]] = {
+    "steps": {
+        "id": (str,),
+        "tool": (str,),
+        "config": (Mapping, type(None)),
+        "inputs": (Mapping, type(None)),
+        "lane": _TEXT_OR_NONE,
+        "stage": _TEXT_OR_NONE,
+        "why": _TEXT_OR_NONE,
+        "container": _TEXT_OR_NONE,
+    },
+    "lanes": {"id": (str,), "title": (str,), "order": (int,)},
+    "containers": {"id": (str,)},
+}
+
+_TYPE_WORDS: dict[type, str] = {str: "text", int: "a whole number", Mapping: "a mapping of keys", type(None): "empty"}
+
+
+def _refuse_wrong_types(entry: Mapping[str, Any], expected: Mapping[str, tuple[type, ...]], where: str) -> None:
+    """Refuse a key whose value is of the wrong type, naming the key and what it should hold."""
+    for key, types in expected.items():
+        if key not in entry:
+            continue
+        value = entry[key]
+        if isinstance(value, bool) or not isinstance(value, types):
+            wanted = " or ".join(_TYPE_WORDS[kind] for kind in types)
+            raise PipelineError(f"{where}: {key!r} must be {wanted}; it holds {type(value).__name__} {value!r}")
+    inputs = entry.get("inputs") if "tool" in expected else None
+    if isinstance(inputs, Mapping):
+        for port, source in inputs.items():
+            if not isinstance(port, str) or not isinstance(source, str):
+                raise PipelineError(
+                    f"{where}: every entry under 'inputs' is a port name and the text 'step.port'; "
+                    f"found {port!r}: {source!r}"
+                )
+
+
+def _refuse_bad_step_id(step_id: str, where: str) -> None:
+    """A step id is the text an edge names it by, so it may not be blank or hold a dot."""
+    if not step_id.strip():
+        raise PipelineError(f"{where}: a step id may not be blank")
+    if "." in step_id:
+        raise PipelineError(
+            f"{where}: a step id may not hold a dot, because an edge is written 'step.port' and is split "
+            f"at the first dot, so no edge could reach this step. Use an underscore instead"
+        )
 
 
 def _entries(document: Mapping[str, Any], kind: str) -> list[Any]:
@@ -401,7 +456,10 @@ def _resolve_edges(raw: Mapping[str, Any], tools_by_step: Mapping[str, Any]) -> 
     # configuration. The configuration is the one written in the file: edges are resolved before
     # the configuration is validated, so no default has been filled in yet. The runner reads the
     # same configuration, so both get the same answer.
-    declared_inputs = input_ports_for(tool, raw.get("config", {}) or {})
+    try:
+        declared_inputs = input_ports_for(tool, raw.get("config", {}) or {})
+    except ToolError as error:
+        raise PipelineError(f"step {step_id!r}: {error}") from error
 
     # Refuse a port this step names twice, before anything else is compared. A port carries one
     # frame, so the second part on a port would quietly take the place of the first. The checks
@@ -462,13 +520,28 @@ def _resolve_edges(raw: Mapping[str, Any], tools_by_step: Mapping[str, Any]) -> 
 # ---------------------------------------------------------------------------
 
 
+def _template(step_id: str, tool: Any) -> Mapping[str, Any]:
+    """The tool's configuration template, with a failure in the tool's own code naming the step."""
+    try:
+        return call_tool_code(tool, "config_template", tool.config_template)
+    except ToolError as error:
+        raise PipelineError(f"step {step_id!r}: {error}") from error
+
+
 def _validate_config(step_id: str, tool: Any, config: Mapping[str, Any]) -> None:
-    """Both halves a tool can refuse without a frame, delegated rather than re-implemented here."""
-    template = tool.config_template()
+    """Both halves a tool can refuse without a frame, delegated rather than re-implemented here.
+
+    A stray exception from the tool's own ``validate_config`` comes out as an
+    :class:`~.errors.ExecutionError`, and every refusal names the step.
+    """
+    template = _template(step_id, tool)
     try:
         validate_against_template(template, config)
-        tool.validate_config(apply_defaults(template, config))
-    except ConfigError as error:
+        filled = apply_defaults(template, config)
+        call_tool_code(tool, "validate_config", lambda: tool.validate_config(filled))
+    except ExecutionError as error:
+        raise ExecutionError(f"step {step_id!r}: {error}") from error
+    except ToolError as error:
         raise ConfigError(f"step {step_id!r}: {error}") from error
 
 
@@ -477,18 +550,93 @@ def _validate_config(step_id: str, tool: Any, config: Mapping[str, Any]) -> None
 # ---------------------------------------------------------------------------
 
 
+def dead_ends(
+    document: Mapping[str, Any],
+    *,
+    registry: ToolRegistry | None = None,
+    without: Collection[str] = (),
+) -> tuple[str, ...]:
+    """Every step of ``document`` that would be refused as a dead end, all at once.
+
+    A dead end is a step whose output nothing reads and whose tool has no effect beyond its ports
+    (an ``output`` writes somewhere, an ``assert`` checks; anything else is computing rows for
+    nobody). Removing a dead end can leave the steps that fed it with no reader, so the rule is
+    applied again until nothing more dies. The answer lists the steps nothing reads first, then the
+    ones that feed only those, round by round, each round in the order the file declares them.
+
+    ``without`` asks "what if": input edges to drop first, each written ``"step.port"`` naming the
+    reading step and its input port, as in ``without=["report.summary"]``. A name the document does
+    not have is refused.
+
+    Works on the raw document, before rules are resolved, so it answers for a file the loader would
+    refuse because of its dead ends. It runs no step and touches no data.
+    """
+    active_registry = registry if registry is not None else REGISTRY
+    _refuse_bad_shape(document)
+    raw_steps: list[Mapping[str, Any]] = list(document["steps"])
+    tools_by_step = {raw["id"]: _resolve_tool(active_registry, raw) for raw in raw_steps}
+    reads: dict[str, dict[str, str]] = {raw["id"]: dict(raw.get("inputs") or {}) for raw in raw_steps}
+
+    for edge in without:
+        step_id, _, port = str(edge).partition(".")
+        if step_id not in reads or port not in reads[step_id]:
+            wired = [f"{step}.{name}" for step, inputs in reads.items() for name in inputs]
+            raise PipelineError(f"without names input {edge!r}, which this document does not wire; {name_choices(str(edge), wired, 'inputs')}")
+        del reads[step_id][port]
+
+    return tuple(step_id for round_ in _dead_rounds(reads, tools_by_step) for step_id in round_)
+
+
+def _dead_rounds(
+    reads: Mapping[str, Mapping[str, Any]],
+    tools_by_step: Mapping[str, Any],
+) -> list[list[str]]:
+    """The dead steps, round by round: those nothing reads, then those that fed only them, and so on."""
+    alive = list(reads)
+    rounds: list[list[str]] = []
+    while True:
+        read = {_source_step(source) for step_id in alive for source in reads[step_id].values()}
+        dead = [
+            step_id
+            for step_id in alive
+            if step_id not in read and tools_by_step[step_id].category not in TERMINAL_CATEGORIES
+        ]
+        if not dead:
+            return rounds
+        rounds.append(dead)
+        gone = set(dead)
+        alive = [step_id for step_id in alive if step_id not in gone]
+
+
+def _source_step(source: Any) -> str:
+    """The step an edge reads from: ``"step.port"`` before the dot, or a :class:`PortRef`'s step."""
+    return source.step if isinstance(source, PortRef) else str(source).split(".", 1)[0]
+
+
 def _refuse_dead_ends(
     resolved_steps: list[Mapping[str, Any]],
     tools_by_step: Mapping[str, Any],
     inputs_by_step: Mapping[str, Mapping[str, PortRef]],
 ) -> None:
-    consumed = {edge.step for edges in inputs_by_step.values() for edge in edges.values()}
-    for raw in resolved_steps:
-        step_id = raw["id"]
-        tool = tools_by_step[step_id]
-        if step_id in consumed or tool.category in TERMINAL_CATEGORIES:
-            continue
-        raise PipelineError(
-            f"step {step_id!r} (tool {tool.name!r}) is a dead end: nothing consumes any of its "
-            f"output and its tool has no effect beyond its ports"
+    """Refuse a flow with dead ends, naming every one, and the steps that would die with them."""
+    rounds = _dead_rounds(inputs_by_step, tools_by_step)
+    if not rounds:
+        return
+    first, behind = rounds[0], [step_id for round_ in rounds[1:] for step_id in round_]
+    named = ", ".join(f"{step_id!r} (tool {tools_by_step[step_id].name!r})" for step_id in first)
+    if len(first) == 1:
+        message = (
+            f"step {named} is a dead end: nothing consumes any of its output and its tool has no "
+            f"effect beyond its ports"
         )
+    else:
+        message = (
+            f"{len(first)} steps are dead ends: nothing consumes any of their output and their tools have "
+            f"no effect beyond their ports: {named}"
+        )
+    if behind:
+        message += (
+            f". Removing {'it' if len(first) == 1 else 'them'} would leave {len(behind)} more with no reader, "
+            f"which feed only {'it' if len(first) == 1 else 'them'}: {', '.join(repr(step_id) for step_id in behind)}"
+        )
+    raise PipelineError(message)

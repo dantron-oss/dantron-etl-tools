@@ -25,6 +25,7 @@ CORE_MODULES = ("boundary", "config", "conformance", "contract", "errors", "exam
 
 # Where each name the package root exports is defined.
 ROOT_HOMES = {
+    "dead_ends": "loader",
     "load_pipeline": "loader",
     "read_pipeline": "loader",
     "run_pipeline": "runner",
