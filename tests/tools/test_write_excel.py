@@ -65,6 +65,7 @@ from xml.etree import ElementTree
 import openpyxl
 import polars as pl
 import pytest
+import xlsxwriter
 from openpyxl.styles import Font
 from openpyxl.workbook.defined_name import DefinedName
 
@@ -540,6 +541,33 @@ class TestWritingIntoATemplate:
         )
         assert _read_back(target, "Figures")["code"].to_list() == ["a", "a", "a"]
         assert _read_back(target, "Detail")["code"].to_list() == ["b", "b", "b"]
+
+    def test_a_formula_on_an_untouched_tab_keeps_its_formula_but_not_its_stored_result(self, tmp_path: Path) -> None:
+        """The stored result of every formula is cleared on the way through, and the help says so.
+
+        A spreadsheet recalculates when it opens the file, so a person sees the right figure. A
+        program that reads the file without recalculating sees a blank. Pinned, so the help's
+        sentence about it fails if the engine ever starts keeping the result.
+        """
+        template = tmp_path / "template.xlsx"
+        with xlsxwriter.Workbook(str(template)) as book:
+            summary = book.add_worksheet("Summary")
+            summary.write_row(0, 0, ["label", "total"])
+            summary.write_string(1, 0, "sum")
+            summary.write_formula(1, 1, "=SUM(10,20)", None, 30)
+        target = tmp_path / "pack.xlsx"
+
+        _write({"one": _rows("a")}, {"path": str(target), "template": str(template), "sheets": [{"port": "one", "sheet": "Figures"}]})
+
+        assert _read_back(template, "Summary")["total"].to_list() == [30], "the template holds a stored result"
+        assert _read_back(target, "Summary")["total"].to_list() == [None], "the pack's stored result is cleared"
+        book = openpyxl.load_workbook(target)
+        try:
+            assert book["Summary"]["B2"].value == "=SUM(10,20)", "the formula itself comes through"
+        finally:
+            book.close()
+        notes = " ".join(WriteExcel().help().notes)
+        assert "stored result" in notes and "recalculates" in notes
 
     def test_the_template_is_copied_to_the_path_and_never_written_to_itself(self, tmp_path: Path) -> None:
         """A template overwritten by its own first run is gone, and the second run has nothing.

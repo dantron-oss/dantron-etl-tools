@@ -327,6 +327,10 @@ class WriteExcel:
             ),
             examples=(plain_write_example(), template_example(), laid_out_example()),
             notes=(
+                "Every formula on a template tab comes through, but its stored result is cleared. A "
+                "spreadsheet recalculates the file when it opens it, so a person sees the right "
+                "figures. A program that reads the file before then, read_excel among them, sees "
+                "blanks where the formulas are.",
                 "A port with no rows still gets its tab, with the header and nothing under it: a "
                 "missing tab reads as a broken report, where an empty one reads as 'nothing this "
                 "month'.",
