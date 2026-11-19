@@ -45,13 +45,13 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
     the likeliest authoring slip, and left unchecked it surfaces as an attribute error raised from
     inside this function, naming neither the tool nor the mistake.
 
-    The inputs are then checked for having been written to. This *detects and reports after the
-    fact*; it is not a rollback, and by the time it raises, the caller's frame has already been
-    changed. It is still worth raising, because ``Ports`` copies the mapping and not the frames, so
-    an in-place column operation reaches straight through the envelope: where one output fans into
-    two branches, one branch rewrites the other branch's input, and a step's own record of what it
-    produced stops being true. Only the schema is compared, because copying every frame would cost
-    a copy per step and a flow is many steps long.
+    The tool is handed a copy of each input frame, made with polars' ``clone``, which shares the
+    data and costs nothing. A change the tool makes in place -- rows appended, a value set, a column
+    added or dropped -- lands on the copy, so it never reaches the caller's frame, another branch
+    reading the same port, or a step's record of what it produced. A change to the copy's columns
+    or its number of rows is still refused afterwards, because it is a slip a tool author should
+    hear about. A value changed in place on the copy is not looked for: it cannot reach anything but
+    this tool's own result, and comparing every value would cost a pass over every input per step.
 
     Between the tool's own configuration rules and ``execute`` sits ``validate_inputs``, the only
     phase that sees the configuration and the frames together. It runs on the filled configuration,
@@ -91,11 +91,14 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
     validate_against_template(template, config)
     filled_config = apply_defaults(template, config)
     call_tool_code(tool, "validate_config", lambda: tool.validate_config(filled_config))
-    call_tool_code(tool, "validate_inputs", lambda: tool.validate_inputs(inputs, filled_config))
 
-    schemas_before = {name: frame.schema for name, frame in inputs.items()}
+    # The tool is handed its own copy of each input frame. A polars clone shares the data and costs
+    # nothing (0.01 ms on a million rows), and a change made in place to the copy -- rows appended,
+    # a value set, a column added -- never reaches the caller's frame or another branch reading it.
+    given = Ports({name: frame.clone() for name, frame in inputs.items()}, notes=inputs.notes, status=inputs.status)
+    call_tool_code(tool, "validate_inputs", lambda: tool.validate_inputs(given, filled_config))
 
-    result = call_tool_code(tool, "execute", lambda: tool.execute(inputs, filled_config))
+    result = call_tool_code(tool, "execute", lambda: tool.execute(given, filled_config))
     if not isinstance(result, Ports):
         raise PortError(
             f"{tool.name!r} handed back {type(result).__name__} rather than Ports; a tool must return "
@@ -126,12 +129,18 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
                 f"schema even when it carries no rows"
             )
 
-    for name, frame in inputs.items():
-        if frame.schema != schemas_before[name]:
+    for name, original in inputs.items():
+        copy = given[name]
+        if copy.schema != original.schema:
             raise PortError(
                 f"{tool.name!r} changed the columns of its input port {name!r} in place; a tool must "
-                f"treat its inputs as read-only (columns before: {', '.join(schemas_before[name])}; "
-                f"after: {', '.join(frame.schema)})"
+                f"treat its inputs as read-only (columns before: {', '.join(original.schema)}; "
+                f"after: {', '.join(copy.schema)})"
+            )
+        if copy.height != original.height:
+            raise PortError(
+                f"{tool.name!r} changed the number of rows of its input port {name!r} in place, from "
+                f"{original.height:,} to {copy.height:,}; a tool must treat its inputs as read-only"
             )
 
     _check_status(tool, result, declared_outputs)

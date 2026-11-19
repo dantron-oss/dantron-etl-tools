@@ -191,7 +191,8 @@ fail when it stops being true.
 
 ### Other standing rules
 
-- **Do not mutate an input frame.** The boundary checks each input's schema before and after a step.
+- **Do not mutate an input frame.** The boundary hands each tool a copy of its inputs, so a change
+  cannot leak, and refuses a change to the copy's columns or row count.
 - **Vectorised only.** No row-by-row Python inside a tool. (`format_number` and `uuid5` are the
   known per-row exceptions, documented as such.)
 - **Import polars and the standard library at module level, nothing else.** YAML, openpyxl and
