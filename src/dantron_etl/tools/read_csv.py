@@ -1,24 +1,9 @@
-"""ReadCsv: a delimited text file becomes one frame, inferred and then corrected column by column.
+"""ReadCsv: read a delimited text file into one frame, working out each column's type.
 
-The catalog's first text source, and the sibling of ``read_excel`` rather than a format switch on
-it: a cell is typed and a text file is not, so this tool's whole first act is inference, and its
-hazards -- a ragged line, an encoding nobody declared, a blank that is not an empty string -- are
-not a workbook's hazards at all.
+Types are worked out from the whole file and corrected per column with `column_types`. A value that
+will not convert, or a line with the wrong number of fields, stops the run. A blank field is null.
 
-**Inference reads the whole file and is the default**, corrected per column through
-``column_types``: a whole-number column is read whole, a figure column is read as a figure, and a
-date stays text because a file cannot say in which order its digits are written. ``column_types``
-names only the columns inference gets wrong; there is no ``infer_schema_length``, because sampling
-would make a column's type depend on where in the file this month's exception happens to sit.
-
-**A value that will not convert to its declared type stops the run, and so does a line whose field
-count disagrees with the header** -- the same tension, the same answer: padding a short line or
-turning a bad value into a null both produce a frame that looks right and is not, so both refuse
-instead, naming the row or the line rather than guessing at it.
-
-**A blank field is nothing, never an empty string**, and a line of nothing is one blank field like
-any other, not layout to be dropped: the paired writer produces exactly that line for a row of
-nulls, and dropping it here would lose that row on the way through.
+Why: docs/design/tools.md#read_csv
 """
 
 import csv
@@ -61,17 +46,14 @@ _LEADING_ZERO: Final[str] = r"^[-+]?0\d"
 _LEADING_ZERO_PATTERN: Final[re.Pattern[str]] = re.compile(_LEADING_ZERO)
 _WHOLE_NUMBER: Final[str] = r"^[-+]?\d+$"
 
-# A byte a spreadsheet writes and almost nothing else expects; accepted and dropped rather than
-# left to become part of the first column's name.
+# A byte order mark, which spreadsheets write; dropped so it does not join the first column's name.
 _BOM: Final[str] = "﻿"
 
 _QUOTE: Final[str] = '"'
 
 _ACCEPTED_EXTENSIONS: Final[tuple[str, ...]] = (".csv", ".tsv")
 
-# Every encoding this tool will decode a file as. A closed set rather than "any string codecs.lookup
-# accepts", for the same reason every enum in this library is closed: a template that took anything
-# would report a typo as a decoding failure three lines further down instead of at authoring time.
+# The encodings accepted. A closed list, so a typo is refused at load, not as a decoding failure.
 _DECLARED_ENCODINGS: Final[tuple[str, ...]] = (
     "utf8",
     "utf-8",
@@ -91,10 +73,10 @@ _EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/rows.csv"
 
 
 class ReadCsv:
-    """Read one delimited text file onto the ``rows`` port, inferred and then corrected."""
+    """Read one delimited text file onto the `rows` port, types worked out then corrected."""
 
     name = "read_csv"
-    description = "Read a delimited text file onto the `rows` port, inferring types by column."
+    description = "Read a CSV or other delimited text file into a table."
     category = "input"
     input_ports = ()
     output_ports = ("rows",)
@@ -103,56 +85,56 @@ class ReadCsv:
         return {
             "path": ConfigField(
                 type="string",
-                description="The file to read; must end in .csv or .tsv.",
+                description="The file to read. It must end in .csv or .tsv.",
                 required=True,
                 non_empty=True,
                 file_path=True,
             ),
             "delimiter": ConfigField(
                 type="string",
-                description="The one character separating fields.",
+                description="The character between fields. Left out, a comma.",
                 default=",",
             ),
             "encoding": ConfigField(
                 type="string",
-                description="The encoding the file was written in; a fact about the file, not a "
-                "choice this tool makes.",
+                description="The text encoding the file was saved in. Left out, UTF-8.",
                 default="utf8",
                 enum=_DECLARED_ENCODINGS,
             ),
             "has_header": ConfigField(
                 type="boolean",
-                description="Whether the first row (after skip_rows) names the columns.",
+                description="Whether the first line (after skip_rows) holds the column names.",
                 default=True,
             ),
             "skip_rows": ConfigField(
                 type="integer",
-                description="How many lines above the header (or the data, if has_header is false) to skip.",
+                description="How many lines to skip before the header, or before the data without one.",
                 default=0,
             ),
             "column_types": ConfigField(
                 type="array",
-                description="Columns whose inferred type is wrong, corrected one entry at a time.",
+                description="Columns whose worked-out type is wrong, with the type they should be.",
                 required=False,
                 items=ConfigField(
                     type="object",
-                    description="One column's override: which one, what it is, and how it is written.",
+                    description="One column: its name, its type, and for dates how it is written.",
                     fields={
                         "column": ConfigField(
                             type="string",
-                            description="The header name this entry corrects.",
+                            description="The column name from the header, such as 'zip'.",
                             required=True,
                             non_empty=True,
                         ),
                         "type": ConfigField(
                             type="string",
-                            description="The declared type, spelled the way the query engine spells it.",
+                            description="The type, such as 'String', 'Int64', 'Float64' or 'Date'.",
                             required=True,
                             enum=DECLARED_TYPES,
                         ),
                         "format": ConfigField(
                             type="string",
-                            description="The order a Date, Datetime or Time is written in; ISO order if left out.",
+                            description="For a date or time: how it is written, such as '%d/%m/%Y'. "
+                            "Left out, year-month-day.",
                             required=False,
                             non_empty=True,
                         ),
@@ -164,38 +146,45 @@ class ReadCsv:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "The whole file is read once to infer every column's type; 'column_types' names the "
-                "columns that inference gets wrong and corrects only those, one entry at a time. A "
-                "blank field arrives as null, never an empty string, and a line whose field count "
-                "disagrees with the header stops the run naming the line rather than being padded "
-                "or truncated."
+                "Use read_csv to start a flow from a .csv or .tsv file. The whole file is read to work "
+                "out each column's type: whole numbers, decimals, true/false, or text. Dates stay text, "
+                "because a file cannot say which order its digits are in; name them in 'column_types' "
+                "with their format. The rows go to `rows`."
             ),
             examples=(_reads_a_file_example(),),
             notes=(
-                "There is no infer_schema_length: inference reads the whole file, because a sample "
-                "would make a column's type depend on where this month's exception happens to sit.",
-                "A value that will not convert to its declared type stops the run naming the column, "
-                "the value and the declared type, rather than becoming a null with no other symptom.",
+                "Types are worked out from the whole file, not a sample, so a column's type does not "
+                "depend on where an odd value sits.",
+                "'column_types' corrects only the columns you list; every other column is read as it "
+                "would be without it. A column listed twice is refused, and so is one not in the header.",
+                "A value that will not convert to its listed type stops the run, naming the column, the "
+                "value and the type. It never becomes a silent null.",
                 "A column that would be read as numbers stops the run when a number would change a "
-                "value: a leading zero (02134) or a whole number too big for 64 bits. Declare it in "
-                "column_types: String keeps it as written, Int64 or Float64 reads it as a number anyway.",
-                "The encoding is configurable because it is a fact about a file somebody else wrote; "
-                "a byte order mark is accepted and dropped, and bytes invalid in the declared "
-                "encoding are refused rather than read lossily.",
+                "value: a leading zero (02134) or a whole number too big for 64 bits.",
+                "Settle that in 'column_types': String keeps it as written, Int64 or Float64 reads it "
+                "as a number anyway.",
+                "A line with more or fewer fields than the header stops the run, naming the line. It is "
+                "never padded or cut.",
+                "A blank field is null, never empty text. A blank line is a row of nulls, not skipped, "
+                "because write_csv writes a row of nulls that way.",
+                "A header with a blank or repeated name is refused. Without a header, columns are named "
+                "column_1, column_2 and so on.",
+                "The encoding is a fact about the file. A byte order mark is accepted and dropped. Bytes "
+                "that are invalid in the stated encoding are refused, never read lossily.",
+                "An empty file, or one with nothing left after 'skip_rows', is refused.",
             ),
             field_help={
-                "column_types": "Each entry names one column and the type it really is; every other "
-                "column is inferred as it would have been with no entries at all.",
-                "skip_rows": "Lines above the header (or the data) to skip; must not be negative.",
+                "path": "For example 'data/orders.csv'. It must end in .csv or .tsv.",
+                "delimiter": "For example ';' or a tab. One character.",
+                "encoding": "For example 'cp1252' for a file saved by older Windows programs.",
+                "column_types": "For example [{column: zip, type: String}, {column: ordered_on, type: "
+                "Date, format: '%d/%m/%Y'}].",
+                "skip_rows": "For example 2, to skip two title lines above the header. Not negative.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse the wrong format, a negative skip count, or a column_types entry the file can't fix.
-
-        Every one of these is answerable from the configuration alone, before a file is opened, so
-        each is refused here rather than after the whole file has already been read.
-        """
+        """Refuse the wrong extension, a bad delimiter, a negative skip, and a bad column_types list."""
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
             raise ConfigError(f"read_csv only reads {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
@@ -205,11 +194,7 @@ class ReadCsv:
         _validate_column_types(config["column_types"] or [])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a file that is not there, before there is anything else to check.
-
-        A source has no ports to check columns against, so this is the one question this phase can
-        still answer for it: is the world this configuration describes actually there?
-        """
+        """Refuse a file that is missing or empty, before the run starts."""
         require_file_to_read("read_csv", config["path"])
         path = Path(config["path"])
         if path.stat().st_size == 0:
@@ -338,11 +323,10 @@ def _skip_lines(text: str, skip_rows: int) -> str:
 
 
 def _parse_records(remainder: str, delimiter: str, skip_rows: int) -> list[tuple[int, list[str]]]:
-    """Every logical record in ``remainder`` as ``(line number, fields)``, quoting handled correctly.
+    """Every record as `(line number, fields)`, with quoting handled.
 
-    The vectorised route when no quote character sits anywhere in the file: a plain split is exact
-    once quoting cannot be present to embed the delimiter or a line ending inside a field. The
-    quote-aware route otherwise, because only it gets a field spanning two physical lines right.
+    A plain split when the file has no quote character; Python's csv reader otherwise, since only it gets a
+    quoted field spanning two lines right.
     """
     if _QUOTE not in remainder:
         return _parse_records_fast(remainder, delimiter, skip_rows)
@@ -366,14 +350,9 @@ def _parse_records_quoted(remainder: str, delimiter: str, skip_rows: int) -> lis
 
 
 def _infer_series(name: str, values: list[str | None], line_numbers: list[int]) -> pl.Series:
-    """``values`` typed as a reader would: a whole number, then a figure, then a truth value, then text.
+    """`values` typed as a whole number, else a decimal, else true/false, else text.
 
-    A column with nothing but nulls in it is left as text: there is no non-null value to infer a
-    type from, and casting an all-null column would otherwise adopt whichever candidate happened to
-    be tried first.
-
-    A column that would read as numbers is refused instead when a number would change what the file
-    says: a leading zero, or a whole number too big for 64 bits (see ``_refuse_a_lossy_number``).
+    An all-null column stays text: there is no value to infer from.
     """
     series = pl.Series(name, values, dtype=pl.String)
     non_null = series.drop_nulls()
@@ -474,12 +453,7 @@ def _converter(declared_type: str, fmt: str | None) -> Callable[[str], Any]:
 
 
 def _truncate_fraction(text: str, fmt: str) -> str:
-    """``text`` with a fractional-second part longer than microseconds cut down to it.
-
-    A python ``datetime`` keeps at most six digits of a second; a value written with more --
-    nanosecond precision, the resolution this catalog's Time dtype actually carries -- would
-    otherwise leave ``strptime`` with unconverted digits and no way to read the rest of the value.
-    """
+    """`text` with fractional seconds cut to six digits, which is all a Python datetime holds."""
     if "%f" not in fmt:
         return text
     match = _FRACTION.search(text)
@@ -510,14 +484,7 @@ def _parse_boolean(text: str) -> bool:
 
 @contextmanager
 def _example_file_setup() -> Iterator[None]:
-    """A small file the example reads, written here rather than inside ``help()``.
-
-    ``help()`` must describe a tool without changing the process doing the describing -- the
-    catalog page generator calls it on every tool -- so the file this example reads is declared
-    through ``setup`` instead. Planted with :func:`scratch_path`, into the directory
-    :func:`check_tool` opens for the run; nothing here tears it back down, because that directory is
-    the checker's to remove, not this setup's.
-    """
+    """Write the small file the example reads into the example's scratch folder."""
     target = scratch_path(_EXAMPLE_PATH)
     target.write_bytes(b"key,label\n1,first\n2,second\n")
     yield
@@ -526,10 +493,10 @@ def _example_file_setup() -> Iterator[None]:
 def _reads_a_file_example() -> WorkedExample:
     outputs = Ports({"rows": pl.DataFrame({"key": [1, 2], "label": ["first", "second"]})})
     return WorkedExample(
-        scenario="read a two-row file with no columns to correct",
+        scenario="read a small file",
         configuration={"path": _EXAMPLE_PATH},
-        explanation="Both columns are inferred from the whole file: 'key' arrives a whole number and "
-        "'label' arrives text, with no column_types entry needed for either.",
+        explanation="Each column's type is worked out from the whole file: 'key' is a whole number and 'label' is "
+        "text.",
         inputs=Ports({}),
         outputs=outputs,
         check_row_order=True,

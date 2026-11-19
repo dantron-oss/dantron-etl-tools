@@ -720,3 +720,30 @@ would give the same rows and save nothing. A test measures peak memory.
 
 **Every refusal is read from the schema,** so an empty frame is refused the same way. A refusal that
 needs a row would report success the day a filter upstream matched nothing.
+
+## read_csv
+
+**A sibling of read_excel, not a format switch on it.** A cell is typed and a text file is not, so
+this tool's first job is working out types, and its hazards (a ragged line, an undeclared encoding, a
+blank that is not empty text) are not a workbook's.
+
+**Types are worked out from the whole file.** There is no `infer_schema_length`: a sample would make a
+column's type depend on where this month's odd value sits. `column_types` corrects only the columns
+inference gets wrong. Dates stay text unless declared, because a file cannot say which order its digits
+are in.
+
+**A bad value or a ragged line stops the run.** Padding a short line, or turning a bad value into null,
+both give a frame that looks right and is not. The refusal names the line or the value.
+
+**A number that would change a value is refused.** A leading zero (02134, a postcode) is lost by a
+number, and a whole number past 64 bits can only be read as a float, which rounds it. The author
+decides in `column_types`.
+
+**A blank field is null, and a blank line is a row.** write_csv writes a row of nulls as an empty line,
+so dropping it here would lose that row on a round trip.
+
+**The encoding is a fact about the file,** from a closed list so a typo is refused at load. A byte
+order mark is dropped; invalid bytes are refused, never read lossily.
+
+**Parsing.** A file with no quote character is split directly; otherwise Python's csv reader handles
+quoted fields that contain the delimiter or a line break.
