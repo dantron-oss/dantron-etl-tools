@@ -277,3 +277,26 @@ column that stays loses it silently, so it is refused by name. The check must st
 only spaces: each reads as an instruction and is not one. The usual cause is a configuration edited
 halfway, and saying so beats agreeing quietly. Every refusal comes from the configuration and the
 column names, never from a row, so an empty frame is refused the same way.
+
+## sort
+
+**Each key has its own direction and null placement.** One list can say "zone ascending with nulls
+first, then amount descending with nulls last". A tool that applied one direction to every key would
+look right on the single-key configuration everyone writes first and be wrong on the second key of
+the next one.
+
+**The sort is stable, and enforced.** Rows that tie on every key keep their arrival order. Other
+tools build on that: record_id numbers rows after a sort, and an unstable sort would make the numbers
+depend on how polars laid out the rows, so two runs could differ. polars' own `maintain_order` does
+not hold in every case: when every key is null on every row and a key sorts descending, polars 1.38
+reorders the rows (with one key, in reverse). So each row's arrival position is added as the last
+key, ascending. The flag is kept too; it costs nothing and says what is meant.
+
+**A setting written with no value is refused.** `direction:` with nothing after it arrives as null.
+Treated as "not set", it would sort by a policy the author never chose.
+
+**Defaults are applied by the tool.** The config template fills defaults only at the top level, so a
+default declared inside a sort key would look as if it applied and never would.
+
+**A repeated key is refused.** The second one can never decide anything: the first already ordered
+every row it would look at.

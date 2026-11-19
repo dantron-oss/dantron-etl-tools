@@ -1,21 +1,9 @@
-"""Sort: put the rows of `rows` in an order, and change nothing else about them.
+"""Sort: put rows in order by one or more keys, and change nothing else.
 
-The same rows come back. Same columns, same column order, same types. Only their order moves.
+Each key has its own direction and its own place for nulls. The sort is stable: rows that tie on
+every key keep their arrival order.
 
-**Each key carries its own direction and its own placement for missing values.** One list can say
-"zone ascending with missing zones first, then amount descending with missing amounts last". A tool
-that read one direction and applied it to every key would look right on a single-key config. That
-is the config everybody writes first. It would be wrong on the second key of the next one.
-
-**The sort is stable.** Rows that tie on every key keep the order they arrived in. The rest of the
-library builds on that promise. A generated row number is a sort followed by a count. An unstable
-sort would make that number depend on how the engine laid the rows out rather than on the data, so
-the same pipeline run twice would give two different answers. The query engine does not keep that
-promise in every case on its own, so the sort adds each row's arrival position as its last key.
-
-**A direction or a placement written with no value is refused.** A definition file spells that
-`direction:`, and it arrives here as nothing at all. Read as "not configured", it would run the
-sort under a policy its author never chose and was never told about.
+Why: docs/design/tools.md#sort
 """
 
 from collections.abc import Mapping
@@ -36,20 +24,17 @@ from ..authoring import (
 _DIRECTION_ENUM: Final[tuple[str, ...]] = ("asc", "desc")
 _NULLS_ENUM: Final[tuple[str, ...]] = ("first", "last")
 
-# What a key does when it says nothing: sort ascending, put missing values last.
-#
-# These live here rather than on the template because the contract fills defaults at the top level
-# of a configuration only. A default declared inside a sort key would read as if it applied, and
-# never be applied. So the tool holds the two policies itself and applies them where it sorts.
+# A key's defaults: ascending, nulls last. Held here because defaults inside a list element are
+# never filled in by the config template.
 _DEFAULT_DIRECTION: Final[str] = "asc"
 _DEFAULT_NULLS: Final[str] = "last"
 
 
 class Sort:
-    """Order the rows of `rows` by one or more keys, leaving everything else about the frame alone."""
+    """Order the rows of `rows` by one or more keys, leaving everything else alone."""
 
     name = "sort"
-    description = "Order the rows of `rows` by one or more keys, keeping tied rows in their arrival order."
+    description = "Put rows in order by one or more columns, each ascending or descending."
     category = "preparation"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -58,30 +43,30 @@ class Sort:
         return {
             "by": ConfigField(
                 type="array",
-                description="The sort keys, most important first. The first key decides. Each later "
-                "key breaks the ties the ones before it leave.",
+                description="The columns to sort on, most important first. Each later key only "
+                "breaks ties left by the ones before it.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="object",
-                    description="One sort key: a column, and how to read it.",
+                    description="One sort key: a column, its direction, and where its nulls go.",
                     fields={
                         "column": ConfigField(
                             type="string",
-                            description="The column to sort on. It has to be on the input.",
+                            description="The column to sort on, such as 'amount'.",
                             required=True,
                             non_empty=True,
                         ),
                         "direction": ConfigField(
                             type="string",
                             description="'asc' for smallest first, 'desc' for largest first. Left "
-                            "out, a key sorts ascending.",
+                            "out, it is 'asc'.",
                             enum=_DIRECTION_ENUM,
                         ),
                         "nulls": ConfigField(
                             type="string",
-                            description="Where missing values go: 'first' or 'last'. Left out, they "
-                            "go last. That holds whichever direction the key sorts in.",
+                            description="Where nulls go: 'first' or 'last'. Left out, they go last, "
+                            "in either direction.",
                             enum=_NULLS_ENUM,
                         ),
                     },
@@ -92,36 +77,30 @@ class Sort:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Orders the rows by the keys listed in 'by'. The first key decides. Each later key "
-                "breaks the ties the ones before it leave. Every key carries its own direction and "
-                "its own placement for missing values, so one list can sort one column ascending "
-                "and the next descending. Rows that tie on every key keep the order they arrived "
-                "in. That is what lets a row number generated afterwards depend on the data rather "
-                "than on the engine. Nothing else about the frame changes: same rows, same "
-                "columns, same column order, same types."
+                "Use sort to put rows in order, for example by date, or by customer and then by "
+                "largest amount. Each key has its own direction and its own place for nulls. Rows "
+                "that tie on every key keep the order they arrived in, so the result is the same on "
+                "every run. Only the row order changes: the columns and values are untouched."
             ),
             examples=(_descending_example(), _two_key_example()),
             notes=(
-                "Missing values go last by default, in either direction. Write 'nulls: first' on a "
-                "key to put them on top.",
-                "A not-a-number value (what 0/0 gives) sorts as larger than every number: after "
-                "them ascending, before them descending. It is not a missing value, so 'nulls' "
-                "does not move it.",
-                "A direction or a placement written with no value is refused, not defaulted. A "
-                "definition file spells 'direction:' when its author meant to say something.",
+                "Nulls go last by default, in either direction. Write 'nulls: first' on a key to put "
+                "them on top.",
+                "A not-a-number value (what 0/0 gives) sorts as larger than every number: last when "
+                "ascending, first when descending. It is not a null, so 'nulls' does not move it.",
+                "A 'direction' or 'nulls' written with no value, such as 'direction:' on its own, is "
+                "refused, not given the default.",
+                "Naming the same column twice in 'by' is refused, because the second key could never "
+                "decide anything.",
             ),
             field_help={
-                "by": "A list of keys, most important first. Each key needs a 'column'. 'direction' "
-                "and 'nulls' are optional, and each applies to its own key alone.",
+                "by": "For example [{column: zone}, {column: amount, direction: desc}]: by zone, then "
+                "largest amount first within each zone.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """The rules a template cannot state: a blank column, an option with no value, a repeated key.
-
-        Each refusal names the key by its path. A list of eight keys is read in a file, and "one of
-        your sort keys is wrong" sends the reader back to look at all eight of them.
-        """
+        """Refuse a blank column, a setting written with no value, and a repeated key, by path."""
         seen: dict[str, int] = {}
         for index, key in enumerate(config["by"]):
             path = f"by[{index}]"
@@ -144,7 +123,7 @@ class Sort:
             seen[column] = index
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Every key column has to be on the input, which only the incoming schema can say."""
+        """Refuse a key column that is not on the input."""
         require_columns(inputs["rows"], [key["column"] for key in config["by"]], "by", "rows")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -152,14 +131,8 @@ class Sort:
         frame = inputs["rows"]
         keys = config["by"]
 
-        # The arrival position is the final key, always ascending. Rows that tie on every key the
-        # author wrote are then ordered by where they arrived, which is what stability means.
-        #
-        # Do not replace it with polars' own stability flag alone. When every key is missing on
-        # every row and at least one key sorts descending, polars 1.38 reorders the rows (one key:
-        # in reverse) even when asked to keep their order. record_id numbers rows after a sort, so
-        # the reordering would reach the identifiers. The flag stays as well: it costs nothing and
-        # says what is meant.
+        # Arrival position as the last key keeps ties in order. maintain_order alone is not enough.
+        # Why: docs/design/tools.md#sort
         arrival = pl.int_range(pl.len())
         return Ports(
             {
@@ -195,11 +168,10 @@ def _descending_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="largest amount first, with the two rows that tie left as they arrived",
+        scenario="largest amount first",
         configuration={"by": [{"column": "amount", "direction": "desc"}]},
-        explanation="Rows 'a' and 'c' both hold 10.0, so nothing in the configuration separates "
-        "them. They come back in the order they went in. The missing amount goes last, which is "
-        "where missing values go unless a key says otherwise.",
+        explanation="Rows 'a' and 'c' both hold 10.0, so they keep the order they came in. The missing amount "
+        "goes last, as nulls do by default.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -228,11 +200,10 @@ def _two_key_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="group by zone, and within a zone put the largest amount first",
+        scenario="by zone, then largest amount first within a zone",
         configuration={"by": [{"column": "zone"}, {"column": "amount", "direction": "desc"}]},
-        explanation="'zone' decides first and sorts ascending, so the two northern rows lead and "
-        "the row with no zone goes last. 'amount' only decides between rows the first key tied. "
-        "Here that is the pair of northern rows.",
+        explanation="'zone' sorts first, ascending, so the two north rows lead and the row with no zone goes "
+        "last. 'amount' only decides between rows with the same zone: here, the two north rows.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
