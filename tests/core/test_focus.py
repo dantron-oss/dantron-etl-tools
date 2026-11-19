@@ -54,9 +54,9 @@ from dantron_etl.focus import (
     available_entities,
     slice_trace,
 )
-from dantron_etl.pipeline import PipelineSpec, PortRef, load_pipeline
-from dantron_etl.runner import PipelineTrace, StepFailedError, run_pipeline
-from dantron_etl.tool import ToolError
+from dantron_etl import Pipeline, PortRef, load_pipeline
+from dantron_etl import PipelineTrace, StepFailedError, run_pipeline
+from dantron_etl.authoring import ToolError
 
 # ---------------------------------------------------------------------------
 # The fixture flow
@@ -238,12 +238,12 @@ def _sources(roster: pl.DataFrame | None = None) -> dict[PortRef, pl.DataFrame]:
 
 
 @pytest.fixture
-def spec() -> PipelineSpec:
+def spec() -> Pipeline:
     return load_pipeline(_document())
 
 
 @pytest.fixture
-def trace(spec: PipelineSpec) -> PipelineTrace:
+def trace(spec: Pipeline) -> PipelineTrace:
     """A finished run holding every frame, which is what a walkthrough is read from."""
     return run_pipeline(spec, sources=_sources(), retain="all")
 
@@ -404,7 +404,7 @@ class TestThreeWaysOfHavingNothingToShow:
         assert (for_everybody.status, for_everybody.rows_focused, for_everybody.rows_at_port) == ("matched", 0, 0)
 
     def test_a_released_port_says_it_was_not_retained_rather_than_saying_nothing_is_here(
-        self, spec: PipelineSpec
+        self, spec: Pipeline
     ) -> None:
         """A live run frees a frame the moment nothing will read it again, and shapes survive.
 
@@ -442,7 +442,7 @@ class TestThreeWaysOfHavingNothingToShow:
         assert "all" in str(nothing_to_pick.value), "the refusal must say how to get a list"
 
     def test_a_value_no_port_holds_is_refused_rather_than_shown_as_a_run_of_nought_rows(
-        self, spec: PipelineSpec, trace: PipelineTrace
+        self, spec: Pipeline, trace: PipelineTrace
     ) -> None:
         """A view of nought everywhere reads as a flow that dropped an entity it never saw.
 
@@ -664,7 +664,7 @@ class TestWhatAFocusMayNotSay:
 class TestATraceIsEvidence:
     """A partial run is exactly when somebody slices, and slicing must leave the run untouched."""
 
-    def test_a_run_that_stopped_early_refuses_the_key_it_cannot_learn(self, spec: PipelineSpec) -> None:
+    def test_a_run_that_stopped_early_refuses_the_key_it_cannot_learn(self, spec: Pipeline) -> None:
         """A trace that stopped mid-flow is the one most likely to be sliced, so its refusal matters most.
 
         The key can no longer be learned, because the run never reached the port it is learned at.

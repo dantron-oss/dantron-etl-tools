@@ -54,14 +54,8 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table
 
 from dantron_etl.column_types import DECLARED_TYPES
-from dantron_etl.tool import (
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import ConfigError, DataError, Ports, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.write_excel import WriteExcel
 
 # ---------------------------------------------------------------------------

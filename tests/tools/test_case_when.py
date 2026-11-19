@@ -59,22 +59,19 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
-    REPLACE_FIELD,
-    YAML_UNSAFE_VALUES,
     ConfigError,
     ConfigField,
     Ports,
+    REGISTRY,
+    REPLACE_FIELD,
     ToolError,
-    apply_defaults,
+    YAML_UNSAFE_VALUES,
     check_tool,
-    expression_fields,
-    expression_values,
     run_tool,
-    validate_against_template,
 )
+from dantron_etl.config import apply_defaults, expression_fields, expression_values, validate_against_template
 from dantron_etl.tools.case_when import CaseWhen
 from dantron_etl.tools.formula import Formula
 

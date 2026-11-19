@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import PipelineError
+from dantron_etl import PipelineError
 from dantron_etl.preview import MANIFEST, PAGE_NAME, PANEL_MANIFEST, discover, serve
-from dantron_etl.runner import StepFailedError
+from dantron_etl import StepFailedError
 
 PROJECT_ROOT = project_root(__file__)
 

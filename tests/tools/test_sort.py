@@ -57,16 +57,16 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
     ConfigError,
     ConformanceError,
     Ports,
+    REGISTRY,
     check_tool,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.record_id import RecordId
 from dantron_etl.tools.sort import Sort
 

@@ -23,15 +23,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.tools.cast_columns import CastColumns
 
 
@@ -272,7 +264,7 @@ class TestReportingWhatCouldNotBeRead:
 
     def test_on_invalid_offers_no_word_a_definition_file_would_rewrite(self) -> None:
         """'set_null' rather than 'null': an unquoted null in YAML IS the null value."""
-        from dantron_etl.tool import YAML_UNSAFE_VALUES
+        from dantron_etl.authoring import YAML_UNSAFE_VALUES
 
         choices = set(CastColumns().config_template()["on_invalid"].enum or ())
         assert choices == {"error", "set_null"}

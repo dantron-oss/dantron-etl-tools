@@ -52,16 +52,16 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.pipeline import PipelineSpec, PortRef, load_pipeline
+from dantron_etl import Pipeline, PortRef, load_pipeline
 from dantron_etl.preview import persist_ports
-from dantron_etl.runner import StepFailedError, run_pipeline
-from dantron_etl.tool import (
-    STATUS_LEVELS,
-    STATUS_SCHEMA,
-    STATUS_VALUE_CHARS,
+from dantron_etl import StepFailedError, run_pipeline
+from dantron_etl.authoring import (
     ConfigField,
     PortError,
     Ports,
+    STATUS_LEVELS,
+    STATUS_SCHEMA,
+    STATUS_VALUE_CHARS,
     ToolHelp,
     row_status,
     run_tool,
@@ -757,7 +757,7 @@ SETTLED = PortRef("settled", "rows")
 CHECKED = PortRef("checked", "rows")
 
 
-def _flow() -> PipelineSpec:
+def _flow() -> Pipeline:
     """Three steps: a supplied source, a lenient cast that degrades, and a step that degrades nothing."""
     return load_pipeline(
         {
@@ -787,7 +787,7 @@ def _flow() -> PipelineSpec:
     )
 
 
-def _flow_that_fails() -> PipelineSpec:
+def _flow_that_fails() -> Pipeline:
     """The same flow, with the last step's invariant made unsatisfiable so the run stops inside it.
 
     The same three steps deliberately: what is being observed is the trace of a run that failed

@@ -79,21 +79,20 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
-    YAML_UNSAFE_VALUES,
     ConfigError,
     DataError,
     ExecutionError,
     Ports,
+    REGISTRY,
     Tool,
     ToolError,
-    apply_defaults,
+    YAML_UNSAFE_VALUES,
     check_tool,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import apply_defaults, expression_fields
 from dantron_etl.tools.read_csv import DECLARED_TYPES, ReadCsv
 from dantron_etl.tools.write_csv import WriteCsv
 

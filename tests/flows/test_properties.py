@@ -16,7 +16,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.tool import Ports, run_tool
+from dantron_etl.authoring import Ports, run_tool
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.filter import Filter
 from dantron_etl.tools.group_by import GroupBy

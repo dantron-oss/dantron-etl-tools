@@ -22,7 +22,7 @@ import pytest
 
 from dantron_etl.db import open_connection
 from dantron_etl.example_world import _resolved_scratch
-from dantron_etl.tool import REGISTRY, ConfigError, Ports, check_registry, run_tool
+from dantron_etl.authoring import ConfigError, Ports, REGISTRY, check_registry, run_tool
 from dantron_etl.tools.read_csv import ReadCsv
 from dantron_etl.tools.read_excel import ReadExcel
 from dantron_etl.tools.write_csv import WriteCsv

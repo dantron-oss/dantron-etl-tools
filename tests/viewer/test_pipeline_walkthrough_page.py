@@ -26,7 +26,7 @@ from dantron_etl.focus import FocusSpec
 from dantron_etl.paths import project_root
 from dantron_etl import REGISTRY, Pipeline, PortRef, Step, read_pipeline
 from dantron_etl.spec import Container, Lane
-from dantron_etl.runner import PipelineTrace, run_pipeline
+from dantron_etl import PipelineTrace, run_pipeline
 
 PROJECT_ROOT = project_root(__file__)
 
@@ -2024,7 +2024,7 @@ def _grouped_spec() -> Pipeline:
     """
     import yaml
 
-    from dantron_etl.pipeline import load_pipeline
+    from dantron_etl import load_pipeline
 
     document = yaml.safe_load((PROJECT_ROOT / "pipelines" / "fixture.yaml").read_text(encoding="utf8"))
     document["containers"] = [{"id": group_id, "title": title} for group_id, title in GROUP_TITLES.items()]

@@ -79,7 +79,8 @@ def current_vocabulary() -> dict[str, Any]:
     import dantron_etl  # noqa: F401 -- importing the package fills the registry
     from dantron_etl.expr import ALLOWED_FUNCTIONS
     from dantron_etl.expr.functions import FUNCTIONS
-    from dantron_etl.tool import REGISTRY, ports_from_config
+    from dantron_etl.authoring import REGISTRY
+    from dantron_etl.contract import ports_from_config
 
     tools = {
         tool.name: {
@@ -131,7 +132,7 @@ def test_the_vocabulary_covers_every_tool_and_function() -> None:
     """The snapshot is not empty, and nothing is left out of it."""
     import dantron_etl  # noqa: F401
     from dantron_etl.expr import ALLOWED_FUNCTIONS
-    from dantron_etl.tool import REGISTRY
+    from dantron_etl.authoring import REGISTRY
 
     vocabulary = current_vocabulary()
     assert sorted(vocabulary["tools"]) == sorted(REGISTRY.names())

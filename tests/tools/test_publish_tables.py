@@ -69,7 +69,8 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.tool import ConfigError, Ports, ToolError, input_ports_for, run_tool
+from dantron_etl.authoring import ConfigError, Ports, ToolError, run_tool
+from dantron_etl.contract import input_ports_for
 from dantron_etl.tools.publish_tables import PublishTables
 
 # The name a pipeline definition would carry: the name of the variable, never the connection itself.

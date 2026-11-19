@@ -48,24 +48,22 @@ import polars as pl
 import pytest
 
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import PipelineError, PortRef, load_pipeline
-from dantron_etl.runner import RunError, run_pipeline
-from dantron_etl.tool import (
-    REGISTRY,
+from dantron_etl import PipelineError, PortRef, load_pipeline
+from dantron_etl import RunError, run_pipeline
+from dantron_etl.authoring import (
     ConfigField,
     ConformanceError,
     PortError,
     Ports,
+    REGISTRY,
     Tool,
     ToolHelp,
     ToolRegistry,
     WorkedExample,
-    catalog_input_ports,
     check_tool,
-    input_ports_for,
-    ports_from_config,
     run_tool,
 )
+from dantron_etl.contract import catalog_input_ports, input_ports_for, ports_from_config
 
 PROJECT_ROOT = project_root(__file__)
 

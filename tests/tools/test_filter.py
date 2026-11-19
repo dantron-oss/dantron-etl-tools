@@ -39,17 +39,17 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from dantron_etl.expr import compile_expr
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
     ConfigError,
     Ports,
+    REGISTRY,
     ToolError,
     check_tool,
     compiled_dtype,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.filter import Filter
 
 # ---------------------------------------------------------------------------

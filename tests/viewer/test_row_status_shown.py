@@ -73,10 +73,10 @@ import polars as pl
 import pytest
 
 from dantron_etl.focus import FocusSpec
-from dantron_etl.pipeline import PipelineSpec, PortRef, load_pipeline
+from dantron_etl import Pipeline, PortRef, load_pipeline
 from dantron_etl.preview import FILTER_PREFIX, MANIFEST, PortStore, PreviewError, serve
-from dantron_etl.runner import PipelineTrace, run_pipeline
-from dantron_etl.tool import STATUS_LEVELS
+from dantron_etl import PipelineTrace, run_pipeline
+from dantron_etl.authoring import STATUS_LEVELS
 
 # The class that says "this cell is the step talking about the row, not the row". One name, worn by
 # the header, by the control under it and by the cell the script draws, because the three are one
@@ -123,7 +123,7 @@ def _clean_entries() -> pl.DataFrame:
     )
 
 
-def _flow() -> PipelineSpec:
+def _flow() -> Pipeline:
     """Four steps: a source, two casts that empty different rows, and a check that touches nothing.
 
     Two degrading steps rather than one, because a writer that stacked every mark it found under

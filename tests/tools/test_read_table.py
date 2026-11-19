@@ -56,12 +56,12 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
     ConfigError,
     PortError,
     Ports,
+    REGISTRY,
     Tool,
     check_tool,
     run_tool,

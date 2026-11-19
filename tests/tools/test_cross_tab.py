@@ -81,7 +81,7 @@ point at, and it is the same fact as a null arriving from a different system. Ac
 refusing the other would make the answer depend on who produced the file.
 
 **A new column name that collides with an index column name is refused.** This is the hazard
-:func:`~dantron_etl.tool.check_output_column` exists for, except that here the name comes from the
+:func:`~dantron_etl.authoring.check_output_column` exists for, except that here the name comes from the
 data, so it can only be checked once rows have been seen. Left unchecked, one of the two columns
 wins and the other is gone.
 
@@ -109,16 +109,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.group_by import AGGREGATE_FUNCTIONS, GroupBy
 
@@ -790,7 +782,7 @@ class TestANullInTheColumnKeyStopsTheRun:
     def test_a_null_on_value_is_refused_and_the_rows_are_counted_and_shown(self) -> None:
         """The refusal names the column, counts the offenders, and shows a few of them.
 
-        :class:`~dantron_etl.tool.DataError` exists for exactly this: a refusal about values rather
+        :class:`~dantron_etl.authoring.DataError` exists for exactly this: a refusal about values rather
         than about a set-up, carrying enough to send the reader to the rows instead of to a query
         they have to write first.
 
@@ -883,7 +875,7 @@ class TestANewColumnMayNotTakeAnIndexColumnsName:
     def test_a_value_of_on_that_matches_an_index_column_is_refused_naming_the_collision(self) -> None:
         """One of the two columns would win and the other would be gone. Neither is acceptable.
 
-        This is the hazard :func:`~dantron_etl.tool.check_output_column` exists for, one step
+        This is the hazard :func:`~dantron_etl.authoring.check_output_column` exists for, one step
         removed: the name is not in the configuration, it is in the rows, so it can only be checked
         once the rows have been seen. The refusal has to name the offending value and the index
         column it collides with, because the author is looking at a configuration that mentions

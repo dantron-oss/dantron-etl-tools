@@ -5,9 +5,9 @@ module. That is a fine place to register from and a terrible thing to rely on, b
 catalog is only as complete as the set of modules something happened to import by name. A consumer
 who writes the obvious line --
 
-    from dantron_etl.tool import REGISTRY
+    from dantron_etl.authoring import REGISTRY
 
--- imports ``dantron_etl`` and ``dantron_etl.tool`` and nothing else, and gets a catalog with zero
+-- imports ``dantron_etl`` and ``dantron_etl.authoring`` and nothing else, and gets a catalog with zero
 tools in it. Nothing raises. ``check_registry(REGISTRY)`` passes, because every rule it enforces
 holds vacuously over an empty catalog, and a generated catalog page renders blank. That is the
 defect this file exists to pin, and it is pinned in a subprocess: inside a pytest session the tool
@@ -44,13 +44,13 @@ from pathlib import Path
 import pytest
 
 import dantron_etl.tools
-from dantron_etl.tool import REGISTRY, check_registry, check_tool
+from dantron_etl.authoring import REGISTRY, check_registry, check_tool
 
 TOOLS_DIR = Path(dantron_etl.tools.__file__).parent
 
 _READ_CATALOG = """
 {importing}
-from dantron_etl.tool import REGISTRY
+from dantron_etl.authoring import REGISTRY
 print(",".join(REGISTRY.names()))
 """
 

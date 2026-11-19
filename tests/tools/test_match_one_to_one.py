@@ -45,17 +45,17 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
-    YAML_UNSAFE_VALUES,
     ConfigError,
     Ports,
+    REGISTRY,
     ToolError,
+    YAML_UNSAFE_VALUES,
     check_tool,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.match_one_to_one import MatchOneToOne
 
 Row = tuple[str, str, int]

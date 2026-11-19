@@ -92,17 +92,17 @@ from polars.testing import assert_frame_equal
 
 import dantron_etl
 from dantron_etl.column_types import DECLARED_DTYPE, DECLARED_TYPES
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
-    YAML_UNSAFE_VALUES,
     ConfigError,
     DataError,
     Ports,
+    REGISTRY,
+    YAML_UNSAFE_VALUES,
     check_tool,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.unpivot import Unpivot
 
@@ -1559,7 +1559,7 @@ _PEAK_MEMORY_SCRIPT = textwrap.dedent(
 
     import polars as pl
 
-    from dantron_etl.tool import Ports, run_tool
+    from dantron_etl.authoring import Ports, run_tool
     from dantron_etl.tools.unpivot import Unpivot
 
 

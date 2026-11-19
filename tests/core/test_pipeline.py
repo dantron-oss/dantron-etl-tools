@@ -52,17 +52,11 @@ import pytest
 
 import dantron_etl
 from dantron_etl.expr import compile_expr
-from dantron_etl.pipeline import (
-    Lane,
-    PipelineError,
-    PipelineSpec,
-    PortRef,
-    StepSpec,
-    load_pipeline,
-    read_pipeline_file,
-)
-from dantron_etl.runner import run_pipeline
-from dantron_etl.tool import REGISTRY, ConfigError, ToolError, apply_defaults, validate_against_template
+from dantron_etl import Pipeline, PipelineError, PortRef, Step, load_pipeline, read_pipeline
+from dantron_etl.spec import Lane
+from dantron_etl import run_pipeline
+from dantron_etl.authoring import ConfigError, REGISTRY, ToolError
+from dantron_etl.config import apply_defaults, validate_against_template
 
 # The environment a child interpreter is started with, when a test needs one with nothing inherited.
 # Linux needs only a PATH. Windows will not start Python without SYSTEMROOT, so it is passed on
@@ -192,7 +186,7 @@ class TestAPipelineIsADataFile:
         """The whole surface: steps as authored, edges port-to-port, and a walkable order."""
         spec = load_pipeline(_document(), rules=RULES)
 
-        assert isinstance(spec, PipelineSpec)
+        assert isinstance(spec, Pipeline)
         assert spec.name == "a neutral fixture"
         assert tuple(step.id for step in spec.steps) == ("entries", "headers", "kept", "paired", "published")
 
@@ -635,11 +629,11 @@ class TestTheLibraryTakesNoFileFormatDependency:
             encoding="utf8",
         )
 
-        assert read_pipeline_file(written, rules=RULES) == load_pipeline(document, rules=RULES)
+        assert read_pipeline(written, rules=RULES) == load_pipeline(document, rules=RULES)
 
         source_root = Path(dantron_etl.__file__).parent.parent
         probe = subprocess.run(
-            [sys.executable, "-c", "import dantron_etl.pipeline, sys; print('yaml' in sys.modules)"],
+            [sys.executable, "-c", "import dantron_etl.loader, sys; print('yaml' in sys.modules)"],
             capture_output=True,
             text=True,
             check=True,
@@ -818,7 +812,7 @@ class TestARuleValueIsEscapedForTheAuthorRatherThanByThem:
             encoding="utf8",
         )
 
-        spec = read_pipeline_file(flow, rules={"kept_code": "O'Brian"})
+        spec = read_pipeline(flow, rules={"kept_code": "O'Brian"})
         run_pipeline(spec)
 
         assert pl.read_csv(kept)["code"].to_list() == ["O'Brian"]
@@ -1197,20 +1191,20 @@ class _NoTextForm:
     """
 
 
-def _spec_carrying(value: Any) -> PipelineSpec:
+def _spec_carrying(value: Any) -> Pipeline:
     """A one-step spec whose configuration holds ``value``, assembled rather than loaded.
 
     Assembled on purpose. Every field the shipped catalog declares is typed and none of the declared
     types is a date, so ``load_pipeline`` refuses a bare ``2026-04-01`` before a fingerprint could
     ever be taken of one -- while ``yaml.safe_load`` goes on handing back a ``datetime.date`` for
-    exactly that line, and :class:`PipelineSpec` is a public dataclass a caller assembling a flow in
+    exactly that line, and :class:`Pipeline` is a public dataclass a caller assembling a flow in
     memory may build directly. So a fingerprint has to answer for a value the JSON encoder has no
     spelling for, whether or not today's loader is the way it arrives, and what it answers is what
     the cases below pin.
     """
-    return PipelineSpec(
+    return Pipeline(
         name="a neutral fixture",
-        steps=(StepSpec(id="entries", tool="read_csv", config={"path": value}, inputs={}),),
+        steps=(Step(id="entries", tool="read_csv", config={"path": value}, inputs={}),),
     )
 
 
@@ -1428,7 +1422,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
             "import sys\n"
             "from pathlib import Path\n"
             "import json\n"
-            "from dantron_etl.pipeline import load_pipeline\n"
+            "from dantron_etl import load_pipeline\n"
             "document = json.loads(Path(sys.argv[1]).read_text(encoding='utf8'))\n"
             "rules = json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))\n"
             "print(load_pipeline(document, rules=rules).fingerprint(sys.argv[3]))\n",

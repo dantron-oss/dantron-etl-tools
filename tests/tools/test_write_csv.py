@@ -72,16 +72,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    Tool,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, Tool, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.write_csv import WriteCsv
 
 # A sheet holds 1,048,576 rows and its header takes one of them. Written out rather than imported

@@ -45,19 +45,19 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from dantron_etl import runner
-from dantron_etl.pipeline import PipelineSpec, PortRef, load_pipeline
-from dantron_etl.runner import (
+from dantron_etl import Pipeline, PortRef, load_pipeline
+from dantron_etl import (
     CachedFrame,
     ColumnCheckError,
-    FrameShape,
     PipelineTrace,
     RunError,
     StepEvent,
     StepFailedError,
-    logging_sink,
     run_pipeline,
 )
-from dantron_etl.tool import DataError, ExecutionError, ToolError
+from dantron_etl.runner import logging_sink
+from dantron_etl.trace import FrameShape
+from dantron_etl.authoring import DataError, ExecutionError, ToolError
 
 # ---------------------------------------------------------------------------
 # The fixture flow
@@ -236,7 +236,7 @@ def _sources(
     }
 
 
-def _spec(**changes: Any) -> PipelineSpec:
+def _spec(**changes: Any) -> Pipeline:
     """The fixture flow, optionally with one step's configuration replaced by ``step_id=config``."""
     document = _document()
     for step in document["steps"]:
@@ -1277,12 +1277,12 @@ def _trimmed_frame() -> pl.DataFrame:
     return pl.DataFrame({"entry_id": [7, 8], "region": ["west", "midlands"]})
 
 
-def _cache(spec: PipelineSpec, port: PortRef, frame: pl.DataFrame) -> dict[PortRef, CachedFrame]:
+def _cache(spec: Pipeline, port: PortRef, frame: pl.DataFrame) -> dict[PortRef, CachedFrame]:
     """One cached port, carrying the fingerprint a previous run of ``spec`` would have written beside it."""
     return {port: CachedFrame(frame, spec.fingerprint(port.step))}
 
 
-def _cache_every_port(spec: PipelineSpec, frames: Mapping[PortRef, pl.DataFrame]) -> dict[PortRef, CachedFrame]:
+def _cache_every_port(spec: Pipeline, frames: Mapping[PortRef, pl.DataFrame]) -> dict[PortRef, CachedFrame]:
     """Every port of one step, each carrying the fingerprint of the step that produced it.
 
     A step may only be cached on all of its ports or none, so this is the shape a cache of any step

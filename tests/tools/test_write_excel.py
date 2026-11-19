@@ -69,18 +69,9 @@ from openpyxl.styles import Font
 from openpyxl.workbook.defined_name import DefinedName
 
 from dantron_etl.column_types import DECLARED_TYPES
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    expression_fields,
-    input_ports_for,
-    ports_from_config,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
+from dantron_etl.contract import input_ports_for, ports_from_config
 from dantron_etl.tools._spreadsheet import MAX_DATA_ROWS, MAX_EXACT_INTEGER
 from dantron_etl.tools.write_excel import WriteExcel
 

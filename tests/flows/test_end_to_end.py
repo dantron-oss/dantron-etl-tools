@@ -17,8 +17,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.pipeline import PortRef, read_pipeline_file
-from dantron_etl.runner import PipelineTrace, run_pipeline
+from dantron_etl import PortRef, read_pipeline
+from dantron_etl import PipelineTrace, run_pipeline
 
 FLOW_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "end_to_end"
 
@@ -29,7 +29,7 @@ def run(tmp_path_factory: pytest.TempPathFactory) -> tuple[PipelineTrace, Path]:
     folder = tmp_path_factory.mktemp("end_to_end")
     for name in ("entries.csv", "parties.csv"):
         shutil.copyfile(FLOW_DIR / name, folder / name)
-    spec = read_pipeline_file(FLOW_DIR / "monthly_by_band.yaml")
+    spec = read_pipeline(FLOW_DIR / "monthly_by_band.yaml")
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(folder)
         trace = run_pipeline(spec, retain="all")

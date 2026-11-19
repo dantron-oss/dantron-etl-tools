@@ -105,7 +105,6 @@ than the one you are editing. If anything looks impossible, run
 | `walk.py` | Works out a run before it starts: which steps `until=` and `cached=` leave to walk, the frames handed in, and when each frame can be freed. |
 | `trace.py` | What a run leaves behind: `StepEvent`, `PipelineTrace`, `CachedFrame`, and the failures that carry a partial trace. |
 | `runner.py` | `run_pipeline`. One frame per port, one event per step, a trace you can read afterwards. `until=` runs part of a flow, `cached=` resumes from earlier frames, `retain=` chooses memory over inspectability. |
-| `tool.py`, `pipeline.py` | Old import paths, re-exporting the names above. Removed once consumers move to the new ones. |
 | `focus.py` | Narrows a finished run to one entity so a wrong figure can be followed step by step. Reads the run; never re-runs it. |
 | `preview.py` | Serves a run's ports a window at a time, so a page can search all the rows, not only the drawn ones. |
 | `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. The table helpers the table tools share. |

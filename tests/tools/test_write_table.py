@@ -57,15 +57,15 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
-    YAML_UNSAFE_VALUES,
     ConfigError,
     DataError,
     Ports,
+    REGISTRY,
     Tool,
     ToolError,
+    YAML_UNSAFE_VALUES,
     check_tool,
     run_tool,
 )

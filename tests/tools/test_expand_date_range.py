@@ -50,15 +50,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.expand_date_range import ExpandDateRange
 
 _TERM: Mapping[str, Any] = {"start": "[term_start]", "end": "[term_end]"}

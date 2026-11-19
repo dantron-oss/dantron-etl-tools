@@ -47,39 +47,37 @@ import polars as pl
 import pytest
 import xlsxwriter
 
-from dantron_etl import tool as tool_contract
+from dantron_etl import authoring as tool_contract
 from dantron_etl.expr import ExpressionError, compile_expr, references
-from dantron_etl.tool import (
-    FIELD_TYPES,
-    MAX_REPORTED_ROWS,
-    REGISTRY,
-    REPLACE_FIELD,
-    YAML_UNSAFE_VALUES,
+from dantron_etl.authoring import (
     ConfigError,
     ConfigField,
     ConformanceError,
     DataError,
     ExecutionError,
+    FIELD_TYPES,
+    MAX_REPORTED_ROWS,
     PortError,
     Ports,
+    REGISTRY,
+    REPLACE_FIELD,
     RegistryError,
     Tool,
     ToolError,
     ToolHelp,
     ToolRegistry,
     WorkedExample,
-    apply_defaults,
+    YAML_UNSAFE_VALUES,
     check_output_column,
     check_registry,
     check_tool,
     compile_predicate_for,
     compiled_dtype,
-    expression_fields,
     require_columns,
     run_tool,
     temporary_environment,
-    validate_against_template,
 )
+from dantron_etl.config import apply_defaults, expression_fields, validate_against_template
 
 # ---------------------------------------------------------------------------
 # Reference tools
@@ -1187,7 +1185,7 @@ class TestNestedConfigurationShape:
         and where, needs the configuration too, because only a concrete index -- ``rules[0].when``
         -- is a thing a loader can put in front of a person.
         """
-        from dantron_etl.tool import expression_values
+        from dantron_etl.config import expression_values
 
         tool = _CaseWhenTool()
         template = tool.config_template()
@@ -1560,7 +1558,7 @@ class TestCategories:
 
     def test_categories_is_published_and_membership_is_checked(self) -> None:
         """The set is exactly the catalog's groups, and a tool outside it is refused by name."""
-        from dantron_etl.tool import CATEGORIES
+        from dantron_etl.authoring import CATEGORIES
 
         assert CATEGORIES == frozenset({"input", "transform", "combine", "preparation", "text", "output", "assert"})
         assert _KeepRowsTool().category in CATEGORIES

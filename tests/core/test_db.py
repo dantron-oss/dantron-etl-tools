@@ -69,7 +69,7 @@ import polars as pl
 import pytest
 
 from dantron_etl.db import driver_for, open_connection
-from dantron_etl.tool import MAX_REPORTED_ROWS, DataError, ExecutionError, Ports, ToolError, run_tool
+from dantron_etl.authoring import DataError, ExecutionError, MAX_REPORTED_ROWS, Ports, ToolError, run_tool
 from dantron_etl.tools import write_table as write_table_module
 from dantron_etl.tools.write_table import WriteTable
 

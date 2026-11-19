@@ -40,7 +40,7 @@ is never applied, ``non_empty`` on a type with no notion of emptiness -- and it 
 same reason: the usual cause is a config edited halfway.
 
 **Every refusal is a ConfigError and every refusal names the offender.** There is no
-:class:`~dantron_etl.tool.DataError` anywhere in this file, deliberately: this tool never reads a
+:class:`~dantron_etl.authoring.DataError` anywhere in this file, deliberately: this tool never reads a
 row, so there is no value it could ever diagnose, and every one of its refusals is decided off the
 schema and the config alone. That is what the zero-row axis on both parametrised tests proves -- a
 refusal that only fires on a populated frame was read off the data by accident.
@@ -57,15 +57,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.rename_columns import RenameColumns
 
 # The config shape these tests fix: an ordered list of small objects, one per rename, the same shape
@@ -325,7 +318,7 @@ class TestRenameColumnsRefusals:
     ) -> None:
         """Every one of these is a config authored against a schema, or an author, that has moved on.
 
-        :class:`ConfigError` throughout, and never :class:`~dantron_etl.tool.DataError`: not one of
+        :class:`ConfigError` throughout, and never :class:`~dantron_etl.authoring.DataError`: not one of
         these refusals looks at a value, so sending a reader to the data would send them to the
         wrong place. The load-bearing half of each case is the text quoted in the message. A
         collision reported as "a column could not be renamed" is a refusal somebody has to reproduce

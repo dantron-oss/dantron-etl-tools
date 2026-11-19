@@ -51,18 +51,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    ToolError,
-    check_tool,
-    expression_fields,
-    expression_values,
-    run_tool,
-    validate_against_template,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, ToolError, check_tool, run_tool
+from dantron_etl.config import expression_fields, expression_values, validate_against_template
 from dantron_etl.tools.formula import Formula
 
 # ---------------------------------------------------------------------------
