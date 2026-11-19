@@ -548,3 +548,29 @@ non-breaking space.
 
 **A key that cleans to nothing is null.** A column of empty strings would join every unusable name to
 every other one.
+
+## regex_extract_groups
+
+**Why a tool, when `regex_extract()` exists.** One group is `regex_extract()` in an expression. A
+pattern with several named groups gives several columns from one pass and one decision per row: a row
+that does not match is null in every group, never in some. A half-matched pattern does not leave half
+its groups filled. A group the pattern makes optional can still be null on a match.
+
+**Column names come from the pattern.** Two places to write the same names are two places for them to
+disagree. The names are read from polars, which runs the pattern, not from Python's `re`, because the
+two disagree on some patterns (look-behind is the case that decides it).
+
+**Groups are text.** Guessing a type would make a column's type depend on which rows arrived.
+
+**`position_column`** exists for flows that try several patterns and keep whichever matched first in
+the text: "first stated" is usually what a reader means, since a line names the term it bills before
+any other. The offset counts bytes (polars' `str.find`), so on non-ASCII text it is larger than a
+character count. Comparing two offsets is always right; slicing text with one is not.
+
+**`all_matches` uses Python per distinct text.** polars can list every match but not every match's
+groups. Cutting each match out and reading it alone gives wrong groups when the pattern looks at the
+text beside the match, as `\b` and `\B` do. So each distinct text is searched once with
+`re.finditer`, a known exception to whole-column work. polars' list of whole matches checks Python's,
+and a text where they differ is refused; a pattern that can match empty text is the usual cause.
+`match_number_column` is required, because without it two rows from one text cannot be told apart.
+`position_column` is refused, because one offset cannot describe several matches.

@@ -995,7 +995,8 @@ class TestAGroupThePatternMakesOptional:
         assert result.select("a", "b").rows() == [("A1", None), (None, "B2"), (None, None)]
 
     def test_the_help_states_it(self) -> None:
-        text = RegexExtractGroups().help().detailed_description
+        help_ = RegexExtractGroups().help()
+        text = " ".join((help_.detailed_description, *help_.notes))
 
         assert "optional" in text
         assert "fills every group" not in text
