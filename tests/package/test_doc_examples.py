@@ -20,7 +20,7 @@ import pytest
 import yaml
 
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import load_pipeline
+from dantron_etl import load_pipeline
 
 PROJECT_ROOT = project_root(__file__)
 DOCUMENTS = (PROJECT_ROOT / "README.md", PROJECT_ROOT / "src" / "dantron_etl" / "MANUAL.md")

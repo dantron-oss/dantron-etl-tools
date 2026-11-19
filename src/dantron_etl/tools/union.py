@@ -52,7 +52,10 @@ class Union:
     """Stack `bottom` under `top`: same columns, same types, every row of both."""
 
     name = "union"
-    description = "Stack the rows of `bottom` under the rows of `top`, which must carry the same columns."
+    description = (
+        "Stack the rows of `bottom` under the rows of `top`, keeping duplicates and matching columns by "
+        "name (SQL's UNION ALL BY NAME)."
+    )
     category = "combine"
     input_ports = ("top", "bottom")
     output_ports = ("rows",)
@@ -63,6 +66,8 @@ class Union:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
+                "Stacks the rows, keeps duplicate rows, and matches columns by name, like SQL's "
+                "UNION ALL BY NAME rather than UNION. "
                 "Every row of `top` followed by every row of `bottom`, carrying the columns of "
                 "`top` in `top`'s own order. The two sides must name the same columns and give "
                 "each the same type; column order may differ, because that is not a fact about "

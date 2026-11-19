@@ -6,13 +6,13 @@ count that is one too few overstates it -- neither announces itself, because the
 like a figure.
 
 A month is counted once the end's day of the month has reached the start's: January 31 to February
-28 is one month, and January 1 to December 31 is a full twelve. `endpoints` -- not "inclusive",
-which is read two ways -- says which ends contribute a unit: `both` (the default) counts the unit
-each end falls in and can never come out as zero, which is what makes it safe to default to; `elapsed`
-counts only completed units, one less in magnitude in both directions. A backwards range counts
+28 is one month, and January 1 to December 31 is a full twelve. `counting` is required and says
+which ends contribute a unit: `inclusive` counts the unit each end falls in and can never come out
+as zero; `elapsed` counts only completed units, one less in magnitude in both directions, like SQL's
+DATEDIFF and Excel's subtraction. A backwards range counts
 negative and keeps its size, because which end was mistyped is a judgement for a repair step and not
 this tool's to make. A missing date on either side gives a null count, never a zero, under every
-combination of unit and endpoints.
+combination of unit and counting.
 """
 
 from collections.abc import Mapping
@@ -34,8 +34,8 @@ from ..authoring import (
     require_not_blank,
 )
 
-_UNIT_ENUM: Final[tuple[str, ...]] = ("months", "days")
-_ENDPOINTS_ENUM: Final[tuple[str, ...]] = ("both", "elapsed")
+_UNIT_ENUM: Final[tuple[str, ...]] = ("month", "day")
+_COUNTING_ENUM: Final[tuple[str, ...]] = ("inclusive", "elapsed")
 
 
 class DateDiff:
@@ -61,17 +61,17 @@ class DateDiff:
             ),
             "unit": ConfigField(
                 type="string",
-                description="What is counted: 'months' or 'days'. No default -- a divisor's unit is "
+                description="What is counted: 'month' or 'day'. No default -- a divisor's unit is "
                 "never inferred from silence.",
                 required=True,
                 enum=_UNIT_ENUM,
             ),
-            "endpoints": ConfigField(
+            "counting": ConfigField(
                 type="string",
-                description="Which ends contribute a unit: 'both' (default, the reading a stated "
-                "period takes) or 'elapsed' (completed units only).",
-                default="both",
-                enum=_ENDPOINTS_ENUM,
+                description="Which ends contribute a unit: 'inclusive' (both ends count, the reading "
+                "a stated period takes) or 'elapsed' (completed units only). No default.",
+                required=True,
+                enum=_COUNTING_ENUM,
             ),
             "output": ConfigField(
                 type="string",
@@ -88,24 +88,23 @@ class DateDiff:
                 "integer after every input column. A month counts once the end's day of the month "
                 "has reached the start's day -- so January 31 to February 28 is one month, not two, "
                 "and January 1 to December 31 is a full twelve. A day counts each calendar date at "
-                "both ends the same way, so the same day at both ends is one day and one month alike."
+                "both ends the same way, so under 'inclusive' the same day at both ends is one day "
+                "and one month alike."
             ),
             examples=(_plain_example(), _surprising_example()),
             notes=(
-                "'endpoints' is spelled that way rather than 'inclusive', which is read two ways: "
-                "'both' counts the unit each end falls in and can never come out as zero; 'elapsed' "
-                "counts only completed units and is exactly one less, in either direction.",
+                "'counting' has no default, because the two readings differ by one and a default "
+                "would decide every divisor silently. 'inclusive' counts the unit each end falls "
+                "in and can never come out as zero; 'elapsed' counts only completed units and is "
+                "exactly one less, in either direction, like SQL's DATEDIFF.",
                 "A backwards range counts negative and keeps its size, because which end was "
                 "mistyped is a judgement for a repair step and not this tool's to make.",
             ),
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        if config["endpoints"] is None:
-            raise ConfigError(
-                "config field 'endpoints' was given with no value; write 'both' or 'elapsed', or "
-                "leave the field out entirely to take its default"
-            )
+        if config["counting"] is None:
+            raise ConfigError("config field 'counting' was given with no value; write 'inclusive' or 'elapsed'")
         require_not_blank(config["output"], "output")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
@@ -137,7 +136,7 @@ class DateDiff:
         earlier = pl.min_horizontal(start_col, end_col)
         later = pl.max_horizontal(start_col, end_col)
 
-        if config["unit"] == "months":
+        if config["unit"] == "month":
             magnitude = (
                 (later.dt.year() - earlier.dt.year()) * 12
                 + (later.dt.month() - earlier.dt.month())
@@ -147,7 +146,7 @@ class DateDiff:
         else:
             magnitude = (later - earlier).dt.total_days() + 1
 
-        if config["endpoints"] == "elapsed":
+        if config["counting"] == "elapsed":
             magnitude = magnitude - 1
 
         # The null case is tested first: a comparison against a null date is itself null, and would
@@ -179,8 +178,14 @@ def _plain_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="a term stated first day to last day is a full twelve months",
-        configuration={"start": "[from_date]", "end": "[to_date]", "unit": "months", "output": "counted"},
-        explanation="Both ends contribute a month by default, and the end's day (31) has reached "
+        configuration={
+            "start": "[from_date]",
+            "end": "[to_date]",
+            "unit": "month",
+            "counting": "inclusive",
+            "output": "counted",
+        },
+        explanation="Both ends contribute a month under 'inclusive', and the end's day (31) has reached "
         "the start's (1), so nothing is subtracted.",
         inputs=inputs,
         outputs=outputs,
@@ -215,7 +220,13 @@ def _surprising_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="a mistyped end year counts negative; a missing start counts null",
-        configuration={"start": "[from_date]", "end": "[to_date]", "unit": "months", "output": "counted"},
+        configuration={
+            "start": "[from_date]",
+            "end": "[to_date]",
+            "unit": "month",
+            "counting": "inclusive",
+            "output": "counted",
+        },
         explanation="The first row runs backwards by one month and is reported as -1, not repaired "
         "or refused; the second row has no start date at all, and counts null rather than zero.",
         inputs=inputs,

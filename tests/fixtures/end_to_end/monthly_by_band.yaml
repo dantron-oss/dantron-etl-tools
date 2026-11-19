@@ -41,11 +41,11 @@ steps:
     tool: case_when
     config:
       output: band
-      rules:
+      cases:
         - {when: "[tier] = 'gold'", then: "'top'"}
         - {when: "[tier] = 'silver'", then: "'middle'"}
       otherwise: "'other'"
-    inputs: {rows: with_party.matched}
+    inputs: {rows: with_party.joined}
 
   - id: monthly
     tool: formula

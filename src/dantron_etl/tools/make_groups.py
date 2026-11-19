@@ -1,14 +1,14 @@
-"""ConnectedComponents: put every record linked by a chain of edges into one group.
+"""MakeGroups: put every record linked by a chain of pairs into one group.
 
-Each row of ``edges`` links two records. Two records are in the same group when a chain of edges
+Each row of ``pairs`` links two records. Two records are in the same group when a chain of pairs
 joins them, however long the chain is. A fixed number of joins cannot do this: two joins follow a
 chain two links deep, and the third link is lost.
 
-The group is named after its smallest record. That name does not depend on the order the edges
-arrive in, or on which side of an edge a record sits, so the same edges always give the same frame.
+The group is named after its smallest record. That name does not depend on the order the pairs
+arrive in, or on which side of a pair a record sits, so the same pairs always give the same frame.
 
 A null endpoint links nothing, the way a null key pairs with nothing in ``join``. The other
-endpoint of that row is still a record, alone unless another edge links it.
+endpoint of that row is still a record, alone unless another pair links it.
 
 The work is done on whole columns, in rounds. Each record is first given a number: its position
 when the distinct records are sorted, so a smaller number is a smaller record. In each round, every
@@ -38,42 +38,42 @@ from ..authoring import (
     require_columns,
 )
 
-_OUTPUT_FIELDS = ("node_column", "component_column")
+_OUTPUT_FIELDS = ("record_column", "group_column")
 
 
-class ConnectedComponents:
-    """Group every node linked to another by a chain of edges, naming each group by its smallest node."""
+class MakeGroups:
+    """Group every record linked to another by a chain of pairs, naming each group by its smallest record."""
 
-    name = "connected_components"
-    description = "Group records linked by a chain of edges, however long, naming each group by its smallest record."
+    name = "make_groups"
+    description = "Group records linked by a chain of pairs, however long, naming each group by its smallest record."
     category = "transform"
-    input_ports = ("edges",)
+    input_ports = ("pairs",)
     output_ports = ("rows",)
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
             "left": ConfigField(
                 type="string",
-                description="The column holding one end of each edge.",
+                description="The column holding one record of each pair.",
                 required=True,
                 non_empty=True,
             ),
             "right": ConfigField(
                 type="string",
-                description="The column holding the other end of each edge. Same type as 'left'.",
+                description="The column holding the other record of each pair. Same type as 'left'.",
                 required=True,
                 non_empty=True,
             ),
-            "node_column": ConfigField(
+            "record_column": ConfigField(
                 type="string",
                 description="The name of the output column holding each record.",
-                default="node",
+                default="record",
                 non_empty=True,
             ),
-            "component_column": ConfigField(
+            "group_column": ConfigField(
                 type="string",
                 description="The name of the output column holding the group each record belongs to.",
-                default="component",
+                default="group",
                 non_empty=True,
             ),
         }
@@ -81,34 +81,34 @@ class ConnectedComponents:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Each input row is an edge between two records. The output has one row per distinct "
-                "record, with the group it belongs to. Two records share a group when a chain of edges "
+                "Each input row is a pair of linked records. The output has one row per distinct "
+                "record, with the group it belongs to. Two records share a group when a chain of pairs "
                 "links them, at any length. Only the two output columns are written; other input "
-                "columns are not carried, because an output row is a record, not an edge."
+                "columns are not carried, because an output row is a record, not a pair."
             ),
             examples=(_chain_example(), _null_example()),
             notes=(
                 "A group is named after its smallest record, compared by value in the endpoints' own "
                 "type: the number 9 comes before 10. Text is compared character by character, so "
-                "'R-100' comes before 'R-20'. The same edges give the same names, whatever order they "
+                "'R-100' comes before 'R-20'. The same pairs give the same names, whatever order they "
                 "arrive in.",
                 "A null endpoint links nothing, as a null key pairs with nothing in a SQL join. A row "
                 "with one null still lists the record at its other end. A row with two nulls adds "
                 "nothing, and no null is ever written as a record.",
-                "An edge from a record to itself is how a record with no links is listed. It does not "
-                "cut that record off from its other edges.",
+                "A pair of a record with itself is how a record with no links is listed. It does not "
+                "cut that record off from its other pairs.",
                 "Rows come out sorted by group, then by record, so a written file does not change "
-                "between runs on the same edges.",
+                "between runs on the same pairs.",
                 "'left' and 'right' must have the same type. The number 2 and the text '2' are not "
                 "the same record, so the tool refuses rather than guess.",
             ),
             field_help={
-                "left": "One end of each edge. Which column is 'left' and which is 'right' makes no difference.",
-                "right": "The other end of each edge, in the same type as 'left'.",
-                "node_column": "The output column for the record. It may reuse an input column's name, "
+                "left": "One record of each pair. Which column is 'left' and which is 'right' makes no difference.",
+                "right": "The other record of each pair, in the same type as 'left'.",
+                "record_column": "The output column for the record. It may reuse an input column's name, "
                 "since the output is a new frame.",
-                "component_column": "The output column for the group. Its value is the smallest record "
-                "in the group. Must differ from 'node_column'.",
+                "group_column": "The output column for the group. Its value is the smallest record "
+                "in the group. Must differ from 'record_column'.",
             },
         )
 
@@ -119,29 +119,29 @@ class ConnectedComponents:
                     f"config field {field!r} must not be blank: a column name has to carry at least one "
                     f"character that is not whitespace"
                 )
-        if config["node_column"] == config["component_column"]:
+        if config["record_column"] == config["group_column"]:
             raise ConfigError(
-                f"config fields 'node_column' and 'component_column' both name {config['node_column']!r}; "
+                f"config fields 'record_column' and 'group_column' both name {config['record_column']!r}; "
                 f"the output has two columns and they need two names"
             )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        edges = inputs["edges"]
+        edges = inputs["pairs"]
         left, right = config["left"], config["right"]
-        require_columns(edges, [left], "left", "edges")
-        require_columns(edges, [right], "right", "edges")
+        require_columns(edges, [left], "left", "pairs")
+        require_columns(edges, [right], "right", "pairs")
         left_type, right_type = edges.schema[left], edges.schema[right]
         if left_type != right_type:
             raise ConfigError(
-                f"config fields 'left' and 'right' name columns of different types on input port 'edges': "
+                f"config fields 'left' and 'right' name columns of different types on input port 'pairs': "
                 f"{left!r} is {left_type} and {right!r} is {right_type}. A value of one type is never the "
                 f"same record as a value of another, so cast one column first"
             )
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
-        edges = inputs["edges"]
+        edges = inputs["pairs"]
         left, right = config["left"], config["right"]
-        node_column, component_column = config["node_column"], config["component_column"]
+        record_column, group_column = config["record_column"], config["group_column"]
 
         # Every distinct record, sorted, so a record's position is also its rank.
         nodes = pl.concat([edges[left], edges[right]]).drop_nulls().unique().sort().rename("value")
@@ -172,8 +172,8 @@ class ConnectedComponents:
                 .unique()
             )
 
-        rows = pl.DataFrame([nodes.rename(node_column), nodes.gather(parent).rename(component_column)]).sort(
-            [component_column, node_column]
+        rows = pl.DataFrame([nodes.rename(record_column), nodes.gather(parent).rename(group_column)]).sort(
+            [group_column, record_column]
         )
         return Ports({"rows": rows})
 
@@ -195,7 +195,7 @@ def _follow_to_end(parent: pl.Series) -> pl.Series:
 def _chain_example() -> WorkedExample:
     inputs = Ports(
         {
-            "edges": pl.DataFrame(
+            "pairs": pl.DataFrame(
                 {
                     "item": ["R-30", "R-12", "R-80", "R-55"],
                     "linked_item": ["R-12", "R-45", "R-80", "R-61"],
@@ -207,8 +207,8 @@ def _chain_example() -> WorkedExample:
         {
             "rows": pl.DataFrame(
                 {
-                    "node": ["R-12", "R-30", "R-45", "R-55", "R-61", "R-80"],
-                    "component": ["R-12", "R-12", "R-12", "R-55", "R-55", "R-80"],
+                    "record": ["R-12", "R-30", "R-45", "R-55", "R-61", "R-80"],
+                    "group": ["R-12", "R-12", "R-12", "R-55", "R-55", "R-80"],
                 }
             )
         }
@@ -216,7 +216,7 @@ def _chain_example() -> WorkedExample:
     return WorkedExample(
         scenario="group items linked to each other through a chain of references",
         configuration={"left": "item", "right": "linked_item"},
-        explanation="R-30 links to R-12, and R-12 links to R-45. No edge links R-30 to R-45, but the "
+        explanation="R-30 links to R-12, and R-12 links to R-45. No pair links R-30 to R-45, but the "
         "chain puts all three in one group, named after its smallest item, R-12. R-55 and R-61 form a "
         "second group. R-80 links only to itself, so it is a group of one.",
         inputs=inputs,
@@ -228,7 +228,7 @@ def _chain_example() -> WorkedExample:
 def _null_example() -> WorkedExample:
     inputs = Ports(
         {
-            "edges": pl.DataFrame(
+            "pairs": pl.DataFrame(
                 {
                     "item": [3, None, None, 8],
                     "linked_item": [None, 8, None, 11],
@@ -237,12 +237,12 @@ def _null_example() -> WorkedExample:
             )
         }
     )
-    outputs = Ports({"rows": pl.DataFrame({"node": [3, 8, 11], "component": [3, 8, 8]})})
+    outputs = Ports({"rows": pl.DataFrame({"record": [3, 8, 11], "group": [3, 8, 8]})})
     return WorkedExample(
         scenario="a missing endpoint links nothing",
         configuration={"left": "item", "right": "linked_item"},
         explanation="3 and 8 each sit beside a null, but a null links nothing, so they stay apart. Each "
-        "is still listed. The row with two nulls adds nothing. 8 and 11 share a real edge, so they "
+        "is still listed. The row with two nulls adds nothing. 8 and 11 share a real pair, so they "
         "share a group.",
         inputs=inputs,
         outputs=outputs,
@@ -250,4 +250,4 @@ def _null_example() -> WorkedExample:
     )
 
 
-REGISTRY.register(ConnectedComponents())
+REGISTRY.register(MakeGroups())

@@ -105,7 +105,7 @@ EDGE_CASES: tuple[str, ...] = (
     "[grade] in ('A', 'B')",
     "[category] = [grade]",
     "lower([grade]) = 'beta'",
-    "strip([category])",
+    "trim([category])",
     # arity
     "round([amount])",
     "round([amount], 1, 2)",

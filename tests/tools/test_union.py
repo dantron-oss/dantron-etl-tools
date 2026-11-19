@@ -24,14 +24,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    check_tool,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.tools.union import Union
 
 

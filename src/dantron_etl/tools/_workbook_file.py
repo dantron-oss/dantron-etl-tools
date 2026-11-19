@@ -1,9 +1,9 @@
-"""write_workbook: opening the one workbook, and making room for each tab in it.
+"""write_excel: opening the one workbook, and making room for each tab in it.
 
 The workbook is loaded from the template, from the file already at ``path``, or started new, and it
 is opened exactly once. The refusals that can only be answered with it open live here too: a tab
 already there with no permission to replace it, and a table name the workbook already uses. Part of
-``write_workbook``; the leading underscore keeps it out of the tool catalog.
+``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -33,7 +33,7 @@ def opened_once(path: str, template: str | None) -> Iterator[Any]:
         import openpyxl
     except ImportError as error:
         raise ConfigError(
-            "write_workbook needs openpyxl, which this environment does not have installed; "
+            "write_excel needs openpyxl, which this environment does not have installed; "
             "install 'openpyxl' to write a workbook"
         ) from error
 
@@ -67,8 +67,8 @@ def empty_tab(book: Any, sheet: str, *, replace: bool) -> Any:
 
     if not replace:
         raise ConfigError(
-            f"write_workbook refuses to overwrite the tab {sheet!r}, which is already in the "
-            f"workbook; set replace: true to overwrite it deliberately, or write to a tab of "
+            f"write_excel refuses to overwrite the tab {sheet!r}, which is already in the "
+            f"workbook; set overwrite_sheets: true to overwrite it deliberately, or write to a tab of "
             f"another name"
         )
 
@@ -101,7 +101,7 @@ def refuse_names_in_use(book: Any, entries: Sequence[Mapping[str, Any]]) -> None
         clash = in_use.get(name.lower())
         if clash is not None:
             raise ConfigError(
-                f"write_workbook cannot name the table on tab {entry['sheet']!r} {name!r}: the "
+                f"write_excel cannot name the table on tab {entry['sheet']!r} {name!r}: the "
                 f"workbook already has {clash}, and a spreadsheet compares these names ignoring "
                 f"case. Give the table another 'name'."
             )

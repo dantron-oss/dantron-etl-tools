@@ -45,19 +45,19 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from dantron_etl import runner
-from dantron_etl.pipeline import PipelineSpec, PortRef, load_pipeline
-from dantron_etl.runner import (
+from dantron_etl import Pipeline, PortRef, load_pipeline
+from dantron_etl import (
     CachedFrame,
     ColumnCheckError,
-    FrameShape,
     PipelineTrace,
     RunError,
     StepEvent,
     StepFailedError,
-    logging_sink,
     run_pipeline,
 )
-from dantron_etl.tool import DataError, ExecutionError, ToolError
+from dantron_etl.runner import logging_sink
+from dantron_etl.trace import FrameShape
+from dantron_etl.authoring import DataError, ExecutionError, ToolError
 
 # ---------------------------------------------------------------------------
 # The fixture flow
@@ -94,7 +94,7 @@ PORTS: tuple[PortRef, ...] = (
     PortRef("audited", "rows"),
     PortRef("kept", "true"),
     PortRef("kept", "false"),
-    PortRef("paired", "matched"),
+    PortRef("paired", "joined"),
     PortRef("paired", "left_only"),
     PortRef("paired", "right_only"),
     PortRef("totals", "rows"),
@@ -108,8 +108,8 @@ def _document() -> dict[str, Any]:
     return {
         "name": "a neutral fixture",
         "lanes": [
-            {"id": "intake", "label": "Intake", "order": 1},
-            {"id": "shaping", "label": "Shaping", "order": 2},
+            {"id": "intake", "title": "Intake", "order": 1},
+            {"id": "shaping", "title": "Shaping", "order": 2},
         ],
         "steps": [
             # Written first, run last, deliberately -- do not tidy it back into place.
@@ -186,7 +186,7 @@ def _document() -> dict[str, Any]:
                     "by": ["region"],
                     "aggregations": [{"name": "total", "function": "sum", "value": "[amount]"}],
                 },
-                "inputs": {"rows": "paired.matched"},
+                "inputs": {"rows": "paired.joined"},
             },
             {
                 "id": "rated",
@@ -236,7 +236,7 @@ def _sources(
     }
 
 
-def _spec(**changes: Any) -> PipelineSpec:
+def _spec(**changes: Any) -> Pipeline:
     """The fixture flow, optionally with one step's configuration replaced by ``step_id=config``."""
     document = _document()
     for step in document["steps"]:
@@ -300,7 +300,7 @@ class TestARunWalksTheFlowAndKeepsWhatItProduced:
             pl.DataFrame({"entry_id": [2, 4], "region": ["north", "south"], "amount": [-5.0, -2.5]}),
         )
         assert_frame_equal(
-            trace.frame(PortRef("paired", "matched")),
+            trace.frame(PortRef("paired", "joined")),
             pl.DataFrame(
                 {
                     "entry_id": [1, 3, 5],
@@ -498,7 +498,7 @@ class TestAnEventSaysWhatOneStepDid:
         paired = trace.event("paired")
         assert tuple(shape.port for shape in paired.inputs) == (PortRef("kept", "true"), PortRef("headers", "rows"))
         assert tuple(shape.port for shape in paired.outputs) == (
-            PortRef("paired", "matched"),
+            PortRef("paired", "joined"),
             PortRef("paired", "left_only"),
             PortRef("paired", "right_only"),
         )
@@ -945,7 +945,7 @@ class TestUntilRunsPartOfAFlow:
             PortRef("headers", "rows"),
             PortRef("kept", "true"),
             PortRef("kept", "false"),
-            PortRef("paired", "matched"),
+            PortRef("paired", "joined"),
             PortRef("paired", "left_only"),
             PortRef("paired", "right_only"),
         )
@@ -1277,12 +1277,12 @@ def _trimmed_frame() -> pl.DataFrame:
     return pl.DataFrame({"entry_id": [7, 8], "region": ["west", "midlands"]})
 
 
-def _cache(spec: PipelineSpec, port: PortRef, frame: pl.DataFrame) -> dict[PortRef, CachedFrame]:
+def _cache(spec: Pipeline, port: PortRef, frame: pl.DataFrame) -> dict[PortRef, CachedFrame]:
     """One cached port, carrying the fingerprint a previous run of ``spec`` would have written beside it."""
     return {port: CachedFrame(frame, spec.fingerprint(port.step))}
 
 
-def _cache_every_port(spec: PipelineSpec, frames: Mapping[PortRef, pl.DataFrame]) -> dict[PortRef, CachedFrame]:
+def _cache_every_port(spec: Pipeline, frames: Mapping[PortRef, pl.DataFrame]) -> dict[PortRef, CachedFrame]:
     """Every port of one step, each carrying the fingerprint of the step that produced it.
 
     A step may only be cached on all of its ports or none, so this is the shape a cache of any step
@@ -1313,7 +1313,7 @@ def _paired_frames() -> dict[PortRef, pl.DataFrame]:
     question is which frame landed on which port, and a height answers it in one number.
     """
     return {
-        PortRef("paired", "matched"): pl.DataFrame(
+        PortRef("paired", "joined"): pl.DataFrame(
             {"entry_id": [7], "region": ["west"], "amount": [200.0], "header_code": ["A"]}
         ),
         PortRef("paired", "left_only"): pl.DataFrame(
@@ -1610,7 +1610,7 @@ class TestAMultiOutputStepIsCachedPortByPort:
             trace.shapes[PortRef("headers", "rows")],
         ), "the left side reads the port it is wired to, not whichever frame the cache held first"
 
-        assert trace.frame(PortRef("paired", "matched"))["entry_id"].to_list() == [7, 8]
+        assert trace.frame(PortRef("paired", "joined"))["entry_id"].to_list() == [7, 8]
         assert trace.frame(PortRef("paired", "left_only")).height == 0
         assert trace.frame(PortRef("paired", "right_only"))["entry_id"].to_list() == [99], (
             "99 was cached on the side nothing reads, so here it can only be the header that found no entry"
@@ -1833,7 +1833,7 @@ class TestACacheIsRefusedWhereItCouldStandInForSomethingElse:
             pytest.param(PortRef("totls", "rows"), "totals", ("totls", "totals"), id="a misspelt step id"),
             pytest.param(PortRef("totals", "row"), "totals", ("totals.row", "rows"), id="a port that step has not got"),
             pytest.param(
-                PortRef("paired", "matched"),
+                PortRef("paired", "joined"),
                 "paired",
                 ("paired.left_only", "paired.right_only"),
                 id="one port of a step that produces three",

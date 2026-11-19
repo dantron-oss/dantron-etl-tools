@@ -45,17 +45,17 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
-    YAML_UNSAFE_VALUES,
     ConfigError,
     Ports,
+    REGISTRY,
     ToolError,
+    YAML_UNSAFE_VALUES,
     check_tool,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.match_one_to_one import MatchOneToOne
 
 Row = tuple[str, str, int]
@@ -87,7 +87,7 @@ def _candidates(rows: Sequence[Row], *, value: str = "gap") -> pl.DataFrame:
 
 def _config(priority: Sequence[Mapping[str, str]], ties: str | None = None) -> dict[str, Any]:
     """A configuration over the ``left_id`` and ``right_id`` columns."""
-    config: dict[str, Any] = {"left": "left_id", "right": "right_id", "priority": [dict(p) for p in priority]}
+    config: dict[str, Any] = {"left_key": "left_id", "right_key": "right_id", "priority": [dict(p) for p in priority]}
     if ties is not None:
         config["ties"] = ties
     return config
@@ -489,15 +489,15 @@ class TestContract:
     @pytest.mark.parametrize(
         ("config", "error", "named"),
         [
-            pytest.param({"left": "left_key"}, ToolError, "left_key", id="a_left_key_column_that_is_not_there"),
-            pytest.param({"right": "right_key"}, ToolError, "right_key", id="a_right_key_column_that_is_not_there"),
+            pytest.param({"left_key": "left_key"}, ToolError, "left_key", id="a_left_key_column_that_is_not_there"),
+            pytest.param({"right_key": "right_key"}, ToolError, "right_key", id="a_right_key_column_that_is_not_there"),
             pytest.param(
                 {"priority": [{"column": "gapp", "direction": "asc"}]},
                 ToolError,
                 "gapp",
                 id="a_priority_column_that_is_not_there",
             ),
-            pytest.param({"right": "left_id"}, ConfigError, "left_id", id="the_same_column_on_both_sides"),
+            pytest.param({"right_key": "left_id"}, ConfigError, "left_id", id="the_same_column_on_both_sides"),
             pytest.param({"ties": "maybe"}, ConfigError, "maybe", id="a_tie_policy_the_tool_does_not_offer"),
             pytest.param(
                 {"priority": [{"column": "gap", "direction": "up"}]},
@@ -531,8 +531,8 @@ class TestContract:
         assert tool.category in CATEGORIES
         assert tuple(tool.input_ports) == ("candidates",)
         assert tuple(tool.output_ports) == ("accepted", "rejected")
-        assert set(template) == {"left", "right", "priority", "ties"}
-        for name in ("left", "right"):
+        assert set(template) == {"left_key", "right_key", "priority", "ties"}
+        for name in ("left_key", "right_key"):
             assert template[name].type == "string", name
             assert template[name].required is True, name
         assert template["priority"].type == "array"

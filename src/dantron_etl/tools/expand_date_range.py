@@ -41,10 +41,10 @@ from ..authoring import (
     compiled_dtype,
 )
 
-# One member, on purpose: every other interval brings its own boundary question -- what a partial
+# One member, on purpose: every other unit brings its own boundary question -- what a partial
 # week or a partial year is worth -- that nothing has asked for yet, and a whitelist with an
 # untested arm in it is worse than a short one. Spelled to avoid every word YAML reads as a boolean.
-_INTERVAL_ENUM: Final[tuple[str, ...]] = ("month",)
+_UNIT_ENUM: Final[tuple[str, ...]] = ("month",)
 
 
 class ExpandDateRange:
@@ -60,11 +60,11 @@ class ExpandDateRange:
         return {
             "start": ConfigField(type="expression", description="The range's first date, inclusive.", required=True),
             "end": ConfigField(type="expression", description="The range's last date, inclusive.", required=True),
-            "interval": ConfigField(
+            "unit": ConfigField(
                 type="string",
                 description="The period a range is broken into; only 'month' ships.",
                 default="month",
-                enum=_INTERVAL_ENUM,
+                enum=_UNIT_ENUM,
             ),
             "period_column": ConfigField(
                 type="string",

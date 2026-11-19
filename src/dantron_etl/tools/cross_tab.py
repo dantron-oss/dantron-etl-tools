@@ -6,7 +6,7 @@ column per period. That is how a person reads a figure that moves over time.
 **The new columns are sorted.** Not in the order the values happened to arrive. A reader scans
 them across a page, so the order has to come from the values themselves.
 
-**A value of ``columns_from`` has to be text already.** A column name is text. Turning a number or a date
+**A value of ``names_from`` has to be text already.** A column name is text. Turning a number or a date
 into text is a formatting choice with several right answers. Choosing one here would freeze it into
 every cross tab this library produces. So a column of another type is refused, and the step that
 formats runs in front. That also settles what sorted means: sorted as text.
@@ -23,7 +23,7 @@ after this one. The honest way to close that gap is one generic fill step, takin
 policy, written once. Until somebody asks for it the gap stays open rather than being papered over
 here.
 
-**A null or a blank in the ``columns_from`` column stops the run.** Dropping those rows would delete their
+**A null or a blank in the ``names_from`` column stops the run.** Dropping those rows would delete their
 figures from the tab, with nothing left to say a row had been there. Giving them a column of their
 own is worse. Every name available is a name the data could also carry, so a literal "unknown"
 would merge with the null group in silence. A blank fails the same way: ``""`` is not a heading a
@@ -31,11 +31,11 @@ reader can point at. Null and blank are also the same fact written two ways, one
 that wrote the file, so one rule covers both. The tool refuses, names the column and counts the
 rows. The fix is upstream, where an author decides whether to drop them or label them.
 
-**A new column name that collides with an index column is refused.** This is the hazard
+**A new column name that collides with a 'by' column is refused.** This is the hazard
 :func:`~.authoring.check_output_column` exists for, one step removed. The name is in the rows rather
 than in the configuration, so it can only be checked once the rows have been seen. Left alone, one
-of the two columns wins and the other is gone. A name that collides with a column outside the index
-is fine, because only the index columns survive into the output.
+of the two columns wins and the other is gone. A name that collides with a column outside 'by'
+is fine, because only the 'by' columns survive into the output.
 
 **The aggregates are GroupBy's published set**, not a second copy of it. Two whitelists in one
 catalog drift. A reader who learned the list from one tool would write a configuration the other
@@ -50,7 +50,7 @@ every cell of a tab and a per-cell separator would be a fifth field on a templat
 are the point. A cell with *no* row under it stays null, which is this tool's ruling everywhere and
 is a distinction GroupBy never has to make: a group with no rows does not exist.
 
-**``values`` is required whichever aggregate is chosen.** That includes ``count``, which counts
+**``values_from`` is required whichever aggregate is chosen.** That includes ``count``, which counts
 rows and reads no column. GroupBy can tell the two apart because it names each output column. Here
 one aggregate fills every cell, so the field is always there and ``count`` ignores it.
 """
@@ -74,17 +74,17 @@ from .group_by import AGGREGATE_FUNCTIONS, DEFAULT_SEPARATOR
 
 
 class CrossTab:
-    """One row per distinct index, one column per distinct value of `on`, holding an aggregate."""
+    """One row per distinct combination of 'by', one column per distinct value of `on`, holding an aggregate."""
 
     name = "cross_tab"
-    description = "Turn `rows` wide: one row per index, one column per value of a key column."
+    description = "Turn `rows` wide: one row per combination of 'by', one column per value of a key column."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
-            "index": ConfigField(
+            "by": ConfigField(
                 type="array",
                 description="The column names that stay as rows. One output row per distinct "
                 "combination of them, in the order each combination first appeared.",
@@ -95,21 +95,21 @@ class CrossTab:
                     description="One column name; naming the same column twice counts it once.",
                 ),
             ),
-            "columns_from": ConfigField(
+            "names_from": ConfigField(
                 type="string",
                 description="The column whose values become the new columns. It has to hold text "
                 "already, and no row may leave it empty.",
                 required=True,
                 non_empty=True,
             ),
-            "values": ConfigField(
+            "values_from": ConfigField(
                 type="string",
                 description="The column each cell is computed from. Required whichever aggregate "
                 "is chosen; 'count' counts rows and ignores it.",
                 required=True,
                 non_empty=True,
             ),
-            "aggregate": ConfigField(
+            "function": ConfigField(
                 type="string",
                 description="How the rows that land in one cell become one value, drawn from the aggregates that ship.",
                 required=True,
@@ -120,11 +120,11 @@ class CrossTab:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "One output row per distinct combination of 'index', in the order each combination "
-                "first appeared. One new column per distinct value of 'columns_from', in sorted "
+                "One output row per distinct combination of 'by', in the order each combination "
+                "first appeared. One new column per distinct value of 'names_from', in sorted "
                 "order, "
                 "because a reader scans those columns across a page. Each cell holds the chosen "
-                "aggregate of 'values' over the rows that landed in it. The index columns come "
+                "aggregate of 'values_from' over the rows that landed in it. The 'by' columns come "
                 "first and keep their types; the new columns take their type from the aggregate. "
                 "Every other column disappears, so a cross tab is usually the last shaping step "
                 "before a report."
@@ -134,7 +134,7 @@ class CrossTab:
                 "A cell with no row under it is null, and there is no way to make it zero. Zero is "
                 "a measured amount and null is the absence of one, and nothing downstream can tell "
                 "a fabricated zero from a real one.",
-                "The values of 'columns_from' become column names, so that column has to hold text "
+                "The values of 'names_from' become column names, so that column has to hold text "
                 "already. "
                 "Format a number or a date into text in the step before this one, where the "
                 "formatting is written down.",
@@ -143,35 +143,35 @@ class CrossTab:
                 "whose values are all missing joins to the empty string, and a cell with no row "
                 "under it stays null, which is the one distinction this tool has to make and "
                 "GroupBy never does.",
-                "A row whose 'columns_from' value is missing or blank stops the run. It cannot be "
+                "A row whose 'names_from' value is missing or blank stops the run. It cannot be "
                 "given a column without inventing a name the data could also carry, and dropping it would "
                 "take its figures out of the tab in silence. A blank is refused with the null "
                 "because they are the same fact written two ways.",
             ),
             field_help={
-                "index": "What stays as rows. Repeating a column counts it once.",
-                "columns_from": "What becomes columns. Its values are the new column names, sorted.",
-                "values": "What fills the cells, before the aggregate is applied to it.",
-                "aggregate": "How several rows in one cell become one value.",
+                "by": "What stays as rows. Repeating a column counts it once.",
+                "names_from": "What becomes columns. Its values are the new column names, sorted.",
+                "values_from": "What fills the cells, before the aggregate is applied to it.",
+                "function": "How several rows in one cell become one value.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """The rules about the configuration alone: a column cannot be in the index and elsewhere.
+        """The rules about the configuration alone: a column cannot be in 'by' and elsewhere.
 
-        The index columns are the ones that survive into the output as themselves. A column that is
+        The 'by' columns are the ones that survive into the output as themselves. A column that is
         also the key would put its own values into the column names, and a column that is also the
         measure would be aggregated and carried forward at once. Each refusal names both fields,
         because an author looking at four fields that all name columns needs to be told which two
         overlap.
         """
-        index = set(_index_columns(config))
-        for name in ("columns_from", "values"):
+        by_columns = set(_by_columns(config))
+        for name in ("names_from", "values_from"):
             column = config[name]
-            if column in index:
+            if column in by_columns:
                 raise ConfigError(
-                    f"config field {name!r} names column {column!r}, which is also in 'index'; the "
-                    f"index columns come through as themselves, so a column cannot be an index "
+                    f"config field {name!r} names column {column!r}, which is also in 'by'; the "
+                    f"'by' columns come through as themselves, so a column cannot be a 'by' "
                     f"column and the {name!r} column at once"
                 )
 
@@ -179,53 +179,53 @@ class CrossTab:
         """What only the incoming schema can answer, read off the column names and types alone.
 
         A frame of a million rows and a frame of none are refused identically here. That matters
-        more for this tool than for most. Waiting until a value of 'columns_from' had been seen
+        more for this tool than for most. Waiting until a value of 'names_from' had been seen
         would let a frame with no rows through, and the run would report success having produced nothing.
         """
         frame = inputs["rows"]
-        require_columns(frame, _index_columns(config), "index", "rows")
-        require_columns(frame, [config["columns_from"]], "columns_from", "rows")
-        require_columns(frame, [config["values"]], "values", "rows")
+        require_columns(frame, _by_columns(config), "by", "rows")
+        require_columns(frame, [config["names_from"]], "names_from", "rows")
+        require_columns(frame, [config["values_from"]], "values_from", "rows")
 
-        key = config["columns_from"]
+        key = config["names_from"]
         key_dtype = frame.schema[key]
         if key_dtype != pl.String:
             raise ConfigError(
-                f"config field 'columns_from' names column {key!r}, which holds {key_dtype}, not "
+                f"config field 'names_from' names column {key!r}, which holds {key_dtype}, not "
                 f"text; the values of that column become column names, so format it into text in the step "
                 f"before this one"
             )
 
-        measure = config["values"]
+        measure = config["values_from"]
         measure_dtype = frame.schema[measure]
-        if config["aggregate"] == "sum" and not measure_dtype.is_numeric():
+        if config["function"] == "sum" and not measure_dtype.is_numeric():
             raise ConfigError(
-                f"config field 'values' names column {measure!r}, which holds {measure_dtype}, not "
-                f"a number, and 'aggregate' asks for a sum"
+                f"config field 'values_from' names column {measure!r}, which holds {measure_dtype}, not "
+                f"a number, and 'function' asks for a sum"
             )
-        if config["aggregate"] == "join_text" and measure_dtype != pl.String:
+        if config["function"] == "join_text" and measure_dtype != pl.String:
             raise ConfigError(
-                f"config field 'values' names column {measure!r}, which holds {measure_dtype}, not "
-                f"text, and 'aggregate' asks for 'join_text'; format it into text in the step "
+                f"config field 'values_from' names column {measure!r}, which holds {measure_dtype}, not "
+                f"text, and 'function' asks for 'join_text'; format it into text in the step "
                 f"before this one, where the formatting is written down"
             )
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
-        index = _index_columns(config)
-        key = config["columns_from"]
+        by_columns = _by_columns(config)
+        key = config["names_from"]
 
         _refuse_unusable_keys(frame, key)
         names = sorted(frame.get_column(key).unique().to_list())
-        _refuse_collisions(names, key, index)
+        _refuse_collisions(names, key, by_columns)
 
         cells = [_cell(config, name) for name in names]
-        return Ports({"rows": frame.group_by(index, maintain_order=True).agg(cells)})
+        return Ports({"rows": frame.group_by(by_columns, maintain_order=True).agg(cells)})
 
 
-def _index_columns(config: Mapping[str, Any]) -> list[str]:
-    """The index, a column named twice counted once, in the order it was first written."""
-    return list(dict.fromkeys(config["index"]))
+def _by_columns(config: Mapping[str, Any]) -> list[str]:
+    """The 'by' columns, a column named twice counted once, in the order it was first written."""
+    return list(dict.fromkeys(config["by"]))
 
 
 def _refuse_unusable_keys(frame: pl.DataFrame, key: str) -> None:
@@ -249,23 +249,23 @@ def _refuse_unusable_keys(frame: pl.DataFrame, key: str) -> None:
         )
 
 
-def _refuse_collisions(names: Sequence[str], key: str, index: Sequence[str]) -> None:
-    """Refuse a value of the key column that would take an index column's name."""
-    taken = set(index)
+def _refuse_collisions(names: Sequence[str], key: str, by_columns: Sequence[str]) -> None:
+    """Refuse a value of the key column that would take a 'by' column's name."""
+    taken = set(by_columns)
     for name in names:
         if name in taken:
             raise ConfigError(
                 f"column {key!r} holds the value {name!r}, which would become an output column of "
-                f"that name and collide with index column {name!r}; rename the index column, or "
+                f"that name and collide with 'by' column {name!r}; rename the 'by' column, or "
                 f"change the value, because one of the two would be lost"
             )
 
 
 def _cell(config: Mapping[str, Any], name: str) -> pl.Expr:
-    """One value column: the aggregate of `values` over this cell's rows, or null if it has none."""
-    here = pl.col(config["columns_from"]) == name
-    measure = pl.col(config["values"]).filter(here)
-    aggregate = config["aggregate"]
+    """One value column: the aggregate of `values_from` over this cell's rows, or null if it has none."""
+    here = pl.col(config["names_from"]) == name
+    measure = pl.col(config["values_from"]).filter(here)
+    aggregate = config["function"]
 
     # This guard is the ruling, and it is the line somebody will simplify away. Do not.
     #
@@ -289,7 +289,7 @@ def _aggregate(measure: pl.Expr, aggregate: str) -> pl.Expr:
         return measure.len().cast(pl.Int64)
     if aggregate == "sum":
         return measure.sum()
-    if aggregate == "count_values":
+    if aggregate == "count_non_null":
         return measure.count().cast(pl.Int64)
     if aggregate == "n_unique":
         return measure.n_unique().cast(pl.Int64)
@@ -337,7 +337,7 @@ def _totals_by_period_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="a total per code and period, with one cell holding nothing",
-        configuration={"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+        configuration={"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         explanation="'period' first appears as p2 and then p1, and the columns still come back "
         "sorted, p1 before p2. Code B has no row in p2, so that cell is null. It is not zero: "
         "nobody measured anything there.",
@@ -372,10 +372,10 @@ def _counts_by_period_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="how many rows landed in each cell, rather than what they add up to",
-        configuration={"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "count"},
+        configuration={"by": ["code"], "names_from": "period", "values_from": "amount", "function": "count"},
         explanation="Two rows share code A in p1, so that cell holds 2. Code B has no row in p1 at "
         "all, so its cell is null rather than 0. There was nothing there to count. 'count' reads no "
-        "column, but 'values' is still written down, because every cell here uses one aggregate.",
+        "column, but 'values_from' is still written down, because every cell here uses one aggregate.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -406,7 +406,7 @@ def _joined_notes_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="a grid of notes, showing the two empty cells that do not mean the same thing",
-        configuration={"index": ["code"], "columns_from": "period", "values": "note", "aggregate": "join_text"},
+        configuration={"by": ["code"], "names_from": "period", "values_from": "note", "function": "join_text"},
         explanation="Both empty-looking cells of the p2 column are the point. Code A has a row in "
         "p2 whose note is missing, so there was something there and it said nothing: the missing "
         "value is skipped rather than joined in as a gap, nothing is left to join, and the cell is "

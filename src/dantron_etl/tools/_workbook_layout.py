@@ -1,7 +1,7 @@
-"""write_workbook: how a written tab looks -- headings, widths, wrapping and tables.
+"""write_excel: how a written tab looks -- headings, widths, wrapping and tables.
 
 Layout never changes a value or a number format; it runs after the cells are written. Part of
-``write_workbook``; the leading underscore keeps it out of the tool catalog.
+``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 import re

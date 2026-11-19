@@ -15,7 +15,7 @@ to clean up. A null key is still not the empty string: a text key built by filli
 merge a genuinely blank value into the null group, which is a different mistake in the other
 direction.
 
-**Absent `columns` means every column of the row.** An empty list means the same thing, for the same
+**Absent `by` means every column of the row.** An empty list means the same thing, for the same
 reason: there is nothing to read `["all"]` out of a schema, so a config carrying that sentinel over
 from an older tool is refused by name rather than quietly searched for.
 
@@ -55,7 +55,7 @@ class RemoveDuplicates:
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
-            "columns": ConfigField(
+            "by": ConfigField(
                 type="array",
                 description="Columns defining sameness; absent or empty means every column of the row.",
                 required=False,
@@ -77,7 +77,7 @@ class RemoveDuplicates:
             detailed_description=(
                 "Sameness follows DISTINCT, not `=`: two rows whose key is null are one group, the "
                 "same group a downstream group-by or join would find, rather than two rows that could "
-                "not be compared. Absent 'columns' means every column of the row defines the group; "
+                "not be compared. Absent 'by' means every column of the row defines the group; "
                 "the members that do not join 'unique' join 'duplicate' instead of vanishing."
             ),
             examples=(_whole_row_example(), _keyed_example()),
@@ -86,7 +86,7 @@ class RemoveDuplicates:
                 "by filling nulls first would merge a genuinely blank value into the null group.",
             ),
             field_help={
-                "columns": "Absent or empty means every column; a column named more than once is counted only once.",
+                "by": "Absent or empty means every column; a column named more than once is counted only once.",
                 "keep": "'first' or 'last' decides which member of a group joins 'unique'; the other "
                 "member of a pair always joins 'duplicate'.",
             },
@@ -102,7 +102,7 @@ class RemoveDuplicates:
         that has since moved, or the `["all"]` sentinel carried over from an older tool. Left to the
         query engine it becomes a complaint about a column the author never wrote.
         """
-        require_columns(inputs["rows"], _key_columns(inputs["rows"], config), "columns", "rows")
+        require_columns(inputs["rows"], _key_columns(inputs["rows"], config), "by", "rows")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
@@ -119,7 +119,7 @@ def _key_columns(frame: pl.DataFrame, config: Mapping[str, Any]) -> list[str]:
     registered instance serves every flow that names this tool and must carry nothing from one run
     into the next. Both callers pay one pass over a list of names for that.
     """
-    columns = config["columns"]
+    columns = config["by"]
     return list(dict.fromkeys(columns)) if columns else list(frame.columns)
 
 
@@ -156,7 +156,7 @@ def _whole_row_example() -> WorkedExample:
     return WorkedExample(
         scenario="keep one instance of a row that repeats across every column",
         configuration={},
-        explanation="No 'columns' at all means every column defines the group; the third row repeats "
+        explanation="No 'by' at all means every column defines the group; the third row repeats "
         "the first exactly, so it joins 'duplicate' and the first instance joins 'unique'.",
         inputs=inputs,
         outputs=outputs,
@@ -174,7 +174,7 @@ def _keyed_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="keep the last row of a group defined by a single key column",
-        configuration={"columns": ["code"], "keep": "last"},
+        configuration={"by": ["code"], "keep": "last"},
         explanation="Sameness is judged on 'code' alone, so the two rows sharing code 'A' are one "
         "group; 'keep: last' sends the second of them to 'unique' and the first to 'duplicate'.",
         inputs=inputs,

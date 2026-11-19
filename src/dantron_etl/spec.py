@@ -1,7 +1,7 @@
 """What a loaded flow is: its steps, the edges between them, and the order they run in.
 
 ``Pipeline`` is the whole flow and ``Step`` is one step as the file wrote it. An edge is a
-``PortRef``: a step id and one of that step's output ports. ``Lane`` and ``Group`` are how the flow
+``PortRef``: a step id and one of that step's output ports. ``Lane`` and ``Container`` are how the flow
 is drawn and change nothing it computes. The loader in ``loader.py`` builds these; nothing here
 moves a row.
 
@@ -23,7 +23,7 @@ from .expr import references
 from .config import expression_values
 from .registry import ToolRegistry
 
-__all__ = ["Group", "Lane", "Pipeline", "PortRef", "Step"]
+__all__ = ["Container", "Lane", "Pipeline", "PortRef", "Step"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,19 +42,19 @@ class Lane:
     """A swimlane a step may sit in, carried in the same document as the wiring it lays out."""
 
     id: str
-    label: str
+    title: str
     order: int
 
 
 @dataclass(frozen=True, slots=True)
-class Group:
+class Container:
     """A line drawn round some of a lane's steps, with one sentence written on it.
 
     Six hundred boxes cannot be read by following them, and a reader after "where does the extract
-    get its header row back" is looking for a job rather than for a tool. So a group says
+    get its header row back" is looking for a job rather than for a tool. So a container says
     which steps do one job, and the ``title`` says what that job is -- a sentence, because the whole
     value of the feature is a reader getting one instead of the six boxes it stands over. An id is
-    not a title, and the loader refuses a group that offers only the former.
+    not a title, and the loader refuses a container that offers only the former.
 
     It reaches no tool and changes no frame: see :meth:`Pipeline.fingerprint` for why that has to
     stay true.
@@ -84,13 +84,13 @@ class Step:
     why: str | None = None
     #: The container this step is drawn inside, or ``None`` for a step in none -- which is the state
     #: every step starts in, and the reason containers can be adopted a stage at a time.
-    group: str | None = None
+    container: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Pipeline:
     """A whole flow: its steps in the order they were authored, its lanes, and the registry it was
-    checked against -- needed by :meth:`column_references` and :meth:`group_outputs`, which have to
+    checked against -- needed by :meth:`column_references` and :meth:`container_outputs`, which have to
     ask a tool for its template and its ports.
 
     ``registry`` does not participate in equality: two specs loaded from the same document against
@@ -100,7 +100,7 @@ class Pipeline:
     name: str
     steps: tuple[Step, ...]
     lanes: tuple[Lane, ...] = ()
-    groups: tuple[Group, ...] = ()
+    containers: tuple[Container, ...] = ()
     registry: ToolRegistry | None = field(default=None, compare=False, repr=False)
 
     def step(self, step_id: str) -> Step:
@@ -110,32 +110,32 @@ class Pipeline:
                 return candidate
         raise PipelineError(f"no step {step_id!r}; steps are: {', '.join(step.id for step in self.steps)}")
 
-    def group(self, group_id: str) -> Group:
-        """The container named ``group_id``, or a refusal naming the ones there actually are."""
-        for candidate in self.groups:
-            if candidate.id == group_id:
+    def container(self, container_id: str) -> Container:
+        """The container named ``container_id``, or a refusal naming the ones there actually are."""
+        for candidate in self.containers:
+            if candidate.id == container_id:
                 return candidate
-        declared = ", ".join(group.id for group in self.groups) or "none"
-        raise PipelineError(f"no group {group_id!r}; groups are: {declared}")
+        declared = ", ".join(container.id for container in self.containers) or "none"
+        raise PipelineError(f"no container {container_id!r}; containers are: {declared}")
 
-    def group_members(self, group_id: str) -> tuple[str, ...]:
-        """The steps in ``group_id``, in the order they were declared.
+    def container_members(self, container_id: str) -> tuple[str, ...]:
+        """The steps in ``container_id``, in the order they were declared.
 
         Declaration order, because that is the order the file reads in and the only order a
         container has. A set would draw the same container over a different arrangement on every
         render, and a reader comparing two renders would be comparing two drawings.
         """
-        self.group(group_id)
-        return tuple(step.id for step in self.steps if step.group == group_id)
+        self.container(container_id)
+        return tuple(step.id for step in self.steps if step.container == container_id)
 
-    def group_inputs(self, group_id: str) -> tuple[PortRef, ...]:
-        """Every port produced outside ``group_id`` and read inside it, named once.
+    def container_inputs(self, container_id: str) -> tuple[PortRef, ...]:
+        """Every port produced outside ``container_id`` and read inside it, named once.
 
         Once however many members read it: two steps taking the same upstream port are one lot of
         rows arriving, and counting it twice reports a container that invented rows. A port produced
         by a member is the container's own plumbing and is no part of what entered it.
         """
-        members = set(self.group_members(group_id))
+        members = set(self.container_members(container_id))
         entered: list[PortRef] = []
         for step in self.steps:
             if step.id not in members:
@@ -145,7 +145,7 @@ class Pipeline:
                     entered.append(source)
         return tuple(entered)
 
-    def group_outputs(self, group_id: str) -> tuple[PortRef, ...]:
+    def container_outputs(self, container_id: str) -> tuple[PortRef, ...]:
         """Every port of a member read by a non-member, or by nobody at all.
 
         The second half is the one that is easy to leave out and wrong to leave out: rows that stop
@@ -156,7 +156,7 @@ class Pipeline:
         nothing.
         """
         assert self.registry is not None
-        members = set(self.group_members(group_id))
+        members = set(self.container_members(container_id))
         left: list[PortRef] = []
         for step in self.steps:
             if step.id not in members:
@@ -176,10 +176,10 @@ class Pipeline:
         moment a filter feeding it keeps different ones, and a hash that could not see that would
         report a match and hand back yesterday's numbers under today's rules. Four things per step
         are covered -- ``id``, ``tool``, ``config`` and ``inputs`` -- and ``lane``, ``stage``,
-        ``why`` and ``group`` deliberately are not. None of the four reaches a tool, so a frame
+        ``why`` and ``container`` deliberately are not. None of the four reaches a tool, so a frame
         produced under one ``why`` is the identical frame under another, and a cache invalidated by
         an improved comment is a cache nobody trusts, which is to say one everybody works around.
-        ``group`` joins that list for the same reason and one of its own: boxing three steps together
+        ``container`` joins that list for the same reason and one of its own: boxing three steps together
         is a line drawn on the canvas, and if it threw away every cached frame behind them the first
         person to tidy the canvas would pay for it with an hour of re-running -- and the second
         person would not tidy the canvas.

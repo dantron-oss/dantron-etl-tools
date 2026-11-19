@@ -2,16 +2,16 @@
 
 **There is no `join_type`.** Inner, left, right and outer are not four behaviours a configuration
 picks between; they are four ways of reading the same pairing. So this tool always does the pairing
-once and hands back all three of its results on named ports -- `matched` for the pairs, `left_only`
+once and hands back all three of its results on named ports -- `joined` for the pairs, `left_only`
 and `right_only` for the rows of each side that found nobody -- and which join a flow performed is
-decided by which of those ports it wires. A left join reads `matched` and `left_only`; an outer join
+decided by which of those ports it wires. A left join reads `joined` and `left_only`; an outer join
 reads all three; an anti-join reads `left_only` alone. What that buys is the orphan check for free:
 the rows a pairing failed to account for are an edge a flow can route to a report or an assertion,
 rather than a number someone reconstructs afterwards with a second join they have to remember to
 write.
 
 **Fan-out is real, and it is not a defect.** A key that appears twice on the right turns one left row
-into two output rows, so `matched.height` is unrelated to either input's height, and a fanned-out
+into two output rows, so `joined.height` is unrelated to either input's height, and a fanned-out
 amount is *repeated* rather than apportioned. Any other behaviour would require this tool to pick
 one of the matches, and nothing in its configuration gives it a basis to pick. Uniqueness of a key
 is the caller's business, guarded upstream -- with RemoveDuplicates, or with an assertion -- and the
@@ -26,11 +26,11 @@ of nothing -- worse, on dirty data it would fan every null-keyed row on one side
 null-keyed row on the other, turning a small missing number into a large wrong one.
 
 **Row accounting is stated over rows, not counts.** Fan-out breaks addition, so
-`matched.height + left_only.height == left.height` is simply false and is not the promise. The
-promise is that every row of a side is either in `matched` at least once or in its own orphan port
+`joined.height + left_only.height == left.height` is simply false and is not the promise. The
+promise is that every row of a side is either in `joined` at least once or in its own orphan port
 exactly once, never both and never neither.
 
-**Row order is deterministic and nothing more.** `matched` comes back in left-input order, with one
+**Row order is deterministic and nothing more.** `joined` comes back in left-input order, with one
 left row's fan-out copies in right-input order; each orphan port comes back in its own side's input
 order. That costs an explicit order-maintaining join, and the parallelism it gives up, and it is
 worth paying because a flow that writes a file needs a diff that does not churn between runs. It is
@@ -59,7 +59,7 @@ from ..authoring import (
 
 # The key fields, in the order a refusal quotes them. Named once so the cross-field rule below and
 # the messages it raises cannot drift apart from the template.
-_KEY_FIELDS: Final[tuple[str, str, str]] = ("keys", "left_on", "right_on")
+_KEY_FIELDS: Final[tuple[str, str, str]] = ("keys", "left_keys", "right_keys")
 
 
 _HOW_ENUM: Final[tuple[str, ...]] = ("inner", "left")
@@ -72,30 +72,30 @@ class Join:
     description = "Pair `left` to `right` on a key, reporting the pairs and each side's unpaired rows."
     category = "combine"
     input_ports = ("left", "right")
-    output_ports = ("matched", "left_only", "right_only")
+    output_ports = ("joined", "left_only", "right_only")
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
             "keys": ConfigField(
                 type="array",
                 description="Key columns spelled the same on both sides; give this or both of "
-                "'left_on' and 'right_on', never both forms.",
+                "'left_keys' and 'right_keys', never both forms.",
                 required=False,
                 non_empty=True,
                 items=ConfigField(type="string", description="One key column name, present on both sides."),
             ),
-            "left_on": ConfigField(
+            "left_keys": ConfigField(
                 type="array",
                 description="The left side's key columns, when the two sides spell the key "
-                "differently; requires 'right_on' of the same length.",
+                "differently; requires 'right_keys' of the same length.",
                 required=False,
                 non_empty=True,
                 items=ConfigField(type="string", description="One key column name on the left side."),
             ),
-            "right_on": ConfigField(
+            "right_keys": ConfigField(
                 type="array",
                 description="The right side's key columns, paired position by position with "
-                "'left_on'; requires 'left_on' of the same length.",
+                "'left_keys'; requires 'left_keys' of the same length.",
                 required=False,
                 non_empty=True,
                 items=ConfigField(type="string", description="One key column name on the right side."),
@@ -108,7 +108,7 @@ class Join:
             ),
             "how": ConfigField(
                 type="string",
-                description="Whether `matched` carries only the rows that paired ('inner') or every "
+                description="Whether `joined` carries only the rows that paired ('inner') or every "
                 "left row, with the right-hand columns null where none paired ('left').",
                 default="inner",
                 enum=_HOW_ENUM,
@@ -118,7 +118,7 @@ class Join:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "One pairing, three ports: `matched` carries a row per pair, so a key repeated on the "
+                "One pairing, three ports: `joined` carries a row per pair, so a key repeated on the "
                 "right fans one left row into a copy per match, and `left_only` / `right_only` carry "
                 "the rows of each side that paired with nothing -- which is why there is no join-type "
                 "option to choose between. An orphan port carries its own side's columns exactly as "
@@ -127,9 +127,9 @@ class Join:
             ),
             examples=(_fan_out_example(), _differently_named_key_example()),
             notes=(
-                "`how` decides only which rows reach `matched`; the orphan ports answer their own "
+                "`how` decides only which rows reach `joined`; the orphan ports answer their own "
                 "question either way. Under 'left' an unmatched left row appears on both -- carried "
-                "in `matched` with its right-hand columns null, and reported on `left_only` -- "
+                "in `joined` with its right-hand columns null, and reported on `left_only` -- "
                 "because one port is the result and the other is the diagnostic.",
                 "A right join is this join with the two inputs swapped, which is why 'right' is not "
                 "offered: the same result under two spellings is a thing to get wrong.",
@@ -150,12 +150,12 @@ class Join:
                 "nulling the right-hand columns where nothing paired -- the commonest join a flow "
                 "asks for. The column set is identical either way, so a later step naming a column "
                 "does not depend on which was chosen.",
-                "keys": "Key columns shared by both sides; use 'left_on'/'right_on' instead when the "
+                "keys": "Key columns shared by both sides; use 'left_keys'/'right_keys' instead when the "
                 "spellings differ, never both forms at once.",
-                "left_on": "The left spelling of each key column, and the spelling that survives on "
-                "'matched'; must be the same length as 'right_on'.",
-                "right_on": "The right spelling of each key column, paired by position with "
-                "'left_on'; the right key column itself does not appear on 'matched' at all.",
+                "left_keys": "The left spelling of each key column, and the spelling that survives on "
+                "'joined'; must be the same length as 'right_keys'.",
+                "right_keys": "The right spelling of each key column, paired by position with "
+                "'left_keys'; the right key column itself does not appear on 'joined' at all.",
                 "suffix": "Applied only to a colliding right-hand non-key column; if the suffixed "
                 "name is taken as well, the join is refused rather than guessing another suffix.",
             },
@@ -169,33 +169,33 @@ class Join:
         every template key is present and a membership test is always true: ``config["keys"] is
         None`` is the only spelling that asks whether a field was given.
         """
-        keys, left_on, right_on = (config[field] for field in _KEY_FIELDS)
+        keys, left_keys, right_keys = (config[field] for field in _KEY_FIELDS)
 
         if keys is not None:
-            also_given = [field for field in ("left_on", "right_on") if config[field] is not None]
+            also_given = [field for field in ("left_keys", "right_keys") if config[field] is not None]
             if also_given:
                 raise ConfigError(
                     f"config gives 'keys' together with {', '.join(repr(field) for field in also_given)}; "
-                    f"give either 'keys', or both of 'left_on' and 'right_on', never both forms"
+                    f"give either 'keys', or both of 'left_keys' and 'right_keys', never both forms"
                 )
             return None
 
-        if left_on is None and right_on is None:
+        if left_keys is None and right_keys is None:
             raise ConfigError(
                 "config names no key columns: give 'keys' for a key spelled the same on both sides, or "
-                "both of 'left_on' and 'right_on' when the two sides spell it differently"
+                "both of 'left_keys' and 'right_keys' when the two sides spell it differently"
             )
-        if left_on is None or right_on is None:
-            given, missing = ("left_on", "right_on") if right_on is None else ("right_on", "left_on")
+        if left_keys is None or right_keys is None:
+            given, missing = ("left_keys", "right_keys") if right_keys is None else ("right_keys", "left_keys")
             raise ConfigError(
                 f"config gives {given!r} without {missing!r}; the two-field form needs both halves, or "
                 f"give 'keys' instead when both sides spell the key the same way"
             )
-        if len(left_on) != len(right_on):
+        if len(left_keys) != len(right_keys):
             raise ConfigError(
-                f"config fields 'left_on' and 'right_on' must name the same number of key columns, "
-                f"since they pair position by position; 'left_on' names {len(left_on)} "
-                f"({', '.join(left_on)}) and 'right_on' names {len(right_on)} ({', '.join(right_on)})"
+                f"config fields 'left_keys' and 'right_keys' must name the same number of key columns, "
+                f"since they pair position by position; 'left_keys' names {len(left_keys)} "
+                f"({', '.join(left_keys)}) and 'right_keys' names {len(right_keys)} ({', '.join(right_keys)})"
             )
         return None
 
@@ -216,19 +216,19 @@ class Join:
         left_keys, right_keys = _key_columns(config)
         shared = config["keys"] is not None
 
-        require_columns(left, left_keys, "keys" if shared else "left_on", "left")
-        require_columns(right, right_keys, "keys" if shared else "right_on", "right")
+        require_columns(left, left_keys, "keys" if shared else "left_keys", "left")
+        require_columns(right, right_keys, "keys" if shared else "right_keys", "right")
 
         _refuse_unsettled_collision(
             left.columns,
-            _matched_right_names(left.columns, right.columns, right_keys, config["suffix"]),
+            _joined_right_names(left.columns, right.columns, right_keys, config["suffix"]),
         )
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         left, right = inputs["left"], inputs["right"]
         suffix = config["suffix"]
         left_keys, right_keys = _key_columns(config)
-        right_names = _matched_right_names(left.columns, right.columns, right_keys, suffix)
+        right_names = _joined_right_names(left.columns, right.columns, right_keys, suffix)
 
         # `maintain_order` is what turns three query-engine artefacts into the documented order; the
         # inputs themselves are never touched, so a frame fanning out to two branches is safe.
@@ -236,7 +236,7 @@ class Join:
         # is the commonest join a flow asks for and the one this tool used to make a reader build out
         # of two steps. The column set and its order are the same either way, so the two modes differ
         # in which rows arrive and never in what a downstream step may name.
-        matched = left.join(
+        joined = left.join(
             right,
             left_on=left_keys,
             right_on=right_keys,
@@ -266,7 +266,7 @@ class Join:
             maintain_order="left",
         )
 
-        return Ports({"matched": matched, "left_only": left_only, "right_only": right_only})
+        return Ports({"joined": joined, "left_only": left_only, "right_only": right_only})
 
 
 def _key_columns(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
@@ -279,20 +279,20 @@ def _key_columns(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     shared = config["keys"]
     if shared is not None:
         return list(shared), list(shared)
-    return list(config["left_on"]), list(config["right_on"])
+    return list(config["left_keys"]), list(config["right_keys"])
 
 
-def _matched_right_names(
+def _joined_right_names(
     left_columns: Sequence[str],
     right_columns: Sequence[str],
     right_keys: Sequence[str],
     suffix: str,
 ) -> dict[str, str]:
-    """Every right-hand column that reaches `matched`, mapped to the name it arrives under.
+    """Every right-hand column that reaches `joined`, mapped to the name it arrives under.
 
     The key columns are absent by design: a pair of key columns is one column after the join, and
-    keeping both would leave `matched` carrying two columns of identical values that every
-    downstream step would then have to choose between. Under `left_on`/`right_on` that means the
+    keeping both would leave `joined` carrying two columns of identical values that every
+    downstream step would then have to choose between. Under `left_keys`/`right_keys` that means the
     left spelling is the one that survives, which is not something a reader can guess.
     """
     return {
@@ -339,7 +339,7 @@ def _fan_out_example() -> WorkedExample:
     )
     outputs = Ports(
         {
-            "matched": pl.DataFrame(
+            "joined": pl.DataFrame(
                 {
                     "entry_id": [1, 1, 2, 2],
                     "group_id": ["G1", "G1", "G1", "G1"],
@@ -387,7 +387,7 @@ def _differently_named_key_example() -> WorkedExample:
     )
     outputs = Ports(
         {
-            "matched": pl.DataFrame(
+            "joined": pl.DataFrame(
                 {
                     "movement_id": [71],
                     "period_start": ["2024-01"],
@@ -402,8 +402,8 @@ def _differently_named_key_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="pair two sides whose key column is spelled differently, over a colliding amount",
-        configuration={"left_on": ["period_start"], "right_on": ["period"]},
-        explanation="Only the left spelling 'period_start' survives on 'matched'; the right's "
+        configuration={"left_keys": ["period_start"], "right_keys": ["period"]},
+        explanation="Only the left spelling 'period_start' survives on 'joined'; the right's "
         "'period' does not appear at all, suffixed or otherwise, because the pair is one column "
         "after the join. 'amount' is on both sides and is not a key, so the right's value survives "
         "under the default suffix as 'amount_right'. Each orphan port keeps its own side's own "

@@ -12,6 +12,7 @@ from typing import Any, Final
 
 import polars as pl
 
+from ..renames import FUNCTION_RENAMES
 from .arguments import POSITIONS, Param, Value
 from .errors import Refusal, error
 from .families import (
@@ -345,7 +346,9 @@ class _Compiler:
         function = FUNCTIONS.get(name)
         if function is None:
             available = ", ".join(sorted(ALLOWED_FUNCTIONS))
-            raise error(self._text, f"{name!r} is not a function this language has: the functions are {available}")
+            renamed = FUNCTION_RENAMES.get(name)
+            was = f"; it was renamed to {renamed!r}" if renamed is not None else ""
+            raise error(self._text, f"{name!r} is not a function this language has{was}: the functions are {available}")
 
         arguments = node.args
         if function.variadic:

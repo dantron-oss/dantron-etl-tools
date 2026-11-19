@@ -1,7 +1,7 @@
 """The loader refuses a key it does not know, at every level of a pipeline file.
 
 A misspelt config field was already refused. A misspelt key around it was not: ``step:`` for
-``steps:`` loaded a flow with no steps, and ``gruop:`` left a step outside its box. Both loaded
+``steps:`` loaded a flow with no steps, and ``contianer:`` left a step outside its box. Both loaded
 cleanly and said nothing. These tests pin the refusal, its wording, and the mirror case: a file that
 uses every allowed key still loads and keeps what it said.
 """
@@ -10,22 +10,22 @@ from typing import Any
 
 import pytest
 
-from dantron_etl.pipeline import PipelineError, load_pipeline
+from dantron_etl import PipelineError, load_pipeline
 
 
 def _document(**changes: Any) -> dict[str, Any]:
     """A small valid flow: read a file, write it out. Every allowed key is used once somewhere."""
     document: dict[str, Any] = {
         "name": "Copy",
-        "lanes": [{"id": "a", "label": "A", "order": 1}],
-        "groups": [{"id": "move", "title": "Read the file and write it out again."}],
+        "lanes": [{"id": "a", "title": "A", "order": 1}],
+        "containers": [{"id": "move", "title": "Read the file and write it out again."}],
         "steps": [
             {
                 "id": "src",
                 "tool": "read_csv",
                 "lane": "a",
                 "stage": "read",
-                "group": "move",
+                "container": "move",
                 "why": "The file as it arrived.",
                 "config": {"path": "in.csv"},
             },
@@ -34,7 +34,7 @@ def _document(**changes: Any) -> dict[str, Any]:
                 "tool": "write_csv",
                 "lane": "a",
                 "stage": "write",
-                "group": "move",
+                "container": "move",
                 "why": "The same rows, written out.",
                 "config": {"path": "out.csv"},
                 "inputs": {"rows": "src.rows"},
@@ -55,9 +55,9 @@ def test_a_file_using_every_allowed_key_loads_and_keeps_each_one() -> None:
     spec = load_pipeline(_document())
 
     written = spec.step("out")
-    assert (written.lane, written.stage, written.group, written.why) == ("a", "write", "move", "The same rows, written out.")
-    assert [lane.label for lane in spec.lanes] == ["A"]
-    assert [group.title for group in spec.groups] == ["Read the file and write it out again."]
+    assert (written.lane, written.stage, written.container, written.why) == ("a", "write", "move", "The same rows, written out.")
+    assert [lane.title for lane in spec.lanes] == ["A"]
+    assert [container.title for container in spec.containers] == ["Read the file and write it out again."]
 
 
 def test_a_misspelt_top_level_key_is_refused_with_the_key_it_was_meant_to_be() -> None:
@@ -68,11 +68,11 @@ def test_a_misspelt_top_level_key_is_refused_with_the_key_it_was_meant_to_be() -
 
     assert "'step'" in message
     assert "did you mean 'steps'" in message
-    for allowed in ("name", "steps", "lanes", "groups"):
+    for allowed in ("name", "steps", "lanes", "containers"):
         assert allowed in message
 
 
-@pytest.mark.parametrize(("typo", "meant"), [("gruop", "group"), ("wy", "why"), ("inptus", "inputs")])
+@pytest.mark.parametrize(("typo", "meant"), [("contianer", "container"), ("wy", "why"), ("inptus", "inputs")])
 def test_a_misspelt_step_key_is_refused_naming_the_step_and_the_key_it_was_meant_to_be(typo: str, meant: str) -> None:
     document = _document()
     step = document["steps"][1]
@@ -94,29 +94,29 @@ def test_an_unknown_step_key_unlike_any_allowed_one_lists_what_is_allowed_and_gu
     assert "step 'src'" in message
     assert "'colour'" in message
     assert "did you mean" not in message
-    for allowed in ("id", "tool", "config", "inputs", "lane", "stage", "group", "why"):
+    for allowed in ("id", "tool", "config", "inputs", "lane", "stage", "container", "why"):
         assert allowed in message
 
 
 def test_a_misspelt_lane_key_is_refused_naming_the_lane() -> None:
     document = _document()
     lane = document["lanes"][0]
-    lane["lable"] = lane.pop("label")
+    lane["titel"] = lane.pop("title")
 
     message = _refusal(document)
 
     assert "lane 'a'" in message
-    assert "did you mean 'label'" in message
+    assert "did you mean 'title'" in message
 
 
-def test_a_misspelt_group_key_is_refused_naming_the_group() -> None:
+def test_a_misspelt_container_key_is_refused_naming_the_container() -> None:
     document = _document()
-    group = document["groups"][0]
-    group["titel"] = group.pop("title")
+    container = document["containers"][0]
+    container["titel"] = container.pop("title")
 
     message = _refusal(document)
 
-    assert "group 'move'" in message
+    assert "container 'move'" in message
     assert "did you mean 'title'" in message
 
 
@@ -140,8 +140,8 @@ def test_a_flow_with_no_steps_is_refused_rather_than_run_as_an_empty_success() -
     assert "no steps" in message
 
 
-@pytest.mark.parametrize("kind", ["lanes", "groups"])
-def test_two_lanes_or_two_groups_sharing_an_id_are_refused(kind: str) -> None:
+@pytest.mark.parametrize("kind", ["lanes", "containers"])
+def test_two_lanes_or_two_containers_sharing_an_id_are_refused(kind: str) -> None:
     document = _document()
     first = document[kind][0]
     document[kind].append({**first, "order": 2} if kind == "lanes" else {**first, "title": "A second title."})

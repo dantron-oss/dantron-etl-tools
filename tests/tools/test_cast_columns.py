@@ -23,15 +23,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.tools.cast_columns import CastColumns
 
 
@@ -189,7 +181,7 @@ class TestCastColumnsInTheCatalog:
 
 
 class TestReportingWhatCouldNotBeRead:
-    """`on_invalid: empty` is the other honest answer, and it has to say how big the problem was.
+    """`on_invalid: set_null` is the other honest answer, and it has to say how big the problem was.
 
     Three unreadable values out of forty-six thousand should not stop a nightly build, and a flow
     that says so gets nulls in their place. What makes that safe rather than silent is the count: how
@@ -205,7 +197,7 @@ class TestReportingWhatCouldNotBeRead:
         rows = run_tool(
             CastColumns(),
             Ports({"rows": frame}),
-            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "empty"},
+            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "set_null"},
         )["rows"]
 
         assert rows["amount"].to_list() == [10.5, None, -3.0, None]
@@ -217,7 +209,7 @@ class TestReportingWhatCouldNotBeRead:
         result = run_tool(
             CastColumns(),
             Ports({"rows": frame}),
-            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "empty"},
+            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "set_null"},
         )
 
         assert len(result.notes) == 1
@@ -232,7 +224,7 @@ class TestReportingWhatCouldNotBeRead:
         result = run_tool(
             CastColumns(),
             Ports({"rows": frame}),
-            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "empty"},
+            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "set_null"},
         )
 
         assert result.notes == (), "nothing failed to convert, so there is nothing to report"
@@ -242,7 +234,7 @@ class TestReportingWhatCouldNotBeRead:
         result = run_tool(
             CastColumns(),
             Ports({"rows": pl.DataFrame({"amount": ["1", "2"]})}),
-            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "empty"},
+            {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "set_null"},
         )
 
         assert result.notes == ()
@@ -262,7 +254,7 @@ class TestReportingWhatCouldNotBeRead:
             Ports({"rows": frame}),
             {
                 "columns": [{"column": "amount", "type": "Float64"}, {"column": "count", "type": "Int64"}],
-                "on_invalid": "empty",
+                "on_invalid": "set_null",
             },
         )
 
@@ -271,9 +263,9 @@ class TestReportingWhatCouldNotBeRead:
         assert any("count" in note for note in result.notes)
 
     def test_on_invalid_offers_no_word_a_definition_file_would_rewrite(self) -> None:
-        """'empty' rather than 'null': an unquoted null in YAML IS the null value."""
-        from dantron_etl.tool import YAML_UNSAFE_VALUES
+        """'set_null' rather than 'null': an unquoted null in YAML IS the null value."""
+        from dantron_etl.authoring import YAML_UNSAFE_VALUES
 
         choices = set(CastColumns().config_template()["on_invalid"].enum or ())
-        assert choices == {"error", "empty"}
+        assert choices == {"error", "set_null"}
         assert not choices & YAML_UNSAFE_VALUES

@@ -1,7 +1,6 @@
 """WriteCsv: one frame becomes one delimited text file, and the same rows pass through.
 
-The catalog's second file sink, and the sibling of ``write_excel`` rather than a format switch on
-it: a text file has no row limit, no cell holding a double, and no tab-naming rules, so none of the
+A file sink, and the sibling of ``write_excel`` rather than a format switch on it: a text file has no row limit, no cell holding a double, and no tab-naming rules, so none of the
 workbook sink's refusals apply here -- and this format has hazards of its own that a cell does not,
 which is the other half of why the two are separate tools.
 
@@ -71,7 +70,7 @@ class WriteCsv:
                 default=",",
                 non_empty=True,
             ),
-            "replace": ConfigField(
+            "overwrite": ConfigField(
                 type="boolean",
                 description="Whether a file already at 'path' may be overwritten; leave it out and "
                 "an existing file is refused.",
@@ -84,7 +83,7 @@ class WriteCsv:
             detailed_description=(
                 "'rows' is written to 'path' as a delimited text file with a header row and every "
                 "row of data below it; the same rows leave on the output port unchanged. An "
-                "existing file is never overwritten unless 'replace' says so in writing, though "
+                "existing file is never overwritten unless 'overwrite' says so in writing, though "
                 "writing true when nothing occupies the path is accepted rather than refused. A "
                 "null and an empty string both arrive on the page as an empty field, and the loss is "
                 "one-way: the paired reader hands both back as nothing."
@@ -103,7 +102,7 @@ class WriteCsv:
                 "that was empty, not a run that never happened.",
             ),
             field_help={
-                "replace": "Defaults to false: a path already occupied is refused until an author "
+                "overwrite": "Defaults to false: a path already occupied is refused until an author "
                 "says in writing that overwriting it is intended.",
             },
         )
@@ -120,9 +119,9 @@ class WriteCsv:
 
         _validate_delimiter(config["delimiter"])
 
-        if Path(path).exists() and not config["replace"]:
+        if Path(path).exists() and not config["overwrite"]:
             raise ConfigError(
-                f"write_csv refuses to overwrite the file already at '{path}'; set replace: true "
+                f"write_csv refuses to overwrite the file already at '{path}'; set overwrite: true "
                 "to overwrite it deliberately"
             )
 
@@ -204,7 +203,7 @@ def _plain_write_example() -> WorkedExample:
     return WorkedExample(
         scenario="write a new file where nothing exists yet",
         configuration={"path": _PLAIN_PATH},
-        explanation="'replace' is left out, and the path is empty, so no permission is needed; the "
+        explanation="'overwrite' is left out, and the path is empty, so no permission is needed; the "
         "same two rows leave on the output port unchanged.",
         inputs=Ports({"rows": frame}),
         outputs=Ports({"rows": frame}),
@@ -217,8 +216,8 @@ def _overwrite_example() -> WorkedExample:
     frame = pl.DataFrame({"key": ["r1", "r2"], "amount": [10.25, -5.5]})
     return WorkedExample(
         scenario="overwrite a file that is already there, on purpose",
-        configuration={"path": _OVERWRITE_PATH, "replace": True},
-        explanation="A file already occupies the path; 'replace: true' says in writing that "
+        configuration={"path": _OVERWRITE_PATH, "overwrite": True},
+        explanation="A file already occupies the path; 'overwrite: true' says in writing that "
         "overwriting it is intended, and the same two rows leave on the output port unchanged "
         "either way.",
         inputs=Ports({"rows": frame}),

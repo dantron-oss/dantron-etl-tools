@@ -1,20 +1,20 @@
 """Tests for the CrossTab tool: a long frame turned wide, and what the new columns mean.
 
 CrossTab takes one input port, ``rows``, and produces one, ``rows``. One output row per distinct
-combination of ``index``. One new column per distinct value of ``columns_from``. Each cell holds the chosen
-aggregate of ``values`` over the rows that landed in it.
+combination of ``by``. One new column per distinct value of ``names_from``. Each cell holds the chosen
+aggregate of ``values_from`` over the rows that landed in it.
 
 The real shape is a series: one row per key and period becomes one row per key with a column per
 period. Thirteen decisions are pinned here, because each one has a quiet failure mode.
 
-**Column order is the sorted distinct values of ``columns_from``.** Not first appearance. A reader scans the
+**Column order is the sorted distinct values of ``names_from``.** Not first appearance. A reader scans the
 new columns across a page, and first appearance would order them by whatever order the rows
 happened to arrive in. The frame below is built so the two orders disagree, so a tool that hands
 back appearance order dies here rather than on somebody's report.
 
-**A value of ``columns_from`` has to be text already.** A column name is text. Turning a number or a date
+**A value of ``names_from`` has to be text already.** A column name is text. Turning a number or a date
 into text is a formatting choice with several right answers, and picking one here would freeze it
-into every cross tab this library ever produces. So a non-text ``columns_from`` column is refused off the
+into every cross tab this library ever produces. So a non-text ``names_from`` column is refused off the
 schema, and the step that formats runs in front. That also settles what "sorted" means: sorted as
 text, which is why a period written as ``p1``, ``p2``, ``p3`` sorts the way a reader expects.
 
@@ -33,7 +33,7 @@ group whose values are all missing, and the two tools have to agree or a reader 
 tool.
 
 Second, a fill value has no single type. The value columns take their type from the aggregate and
-from ``values``, so a cross tab of text has text cells and a numeric fill is nonsense in it. A
+from ``values_from``, so a cross tab of text has text cells and a numeric fill is nonsense in it. A
 ``fill`` field would need a type rule of its own, and would have to say what it does to a cell that
 genuinely aggregated to null, which is a different fact from an absent row.
 
@@ -68,7 +68,7 @@ the case below puts the two cells side by side in one tab where nothing else in 
 Joining a column that is not text is refused on the schema, for the reason GroupBy refuses it: a
 grid of joined numbers is plausible, unsortable and unsummable, and nobody is told.
 
-**A null in the ``columns_from`` column stops the run.** Refused, not dropped, and not given a column of its
+**A null in the ``names_from`` column stops the run.** Refused, not dropped, and not given a column of its
 own. Dropping the row would delete its figures from the tab with nothing left to say a row had been
 there. Giving it a name is worse: every name available is a name the data could also carry, so a
 literal ``"unknown"`` in the column would silently merge with the null group and nobody would see
@@ -76,12 +76,12 @@ it happen. So the tool refuses, names the column, and reports how many rows offe
 of them look like. The fix is upstream, where the author decides whether those rows are dropped or
 labelled.
 
-**A blank in the ``columns_from`` column stops the run as well.** An empty string is not a name a reader can
+**A blank in the ``names_from`` column stops the run as well.** An empty string is not a name a reader can
 point at, and it is the same fact as a null arriving from a different system. Accepting one and
 refusing the other would make the answer depend on who produced the file.
 
 **A new column name that collides with an index column name is refused.** This is the hazard
-:func:`~dantron_etl.tool.check_output_column` exists for, except that here the name comes from the
+:func:`~dantron_etl.authoring.check_output_column` exists for, except that here the name comes from the
 data, so it can only be checked once rows have been seen. Left unchecked, one of the two columns
 wins and the other is gone.
 
@@ -89,13 +89,13 @@ wins and the other is gone.
 lists them, holding what they held. The value columns follow, typed by the aggregate.
 
 **A frame with no rows gives a frame with no rows carrying just the index columns, typed.** There
-are no values of ``columns_from`` to make columns from, so there are no value columns. A later step still has
+are no values of ``names_from`` to make columns from, so there are no value columns. A later step still has
 a schema to compile against.
 
 **Every refusal is read off the schema and the configuration, not off the values.** Each refusal
 case runs twice: once on a populated frame and once on a frame with no rows at all. Passing both is
 what shows the refusal came from the column names rather than from what happened to be in them. The
-two refusals that are genuinely about values -- a null in ``columns_from``, and a blank in it -- are the
+two refusals that are genuinely about values -- a null in ``names_from``, and a blank in it -- are the
 exceptions, and each has its own class below.
 
 Vocabulary is deliberately generic -- code, site, period, amount, label -- because the library
@@ -109,16 +109,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.group_by import AGGREGATE_FUNCTIONS, GroupBy
 
@@ -140,7 +132,7 @@ def _rows() -> pl.DataFrame:
     all leave "some of it is missing" unpinned, and that is the case a real extract is full of.
 
     ``site`` is an integer, so it can stand as an index column that has to keep its type, and as an
-    ``columns_from`` column that has to be refused for not being text.
+    ``names_from`` column that has to be refused for not being text.
     """
     return pl.DataFrame(
         {
@@ -162,14 +154,14 @@ def _rows() -> pl.DataFrame:
 
 def _index_columns(config: Mapping[str, Any]) -> list[str]:
     """The index as the output carries it: in configured order, a repeated column counted once."""
-    return list(dict.fromkeys(config["index"]))
+    return list(dict.fromkeys(config["by"]))
 
 
 def _wide_cases() -> list[Any]:
     """(config, the frame it must produce) for each shape of cross tab worth pinning."""
     return [
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -182,7 +174,7 @@ def _wide_cases() -> list[Any]:
             id="a_total_per_key_and_period_with_the_periods_in_sorted_order",
         ),
         pytest.param(
-            {"index": ["code", "code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code", "code"], "names_from": "period", "values_from": "amount", "function": "sum"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -195,7 +187,7 @@ def _wide_cases() -> list[Any]:
             id="an_index_column_named_twice_is_counted_once",
         ),
         pytest.param(
-            {"index": ["site"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["site"], "names_from": "period", "values_from": "amount", "function": "sum"},
             pl.DataFrame(
                 {
                     "site": [1, 2],
@@ -208,7 +200,7 @@ def _wide_cases() -> list[Any]:
             id="an_integer_index_column_keeps_its_type",
         ),
         pytest.param(
-            {"index": ["code", "site"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code", "site"], "names_from": "period", "values_from": "amount", "function": "sum"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "a", "c"],
@@ -228,7 +220,7 @@ def _wide_cases() -> list[Any]:
             id="two_index_columns_in_the_order_they_were_configured",
         ),
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "count"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "count"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -241,7 +233,7 @@ def _wide_cases() -> list[Any]:
             id="counting_rows_gives_whole_numbers_and_still_leaves_an_absent_cell_null",
         ),
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "count_values"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "count_non_null"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -254,7 +246,7 @@ def _wide_cases() -> list[Any]:
             id="a_cell_with_a_row_but_no_value_counts_zero_where_an_absent_cell_is_null",
         ),
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "label", "aggregate": "min"},
+            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "min"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -267,7 +259,7 @@ def _wide_cases() -> list[Any]:
             id="a_text_value_column_gives_text_cells",
         ),
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "label", "aggregate": "max"},
+            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "max"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -280,7 +272,7 @@ def _wide_cases() -> list[Any]:
             id="the_same_cell_answers_differently_for_min_and_for_max",
         ),
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "label", "aggregate": "n_unique"},
+            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "n_unique"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -293,7 +285,7 @@ def _wide_cases() -> list[Any]:
             id="an_aggregate_that_counts_retypes_a_text_value_column_to_whole_numbers",
         ),
         pytest.param(
-            {"index": ["code"], "columns_from": "period", "values": "label", "aggregate": "join_text"},
+            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "join_text"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -309,7 +301,7 @@ def _wide_cases() -> list[Any]:
 
 
 class TestCrossTabTurnsRowsIntoColumns:
-    """One row per index combination, one column per value of ``columns_from``, in sorted order."""
+    """One row per index combination, one column per value of ``names_from``, in sorted order."""
 
     @pytest.mark.parametrize(("config", "expected"), _wide_cases())
     def test_the_wide_frame_is_the_one_written_down(
@@ -344,7 +336,7 @@ class TestCrossTabTurnsRowsIntoColumns:
         result = run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         assert frame["period"].unique(maintain_order=True).to_list() == ["p2", "p1", "p3"], (
@@ -360,7 +352,7 @@ class TestCrossTabTurnsRowsIntoColumns:
         ten can, and a period code is exactly where a reader meets it first.
 
         The answer is not obviously the nicer one. It is the one that follows from the rule that
-        ``columns_from`` has to hold text already: the tool is handed text and has no licence to read numbers
+        ``names_from`` has to hold text already: the tool is handed text and has no licence to read numbers
         out of it. An author who wants p01, p02, p10 formats them that way in the step in front,
         where the decision is written down.
         """
@@ -376,7 +368,7 @@ class TestCrossTabTurnsRowsIntoColumns:
         result = run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         assert result["rows"].columns == ["code", "p10", "p2", "p9"]
@@ -395,7 +387,7 @@ class TestCrossTabTurnsRowsIntoColumns:
         result = run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         wide = result["rows"]
@@ -408,7 +400,7 @@ class TestCrossTabTurnsRowsIntoColumns:
         config: Mapping[str, Any],
         expected: pl.DataFrame,
     ) -> None:
-        """No rows means no values of ``columns_from``, so there is nothing to make a value column out of.
+        """No rows means no values of ``names_from``, so there is nothing to make a value column out of.
 
         The index columns still come back, typed, so a later step has a schema to compile against.
         Running every shape again with nothing in it is what catches a tool that reaches for the
@@ -435,7 +427,7 @@ class TestCrossTabTurnsRowsIntoColumns:
         run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         assert_frame_equal(frame, before)
@@ -459,7 +451,7 @@ class TestAnEmptyCellIsNull:
         result = run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         row = result["rows"].filter(pl.col("code") == "c")
@@ -478,7 +470,7 @@ class TestAnEmptyCellIsNull:
         result = run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         assert result["rows"].filter(pl.col("code") == "c")["p3"].to_list() == [None]
@@ -493,7 +485,7 @@ class TestAnEmptyCellIsNull:
         """
         template = CrossTab().config_template()
 
-        assert set(template) == {"index", "columns_from", "values", "aggregate"}
+        assert set(template) == {"by", "names_from", "values_from", "function"}
         assert expression_fields(template) == (), "every field here names a column; none computes one"
 
 
@@ -537,7 +529,7 @@ class TestAMissingValueBesideARealOne:
         result = run_tool(
             CrossTab(),
             Ports({"rows": _rows()}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         assert result["rows"].filter(pl.col("code") == "a")["p1"].to_list() == [13.0]
@@ -547,7 +539,7 @@ class TestAMissingValueBesideARealOne:
         [
             ("sum", 13.0),
             ("count", 3),
-            ("count_values", 2),
+            ("count_non_null", 2),
             ("n_unique", 3),
             ("min", 3.0),
             ("max", 10.0),
@@ -557,7 +549,7 @@ class TestAMissingValueBesideARealOne:
     def test_each_aggregate_reads_the_same_cell_its_own_way(self, aggregate: str, expected: object) -> None:
         """Seven aggregates, one cell, and the blank row means something different to each.
 
-        ``count`` counts rows, so it says 3. ``count_values`` counts the values that are there, so it
+        ``count`` counts rows, so it says 3. ``count_non_null`` counts the values that are there, so it
         says 2. That the two differ is the whole reason they have two names, and only a cell with
         more than one row and a blank among them can show it.
 
@@ -570,7 +562,7 @@ class TestAMissingValueBesideARealOne:
         result = run_tool(
             CrossTab(),
             Ports({"rows": _rows()}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": aggregate},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": aggregate},
         )
 
         assert result["rows"].filter(pl.col("code") == "a")["p1"].to_list() == [expected]
@@ -623,7 +615,7 @@ def _cell_answers() -> dict[str, Any]:
     return {
         "sum": 29.0,
         "count": 6,
-        "count_values": 5,
+        "count_non_null": 5,
         "n_unique": 4,
         "min": 1.0,
         "max": 9.0,
@@ -682,10 +674,10 @@ class TestEveryPublishedAggregateIsReallyComputed:
             CrossTab(),
             Ports({"rows": _one_cell_frame()}),
             {
-                "index": ["code"],
-                "columns_from": "period",
-                "values": _values_column(aggregate),
-                "aggregate": aggregate,
+                "by": ["code"],
+                "names_from": "period",
+                "values_from": _values_column(aggregate),
+                "function": aggregate,
             },
         )
 
@@ -705,10 +697,10 @@ class TestEveryPublishedAggregateIsReallyComputed:
             CrossTab(),
             Ports({"rows": rows}),
             {
-                "index": ["code"],
-                "columns_from": "period",
-                "values": _values_column(aggregate),
-                "aggregate": aggregate,
+                "by": ["code"],
+                "names_from": "period",
+                "values_from": _values_column(aggregate),
+                "function": aggregate,
             },
         )
         grouped = run_tool(GroupBy(), Ports({"rows": rows}), _group_by_config(aggregate))
@@ -770,7 +762,7 @@ class TestJoinedTextFillsACellTheWayItFillsAGroup:
         result = run_tool(
             CrossTab(),
             Ports({"rows": _noted_cells()}),
-            {"index": ["code"], "columns_from": "period", "values": "note", "aggregate": "join_text"},
+            {"by": ["code"], "names_from": "period", "values_from": "note", "function": "join_text"},
         )
 
         expected = pl.DataFrame(
@@ -790,7 +782,7 @@ class TestANullInTheColumnKeyStopsTheRun:
     def test_a_null_on_value_is_refused_and_the_rows_are_counted_and_shown(self) -> None:
         """The refusal names the column, counts the offenders, and shows a few of them.
 
-        :class:`~dantron_etl.tool.DataError` exists for exactly this: a refusal about values rather
+        :class:`~dantron_etl.authoring.DataError` exists for exactly this: a refusal about values rather
         than about a set-up, carrying enough to send the reader to the rows instead of to a query
         they have to write first.
 
@@ -804,7 +796,7 @@ class TestANullInTheColumnKeyStopsTheRun:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+                {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
             )
 
         error = caught.value
@@ -829,7 +821,7 @@ class TestANullInTheColumnKeyStopsTheRun:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+                {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
             )
 
         assert caught.value.offending_rows == 7
@@ -867,7 +859,7 @@ class TestABlankColumnKeyStopsTheRunToo:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+                {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
             )
 
         error = caught.value
@@ -883,7 +875,7 @@ class TestANewColumnMayNotTakeAnIndexColumnsName:
     def test_a_value_of_on_that_matches_an_index_column_is_refused_naming_the_collision(self) -> None:
         """One of the two columns would win and the other would be gone. Neither is acceptable.
 
-        This is the hazard :func:`~dantron_etl.tool.check_output_column` exists for, one step
+        This is the hazard :func:`~dantron_etl.authoring.check_output_column` exists for, one step
         removed: the name is not in the configuration, it is in the rows, so it can only be checked
         once the rows have been seen. The refusal has to name the offending value and the index
         column it collides with, because the author is looking at a configuration that mentions
@@ -895,13 +887,13 @@ class TestANewColumnMayNotTakeAnIndexColumnsName:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+                {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
             )
 
         message = str(caught.value)
         assert "code" in message, f"refusal should name the colliding name: {message}"
         assert "period" in message, f"refusal should name the column the name came from: {message}"
-        assert "index" in message, f"refusal should say the collision is with the index: {message}"
+        assert "by" in message, f"refusal should say the collision is with the index: {message}"
 
     def test_a_value_of_on_matching_a_column_that_is_not_in_the_index_is_fine(self) -> None:
         """Only the index columns survive into the output, so only they can be collided with.
@@ -916,7 +908,7 @@ class TestANewColumnMayNotTakeAnIndexColumnsName:
         result = run_tool(
             CrossTab(),
             Ports({"rows": frame}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
 
         assert result["rows"].columns == ["code", "label", "p1", "p2", "p3"]
@@ -924,32 +916,32 @@ class TestANewColumnMayNotTakeAnIndexColumnsName:
 
 def _refusal_cases() -> list[Any]:
     """(config, the text its refusal must quote) for each way a cross tab can be configured wrong."""
-    base = {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"}
+    base = {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"}
     return [
-        pytest.param({**base, "index": []}, "config field 'index' must not be empty", id="an_index_of_nothing"),
-        pytest.param({**base, "index": None}, "required config field 'index'", id="an_index_with_no_value"),
-        pytest.param({**base, "columns_from": None}, "columns_from", id="an_on_with_no_value"),
-        pytest.param({**base, "values": None}, "values", id="a_values_with_no_value"),
-        pytest.param({**base, "aggregate": None}, "aggregate", id="an_aggregate_with_no_value"),
-        pytest.param({**base, "index": ["branch"]}, "branch", id="an_index_column_that_is_not_there"),
-        pytest.param({**base, "index": ["Code"]}, "Code", id="an_index_column_whose_case_is_wrong"),
-        pytest.param({**base, "columns_from": "quarter"}, "quarter", id="an_on_column_that_is_not_there"),
-        pytest.param({**base, "values": "total"}, "total", id="a_values_column_that_is_not_there"),
-        pytest.param({**base, "columns_from": "code"}, "code", id="an_on_column_that_is_also_in_the_index"),
-        pytest.param({**base, "values": "code"}, "code", id="a_values_column_that_is_also_in_the_index"),
-        pytest.param({**base, "aggregate": "average"}, "average", id="an_aggregate_nobody_published"),
-        pytest.param({**base, "aggregate": "mean"}, "mean", id="the_aggregate_the_catalog_deliberately_omits"),
-        pytest.param({**base, "columns_from": "site"}, "site", id="an_on_column_that_is_not_text"),
-        pytest.param({**base, "values": "label"}, "label", id="a_sum_of_something_that_is_not_a_number"),
+        pytest.param({**base, "by": []}, "config field 'by' must not be empty", id="an_index_of_nothing"),
+        pytest.param({**base, "by": None}, "required config field 'by'", id="an_index_with_no_value"),
+        pytest.param({**base, "names_from": None}, "names_from", id="an_on_with_no_value"),
+        pytest.param({**base, "values_from": None}, "values_from", id="a_values_with_no_value"),
+        pytest.param({**base, "function": None}, "function", id="an_aggregate_with_no_value"),
+        pytest.param({**base, "by": ["branch"]}, "branch", id="an_index_column_that_is_not_there"),
+        pytest.param({**base, "by": ["Code"]}, "Code", id="an_index_column_whose_case_is_wrong"),
+        pytest.param({**base, "names_from": "quarter"}, "quarter", id="an_on_column_that_is_not_there"),
+        pytest.param({**base, "values_from": "total"}, "total", id="a_values_column_that_is_not_there"),
+        pytest.param({**base, "names_from": "code"}, "code", id="an_on_column_that_is_also_in_the_index"),
+        pytest.param({**base, "values_from": "code"}, "code", id="a_values_column_that_is_also_in_the_index"),
+        pytest.param({**base, "function": "average"}, "average", id="an_aggregate_nobody_published"),
+        pytest.param({**base, "function": "mean"}, "mean", id="the_aggregate_the_catalog_deliberately_omits"),
+        pytest.param({**base, "names_from": "site"}, "site", id="an_on_column_that_is_not_text"),
+        pytest.param({**base, "values_from": "label"}, "label", id="a_sum_of_something_that_is_not_a_number"),
         pytest.param(
-            {**base, "values": "amount", "aggregate": "join_text"},
+            {**base, "values_from": "amount", "function": "join_text"},
             "amount",
             id="a_text_join_of_something_that_is_not_text",
         ),
-        pytest.param({**base, "index": [7]}, "index[0]", id="an_index_entry_that_is_not_text"),
-        pytest.param({**base, "index": "code"}, "index", id="an_index_written_as_one_bare_name"),
-        pytest.param({**base, "columns_from": ["period"]}, "columns_from", id="an_on_written_as_a_list"),
-        pytest.param({**base, "columns_from": ""}, "columns_from", id="an_on_that_is_blank"),
+        pytest.param({**base, "by": [7]}, "by[0]", id="an_index_entry_that_is_not_text"),
+        pytest.param({**base, "by": "code"}, "by", id="an_index_written_as_one_bare_name"),
+        pytest.param({**base, "names_from": ["period"]}, "names_from", id="an_on_written_as_a_list"),
+        pytest.param({**base, "names_from": ""}, "names_from", id="an_on_that_is_blank"),
         pytest.param({**base, "columns": ["period"]}, "unknown config field", id="a_field_nobody_declared"),
     ]
 
@@ -975,7 +967,7 @@ class TestCrossTabRefusals:
         The same refusal has to hold on a frame with no rows, which is what shows it was read off
         the column names and the configuration rather than off the values. The empty frame is the
         sharper half of this pair for a cross tab, because a tool that waits until it has seen a
-        value of ``columns_from`` before checking anything would hand back an empty frame and report success.
+        value of ``names_from`` before checking anything would hand back an empty frame and report success.
         """
         frame = _rows().head(height)
 
@@ -988,8 +980,8 @@ class TestCrossTabRefusals:
     def test_a_key_column_that_is_also_an_index_column_is_refused_for_that_reason(self) -> None:
         """The refusal has to say which field collided with which, not just name a column.
 
-        An author looking at four fields that all name columns needs to be told that ``columns_from`` and
-        ``index`` are the two that overlap. "Column 'code' is used twice" sends them to read all
+        An author looking at four fields that all name columns needs to be told that ``names_from`` and
+        ``by`` are the two that overlap. "Column 'code' is used twice" sends them to read all
         four.
         """
         frame = _rows()
@@ -998,13 +990,13 @@ class TestCrossTabRefusals:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code", "site"], "columns_from": "code", "values": "amount", "aggregate": "sum"},
+                {"by": ["code", "site"], "names_from": "code", "values_from": "amount", "function": "sum"},
             )
 
         message = str(caught.value)
         assert "code" in message, f"refusal should name the column: {message}"
-        assert "columns_from" in message, f"refusal should name the field that collided: {message}"
-        assert "index" in message, f"refusal should name the field it collided with: {message}"
+        assert "names_from" in message, f"refusal should name the field that collided: {message}"
+        assert "by" in message, f"refusal should name the field it collided with: {message}"
 
     def test_a_non_text_key_column_is_refused_naming_the_column_and_what_it_holds(self) -> None:
         """A column name is text. Formatting a number into one is a decision for the step in front.
@@ -1018,7 +1010,7 @@ class TestCrossTabRefusals:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "columns_from": "site", "values": "amount", "aggregate": "sum"},
+                {"by": ["code"], "names_from": "site", "values_from": "amount", "function": "sum"},
             )
 
         message = str(caught.value)
@@ -1046,7 +1038,7 @@ class TestCrossTabRefusals:
             run_tool(
                 CrossTab(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "join_text"},
+                {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "join_text"},
             )
 
         message = str(caught.value)
@@ -1066,21 +1058,21 @@ class TestCrossTabRefusals:
         """
         template = CrossTab().config_template()
 
-        assert template["index"].type == "array"
-        assert template["index"].required is True
-        assert template["index"].non_empty is True, "an empty list is a value, so 'required' alone accepts it"
-        element = template["index"].items
+        assert template["by"].type == "array"
+        assert template["by"].required is True
+        assert template["by"].non_empty is True, "an empty list is a value, so 'required' alone accepts it"
+        element = template["by"].items
         assert element is not None, "an array with no declared element type checks nothing"
         assert element.type == "string"
 
-        for name in ("columns_from", "values", "aggregate"):
+        for name in ("names_from", "values_from", "function"):
             assert template[name].type == "string", f"{name} names one column or one aggregate"
             assert template[name].required is True
 
-        assert tuple(template["aggregate"].enum or ()) == tuple(sorted(AGGREGATE_FUNCTIONS)), (
+        assert tuple(template["function"].enum or ()) == tuple(sorted(AGGREGATE_FUNCTIONS)), (
             "the aggregates on offer must be the published set, not a second copy of it"
         )
-        assert template["aggregate"].default is None, "there is no obvious aggregate to assume"
+        assert template["function"].default is None, "there is no obvious aggregate to assume"
 
 
 class TestCrossTabInTheCatalog:
@@ -1126,7 +1118,7 @@ class TestCrossTabInTheCatalog:
 
         check_tool(tool)
 
-        joining = [example for example in tool.help().examples if example.configuration.get("aggregate") == "join_text"]
+        joining = [example for example in tool.help().examples if example.configuration.get("function") == "join_text"]
         assert joining, "an aggregate nobody demonstrates is one conformance never runs"
         assert any(
             _holds_a_blank_cell(example.outputs["rows"], _index_columns(example.configuration))
@@ -1169,7 +1161,7 @@ class TestFirstWhenTheFirstValueIsNull:
         result = run_tool(
             CrossTab(),
             Ports({"rows": rows}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "first"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "first"},
         )["rows"].sort("code")
 
         assert_frame_equal(

@@ -24,8 +24,9 @@ import pytest
 
 from dantron_etl.focus import FocusSpec
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import REGISTRY, Group, Lane, PipelineSpec, PortRef, StepSpec, read_pipeline_file
-from dantron_etl.runner import PipelineTrace, run_pipeline
+from dantron_etl import REGISTRY, Pipeline, PortRef, Step, read_pipeline
+from dantron_etl.spec import Container, Lane
+from dantron_etl import PipelineTrace, run_pipeline
 
 PROJECT_ROOT = project_root(__file__)
 
@@ -40,7 +41,7 @@ from scripts.pipeline_walkthrough_page import _canvas, build  # noqa: E402 -- ne
 @pytest.fixture(scope="module")
 def page(fixture_flow_sandbox: Path) -> str:
     """One rendered page, shared: building it is pure and costs nothing to reuse."""
-    spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+    spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
     with chdir(fixture_flow_sandbox):  # the flow's sinks write under the working folder
         trace = run_pipeline(spec)
     return build(spec, trace, FocusSpec(label="party", identity=("party",)))
@@ -55,7 +56,7 @@ def panels(fixture_flow_sandbox: Path) -> dict[str, str]:
     """
     from scripts.pipeline_walkthrough_page import build_panels
 
-    spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+    spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
     with chdir(fixture_flow_sandbox):
         trace = run_pipeline(spec)
     return build_panels(spec, trace, FocusSpec(label="party", identity=("party",)))
@@ -76,7 +77,7 @@ def shown(page: str, panels: dict[str, str]) -> str:
 
 @pytest.fixture(scope="module")
 def steps() -> tuple[str, ...]:
-    spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+    spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
     return tuple(spec.order())
 
 
@@ -87,7 +88,7 @@ def wiring() -> Counter[tuple[str, str, str]]:
     A Counter rather than a set: one step may take the same upstream port on two of its own inputs,
     which is two lines on the canvas and has to stay two lines in the markup.
     """
-    spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+    spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
     return Counter((ref.step, step.id, ref.port) for step in spec.steps for ref in step.inputs.values())
 
 
@@ -202,7 +203,7 @@ class TestTheFlowIsTheIndex:
     def test_only_a_step_with_inputs_offers_an_in_toggle(self, shown: str) -> None:
         """A source has no `in` to turn to, and a control that does nothing is worse than none."""
         sections = re.findall(r'<section class="stepdata" data-step="([a-z_]+)"(.*?)</section>', shown, re.DOTALL)
-        spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+        spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
 
         for step_id, body in sections:
             has_inputs = bool(spec.step(step_id).inputs)
@@ -1862,7 +1863,7 @@ class TestThePanelOpensOnTheEntityTheReaderChose:
         """
         from scripts.pipeline_walkthrough_page import build_panels
 
-        spec = read_pipeline_file(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+        spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
         with chdir(fixture_flow_sandbox):
             trace = run_pipeline(spec)
         fetched = build_panels(spec, trace, FocusSpec(label="party", identity=("party",)))
@@ -2014,7 +2015,7 @@ GROUP_MEMBERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _grouped_spec() -> PipelineSpec:
+def _grouped_spec() -> Pipeline:
     """The fixture flow with two of its stages boxed, read from the same file the page renders.
 
     Built by reading the shipped pipeline and adding the containers in memory rather than by editing
@@ -2023,19 +2024,19 @@ def _grouped_spec() -> PipelineSpec:
     """
     import yaml
 
-    from dantron_etl.pipeline import load_pipeline
+    from dantron_etl import load_pipeline
 
     document = yaml.safe_load((PROJECT_ROOT / "pipelines" / "fixture.yaml").read_text(encoding="utf8"))
-    document["groups"] = [{"id": group_id, "title": title} for group_id, title in GROUP_TITLES.items()]
+    document["containers"] = [{"id": group_id, "title": title} for group_id, title in GROUP_TITLES.items()]
     for group_id, members in GROUP_MEMBERS.items():
         for step in document["steps"]:
             if step["id"] in members:
-                step["group"] = group_id
+                step["container"] = group_id
     return load_pipeline(document, rules={"revenue_type": "REVENUE"})
 
 
 @pytest.fixture(scope="module")
-def boxed(fixture_flow_sandbox: Path) -> tuple[PipelineSpec, PipelineTrace]:
+def boxed(fixture_flow_sandbox: Path) -> tuple[Pipeline, PipelineTrace]:
     """The grouped pipeline and one run of it, which the counts on the boxes are read off."""
     spec = _grouped_spec()
     with chdir(fixture_flow_sandbox):
@@ -2043,7 +2044,7 @@ def boxed(fixture_flow_sandbox: Path) -> tuple[PipelineSpec, PipelineTrace]:
 
 
 @pytest.fixture(scope="module")
-def boxed_page(boxed: tuple[PipelineSpec, PipelineTrace]) -> str:
+def boxed_page(boxed: tuple[Pipeline, PipelineTrace]) -> str:
     spec, trace = boxed
     return build(spec, trace, FocusSpec(label="party", identity=("party",)))
 
@@ -2124,7 +2125,7 @@ def _overlaps(one: tuple[float, float, float, float], other: tuple[float, float,
     )
 
 
-def _boundary(spec: PipelineSpec, group_id: str) -> tuple[tuple[PortRef, ...], tuple[PortRef, ...]]:
+def _boundary(spec: Pipeline, group_id: str) -> tuple[tuple[PortRef, ...], tuple[PortRef, ...]]:
     """What entered a container and what left it, worked out here from the wiring alone.
 
     Derived in the test rather than taken from the graph's own answer to the same question: a page
@@ -2132,7 +2133,7 @@ def _boundary(spec: PipelineSpec, group_id: str) -> tuple[tuple[PortRef, ...], t
     question agree with each other perfectly, and this is the one figure on the box a reader is
     invited to trust without opening it.
     """
-    members = tuple(step.id for step in spec.steps if step.group == group_id)
+    members = tuple(step.id for step in spec.steps if step.container == group_id)
     entered: list[PortRef] = []
     for step_id in members:
         for source in spec.step(step_id).inputs.values():
@@ -2151,7 +2152,7 @@ class TestAContainerIsOneBoxWithASentenceOnIt:
     """Six boxes a reader has to follow, replaced by one they can read."""
 
     def test_every_declared_container_is_drawn_once_and_carries_its_title(
-        self, boxed_page: str, boxed: tuple[PipelineSpec, PipelineTrace]
+        self, boxed_page: str, boxed: tuple[Pipeline, PipelineTrace]
     ) -> None:
         """A title is the feature. An id over six boxes is the same canvas with a line drawn on it.
 
@@ -2165,7 +2166,7 @@ class TestAContainerIsOneBoxWithASentenceOnIt:
         drawn = _containers(boxed_page)
 
         assert set(drawn) == set(GROUP_TITLES), f"the containers drawn are {sorted(drawn)}"
-        assert {group.id: group.title for group in spec.groups} == GROUP_TITLES
+        assert {group.id: group.title for group in spec.containers} == GROUP_TITLES
         for group_id, title in GROUP_TITLES.items():
             attrs, body = drawn[group_id]
             said = re.findall(r"<text[^>]*>(.*?)</text>", body)
@@ -2230,7 +2231,7 @@ class TestAContainerIsOneBoxWithASentenceOnIt:
         assert sorted(drawn) == sorted(steps), "boxing some steps drew one of them twice, or dropped one"
 
     def test_a_container_says_what_entered_it_and_what_left_it(
-        self, boxed_page: str, boxed: tuple[PipelineSpec, PipelineTrace]
+        self, boxed_page: str, boxed: tuple[Pipeline, PipelineTrace]
     ) -> None:
         """The figure that lets a reader check a section without opening it.
 
@@ -2266,7 +2267,7 @@ class TestAContainerIsOneBoxWithASentenceOnIt:
             )
 
         naive = {
-            group_id: sum(shape.rows for port, shape in trace.shapes.items() if spec.step(port.step).group == group_id)
+            group_id: sum(shape.rows for port, shape in trace.shapes.items() if spec.step(port.step).container == group_id)
             for group_id in GROUP_TITLES
         }
         honest = {
@@ -2372,7 +2373,7 @@ class TestAClosedContainerStillJoinsUpToTheFlow:
     """A connection into a step that is no longer drawn is a flow that appears to stop dead at a box."""
 
     def test_every_connection_names_the_container_at_each_of_its_ends(
-        self, boxed_page: str, boxed: tuple[PipelineSpec, PipelineTrace]
+        self, boxed_page: str, boxed: tuple[Pipeline, PipelineTrace]
     ) -> None:
         """The fact a closed container re-wires itself from, so it is read off the drawing.
 
@@ -2384,7 +2385,7 @@ class TestAClosedContainerStillJoinsUpToTheFlow:
         """
         spec, _ = boxed
         expected = Counter(
-            (source.step, step.id, source.port, spec.step(source.step).group or "", step.group or "")
+            (source.step, step.id, source.port, spec.step(source.step).container or "", step.container or "")
             for step in spec.steps
             for source in step.inputs.values()
         )
@@ -3046,11 +3047,11 @@ def _drift(rng: random.Random) -> int:
     return rng.randrange(-FAR, FAR + 1)
 
 
-def _dense_flow(*, boxed: bool) -> PipelineSpec:
+def _dense_flow(*, boxed: bool) -> Pipeline:
     """A flow with a real one's shape and no client's vocabulary, optionally boxed into containers.
 
     Built as a spec rather than as a document, because the loader is not what is under test: the
-    layout is handed a :class:`PipelineSpec` and reads its wiring, its lanes and its groups. The
+    layout is handed a :class:`Pipeline` and reads its wiring, its lanes and its groups. The
     registry is the real one, so every tool named here has the ports it is wired through.
 
     A step's column is its longest path from a source, which the layout works out from the wiring
@@ -3107,7 +3108,7 @@ def _dense_flow(*, boxed: bool) -> PipelineSpec:
     def some_port(step_id: str) -> PortRef:
         return PortRef(step_id, rng.choice(REGISTRY.get(tool_of[step_id]).output_ports))
 
-    steps: list[StepSpec] = []
+    steps: list[Step] = []
     written_in_lane: Counter[str] = Counter()
     for step_id in ids:
         lane, column = lane_of[step_id], column_of[step_id]
@@ -3119,33 +3120,33 @@ def _dense_flow(*, boxed: bool) -> PipelineSpec:
             inputs[ports[0]] = some_port(rng.choice(at_column[column - 1]))
         if len(ports) > 1:
             inputs[ports[1]] = some_port(rng.choice(at_column[rng.randrange(0, column - 1)]))
-        steps.append(StepSpec(id=step_id, tool=tool_of[step_id], config={}, inputs=inputs, lane=lane, stage=stage))
+        steps.append(Step(id=step_id, tool=tool_of[step_id], config={}, inputs=inputs, lane=lane, stage=stage))
 
-    groups: tuple[Group, ...] = ()
+    groups: tuple[Container, ...] = ()
     if boxed:
         runs = _runs(steps)
         owner = {step_id: f"box_{n:03d}" for n, run in enumerate(runs) for step_id in run}
         groups = tuple(
-            Group(id=f"box_{n:03d}", title=f"Step {n}: what {len(run)} tools do between them")
+            Container(id=f"box_{n:03d}", title=f"Step {n}: what {len(run)} tools do between them")
             for n, run in enumerate(runs)
         )
         steps = [
-            StepSpec(
+            Step(
                 id=step.id,
                 tool=step.tool,
                 config=step.config,
                 inputs=step.inputs,
                 lane=step.lane,
                 stage=step.stage,
-                group=owner[step.id],
+                container=owner[step.id],
             )
             for step in steps
         ]
-    lanes = tuple(Lane(id=lane, label=f"Lane {lane}", order=n) for n, (lane, *_) in enumerate(LANE_SHAPE))
-    return PipelineSpec(name="dense", steps=tuple(steps), lanes=lanes, groups=groups, registry=REGISTRY)
+    lanes = tuple(Lane(id=lane, title=f"Lane {lane}", order=n) for n, (lane, *_) in enumerate(LANE_SHAPE))
+    return Pipeline(name="dense", steps=tuple(steps), lanes=lanes, containers=groups, registry=REGISTRY)
 
 
-def _runs(steps: list[StepSpec]) -> list[list[str]]:
+def _runs(steps: list[Step]) -> list[list[str]]:
     """Consecutive steps sharing a lane and a stage, cut into runs of at most :data:`RUN_LENGTH`."""
     runs: list[list[str]] = []
     key: tuple[str | None, str | None] | None = None
@@ -3159,7 +3160,7 @@ def _runs(steps: list[StepSpec]) -> list[list[str]]:
     return runs
 
 
-def _no_run(spec: PipelineSpec) -> PipelineTrace:
+def _no_run(spec: Pipeline) -> PipelineTrace:
     """A trace of nothing, which is all the layout needs.
 
     Nothing in the placing of a step consults the trace -- it supplies the figures written onto the
@@ -3179,7 +3180,7 @@ def dense_unboxed() -> str:
 
 
 @pytest.fixture(scope="module")
-def dense_boxed() -> tuple[PipelineSpec, str]:
+def dense_boxed() -> tuple[Pipeline, str]:
     """The dense flow with a container round every run of steps doing one job, and its canvas."""
     spec = _dense_flow(boxed=True)
     return spec, _canvas(spec, _no_run(spec))
@@ -3196,7 +3197,7 @@ def _places(canvas: str) -> str:
     return "\n".join(sorted(f"{step} {at[0]:g},{at[1]:g}" for step, at in _node_boxes(canvas).items()))
 
 
-def _columns(spec: PipelineSpec) -> dict[str, int]:
+def _columns(spec: Pipeline) -> dict[str, int]:
     """How far along the flow each step sits, worked out here from the wiring rather than taken
     from the page, so the shape case is checking the flow and not the drawing of it."""
     column: dict[str, int] = {}
@@ -3223,7 +3224,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
     """The same containers the cases above draw over six steps, drawn over six hundred and seventy-two."""
 
     def test_the_generated_flow_is_the_shape_these_cases_were_measured_against(
-        self, dense_boxed: tuple[PipelineSpec, str]
+        self, dense_boxed: tuple[Pipeline, str]
     ) -> None:
         """The figures the rest of the class argues from, stated once and checked.
 
@@ -3252,7 +3253,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
             "layout that places containers from one that draws a box round wherever they landed"
         )
         assert len(cell) == 222, f"{len(cell)} of the 672 steps are at slot 0, not 222"
-        assert len(spec.groups) == 150, f"boxing runs of {RUN_LENGTH} now yields {len(spec.groups)} containers"
+        assert len(spec.containers) == 150, f"boxing runs of {RUN_LENGTH} now yields {len(spec.containers)} containers"
         assert sum(len(step.inputs) for step in spec.steps) == 824, "the flow is not wired as it was measured"
         skipping = [
             (step.id, ref.step)
@@ -3266,7 +3267,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         )
 
     def test_every_container_on_a_dense_flow_encloses_its_own_steps_and_no_others(
-        self, dense_boxed: tuple[PipelineSpec, str]
+        self, dense_boxed: tuple[Pipeline, str]
     ) -> None:
         """The fatal one: a box is a claim about what is inside it, and today 145 of 150 are false.
 
@@ -3285,13 +3286,13 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         boxes = _node_boxes(canvas)
         containers = _containers(canvas)
 
-        assert set(containers) == {group.id for group in spec.groups}, "not every declared container is drawn"
+        assert set(containers) == {group.id for group in spec.containers}, "not every declared container is drawn"
         assert len(boxes) == len(spec.steps), f"{len(boxes)} steps are drawn, not {len(spec.steps)}"
 
         missing: dict[str, list[str]] = {}
         swallowed: dict[str, list[str]] = {}
         for group_id, (_, body) in containers.items():
-            held = set(spec.group_members(group_id))
+            held = set(spec.container_members(group_id))
             drawn = {attrs.get("id", "").removeprefix("node-") for attrs, _ in _elements(body, '<a class="node')}
             assert drawn == held, f"{group_id} draws {sorted(drawn)}, which is not {sorted(held)}"
 
@@ -3314,7 +3315,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         )
 
     def test_every_containers_header_has_room_of_its_own_on_a_dense_flow(
-        self, dense_boxed: tuple[PipelineSpec, str]
+        self, dense_boxed: tuple[Pipeline, str]
     ) -> None:
         """The title and the counts are the feature; drawn over a step, neither can be read.
 
@@ -3332,7 +3333,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         boxes = _node_boxes(canvas)
         containers = _containers(canvas)
 
-        assert set(containers) == {group.id for group in spec.groups}, "not every declared container is drawn"
+        assert set(containers) == {group.id for group in spec.containers}, "not every declared container is drawn"
         written_over: dict[str, list[str]] = {}
         for group_id, (_, body) in containers.items():
             outline, header = _outline_and_header(body)
@@ -3349,7 +3350,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         )
 
     def test_two_containers_are_never_drawn_over_each_other_on_a_dense_flow(
-        self, dense_boxed: tuple[PipelineSpec, str]
+        self, dense_boxed: tuple[Pipeline, str]
     ) -> None:
         """A step belongs to at most one container, so two outlines crossing is a drawing of a lie.
 
@@ -3361,7 +3362,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         spec, canvas = dense_boxed
         containers = _containers(canvas)
 
-        assert set(containers) == {group.id for group in spec.groups}, "not every declared container is drawn"
+        assert set(containers) == {group.id for group in spec.containers}, "not every declared container is drawn"
         outlines = {group_id: _outline_and_header(body)[0] for group_id, (_, body) in containers.items()}
         crossing = [
             (one, other)
@@ -3400,7 +3401,7 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         )
 
     def test_boxing_a_dense_flow_does_not_make_the_canvas_absurd(
-        self, dense_unboxed: str, dense_boxed: tuple[PipelineSpec, str]
+        self, dense_unboxed: str, dense_boxed: tuple[Pipeline, str]
     ) -> None:
         """Every rule above is satisfied by a layout nobody could use, so the cost is pinned too.
 

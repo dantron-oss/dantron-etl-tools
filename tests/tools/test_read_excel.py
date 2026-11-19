@@ -51,16 +51,16 @@ import pytest
 import xlsxwriter
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
+from dantron_etl.authoring import (
     CATEGORIES,
-    REGISTRY,
     ConfigError,
     ExecutionError,
     Ports,
+    REGISTRY,
     check_tool,
-    expression_fields,
     run_tool,
 )
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.cast_columns import CastColumns
 from dantron_etl.tools.read_excel import ReadExcel
 from dantron_etl.tools.write_excel import WriteExcel
@@ -483,7 +483,7 @@ class TestReadExcelInTheCatalog:
             }
         )
 
-        run_tool(WriteExcel(), Ports({"rows": frame}), {"path": str(target), "sheet": "Figures"})
+        run_tool(WriteExcel(), Ports({"rows": frame}), {"path": str(target), "sheets": [{"port": "rows", "sheet": "Figures"}]})
         back = _read({"path": str(target), "sheet": "Figures"})
 
         assert_frame_equal(back, frame, check_row_order=True)

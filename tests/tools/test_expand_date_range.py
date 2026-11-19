@@ -50,15 +50,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.expand_date_range import ExpandDateRange
 
 _TERM: Mapping[str, Any] = {"start": "[term_start]", "end": "[term_end]"}
@@ -398,11 +391,11 @@ class TestExpandDateRangeRefusals:
         """
         template = ExpandDateRange().config_template()
 
-        assert set(template) == {"start", "end", "interval", "period_column"}
+        assert set(template) == {"start", "end", "unit", "period_column"}
         assert (template["start"].required, template["end"].required) == (True, True)
         assert expression_fields(template) == ("start", "end"), "the loader seam is the declared type"
-        assert tuple(template["interval"].enum or ()) == ("month",)
-        assert template["interval"].default == "month"
+        assert tuple(template["unit"].enum or ()) == ("month",)
+        assert template["unit"].default == "month"
         assert template["period_column"].default == "period_start"
 
 

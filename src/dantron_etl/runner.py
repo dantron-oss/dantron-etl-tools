@@ -67,19 +67,7 @@ from .spec import Pipeline, PortRef
 from .trace import CachedFrame, ColumnCheckError, FrameShape, Level, PipelineTrace, StepEvent, StepFailedError
 from .walk import release_schedule, resolve_cached, resolve_sources, walk_around_cache, walk_for
 
-# compatibility: removed in the names stage -- the trace names below now live in trace.py
-__all__ = [
-    "CachedFrame",
-    "ColumnCheckError",
-    "FrameShape",
-    "Level",
-    "PipelineTrace",
-    "RunError",
-    "StepEvent",
-    "StepFailedError",
-    "logging_sink",
-    "run_pipeline",
-]
+__all__ = ["logging_sink", "run_pipeline"]
 
 
 #: Where one step's output frames came from. Not a pair of booleans on the walk, because "ran" and

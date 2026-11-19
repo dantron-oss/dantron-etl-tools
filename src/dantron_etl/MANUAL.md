@@ -81,24 +81,24 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-31 tools, by category:
+30 tools, by category:
 
 | category | tools |
 |---|---|
 | `input` | `read_csv`, `read_excel`, `read_table` |
 | `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| `transform` | `assemble_date`, `case_when`, `connected_components`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
+| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
-| `output` | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+| `output` | `publish_tables`, `write_csv`, `write_excel`, `write_table` |
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
 
 Four capabilities that each replace a shape you would otherwise build badly:
 
 - **Records that belong together through a chain** (A links to B, B to C, so A and C are one
-  group) — `connected_components`. A fixed run of joins follows a chain only as deep as you wrote
+  group) — `make_groups`. A fixed run of joins follows a chain only as deep as you wrote
   it, and fails silently on a deeper one. Clear blank keys to null first: an empty string is a
   record, and every row sharing one would join a single giant group.
 - **Best available match, each side used once** — `match_one_to_one`. A join plus filters cannot
@@ -118,8 +118,8 @@ Four capabilities that each replace a shape you would otherwise build badly:
 name: Monthly figures
 
 lanes:
-  - {id: source,  label: "As loaded",   order: 0}
-  - {id: figures, label: "The figures", order: 1}
+  - {id: source,  title: "As loaded",   order: 0}
+  - {id: figures, title: "The figures", order: 1}
 
 steps:
   - id: orders
@@ -148,10 +148,23 @@ Every step has `id`, `tool`, `config`, and `inputs` (except a source, which read
 `stage` and `why` drive the rendered walkthrough.
 
 The loader refuses any key it does not know, at every level: the top of the file (`name`, `steps`,
-`lanes`, `groups`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `group`, `why`), a
-lane (`id`, `label`, `order`) and a group (`id`, `title`). A misspelt key would otherwise be dropped
-without a word. The refusal names the key and suggests the one you probably meant. `stage` is free
-text, so a misspelt stage is not caught: it draws as a stage of its own.
+`lanes`, `containers`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `container`,
+`why`), a lane (`id`, `title`, `order`) and a container (`id`, `title`). A misspelt key would
+otherwise be dropped without a word. The refusal names the key and suggests the one you probably
+meant. `stage` is free text, so a misspelt stage is not caught: it draws as a stage of its own.
+
+**A file written for an older version of the library** may use names that have since been renamed
+(`groups`, a join's `matched` port, `strip()` and others). The loader refuses it, says what each old
+name is now called, and names the command that rewrites the file:
+
+```bash
+python -m dantron_etl.migrate pipelines/          # a dry run: what would change, file by file
+python -m dantron_etl.migrate --write pipelines/  # apply it
+```
+
+It edits the file's text, so comments, layout and `why` text are kept exactly. Pass the rules files
+too: an expression in one is migrated the same way. Python code is not rewritten; the command
+prints the renamed Python names to change by hand.
 
 **`why` is required to be useful.** It is the sentence a reader sees next to the number. Write what
 the step decides and why that is the right decision, not what the configuration already says.
@@ -176,14 +189,14 @@ The ports that surprise people:
 | tool | in | out |
 |---|---|---|
 | `filter` | `rows` | `true`, `false` |
-| `join` | `left`, `right` | `matched`, `left_only`, `right_only` |
+| `join` | `left`, `right` | `joined`, `left_only`, `right_only` |
 | `remove_duplicates` | `rows` | `unique`, `duplicate` |
 | `expand_date_range` | `rows` | `rows`, `unexpanded` |
 | `limit_rows` | `rows` | `rows`, `dropped` |
 | `union` | `top`, `bottom` | `rows` |
 
-`join` with `how: left` still writes to `matched` — `how` decides only which rows reach `matched`,
-and the orphan ports answer their own question either way. So a left join reads `matched`; the rows
+`join` with `how: left` still writes to `joined` — `how` decides only which rows reach `joined`,
+and the orphan ports answer their own question either way. So a left join reads `joined`; the rows
 that paired with nothing are *also* on `left_only`, which is where an orphan check comes from free.
 
 `expand_date_range`'s second port is not tidiness. A row it cannot expand does not disappear — the
@@ -207,9 +220,12 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
-Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `strip`,
+Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `trim`,
 `len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`,
 `concat`, `format_number`, `uuid5`.
+
+`trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
+inside the text alone.
 
 `format_number(value, decimals, thousands_separator, decimal_separator)` writes a number as text:
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`
@@ -275,11 +291,11 @@ no field that only applies when another field holds a particular value.
 
 ### 4.4 Containers
 
-A flow of any size is unreadable as a list of steps. `groups` names boxes and each step says which
+A flow of any size is unreadable as a list of steps. `containers` names boxes and each step says which
 box it is in:
 
 ```yaml
-groups:
+containers:
   - {id: read_accounts, title: "Fetch the account list and put its header row back"}
 
 steps:
@@ -287,7 +303,7 @@ steps:
     tool: read_table
     lane: sources
     stage: parties
-    group: read_accounts
+    container: read_accounts
 ```
 
 On the drawn page a container is a titled box its steps sit inside, which a reader can close to a
@@ -298,7 +314,7 @@ they do not need to look at today.
 
 | | |
 |---|---|
-| a `group` naming no declared container | a typo is refused, never quietly ignored |
+| a `container` naming no declared container | a typo is refused, never quietly ignored |
 | a container with no members | it would draw as an empty box |
 | a blank or whitespace title | the title is the only thing a closed container shows |
 | a container whose steps sit in two different lanes | a box spans one lane; two is a drawing that cannot be laid out |
@@ -314,7 +330,7 @@ words, what the steps produce, no vocabulary from this library. Sentence case, n
 about seventy characters.
 
 A container is a way of reading the flow. It changes nothing about what runs, in what order, or what
-any step produces -- `group` is not part of a step's fingerprint (§7b), so boxing an existing flow
+any step produces -- `container` is not part of a step's fingerprint (§7b), so boxing an existing flow
 does not invalidate a cache.
 
 ---
@@ -477,8 +493,8 @@ Every one of these was measured, most of them the hard way.
   and `formula` take the flag, and it is a statement that the column is there to be written over. A
   misspelled name fails the run instead of quietly writing a new column and leaving the one you
   meant to repair with its old values. Without the flag, a name the input already carries is
-  refused; with it, the column is written where it already was, and the rules read the values that
-  were there before the step ran — so a rule may read the column it writes. Reading the old values
+  refused; with it, the column is written where it already was, and the cases read the values that
+  were there before the step ran — so a case may read the column it writes. Reading the old values
   is not the same as keeping them — the column is written in full, so a row no rung reached takes
   `otherwise`, or null when there is none. A ladder that repairs three rows and has no `otherwise`
   nulls every other row of the column.
@@ -491,7 +507,7 @@ Every one of these was measured, most of them the hard way.
 - **The integer literal in an expression is 32-bit.** `0` and `1` in a `formula` give a narrower
   column than a database's `BIGINT`. It is the right width for a rank or a small count; use
   `cast_columns` when the width itself matters.
-- **A spreadsheet cell cannot record a time zone**, so `write_excel` and `write_workbook` refuse a
+- **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
   zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
   writer drop the zone quietly.
 - **A text file states no types at all.** `read_csv` infers, reading the *whole* column before it
@@ -501,7 +517,7 @@ Every one of these was measured, most of them the hard way.
 
 ### How a figure is shown
 
-- **Nothing is formatted unless the tab says so.** `write_workbook` writes the figures and leaves
+- **Nothing is formatted unless the tab says so.** `write_excel` writes the figures and leaves
   them under the workbook's own `General`, so `661617.4665392789` opens reading exactly that. State
   `formats` on the sheet entry to get `661,617.47`. The only format written without being asked for
   is on a date column, and that one is not decoration: without it the cell reads as a count of days
@@ -560,7 +576,7 @@ Two more rulings you will meet:
 - **`join_text` of the same group is the empty string** — deliberately the opposite. Joining no
   strings together produces the empty string in any language that has both; adding no numbers
   together produces a total nobody measured.
-- **`count` counts rows. `count_values` counts the values that are there.** Other libraries spell
+- **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
 
 ---
@@ -622,7 +638,7 @@ if anything upstream has been edited since, the cache is **refused by name** rat
 That refusal is the whole feature. A cache that fails to load is a nuisance; a cache that loads
 perfectly against a pipeline somebody has since edited is a wrong number nobody can see.
 
-Deliberately **not** part of the fingerprint: `lane`, `stage`, `why` and `group`. None of them
+Deliberately **not** part of the fingerprint: `lane`, `stage`, `why` and `container`. None of them
 changes a figure, so re-drawing or re-describing a flow does not throw away a cache you would still
 have been right to use.
 

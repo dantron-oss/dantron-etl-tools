@@ -16,7 +16,7 @@ null by default would produce a frame that looks right and is not: the column ha
 the row is still there, and the value is simply gone. So ``on_invalid`` defaults to ``error``, and
 the refusal names the column, the type asked for, and the offending rows.
 
-``on_invalid: empty`` is the other honest answer, and it is the one a large messy source usually
+``on_invalid: set_null`` is the other honest answer, and it is the one a large messy source usually
 wants: three unreadable values out of forty-six thousand should not stop a nightly build. It leaves
 them null and **reports how many, out of how many, and what share** -- which raises the step to a
 warning, so the run carries on and the fact travels with it, into the log and onto the canvas. The
@@ -58,10 +58,10 @@ from ..authoring import (
     unreadable_report,
 )
 
-# 'empty' rather than 'null': `null` unquoted in a definition file IS the null value, so an author
+# 'set_null' rather than 'null': `null` unquoted in a definition file IS the null value, so an author
 # reaching for the obvious word would hand over None and the boundary would read it as unset. Spelled
 # the same way AssembleDate spells the same choice.
-_ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "empty")
+_ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "set_null")
 
 
 class CastColumns:
@@ -102,7 +102,7 @@ class CastColumns:
             "on_invalid": ConfigField(
                 type="string",
                 description="What a value that will not convert does: 'error' stops the run "
-                "(default), 'empty' leaves it null and reports how many, out of how many.",
+                "(default), 'set_null' leaves it null and reports how many, out of how many.",
                 default="error",
                 enum=_ON_INVALID_ENUM,
             ),
@@ -120,7 +120,7 @@ class CastColumns:
                 "Put this in front of a Union whose two sides disagree about a column: the union "
                 "refuses rather than choosing which side to rewrite, and this is where the flow "
                 "says which one was right.",
-                "A value that will not convert stops the run by default. 'on_invalid: empty' "
+                "A value that will not convert stops the run by default. 'on_invalid: set_null' "
                 "leaves it null instead and reports how many out of how many, raising the step to "
                 "a warning -- the run carries on, and the size of the problem carries on with it.",
                 "Casting a column to the type it already has is refused: it is a declaration that "
@@ -163,7 +163,7 @@ class CastColumns:
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
-        lenient = config["on_invalid"] == "empty"
+        lenient = config["on_invalid"] == "set_null"
         notes: list[str] = []
         # One entry per column that emptied something, carrying a reason for each row it emptied.
         # Gathered in the order the columns were cast, so a row degraded twice reads in the order

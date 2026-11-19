@@ -16,7 +16,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.tool import Ports, run_tool
+from dantron_etl.authoring import Ports, run_tool
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.filter import Filter
 from dantron_etl.tools.group_by import GroupBy
@@ -49,7 +49,7 @@ def _show(**frames: pl.DataFrame) -> str:
 
 @pytest.mark.parametrize("how", ["inner", "left"])
 def test_join_pairs_exactly_the_rows_whose_keys_are_equal_and_not_null(how: str) -> None:
-    """Every (left row, right row) pair in ``matched`` is one the keys allow, and none is missing.
+    """Every (left row, right row) pair in ``joined`` is one the keys allow, and none is missing.
 
     A null key pairs with nothing, under either ``how``. Under ``left``, a left row that paired with
     nothing is kept once, with nothing from the right. The orphan ports hold exactly the rows that
@@ -70,9 +70,9 @@ def test_join_pairs_exactly_the_rows_whose_keys_are_equal_and_not_null(how: str)
         right_alone = [rid for rid in right["r_id"] if rid not in {pair[1] for pair in pairs}]
         expected = Counter(pairs + ([(lid, None) for lid in left_alone] if how == "left" else []))
 
-        got = Counter(zip(result["matched"]["l_id"].to_list(), result["matched"]["r_id"].to_list(), strict=True))
+        got = Counter(zip(result["joined"]["l_id"].to_list(), result["joined"]["r_id"].to_list(), strict=True))
         context = _show(left=left, right=right)
-        assert got == expected, f"how={how}: matched pairs {got} != {expected}\n{context}"
+        assert got == expected, f"how={how}: joined pairs {got} != {expected}\n{context}"
         assert sorted(result["left_only"]["l_id"].to_list()) == left_alone, context
         assert sorted(result["right_only"]["r_id"].to_list()) == right_alone, context
 
@@ -121,7 +121,7 @@ def test_remove_duplicates_keeps_one_row_per_key_and_sets_the_rest_aside(keep: s
     for _ in range(CASES):
         rows = _frame(rng, rng.randint(0, 8))
         by = rng.choice([["k"], ["k", "x_amount"]])
-        result = run_tool(RemoveDuplicates(), Ports({"rows": rows}), {"columns": by, "keep": keep})
+        result = run_tool(RemoveDuplicates(), Ports({"rows": rows}), {"by": by, "keep": keep})
 
         kept: dict[tuple[Any, ...], int] = {}
         for row in rows.iter_rows(named=True):
@@ -177,11 +177,11 @@ def test_unpivot_then_cross_tab_gives_back_the_wide_frame() -> None:
             schema={"k": pl.String, **dict.fromkeys(periods, pl.Float64)},
         )
 
-        long = run_tool(Unpivot(), Ports({"rows": wide}), {"index": ["k"], "into": "period", "values": "amount"})
+        long = run_tool(Unpivot(), Ports({"rows": wide}), {"by": ["k"], "names_to": "period", "values_to": "amount"})
         back = run_tool(
             CrossTab(),
             Ports({"rows": long["rows"]}),
-            {"index": ["k"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["k"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )["rows"]
 
         assert long["rows"].height == height * width, _show(wide=wide)

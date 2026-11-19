@@ -48,24 +48,22 @@ import polars as pl
 import pytest
 
 from dantron_etl.paths import project_root
-from dantron_etl.pipeline import PipelineError, PortRef, load_pipeline
-from dantron_etl.runner import RunError, run_pipeline
-from dantron_etl.tool import (
-    REGISTRY,
+from dantron_etl import PipelineError, PortRef, load_pipeline
+from dantron_etl import RunError, run_pipeline
+from dantron_etl.authoring import (
     ConfigField,
     ConformanceError,
     PortError,
     Ports,
+    REGISTRY,
     Tool,
     ToolHelp,
     ToolRegistry,
     WorkedExample,
-    catalog_input_ports,
     check_tool,
-    input_ports_for,
-    ports_from_config,
     run_tool,
 )
+from dantron_etl.contract import catalog_input_ports, input_ports_for, ports_from_config
 
 PROJECT_ROOT = project_root(__file__)
 
@@ -1001,14 +999,14 @@ class TestTwoStepsOfOneConfigDerivedTool:
 #: ``input_ports_for`` would quietly join this set, and a guard that skipped on membership would
 #: excuse the very tool it exists to check.
 #:
-#: ``write_workbook`` is the first member: it reads one port per tab its ``sheets`` name, so two
+#: ``write_excel`` is the first member: it reads one port per tab its ``sheets`` name, so two
 #: steps of it read different frames and no static attribute can say what either one reads. It has
-#: its own coverage in ``tests/tools/test_write_workbook.py``.
+#: its own coverage in ``tests/tools/test_write_excel.py``.
 #:
 #: ``publish_tables`` is the second, for the same shape and the same reason: it reads one port per
 #: table its ``tables`` name, and a publish of five tables reads five frames where a publish of one
 #: reads one. Its coverage is in ``tests/tools/test_publish_tables.py``.
-SHIPPED_TOOLS_THAT_DERIVE_THEIR_PORTS: frozenset[str] = frozenset({"write_workbook", "publish_tables"})
+SHIPPED_TOOLS_THAT_DERIVE_THEIR_PORTS: frozenset[str] = frozenset({"write_excel", "publish_tables"})
 
 
 class TestTheShippedCatalogIsCheckedNotExcused:

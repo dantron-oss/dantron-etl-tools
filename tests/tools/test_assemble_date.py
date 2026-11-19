@@ -47,16 +47,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    ToolError,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, ToolError, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.assemble_date import AssembleDate
 
 # ---------------------------------------------------------------------------
@@ -223,7 +215,7 @@ class TestAssembleDateBuildsADate:
     @pytest.mark.parametrize(
         ("policy", "expected"),
         [
-            pytest.param("empty", [None], id="empty_gives_a_null_date_for_that_row"),
+            pytest.param("set_null", [None], id="set_null_gives_a_null_date_for_that_row"),
             pytest.param("error", None, id="error_refuses_the_run"),
         ],
     )
@@ -281,9 +273,9 @@ class TestAssembleDateBuildsADate:
                 _built(frame, _config(on_invalid=policy))
             assert named in str(caught.value), f"the refusal must quote {named!r}: {caught.value}"
 
-        assert _built(frame, _config(on_invalid="empty")).to_list() == [None]
+        assert _built(frame, _config(on_invalid="set_null")).to_list() == [None]
 
-    @pytest.mark.parametrize("policy", ["clamp", "empty", "error"])
+    @pytest.mark.parametrize("policy", ["clamp", "set_null", "error"])
     def test_a_missing_part_is_a_null_date_under_every_policy_including_error(self, policy: str) -> None:
         """A part nobody supplied is missing data, which is a different question from an impossible date.
 
@@ -335,7 +327,7 @@ class TestAssembleDateBuildsADate:
         if written:
             assert written in str(caught.value), f"the refusal must quote the value it could not read: {caught.value}"
 
-        assert _built(frame, {**config, "on_invalid": "empty"}).to_list() == [date(2026, 3, 1), None]
+        assert _built(frame, {**config, "on_invalid": "set_null"}).to_list() == [date(2026, 3, 1), None]
 
     @pytest.mark.parametrize(
         ("column", "values"),
@@ -426,7 +418,7 @@ class TestAssembleDateRefusals:
             _built(_parts(), _config(on_invalid=spelling))
 
         message = str(caught.value)
-        assert "empty" in message, f"the refusal must list the policy the author wanted: {message}"
+        assert "set_null" in message, f"the refusal must list the policy the author wanted: {message}"
         assert "clamp" in message and "error" in message, f"and the other two: {message}"
 
     def test_the_template_declares_three_part_expressions_and_a_day_that_defaults_to_the_first(self) -> None:
@@ -447,7 +439,7 @@ class TestAssembleDateRefusals:
         assert template["day"].required is False
         assert template["day"].default == "1", "the one day every month has"
         assert template["on_invalid"].default == "error", "the two other policies both change what the data says"
-        assert set(template["on_invalid"].enum or ()) == {"clamp", "empty", "error"}
+        assert set(template["on_invalid"].enum or ()) == {"clamp", "set_null", "error"}
         assert "null" not in (template["on_invalid"].enum or ()), "an unquoted null in YAML is the null value"
 
     def test_assemble_date_leaves_its_input_untouched(self) -> None:

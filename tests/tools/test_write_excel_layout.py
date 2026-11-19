@@ -1,4 +1,4 @@
-"""Tests for write_workbook's layout options: how a tab looks, never what it holds.
+"""Tests for write_excel's layout options: how a tab looks, never what it holds.
 
 A report written by a flow can match an older hand-written report figure for figure and format for
 format, and still read worse. Its paragraphs run on as one long line. Its title is plain. Its
@@ -54,15 +54,9 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table
 
 from dantron_etl.column_types import DECLARED_TYPES
-from dantron_etl.tool import (
-    ConfigError,
-    DataError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
-from dantron_etl.tools.write_workbook import WriteWorkbook
+from dantron_etl.authoring import ConfigError, DataError, Ports, check_tool, run_tool
+from dantron_etl.config import expression_fields
+from dantron_etl.tools.write_excel import WriteExcel
 
 # ---------------------------------------------------------------------------
 # Test data and helpers
@@ -125,7 +119,7 @@ replacing a cell's whole style would take its number format with it."""
 
 def _write(frames: Mapping[str, pl.DataFrame], config: Mapping[str, Any]) -> None:
     """Put ``frames`` through the boundary, the way a flow does."""
-    result = run_tool(WriteWorkbook(), Ports(dict(frames)), dict(config))
+    result = run_tool(WriteExcel(), Ports(dict(frames)), dict(config))
     assert result.names == (), "a terminal sink produces no ports at all"
 
 
@@ -746,7 +740,7 @@ class TestLayoutInATemplate:
 
         _write(
             {"one": _laid_out_rows()},
-            {"path": str(target), "template": str(template), "replace": True, "sheets": [entry]},
+            {"path": str(target), "template": str(template), "overwrite_sheets": True, "sheets": [entry]},
         )
 
         assert [t["name"] for t in _tables(target, "Figures")] == expected
@@ -949,7 +943,7 @@ class TestLayoutIsDeclaredAndDocumented:
     """The options as a definition file meets them: optional, typed, spelled safely, and demonstrated."""
 
     def test_the_sheet_entry_declares_each_option_with_its_shape(self) -> None:
-        entry = WriteWorkbook().config_template()["sheets"].items
+        entry = WriteExcel().config_template()["sheets"].items
         assert entry is not None and entry.fields is not None
         fields = entry.fields
 
@@ -984,11 +978,11 @@ class TestLayoutIsDeclaredAndDocumented:
 
         every_name = {"widths", "fit_widths", "wrap", "table", "header", "width", "name", "style", "bold", "size"}
         assert not every_name & YAML_REWRITES, "a field a definition file rewrites is not a field"
-        assert expression_fields(WriteWorkbook().config_template()) == (), "no layout option is a column reference"
+        assert expression_fields(WriteExcel().config_template()) == (), "no layout option is a column reference"
 
     def test_a_worked_example_uses_every_option_and_really_runs(self) -> None:
         """The catalog shows each option in use, and the conformance check runs that example."""
-        tool = WriteWorkbook()
+        tool = WriteExcel()
         help_ = tool.help()
 
         used = {key for example in help_.examples for entry in example.configuration["sheets"] for key in entry}

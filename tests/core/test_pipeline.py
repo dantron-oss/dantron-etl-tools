@@ -52,17 +52,11 @@ import pytest
 
 import dantron_etl
 from dantron_etl.expr import compile_expr
-from dantron_etl.pipeline import (
-    Lane,
-    PipelineError,
-    PipelineSpec,
-    PortRef,
-    StepSpec,
-    load_pipeline,
-    read_pipeline_file,
-)
-from dantron_etl.runner import run_pipeline
-from dantron_etl.tool import REGISTRY, ConfigError, ToolError, apply_defaults, validate_against_template
+from dantron_etl import Pipeline, PipelineError, PortRef, Step, load_pipeline, read_pipeline
+from dantron_etl.spec import Lane
+from dantron_etl import run_pipeline
+from dantron_etl.authoring import ConfigError, REGISTRY, ToolError
+from dantron_etl.config import apply_defaults, validate_against_template
 
 # The environment a child interpreter is started with, when a test needs one with nothing inherited.
 # Linux needs only a PATH. Windows will not start Python without SYSTEMROOT, so it is passed on
@@ -95,8 +89,8 @@ def _document() -> dict[str, Any]:
     return {
         "name": "a neutral fixture",
         "lanes": [
-            {"id": "intake", "label": "Intake", "order": 1},
-            {"id": "shaping", "label": "Shaping", "order": 2},
+            {"id": "intake", "title": "Intake", "order": 1},
+            {"id": "shaping", "title": "Shaping", "order": 2},
         ],
         "steps": [
             {
@@ -136,7 +130,7 @@ def _document() -> dict[str, Any]:
                 "lane": "shaping",
                 "stage": "publish",
                 "config": {"path": "{scratch}/paired.csv"},
-                "inputs": {"rows": "paired.matched"},
+                "inputs": {"rows": "paired.joined"},
             },
         ],
     }
@@ -192,7 +186,7 @@ class TestAPipelineIsADataFile:
         """The whole surface: steps as authored, edges port-to-port, and a walkable order."""
         spec = load_pipeline(_document(), rules=RULES)
 
-        assert isinstance(spec, PipelineSpec)
+        assert isinstance(spec, Pipeline)
         assert spec.name == "a neutral fixture"
         assert tuple(step.id for step in spec.steps) == ("entries", "headers", "kept", "paired", "published")
 
@@ -420,7 +414,7 @@ class TestTheWiringIsRefusedBeforeARowMoves:
                     "id": "published",
                     "tool": "write_csv",
                     "config": {"path": str(paired)},
-                    "inputs": {"rows": "paired.matched"},
+                    "inputs": {"rows": "paired.joined"},
                 },
             ],
         }
@@ -447,7 +441,7 @@ class TestTheWiringIsRefusedBeforeARowMoves:
                 "inputs": {"left": "loop_b.true", "right": "loop_b.false"},
             }
         )
-        document["steps"].append(_filter_step("loop_b", "loop_a.matched"))
+        document["steps"].append(_filter_step("loop_b", "loop_a.joined"))
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -635,11 +629,11 @@ class TestTheLibraryTakesNoFileFormatDependency:
             encoding="utf8",
         )
 
-        assert read_pipeline_file(written, rules=RULES) == load_pipeline(document, rules=RULES)
+        assert read_pipeline(written, rules=RULES) == load_pipeline(document, rules=RULES)
 
         source_root = Path(dantron_etl.__file__).parent.parent
         probe = subprocess.run(
-            [sys.executable, "-c", "import dantron_etl.pipeline, sys; print('yaml' in sys.modules)"],
+            [sys.executable, "-c", "import dantron_etl.loader, sys; print('yaml' in sys.modules)"],
             capture_output=True,
             text=True,
             check=True,
@@ -818,7 +812,7 @@ class TestARuleValueIsEscapedForTheAuthorRatherThanByThem:
             encoding="utf8",
         )
 
-        spec = read_pipeline_file(flow, rules={"kept_code": "O'Brian"})
+        spec = read_pipeline(flow, rules={"kept_code": "O'Brian"})
         run_pipeline(spec)
 
         assert pl.read_csv(kept)["code"].to_list() == ["O'Brian"]
@@ -904,13 +898,16 @@ class TestARuleValueIsSpelledForTheFieldItLandsIn:
             {
                 "id": "workbook",
                 "tool": "write_excel",
-                "config": {"path": "{scratch}/figures.xlsx", "sheet": "Figures ${rules.period}"},
-                "inputs": {"rows": "paired.matched"},
+                "config": {
+                    "path": "{scratch}/figures.xlsx",
+                    "sheets": [{"port": "rows", "sheet": "Figures ${rules.period}"}],
+                },
+                "inputs": {"rows": "paired.joined"},
             },
             {"period": "2026-09"},
         )
 
-        assert config["sheet"] == "Figures 2026-09"
+        assert config["sheets"][0]["sheet"] == "Figures 2026-09"
 
     def test_a_column_name_nested_in_an_array_of_objects_receives_the_value(self) -> None:
         """The seam has to reach nesting: the name sits at ``columns[0].name``, beside an expression.
@@ -975,13 +972,13 @@ class TestAnExpressionFieldKeepsTheQuotingItAlreadyHas:
     """
 
     def test_a_ladders_conditions_and_results_keep_the_languages_quoting(self) -> None:
-        """``rules[].when`` and ``rules[].then`` are expressions two levels down, and stay so."""
+        """``cases[].when`` and ``cases[].then`` are expressions two levels down, and stay so."""
         config = _load_step(
             {
                 "id": "banding",
                 "tool": "case_when",
                 "config": {
-                    "rules": [
+                    "cases": [
                         {
                             "when": "[code] = '${rules.kept_code}'",
                             "then": "concat('band ', '${rules.band}')",
@@ -995,10 +992,10 @@ class TestAnExpressionFieldKeepsTheQuotingItAlreadyHas:
             {"kept_code": "O'Brian", "band": "O'Neill"},
         )
 
-        assert config["rules"][0]["when"] == "[code] = 'O''Brian'"
-        assert config["rules"][0]["then"] == "concat('band ', 'O''Neill')"
+        assert config["cases"][0]["when"] == "[code] = 'O''Brian'"
+        assert config["cases"][0]["then"] == "concat('band ', 'O''Neill')"
         rows = pl.DataFrame({"code": ["O'Brian", "OBrian"]})
-        assert rows.filter(compile_expr(config["rules"][0]["when"]))["code"].to_list() == ["O'Brian"]
+        assert rows.filter(compile_expr(config["cases"][0]["when"]))["code"].to_list() == ["O'Brian"]
 
     def test_an_aggregations_value_keeps_the_languages_quoting(self) -> None:
         """``aggregations[].value`` is an expression beside two plain strings in the same object."""
@@ -1194,20 +1191,20 @@ class _NoTextForm:
     """
 
 
-def _spec_carrying(value: Any) -> PipelineSpec:
+def _spec_carrying(value: Any) -> Pipeline:
     """A one-step spec whose configuration holds ``value``, assembled rather than loaded.
 
     Assembled on purpose. Every field the shipped catalog declares is typed and none of the declared
     types is a date, so ``load_pipeline`` refuses a bare ``2026-04-01`` before a fingerprint could
     ever be taken of one -- while ``yaml.safe_load`` goes on handing back a ``datetime.date`` for
-    exactly that line, and :class:`PipelineSpec` is a public dataclass a caller assembling a flow in
+    exactly that line, and :class:`Pipeline` is a public dataclass a caller assembling a flow in
     memory may build directly. So a fingerprint has to answer for a value the JSON encoder has no
     spelling for, whether or not today's loader is the way it arrives, and what it answers is what
     the cases below pin.
     """
-    return PipelineSpec(
+    return Pipeline(
         name="a neutral fixture",
-        steps=(StepSpec(id="entries", tool="read_csv", config={"path": value}, inputs={}),),
+        steps=(Step(id="entries", tool="read_csv", config={"path": value}, inputs={}),),
     )
 
 
@@ -1425,7 +1422,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
             "import sys\n"
             "from pathlib import Path\n"
             "import json\n"
-            "from dantron_etl.pipeline import load_pipeline\n"
+            "from dantron_etl import load_pipeline\n"
             "document = json.loads(Path(sys.argv[1]).read_text(encoding='utf8'))\n"
             "rules = json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))\n"
             "print(load_pipeline(document, rules=rules).fingerprint(sys.argv[3]))\n",
@@ -1538,7 +1535,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
 # can -- "fetch the crm accounts and put the header row back" says in one line what six boxes
 # say in six, and a reader who trusts that line never has to open it.
 #
-# The shape is a `group` field on the step and a `groups:` block giving each id a title. Steps stay
+# The shape is a `container` field on the step and a `containers:` block giving each id a title. Steps stay
 # in one flat list, so a step moves between containers by editing one line and nothing about the
 # file's shape changes. It is exactly how `lane` and `stage` already work, which is the reason it was
 # chosen: a second nesting level in the document would make every tool that reads a pipeline file
@@ -1569,9 +1566,9 @@ def _grouped_document() -> dict[str, Any]:
     container has a real boundary in both directions rather than being the whole flow.
     """
     document = _document()
-    document["groups"] = [{"id": "shape", "title": SHAPE_TITLE}]
+    document["containers"] = [{"id": "shape", "title": SHAPE_TITLE}]
     for step_id in ("kept", "paired", "published"):
-        _step(document, step_id)["group"] = "shape"
+        _step(document, step_id)["container"] = "shape"
     return document
 
 
@@ -1581,37 +1578,37 @@ class TestStepsAreBoxedIntoContainers:
     def test_a_document_declaring_groups_loads_them_with_their_titles_and_members(self) -> None:
         """The whole surface: the declared containers, the title of each, and who is in them.
 
-        ``Group`` is imported inside the test rather than at the top of this file, so that a suite
+        ``Container`` is imported inside the test rather than at the top of this file, so that a suite
         run before containers exist fails on the cases that are about them instead of collecting
         nothing at all.
         """
-        from dantron_etl.pipeline import Group
+        from dantron_etl.spec import Container
 
         spec = load_pipeline(_grouped_document(), rules=RULES)
 
-        assert spec.groups == (Group("shape", SHAPE_TITLE),)
-        assert spec.group("shape").title == SHAPE_TITLE
+        assert spec.containers == (Container("shape", SHAPE_TITLE),)
+        assert spec.container("shape").title == SHAPE_TITLE
         # Members in the order the steps were declared, which is the order the file reads in and the
         # only order a container has: a set would draw its title over a different arrangement on
         # every render, and a reader comparing two renders would be comparing two drawings.
-        assert spec.group_members("shape") == ("kept", "paired", "published")
-        assert spec.step("kept").group == "shape"
+        assert spec.container_members("shape") == ("kept", "paired", "published")
+        assert spec.step("kept").container == "shape"
         # The property that lets containers be adopted one stage at a time rather than all at once:
         # a step that names no group is a step nothing changed about.
-        assert spec.step("entries").group is None
-        assert spec.group_members("shape") == tuple(s.id for s in spec.steps if s.group == "shape")
+        assert spec.step("entries").container is None
+        assert spec.container_members("shape") == tuple(s.id for s in spec.steps if s.container == "shape")
 
         # Named by id and refused by name, the way a missing step already is -- a reader who asks
         # for a container that is not there is told which ones there are.
         with pytest.raises(PipelineError) as raised:
-            spec.group("shpae")
+            spec.container("shpae")
         assert "shpae" in str(raised.value) and "shape" in str(raised.value)
 
     def test_a_group_is_presentation_and_never_changes_what_a_step_computes(self) -> None:
         """The same ruling lane, stage and why already live under, and for the same reason.
 
         A container is a line drawn round some boxes so a person can read the canvas. It reaches no
-        tool, so a frame produced inside a container is the identical frame outside one. Put `group`
+        tool, so a frame produced inside a container is the identical frame outside one. Put `container`
         into the fingerprint and boxing three steps together throws away every cached frame behind
         them -- which is to say the first person to tidy the canvas pays for it with an hour of
         re-running, and the second person does not tidy the canvas.
@@ -1619,7 +1616,7 @@ class TestStepsAreBoxedIntoContainers:
         plain = load_pipeline(_document(), rules=RULES)
         boxed = load_pipeline(_grouped_document(), rules=RULES)
 
-        assert boxed.step("paired").group == "shape", "the group did not survive the load at all"
+        assert boxed.step("paired").container == "shape", "the group did not survive the load at all"
         for step_id in ("kept", "paired", "published"):
             assert plain.fingerprint(step_id) == boxed.fingerprint(step_id), (
                 f"drawing a box round {step_id} invalidated its cache, so tidying the canvas costs a re-run"
@@ -1634,7 +1631,7 @@ class TestStepsAreBoxedIntoContainers:
         lane already is, naming the spelling that was written and the ones that exist.
         """
         document = _grouped_document()
-        _step(document, "paired")["group"] = "shpae"
+        _step(document, "paired")["container"] = "shpae"
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -1657,7 +1654,7 @@ class TestStepsAreBoxedIntoContainers:
         """
         for missing in ({"id": "shape"}, {"id": "shape", "title": ""}, {"id": "shape", "title": "   "}):
             document = _grouped_document()
-            document["groups"] = [missing]
+            document["containers"] = [missing]
 
             with pytest.raises(PipelineError) as raised:
                 load_pipeline(document, rules=RULES)
@@ -1671,12 +1668,12 @@ class TestStepsAreBoxedIntoContainers:
 
         It is the mirror of the refusal above it, and the pair is the point: a group named by a step
         and not declared is refused, and a group declared and named by no step is refused. Pin only
-        one side and the other spelling of the same typo -- fixing the `groups:` block instead of the
+        one side and the other spelling of the same typo -- fixing the `containers:` block instead of the
         step, or the step instead of the block -- passes the loader and shows a reader an empty
         rectangle with a title over nothing.
         """
         document = _grouped_document()
-        document["groups"].append({"id": "orphan", "title": "Something that used to be here"})
+        document["containers"].append({"id": "orphan", "title": "Something that used to be here"})
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -1697,7 +1694,7 @@ class TestStepsAreBoxedIntoContainers:
         the container in two -- and only the author knows which of the two they meant.
         """
         document = _grouped_document()
-        _step(document, "entries")["group"] = "shape"  # lane 'intake', among three steps in 'shaping'
+        _step(document, "entries")["container"] = "shape"  # lane 'intake', among three steps in 'shaping'
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -1721,15 +1718,15 @@ class TestStepsAreBoxedIntoContainers:
         easily -- so it is pinned where it can actually be checked, over the rendered markup.
         """
         document = _grouped_document()
-        document["groups"] = [{"id": "sources", "title": "Read both extracts as they arrived"}]
+        document["containers"] = [{"id": "sources", "title": "Read both extracts as they arrived"}]
         for step_id in ("kept", "paired", "published"):
-            _step(document, step_id).pop("group")
+            _step(document, step_id).pop("container")
         for step_id in ("entries", "headers"):  # two sources, one lane, no edge between them
-            _step(document, step_id)["group"] = "sources"
+            _step(document, step_id)["container"] = "sources"
 
         spec = load_pipeline(document, rules=RULES)
 
-        assert spec.group_members("sources") == ("entries", "headers")
+        assert spec.container_members("sources") == ("entries", "headers")
 
     def test_a_container_names_what_entered_it_and_what_left_it(self) -> None:
         """The boundary, which is a question about the wiring and so is answered by the graph.
@@ -1750,8 +1747,8 @@ class TestStepsAreBoxedIntoContainers:
         """
         spec = load_pipeline(_grouped_document(), rules=RULES)
 
-        assert spec.group_inputs("shape") == (PortRef("entries", "rows"), PortRef("headers", "rows"))
-        assert spec.group_outputs("shape") == (
+        assert spec.container_inputs("shape") == (PortRef("entries", "rows"), PortRef("headers", "rows"))
+        assert spec.container_outputs("shape") == (
             PortRef("kept", "false"),  # read by nobody: the rows the container set aside
             PortRef("paired", "left_only"),
             PortRef("paired", "right_only"),
@@ -1761,13 +1758,13 @@ class TestStepsAreBoxedIntoContainers:
         # Named once, not twice: `kept` and `also` both read the same upstream port, and that is one
         # lot of rows entering the container.
         shared = _grouped_document()
-        shared["steps"].append({**_filter_step("also", "entries.rows"), "group": "shape"})
-        shared["steps"].append({**_writer_step("also_out", "also.true"), "group": "shape"})
+        shared["steps"].append({**_filter_step("also", "entries.rows"), "container": "shape"})
+        shared["steps"].append({**_writer_step("also_out", "also.true"), "container": "shape"})
 
         widened = load_pipeline(shared, rules=RULES)
 
-        assert widened.group_inputs("shape").count(PortRef("entries", "rows")) == 1
-        assert PortRef("also", "true") not in widened.group_outputs("shape"), (
+        assert widened.container_inputs("shape").count(PortRef("entries", "rows")) == 1
+        assert PortRef("also", "true") not in widened.container_outputs("shape"), (
             "a port read by another member of the same container is the container's own plumbing"
         )
-        assert PortRef("also", "false") in widened.group_outputs("shape")
+        assert PortRef("also", "false") in widened.container_outputs("shape")

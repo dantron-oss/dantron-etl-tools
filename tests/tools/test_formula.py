@@ -51,18 +51,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    ToolError,
-    check_tool,
-    expression_fields,
-    expression_values,
-    run_tool,
-    validate_against_template,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, ToolError, check_tool, run_tool
+from dantron_etl.config import expression_fields, expression_values, validate_against_template
 from dantron_etl.tools.formula import Formula
 
 # ---------------------------------------------------------------------------
@@ -104,7 +94,7 @@ def _write_cases() -> list[Any]:
             {
                 "columns": [
                     {"name": "monthly", "value": "[line_amount] / [months_in_period]"},
-                    {"name": "code_key", "value": "upper(strip([code]))"},
+                    {"name": "code_key", "value": "upper(trim([code]))"},
                 ]
             },
             {
@@ -116,7 +106,7 @@ def _write_cases() -> list[Any]:
         ),
         pytest.param(
             rows,
-            {"columns": [{"name": "code", "value": "upper(strip([code]))", "replace": True}]},
+            {"columns": [{"name": "code", "value": "upper(trim([code]))", "replace": True}]},
             {"code": ["A1", "B2", None, "C3"]},
             ("key", "code", "line_amount", "currency_rate", "months_in_period"),
             id="a_replaced_column_keeps_its_position",
@@ -381,7 +371,7 @@ class TestFormulaRefusals:
         run_tool(
             Formula(),
             Ports({"rows": frame}),
-            {"columns": [{"name": "code", "value": "upper(strip([code]))", "replace": True}]},
+            {"columns": [{"name": "code", "value": "upper(trim([code]))", "replace": True}]},
         )
 
         assert_frame_equal(frame, before)

@@ -57,7 +57,8 @@ from typing import Any
 import pytest
 
 from dantron_etl.paths import project_root
-from dantron_etl.tool import REGISTRY, ConfigField, Tool, catalog_input_ports
+from dantron_etl.authoring import ConfigField, REGISTRY, Tool
+from dantron_etl.contract import catalog_input_ports
 
 PROJECT_ROOT = project_root(__file__)
 

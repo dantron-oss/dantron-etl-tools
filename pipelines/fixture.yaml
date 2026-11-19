@@ -4,9 +4,9 @@
 name: Monthly totals by party
 
 lanes:
-  - {id: source,  label: Source,   order: 1}
-  - {id: shaping, label: Shaping,  order: 2}
-  - {id: figures, label: Figures,  order: 3}
+  - {id: source,  title: Source,   order: 1}
+  - {id: shaping, title: Shaping,  order: 2}
+  - {id: figures, title: Figures,  order: 3}
 
 steps:
   - id: entries
@@ -35,7 +35,7 @@ steps:
     why: What the classification declined, kept so a reader can see it.
     config:
       path: output_files/fixture_set_aside.csv
-      replace: true
+      overwrite: true
     inputs: {rows: receivable.false}
 
   - id: monthly
@@ -69,5 +69,5 @@ steps:
     why: The figures as published.
     config:
       path: output_files/fixture_totals.csv
-      replace: true
+      overwrite: true
     inputs: {rows: totals.rows}

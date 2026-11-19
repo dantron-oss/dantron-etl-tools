@@ -55,16 +55,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    ToolError,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, ToolError, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.normalize_text import OPERATION_ORDER, NormalizeText
 
 # ---------------------------------------------------------------------------
@@ -105,7 +97,7 @@ def _frame(values: Sequence[str | None], column: str = "party") -> pl.DataFrame:
 def _config(operations: Sequence[str], suffixes: Sequence[str] | None = None, **overrides: Any) -> dict[str, Any]:
     config: dict[str, Any] = {"source": "[party]", "output": "party_key", "operations": list(operations)}
     if suffixes is not None:
-        config["strip_suffixes"] = list(suffixes)
+        config["suffixes"] = list(suffixes)
     return config | overrides
 
 
@@ -418,9 +410,9 @@ def _refused_configurations() -> list[Any]:
         pytest.param(_config([], []), "operations", id="no_operation_at_all"),
         pytest.param(_config(["shout"]), "shout", id="an_operation_that_does_not_exist"),
         pytest.param(_config(["lower", "lower"]), "lower", id="the_same_operation_twice"),
-        pytest.param(_config(FULL, []), "strip_suffixes", id="suffix_stripping_with_no_words_to_strip"),
-        pytest.param(_config(FULL), "strip_suffixes", id="suffix_stripping_with_the_list_left_out"),
-        pytest.param(_config(["lower"], SUFFIXES), "strip_suffixes", id="words_to_strip_but_no_operation_to_strip"),
+        pytest.param(_config(FULL, []), "suffixes", id="suffix_stripping_with_no_words_to_strip"),
+        pytest.param(_config(FULL), "suffixes", id="suffix_stripping_with_the_list_left_out"),
+        pytest.param(_config(["lower"], SUFFIXES), "suffixes", id="words_to_strip_but_no_operation_to_strip"),
         pytest.param(_config(["lower"], output=""), "output", id="a_key_column_with_no_name"),
         pytest.param(
             _config(FULL, ["${rules.company_suffixes}"]),
@@ -506,7 +498,7 @@ class TestNormalizeTextRefusals:
         """
         template = NormalizeText().config_template()
 
-        assert set(template) == {"source", "output", "operations", "strip_suffixes"}
+        assert set(template) == {"source", "output", "operations", "suffixes"}
         assert expression_fields(template) == ("source",), "the loader seam is the declared type"
         assert template["source"].required is True
         assert template["output"].required is True
@@ -529,7 +521,7 @@ class TestNormalizeTextRefusals:
             "accent folding is what makes 'SARL' recognisable as the configured word 'sarl'"
         )
 
-        suffix_list = template["strip_suffixes"]
+        suffix_list = template["suffixes"]
         assert suffix_list.type == "array"
         assert suffix_list.default is None, "a built-in list of one country's suffixes must have nowhere to live"
         assert suffix_list.items is not None and suffix_list.items.type == "string"
@@ -561,7 +553,7 @@ class TestNormalizeTextInTheCatalog:
 
         examples = tool.help().examples
         assert len(examples) >= 2
-        assert any("strip_suffixes" in example.configuration for example in examples), (
+        assert any("suffixes" in example.configuration for example in examples), (
             "the suffix list is the genericity line, so an example must show a caller supplying one"
         )
         keys = [

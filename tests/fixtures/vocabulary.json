@@ -14,24 +14,23 @@
     "regex_replace": 3,
     "round": 2,
     "starts_with": 2,
-    "strip": 1,
+    "trim": 1,
     "upper": 1,
     "uuid5": 2,
     "year": 1
   },
   "pipeline_file_keys": {
     "document": [
-      "groups",
+      "containers",
       "lanes",
       "name",
       "steps"
     ],
     "entry": [
       "config",
-      "group",
+      "container",
       "id",
       "inputs",
-      "label",
       "lane",
       "order",
       "stage",
@@ -66,7 +65,7 @@
           "default": "error",
           "enum": [
             "clamp",
-            "empty",
+            "set_null",
             "error"
           ],
           "fields": null,
@@ -142,34 +141,7 @@
     "case_when": {
       "category": "transform",
       "config": {
-        "otherwise": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "expression"
-        },
-        "output": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": true,
-          "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        },
-        "rules": {
+        "cases": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -204,6 +176,33 @@
           "non_empty": false,
           "required": true,
           "type": "array"
+        },
+        "otherwise": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "expression"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "replace": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
         }
       },
       "input_ports": [
@@ -264,7 +263,7 @@
           "default": "error",
           "enum": [
             "error",
-            "empty"
+            "set_null"
           ],
           "fields": null,
           "items": null,
@@ -275,53 +274,6 @@
       },
       "input_ports": [
         "rows"
-      ],
-      "output_ports": [
-        "rows"
-      ]
-    },
-    "connected_components": {
-      "category": "transform",
-      "config": {
-        "component_column": {
-          "default": "component",
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": false,
-          "type": "string"
-        },
-        "left": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "node_column": {
-          "default": "node",
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": false,
-          "type": "string"
-        },
-        "right": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        }
-      },
-      "input_ports": [
-        "edges"
       ],
       "output_ports": [
         "rows"
@@ -330,34 +282,7 @@
     "cross_tab": {
       "category": "transform",
       "config": {
-        "aggregate": {
-          "default": null,
-          "enum": [
-            "count",
-            "count_values",
-            "first",
-            "join_text",
-            "max",
-            "min",
-            "n_unique",
-            "sum"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": true,
-          "type": "string"
-        },
-        "columns_from": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "index": {
+        "by": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -374,7 +299,34 @@
           "required": true,
           "type": "array"
         },
-        "values": {
+        "function": {
+          "default": null,
+          "enum": [
+            "count",
+            "count_non_null",
+            "first",
+            "join_text",
+            "max",
+            "min",
+            "n_unique",
+            "sum"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "names_from": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "values_from": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -394,6 +346,18 @@
     "date_diff": {
       "category": "transform",
       "config": {
+        "counting": {
+          "default": null,
+          "enum": [
+            "inclusive",
+            "elapsed"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
         "end": {
           "default": null,
           "enum": null,
@@ -402,18 +366,6 @@
           "non_empty": false,
           "required": true,
           "type": "expression"
-        },
-        "endpoints": {
-          "default": "both",
-          "enum": [
-            "both",
-            "elapsed"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "string"
         },
         "output": {
           "default": null,
@@ -436,8 +388,8 @@
         "unit": {
           "default": null,
           "enum": [
-            "months",
-            "days"
+            "month",
+            "day"
           ],
           "fields": null,
           "items": null,
@@ -465,17 +417,6 @@
           "required": true,
           "type": "expression"
         },
-        "interval": {
-          "default": "month",
-          "enum": [
-            "month"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "string"
-        },
         "period_column": {
           "default": "period_start",
           "enum": null,
@@ -493,6 +434,17 @@
           "non_empty": false,
           "required": true,
           "type": "expression"
+        },
+        "unit": {
+          "default": "month",
+          "enum": [
+            "month"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
         }
       },
       "input_ports": [
@@ -607,7 +559,7 @@
                 "default": null,
                 "enum": [
                   "count",
-                  "count_values",
+                  "count_non_null",
                   "first",
                   "join_text",
                   "max",
@@ -715,7 +667,7 @@
           "required": false,
           "type": "array"
         },
-        "left_on": {
+        "left_keys": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -732,7 +684,7 @@
           "required": false,
           "type": "array"
         },
-        "right_on": {
+        "right_keys": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -764,7 +716,7 @@
         "right"
       ],
       "output_ports": [
-        "matched",
+        "joined",
         "left_only",
         "right_only"
       ]
@@ -790,10 +742,57 @@
         "dropped"
       ]
     },
+    "make_groups": {
+      "category": "transform",
+      "config": {
+        "group_column": {
+          "default": "group",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "left": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "record_column": {
+          "default": "record",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "right": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "pairs"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
     "match_one_to_one": {
       "category": "preparation",
       "config": {
-        "left": {
+        "left_key": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -841,7 +840,7 @@
           "required": true,
           "type": "array"
         },
-        "right": {
+        "right_key": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -915,7 +914,7 @@
           "required": true,
           "type": "expression"
         },
-        "strip_suffixes": {
+        "suffixes": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -961,7 +960,7 @@
           "required": false,
           "type": "string"
         },
-        "stamp": {
+        "stamp_column": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -987,7 +986,7 @@
                 "required": false,
                 "type": "boolean"
               },
-              "key": {
+              "keys": {
                 "default": null,
                 "enum": null,
                 "fields": null,
@@ -1367,7 +1366,7 @@
     "remove_duplicates": {
       "category": "preparation",
       "config": {
-        "columns": {
+        "by": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1568,16 +1567,7 @@
     "unpivot": {
       "category": "transform",
       "config": {
-        "exclude_nulls": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        },
-        "index": {
+        "by": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1594,7 +1584,16 @@
           "required": true,
           "type": "array"
         },
-        "into": {
+        "exclude_nulls": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "names_to": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1607,7 +1606,7 @@
           "default": null,
           "enum": [
             "error",
-            "empty"
+            "set_null"
           ],
           "fields": null,
           "items": null,
@@ -1615,7 +1614,7 @@
           "required": false,
           "type": "string"
         },
-        "values": {
+        "values_to": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1661,45 +1660,7 @@
           "required": false,
           "type": "string"
         },
-        "path": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        }
-      },
-      "input_ports": [
-        "rows"
-      ],
-      "output_ports": [
-        "rows"
-      ]
-    },
-    "write_excel": {
-      "category": "output",
-      "config": {
-        "path": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "replace": {
+        "overwrite": {
           "default": false,
           "enum": null,
           "fields": null,
@@ -1708,7 +1669,7 @@
           "required": false,
           "type": "boolean"
         },
-        "sheet": {
+        "path": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1725,10 +1686,10 @@
         "rows"
       ]
     },
-    "write_table": {
+    "write_excel": {
       "category": "output",
       "config": {
-        "allow_empty": {
+        "overwrite_sheets": {
           "default": false,
           "enum": null,
           "fields": null,
@@ -1737,56 +1698,6 @@
           "required": false,
           "type": "boolean"
         },
-        "connection": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "mode": {
-          "default": null,
-          "enum": [
-            "replace",
-            "append"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": true,
-          "type": "string"
-        },
-        "schema": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "string"
-        },
-        "table": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        }
-      },
-      "input_ports": [
-        "rows"
-      ],
-      "output_ports": [
-        "rows"
-      ]
-    },
-    "write_workbook": {
-      "category": "output",
-      "config": {
         "path": {
           "default": null,
           "enum": null,
@@ -1795,15 +1706,6 @@
           "non_empty": true,
           "required": true,
           "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
         },
         "sheets": {
           "default": null,
@@ -2068,6 +1970,65 @@
       },
       "input_ports": "from config",
       "output_ports": []
+    },
+    "write_table": {
+      "category": "output",
+      "config": {
+        "allow_empty": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "connection": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "mode": {
+          "default": null,
+          "enum": [
+            "replace",
+            "append"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "schema": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "table": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
     }
   }
 }

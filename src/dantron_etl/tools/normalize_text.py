@@ -105,7 +105,7 @@ class NormalizeText:
                     enum=OPERATION_ORDER,
                 ),
             ),
-            "strip_suffixes": ConfigField(
+            "suffixes": ConfigField(
                 type="array",
                 description="Whole trailing words to strip, case-insensitively and repeatedly; "
                 "required when 'strip_suffixes' is selected, and only then.",
@@ -124,12 +124,12 @@ class NormalizeText:
             ),
             examples=(_party_example(), _plain_case_example()),
             notes=(
-                "'strip_suffixes' carries no built-in words: a jurisdiction's company suffixes are "
+                "'suffixes' carries no built-in words: a jurisdiction's company suffixes are "
                 "the caller's data, not this library's.",
             ),
             field_help={
                 "operations": "Selects which reductions run; OPERATION_ORDER decides the sequence.",
-                "strip_suffixes": "The caller's own suffix words; there is no default list.",
+                "suffixes": "The caller's own suffix words; there is no default list.",
             },
         )
 
@@ -146,15 +146,15 @@ class NormalizeText:
             seen.add(operation)
 
         wants_suffixes = "strip_suffixes" in operations
-        suffixes = config["strip_suffixes"]
+        suffixes = config["suffixes"]
         if wants_suffixes and not suffixes:
             raise ConfigError(
-                "config field 'strip_suffixes' must name at least one word when 'strip_suffixes' is "
+                "config field 'suffixes' must name at least one word when 'strip_suffixes' is "
                 "one of 'operations'; stripping nothing would leave every suffix on the key"
             )
         if not wants_suffixes and suffixes is not None:
             raise ConfigError(
-                "config field 'strip_suffixes' names words to strip, but 'strip_suffixes' is not one "
+                "config field 'suffixes' names words to strip, but 'strip_suffixes' is not one "
                 "of 'operations'; the words would silently do nothing"
             )
 
@@ -177,7 +177,7 @@ class NormalizeText:
         for operation in OPERATION_ORDER:
             if operation not in selected:
                 continue
-            working = _OPERATIONS[operation](working, config["strip_suffixes"])
+            working = _OPERATIONS[operation](working, config["suffixes"])
 
         working = working.replace("", None)
         return Ports({"rows": frame.with_columns(working.alias(output))})
@@ -254,7 +254,7 @@ def _party_example() -> WorkedExample:
             "source": "[party]",
             "output": "party_key",
             "operations": list(OPERATION_ORDER),
-            "strip_suffixes": ["ltd", "pty"],
+            "suffixes": ["ltd", "pty"],
         },
         explanation="A shouted spelling with a stop and its plain lowercase equivalent both reduce to "
         "'acme'; a name that is nothing but punctuation reduces to nothing, and is written null "
@@ -278,7 +278,7 @@ def _plain_case_example() -> WorkedExample:
     return WorkedExample(
         scenario="only case and spacing are asked for, with no suffix list at all",
         configuration={"source": "[party]", "output": "party_key", "operations": ["lower", "collapse_whitespace"]},
-        explanation="'strip_suffixes' is absent from both the operation list and the configuration, "
+        explanation="'strip_suffixes' is absent from the operation list and 'suffixes' from the configuration, "
         "which is allowed: the two travel together only when suffix stripping is actually selected.",
         inputs=inputs,
         outputs=outputs,

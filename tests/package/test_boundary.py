@@ -253,7 +253,7 @@ class TestTheManualDescribesTheLibraryThatExists:
     def test_every_registered_tool_is_named_in_the_manual(self) -> None:
         """A tool the manual omits is one no reader knows to reach for before building their own."""
         import dantron_etl  # noqa: F401  -- importing the package is what populates the registry
-        from dantron_etl.tool import REGISTRY
+        from dantron_etl.authoring import REGISTRY
 
         text = self._manual()
         missing = sorted(tool.name for tool in REGISTRY.tools() if f"`{tool.name}`" not in text)
@@ -262,7 +262,7 @@ class TestTheManualDescribesTheLibraryThatExists:
     def test_the_manual_names_no_tool_that_does_not_exist(self) -> None:
         """The failure that matters: a reader writes the name they were given and the run refuses it."""
         import dantron_etl  # noqa: F401
-        from dantron_etl.tool import REGISTRY
+        from dantron_etl.authoring import REGISTRY
 
         registered = {tool.name for tool in REGISTRY.tools()}
         table = self._manual().split("### 3.1 The tools that ship", 1)[-1].split("---", 1)[0]
@@ -273,14 +273,14 @@ class TestTheManualDescribesTheLibraryThatExists:
     def test_the_stated_tool_count_is_the_real_one(self) -> None:
         """The number a reader weighs 'is something missing?' against."""
         import dantron_etl  # noqa: F401
-        from dantron_etl.tool import REGISTRY
+        from dantron_etl.authoring import REGISTRY
 
         count = len(list(REGISTRY.tools()))
         assert f"{count} tools" in self._manual(), f"MANUAL.md does not say '{count} tools'; the registry holds {count}"
 
     def test_every_category_the_contract_publishes_is_listed(self) -> None:
         """A contributor picks a category from this list, and one it omits is one nobody declares."""
-        from dantron_etl.tool import CATEGORIES
+        from dantron_etl.authoring import CATEGORIES
 
         text = self._manual()
         missing = sorted(name for name in CATEGORIES if name not in text)

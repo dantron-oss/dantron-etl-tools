@@ -1,8 +1,8 @@
-"""write_workbook: which columns a type-or-column rule reaches.
+"""write_excel: which columns a type-or-column rule reaches.
 
 Formats, widths and wraps all name their targets the same way: a type, or one column. This module
 answers which columns each list of rules reaches, and what a column is shown under before any rule
-is read. Part of ``write_workbook``; the leading underscore keeps it out of the tool catalog.
+is read. Part of ``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 from collections.abc import Mapping, Sequence
@@ -88,9 +88,8 @@ def column_formats(
     the first time somebody wrote a reference number in one, and a tool reading the column's *name*
     to decide would be wrong the first time somebody renamed it.
 
-    Deliberately about a schema and a list of rules, naming neither a sheet nor a workbook, because
-    ``write_excel`` is the intended second caller: the two sinks share every other rule about what a
-    cell may hold, and a one-tab flow cannot state a format at all until it shares this one too.
+    Deliberately about a schema and a list of rules, naming neither a sheet nor a workbook, so that
+    another writer can call it too.
     """
     formats: dict[str, str | None] = {name: _default_format(dtype) for name, dtype in schema.items()}
     formats.update(resolve_rules(schema, rules, "format"))

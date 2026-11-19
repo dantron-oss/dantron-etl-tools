@@ -37,7 +37,7 @@ from ..authoring import (
     require_not_blank,
 )
 
-_ON_INVALID_ENUM: Final[tuple[str, ...]] = ("clamp", "empty", "error")
+_ON_INVALID_ENUM: Final[tuple[str, ...]] = ("clamp", "set_null", "error")
 _DIGITS_ONLY: Final[str] = r"^[0-9]+$"
 _MIN_YEAR: Final[int] = 1
 _MAX_YEAR: Final[int] = 9999
@@ -72,7 +72,7 @@ class AssembleDate:
             "on_invalid": ConfigField(
                 type="string",
                 description="What to do with a day the calendar is too short for: 'clamp' it into "
-                "the month, carry 'empty' (a null date), or 'error' (the default).",
+                "the month, carry 'set_null' (a null date), or 'error' (the default).",
                 default="error",
                 enum=_ON_INVALID_ENUM,
             ),
@@ -103,7 +103,7 @@ class AssembleDate:
                 "conflating them would fail a whole run over rows nobody filled in.",
             ),
             field_help={
-                "on_invalid": "Spelled 'empty', never 'null': an unquoted null in a definition file "
+                "on_invalid": "Spelled 'set_null', never 'null': an unquoted null in a definition file "
                 "is the null value itself, not a name for this policy.",
             },
         )
@@ -111,7 +111,7 @@ class AssembleDate:
     def validate_config(self, config: Mapping[str, Any]) -> None:
         if config["on_invalid"] is None:
             raise ConfigError(
-                "config field 'on_invalid' was given with no value; write 'clamp', 'empty' or "
+                "config field 'on_invalid' was given with no value; write 'clamp', 'set_null' or "
                 "'error', or leave the field out entirely to take its default"
             )
         if config["day"] is None:
@@ -213,7 +213,7 @@ class AssembleDate:
             resolved_day.alias("__resolved_day"),
         )
 
-        if policy != "empty" and staged["__offending"].any():
+        if policy != "set_null" and staged["__offending"].any():
             refusing = frame.filter(staged["__offending"])
             raise DataError(
                 f"assemble_date: on_invalid={policy!r} cannot resolve every date part",

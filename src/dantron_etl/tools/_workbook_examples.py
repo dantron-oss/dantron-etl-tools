@@ -1,6 +1,6 @@
-"""write_workbook: the worked examples its help shows and the catalog check runs.
+"""write_excel: the worked examples its help shows and the catalog check runs.
 
-Part of ``write_workbook``; the leading underscore keeps it out of the tool catalog.
+Part of ``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 from collections.abc import Iterator

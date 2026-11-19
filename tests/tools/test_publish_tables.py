@@ -50,7 +50,7 @@ which is the loudest silence a nightly build leaves behind, so an empty frame st
 the *whole* publish, since it is one unit -- unless that entry says in writing that it may be empty.
 
 **The ports come from the configuration.** A publish of five tables reads five frames and a publish
-of one reads one, which no static attribute can say; the derivation follows ``write_workbook``'s,
+of one reads one, which no static attribute can say; the derivation follows ``write_excel``'s,
 down to passing over a malformed configuration rather than refusing it there.
 
 The SQLite half runs anywhere. The Postgres half skips loudly when there is no server. The schema it
@@ -69,7 +69,8 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.tool import ConfigError, Ports, ToolError, input_ports_for, run_tool
+from dantron_etl.authoring import ConfigError, Ports, ToolError, run_tool
+from dantron_etl.contract import input_ports_for
 from dantron_etl.tools.publish_tables import PublishTables
 
 # The name a pipeline definition would carry: the name of the variable, never the connection itself.
@@ -254,7 +255,7 @@ def _entries() -> list[dict[str, Any]]:
         {"port": "series", "table": "entry_series", "mode": "replace"},
         {"port": "audit", "table": "entry_audit", "mode": "replace"},
         {"port": "changes", "table": "entry_changes", "mode": "append"},
-        {"port": "parties", "table": "entry_parties", "mode": "merge", "key": ["party"]},
+        {"port": "parties", "table": "entry_parties", "mode": "merge", "keys": ["party"]},
     ]
 
 
@@ -262,7 +263,7 @@ def _publish(target: _Target, **overrides: Any) -> dict[str, Any]:
     """One publish's configuration on ``target``, with whatever a case changes."""
     config: dict[str, Any] = {
         "connection": target.variable,
-        "stamp": _STAMP_COLUMN,
+        "stamp_column": _STAMP_COLUMN,
         "tables": _entries(),
         **overrides,
     }
@@ -504,12 +505,12 @@ def _an_unknown_mode(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, A
 
 
 def _a_merge_with_no_key(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:
-    del config["tables"][4]["key"]
+    del config["tables"][4]["keys"]
     return config, inputs
 
 
 def _a_key_the_frame_does_not_carry(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:
-    config["tables"][4]["key"] = ["counterparty"]
+    config["tables"][4]["keys"] = ["counterparty"]
     return config, inputs
 
 
@@ -561,7 +562,7 @@ def _a_stamp_named_after_a_table(config: dict[str, Any], inputs: Ports) -> tuple
     holding is that the publish does not proceed, and nothing quietly loses a column. Pinned here so
     that a later change to how the columns are compared cannot open the hole by accident.
     """
-    return {**config, "stamp": config["tables"][0]["table"]}, inputs
+    return {**config, "stamp_column": config["tables"][0]["table"]}, inputs
 
 
 def _columns_that_do_not_line_up(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:
@@ -693,7 +694,7 @@ class TestThePortsComeFromTheTablesNamed:
     """A publish of five tables reads five frames, and a publish of one reads one."""
 
     def test_the_ports_are_the_entries_in_order_and_a_malformed_configuration_is_passed_over(self) -> None:
-        """Derived from ``tables``, in the order written, following ``write_workbook``'s rule exactly.
+        """Derived from ``tables``, in the order written, following ``write_excel``'s rule exactly.
 
         No static attribute can say this: two steps of this tool publish different numbers of tables
         and therefore read different numbers of frames. The malformed cases are passed over rather

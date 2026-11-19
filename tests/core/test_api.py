@@ -1,9 +1,9 @@
-"""The import surface: the package root, the tool author's module, and the old paths kept for now.
+"""The import surface: the package root and the tool author's module.
 
 The core is split into small modules, and two modules gather the names people use: the package
 root for running a flow, and ``authoring`` for writing a tool. These tests pin that each gathered
 name is the very object its home module defines, so there is never a second copy to drift. They
-also pin that the old import paths still resolve, until the names stage removes them.
+also pin that the old import paths are gone, so nothing keeps a second way in.
 """
 
 import ast
@@ -99,44 +99,17 @@ def test_every_tool_imports_the_core_only_through_authoring() -> None:
     assert not offenders
 
 
-# The old paths, kept until the names stage: (old module, old name, home module, home name).
-OLD_PATHS = [
-    ("pipeline", "PipelineSpec", "spec", "Pipeline"),
-    ("pipeline", "StepSpec", "spec", "Step"),
-    ("pipeline", "read_pipeline_file", "loader", "read_pipeline"),
-    ("pipeline", "load_pipeline", "loader", "load_pipeline"),
-    ("pipeline", "PortRef", "spec", "PortRef"),
-    ("pipeline", "Group", "spec", "Group"),
-    ("pipeline", "Lane", "spec", "Lane"),
-    ("pipeline", "PipelineError", "errors", "PipelineError"),
-    ("pipeline", "REGISTRY", "registry", "REGISTRY"),
-    ("runner", "run_pipeline", "runner", "run_pipeline"),
-    ("runner", "PipelineTrace", "trace", "PipelineTrace"),
-    ("runner", "StepEvent", "trace", "StepEvent"),
-    ("runner", "CachedFrame", "trace", "CachedFrame"),
-    ("runner", "FrameShape", "trace", "FrameShape"),
-    ("runner", "Level", "trace", "Level"),
-    ("runner", "StepFailedError", "trace", "StepFailedError"),
-    ("runner", "ColumnCheckError", "trace", "ColumnCheckError"),
-    ("runner", "RunError", "errors", "RunError"),
-    ("runner", "logging_sink", "runner", "logging_sink"),
-]
+@pytest.mark.parametrize("retired", ["tool", "pipeline"])
+def test_the_retired_import_modules_are_gone(retired: str) -> None:
+    """``dantron_etl.tool`` and ``dantron_etl.pipeline`` were old paths; the package root and
+    ``authoring`` replace them, and nothing imports them any more."""
+    with pytest.raises(ModuleNotFoundError):
+        _home(retired)
 
 
-@pytest.mark.parametrize(("old", "name", "home", "home_name"), OLD_PATHS, ids=lambda value: str(value))
-def test_an_old_import_path_still_resolves_to_the_same_object(old: str, name: str, home: str, home_name: str) -> None:
-    """``from dantron_etl.<old> import <name>`` still works and hands back the moved object itself."""
-    assert getattr(_home(old), name) is getattr(_home(home), home_name)
-
-
-def test_every_name_the_old_tool_module_exported_is_still_the_same_object() -> None:
-    """``dantron_etl.tool`` still offers every name it did, each the object one core module defines."""
-    tool = _home("tool")
-    for name in tool.__all__:
-        owners = [module for module in CORE_MODULES if getattr(_home(module), name, None) is getattr(tool, name)]
-        assert owners, f"tool.{name} is not any core module's object"
-        if name in authoring.__all__:
-            assert getattr(tool, name) is getattr(authoring, name), name
+def test_the_runner_exports_only_what_it_defines() -> None:
+    """The trace names live in ``trace`` and are exported from the package root, not again here."""
+    assert sorted(runner.__all__) == ["logging_sink", "run_pipeline"]
 
 
 def test_a_wrapper_put_on_runner_run_tool_sees_every_step_that_runs(monkeypatch: pytest.MonkeyPatch) -> None:

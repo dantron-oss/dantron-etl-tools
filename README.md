@@ -28,17 +28,17 @@ the rows coming out, and let them look. That is what this is for: every step is 
 instance of a general tool, every step's output is inspectable, and the definition of a run is one
 file a non-developer can read.
 
-## The 31 tools
+## The 30 tools
 
 | category | tools |
 |---|---|
 | **input** | `read_csv`, `read_excel`, `read_table` |
 | **preparation** | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| **transform** | `assemble_date`, `case_when`, `connected_components`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
+| **transform** | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
 | **combine** | `join`, `union` |
 | **text** | `normalize_text`, `regex_extract_groups` |
 | **assert** | `assert_rows` |
-| **output** | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+| **output** | `publish_tables`, `write_csv`, `write_excel`, `write_table` |
 
 Every tool carries executable worked examples, and a conformance test runs each example on its
 stated input and compares it to its stated output. The catalog is generated from the registry, so a
@@ -47,7 +47,7 @@ tool's page cannot drift from the tool.
 ## Ideas worth knowing before you use it
 
 **Ports, not steps.** A step's inputs and outputs are *named* frames. `filter` has `true` and
-`false`; `join` has `matched`, `left_only` and `right_only`. Rows a step sets aside are a first-class
+`false`; `join` has `joined`, `left_only` and `right_only`. Rows a step sets aside are a first-class
 output you can route somewhere, not a number reconstructed later.
 
 **One small expression language.** `[column]` references, a fixed set of operators and a whitelist of
@@ -67,6 +67,9 @@ run's frames and refuses a cache whose configuration has since changed.
 uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools
 uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/DanTron-Inc/dantron-etl-tools"
 ```
+
+A pipeline file written for an older version is refused at load with the new name of each renamed
+word; `python -m dantron_etl.migrate --write <file-or-folder>` rewrites it, keeping its comments.
 
 Postgres drivers are an extra, deliberately: `read_table` and `write_table` import theirs lazily by
 URI scheme and name the package to install when it is missing, and SQLite needs nothing at all —

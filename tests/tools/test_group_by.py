@@ -34,9 +34,9 @@ into a report, and no downstream assertion can tell it from a real zero afterwar
 skipped within a group that has any value at all, so ``[10, null]`` sums to ``10`` -- which is what
 makes "all null" the only case that produces null, and therefore meaningful.
 
-**``count`` counts rows; ``count_values`` counts the values that are there.** Both are wanted and
+**``count`` counts rows; ``count_non_null`` counts the values that are there.** Both are wanted and
 they differ, so they get two names rather than one name and a flag: ``count`` takes no ``value`` at
-all (a row count cannot depend on a column), and ``count_values`` requires one and ignores its
+all (a row count cannot depend on a column), and ``count_non_null`` requires one and ignores its
 nulls. The trap this closes is a legacy one -- the dataframe library the earlier tools were written
 against spells the non-null count ``count``, so an author porting a step gets the other number
 without being told.
@@ -55,7 +55,7 @@ written down where a reader looking for it will find it -- the two differ becaus
 what joining nothing produces, while a zero is a measured amount nobody measured. It takes a
 ``separator`` of its own, and that field is refused beside any other aggregate rather than ignored:
 a separator that silently does nothing is the class of mistake this library refuses everywhere, and
-it is refused the same way Join refuses ``keys`` beside ``left_on``. Its value has to be text,
+it is refused the same way Join refuses ``keys`` beside ``left_keys``. Its value has to be text,
 refused on the schema, because a number or a date joined into a string is an author error that
 otherwise ships as a plausible-looking string of digits.
 
@@ -71,15 +71,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.tool import (
-    CATEGORIES,
-    REGISTRY,
-    ConfigError,
-    Ports,
-    check_tool,
-    expression_fields,
-    run_tool,
-)
+from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.config import expression_fields
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.group_by import AGGREGATE_FUNCTIONS, GroupBy
 
@@ -208,7 +201,7 @@ def _grouping_cases() -> list[Any]:
                 "by": ["code"],
                 "aggregations": [
                     _aggregation("terms", "n_unique", "[term]"),
-                    _aggregation("figures", "count_values", "[amount]"),
+                    _aggregation("figures", "count_non_null", "[amount]"),
                 ],
             },
             pl.DataFrame({"code": ["A", "B", "C"], "terms": [1, 2, 1], "figures": [2, 2, 0]}),
@@ -343,19 +336,19 @@ class TestGroupByAggregates:
         assert result["total"].to_list() == [expected]
         assert result["total"].dtype == pl.Float64, "a sum keeps the dtype of what it added"
 
-    def test_count_counts_rows_and_count_values_counts_the_values_that_are_there(self) -> None:
+    def test_count_counts_rows_and_count_non_null_counts_the_values_that_are_there(self) -> None:
         """Two names for two numbers, so neither can be mistaken for the other.
 
         The legacy dataframe library spells the non-null count ``count``, so an author porting a
         step from it gets the other number silently. Here ``count`` is the row count and takes no
-        ``value``; ``count_values`` requires one and ignores its nulls.
+        ``value``; ``count_non_null`` requires one and ignores its nulls.
         """
         frame = pl.DataFrame({"code": ["A", "A", "A"], "amount": [1.0, None, None]})
         config = {
             "by": ["code"],
             "aggregations": [
                 _aggregation("rows_in_group", "count"),
-                _aggregation("figures_present", "count_values", "[amount]"),
+                _aggregation("figures_present", "count_non_null", "[amount]"),
             ],
         }
 
@@ -503,7 +496,7 @@ class TestGroupByJoinsText:
         the ruling ``sum`` makes about the same group. The two differ because the claims differ:
         joining no strings together produces the empty string in any language that has both, while
         adding no numbers together produces a total nobody measured. A flow that needs to tell an
-        empty join from a group that had nothing to join counts beside it with ``count_values``.
+        empty join from a group that had nothing to join counts beside it with ``count_non_null``.
         """
         frame = pl.DataFrame({"code": ["A"] * len(values), "note": values}, schema_overrides={"note": pl.String})
 
@@ -582,7 +575,7 @@ def _group_answers() -> dict[str, Any]:
     return {
         "sum": 42.0,
         "count": 7,
-        "count_values": 6,
+        "count_non_null": 6,
         "n_unique": 5,
         "min": 2.0,
         "max": 13.0,
@@ -677,7 +670,7 @@ def _refusal_cases() -> list[Any]:
         ),
         pytest.param(
             {"by": ["code"], "aggregations": [_aggregation("n", "count", "[amount]")]},
-            ("count_values",),
+            ("count_non_null",),
             id="a_row_count_given_something_to_count",
         ),
         pytest.param(
@@ -803,7 +796,7 @@ class TestGroupByRefusals:
     ) -> None:
         """A field that would do nothing is refused, naming where it sits and what it sits beside.
 
-        This is Join's ``keys``-beside-``left_on`` ruling applied to the same shape of mistake: a
+        This is Join's ``keys``-beside-``left_keys`` ruling applied to the same shape of mistake: a
         configuration whose fields are individually valid and jointly say two things. Accepting it
         would mean an author who wrote ``function: min`` where they meant ``join_text`` gets a
         separator that vanishes, and a column of single values where they expected a list, with
@@ -853,7 +846,7 @@ class TestGroupByTemplate:
         """A whitelist a template author can read, and one that cannot fail open.
 
         The set is pinned exactly, in both directions. ``sum`` is a per-group total; ``count`` and
-        ``count_values`` are the two counts; ``n_unique`` decides whether a group covers a single
+        ``count_non_null`` are the two counts; ``n_unique`` decides whether a group covers a single
         coherent period; ``min``, ``max`` and ``first`` are the ways to carry forward a column that
         is constant within a group, since every other column disappears. ``mean`` is absent because
         no step wants it, and an aggregate with no consumer is an arm nobody has ever run.
@@ -874,7 +867,7 @@ class TestGroupByTemplate:
         """
         assert isinstance(AGGREGATE_FUNCTIONS, frozenset)
         assert AGGREGATE_FUNCTIONS == frozenset(
-            {"sum", "count", "count_values", "n_unique", "min", "max", "first", "join_text"}
+            {"sum", "count", "count_non_null", "n_unique", "min", "max", "first", "join_text"}
         )
 
         function_field = GroupBy().config_template()["aggregations"].items.fields["function"]
@@ -893,7 +886,7 @@ class TestGroupByTemplate:
         """
         assert "join_text" in AGGREGATE_FUNCTIONS
 
-        aggregate_field = CrossTab().config_template()["aggregate"]
+        aggregate_field = CrossTab().config_template()["function"]
         assert tuple(aggregate_field.enum or ()) == tuple(sorted(AGGREGATE_FUNCTIONS))
         check_tool(CrossTab())
 
