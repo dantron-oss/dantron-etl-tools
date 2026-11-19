@@ -1,27 +1,9 @@
-"""ExpandDateRange: one row in, one row per period out -- the one tool that multiplies row count.
+"""ExpandDateRange: turn each row into one row per month from `start` to `end`, both included.
 
-**Both ends are inclusive, at period granularity.** January to December is twelve rows, not eleven
-and not thirteen: the period containing the start counts however far into it the start falls, and
-the period containing the end counts the same way, because an end spelled as the last day of a
-month is the overwhelmingly common spelling and truncating it would drop a whole period's money from
-every such row. The same day at both ends is one row, never zero -- a single day still sits inside
-the period it belongs to.
+The only tool that multiplies rows. A row with a missing date, or an end before its start, goes to
+`unexpanded` with the input's columns, never dropped and never given a null period.
 
-**A backwards range produces no rows and leaves on ``unexpanded``,** judged on the dates themselves
-and not on the periods they fall in. A range whose end sits before its start is real data -- a
-mistyped year, a transposed day and month -- not an impossibility, and the fix belongs to a repair
-step where it can be reviewed, not to the arithmetic here. Two ends inside the same period, the
-wrong way round, are backwards too: period arithmetic alone would give that row one perfectly
-plausible period, which is exactly the shape a transposed day and month makes, so the comparison has
-to run on the dates before anything is truncated to a period.
-
-**A row that cannot be expanded must not vanish, and must not become a null period either.** The
-obvious implementation explodes an empty period list into one row whose period is null, which is
-worse than dropping the row: it looks like a schedule row, it carries the row's whole figure, and it
-sits in a report as a period that does not exist. So such a row is set aside on ``unexpanded``
-instead, carrying the input's schema exactly -- no period column, no reason column, because the
-reason is one predicate away downstream and a reason column would stop the port being
-union-compatible with the input it came from.
+Why: docs/design/tools.md#expand_date_range
 """
 
 from collections.abc import Mapping
@@ -47,34 +29,36 @@ from ..authoring import (
     require_stated_zone,
 )
 
-# One member, on purpose: every other unit brings its own boundary question -- what a partial
-# week or a partial year is worth -- that nothing has asked for yet, and a whitelist with an
-# untested arm in it is worse than a short one. Spelled to avoid every word YAML reads as a boolean.
+# Only month for now. Why: docs/design/tools.md#expand_date_range
 _UNIT_ENUM: Final[tuple[str, ...]] = ("month",)
 
 
 class ExpandDateRange:
-    """Expand each row of `rows` into one row per period between `start` and `end`, inclusive."""
+    """Expand each row of `rows` into one row per month between `start` and `end`, inclusive."""
 
     name = "expand_date_range"
-    description = "Expand each row into one row per period between two dates; set the rest aside."
+    description = "Turn each row with a start and end date into one row per month between them."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows", "unexpanded")
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
-            "start": ConfigField(type="expression", description="The range's first date, inclusive.", required=True),
-            "end": ConfigField(type="expression", description="The range's last date, inclusive.", required=True),
+            "start": ConfigField(
+                type="expression", description="The first date of the range, such as '[term_start]'.", required=True
+            ),
+            "end": ConfigField(
+                type="expression", description="The last date of the range, such as '[term_end]'.", required=True
+            ),
             "unit": ConfigField(
                 type="string",
-                description="The period a range is broken into; only 'month' ships.",
+                description="The period each row is split into. Only 'month' is offered.",
                 default="month",
                 enum=_UNIT_ENUM,
             ),
             "period_column": ConfigField(
                 type="string",
-                description="The name of the added column carrying each period's first day.",
+                description="The name of the new column holding each period's first day.",
                 default="period_start",
             ),
             "in_zone": ZONE_FIELD,
@@ -83,31 +67,34 @@ class ExpandDateRange:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every row between 'start' and 'end', inclusive of both, becomes one row per month "
-                "on 'rows', with every other column carried unchanged and the period column added "
-                "last. A row this cannot expand -- a missing end, or an end before its start -- is "
-                "never dropped and never given a null period; it leaves on 'unexpanded' instead, "
-                "carrying the input's schema exactly."
+                "Use expand_date_range to turn one row per contract or term into one row per month it "
+                "covers, for example to spread a yearly amount over its months. `rows` has one row "
+                "per month from 'start' to 'end', both included, with the other columns repeated and "
+                "the month's first day in a new column at the end. A row that cannot be expanded goes "
+                "to `unexpanded`, unchanged."
             ),
             examples=(_clean_term_example(), _unexpanded_example()),
             notes=(
-                "A backwards range is judged on the dates, not on the periods they fall in: two "
-                "ends inside the same period the wrong way round still leave on 'unexpanded', which "
-                "is what makes this agree with DateDiff's negative count on the same row. A "
-                "timestamp is read as its calendar date first, in both tools, so two times on the "
-                "same day are one day whichever comes first.",
-                "'unexpanded' carries no period column and no reason column; the reason is one "
-                "predicate away downstream, and adding one would stop the port being "
-                "union-compatible with the rows that arrived.",
+                "Both ends count: January to December is twelve rows, however far into its month "
+                "each date falls. The same day at both ends is one row.",
+                "A row with a missing date, or an end before its start, goes to `unexpanded`. It is "
+                "never dropped and never given a null period.",
+                "Backwards is judged on the dates, not the months, so two dates in the same month the "
+                "wrong way round also go to `unexpanded`. That agrees with date_diff's negative count.",
+                "A timestamp is read as its calendar date first, as in date_diff, so two times on the "
+                "same day are the same day whichever comes first.",
+                "`unexpanded` has exactly the input's columns, with no period or reason column, so it "
+                "can be unioned back with other input rows.",
+                "Amounts are repeated on every month row, not split. Divide them in a later step, for "
+                "example by a date_diff count.",
+                "A 'period_column' name already on the input is refused.",
             ),
             field_help={
-                "start": "Must produce a date or a timestamp; a timestamp is read as its calendar date, "
-                "in the zone 'in_zone' states when it carries one.",
-                "end": "Must produce a date or a timestamp; a timestamp is read as its calendar date, "
-                "in the zone 'in_zone' states when it carries one.",
-                "in_zone": "Required when 'start' or 'end' is a timestamp in a time zone, because which "
-                "day it falls on depends on the zone. 'UTC' reads the UTC date. Refused otherwise.",
-                "period_column": "Refused if the input already carries a column of that name.",
+                "start": "A date or a timestamp. A timestamp with a time zone also needs 'in_zone'.",
+                "end": "A date or a timestamp. A timestamp with a time zone also needs 'in_zone'.",
+                "in_zone": "For example 'UTC'. Needed when 'start' or 'end' is a timestamp with a time "
+                "zone, because the day depends on the zone; refused otherwise.",
+                "period_column": "For example 'month'. It must be a new column name.",
             },
         )
 
@@ -117,12 +104,7 @@ class ExpandDateRange:
             check_zone_name(config["in_zone"], "in_zone")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """The two questions the schema alone can answer: are the ends dates, and is the name free.
-
-        Both are refused here rather than in ``execute``, so a range built from a number or a piece
-        of text, or a period column that would overwrite one already there, is reported as a
-        configuration fault before a single row moves -- at a frame of a million rows or of none.
-        """
+        """Refuse ends that are not dates, a missing or unneeded zone, and a period column name in use."""
         frame = inputs["rows"]
         period_column = config["period_column"]
         if period_column in frame.columns:
@@ -143,8 +125,7 @@ class ExpandDateRange:
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
-        # A timestamp is read as its calendar date before anything else, as date_diff reads it.
-        # So 15:00 and 09:00 on one day are the same day, not a backwards range.
+        # Timestamps become calendar dates first, so two times on one day are not a backwards range.
         for side in ("start", "end"):
             refuse_division_by_zero(frame, config[side], side)
         start, end = (
@@ -168,7 +149,7 @@ class ExpandDateRange:
 
 
 def _require_zone_where_needed(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
-    """'in_zone' is needed when a side is a timestamp in a zone, and refused when neither side is."""
+    """Require 'in_zone' when a side is a zoned timestamp, and refuse it when neither side is."""
     zoned = False
     for side in ("start", "end"):
         column, dtype = compiled_dtype(frame, config[side], side)
@@ -216,10 +197,10 @@ def _clean_term_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a clean term expands into one row per month it covers",
+        scenario="turn a three-month term into one row per month",
         configuration={"start": "[term_start]", "end": "[term_end]"},
-        explanation="January through March, inclusive of both ends, is three rows; every other "
-        "column is repeated onto each and the period column is added last.",
+        explanation="January to March, both included, gives three rows. The other columns are repeated on each, "
+        "and the period column is added at the end.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -261,10 +242,10 @@ def _unexpanded_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a backwards term is set aside instead of vanishing or becoming a null period",
+        scenario="set aside a term whose end is before its start",
         configuration={"start": "[term_start]", "end": "[term_end]"},
-        explanation="Key 1's term expands normally; key 2's end falls before its start, so it "
-        "contributes no rows to 'rows' and leaves on 'unexpanded' carrying the input's own columns.",
+        explanation="Key 1 expands as usual. Key 2's end is before its start, so it gives no rows on 'rows' and "
+        "goes to 'unexpanded' with its own columns.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

@@ -496,3 +496,28 @@ see, not something to guess.
 
 **One build function.** assemble_date and the expression function `make_date` share `date_or_null`.
 assemble_date stays a tool beside `make_date` (finding E-19).
+
+## expand_date_range
+
+**Both ends are included, per period.** January to December is twelve rows. The period holding the
+start counts however far into it the start falls, and so does the period holding the end, because an
+end written as a month's last day is by far the commonest spelling, and dropping that month would lose
+a whole period's money from every row. The same day at both ends is one row.
+
+**A backwards range goes to `unexpanded`, judged on the dates.** An end before its start is real data
+(a mistyped year, a swapped day and month), and the fix belongs in a repair step where it can be
+reviewed. Two ends in the same month the wrong way round are backwards too: month arithmetic alone
+would give them one plausible period, the exact shape a swapped day and month makes. This agrees with
+date_diff's negative count on the same row.
+
+**A row that cannot be expanded never vanishes and never gets a null period.** The obvious
+implementation explodes an empty list into one row with a null period. That is worse than dropping
+it: it looks like a schedule row, carries the row's whole figure, and sits in a report as a period that
+does not exist. `unexpanded` has exactly the input's columns, with no reason column, so it stays
+union-compatible; the reason is one condition away downstream.
+
+**Only `month`.** Every other unit brings its own question (what is a partial week or year worth?) that
+nothing has asked yet, and an allowed value with no tests behind it is worse than a short list.
+
+**A zone-aware timestamp needs `in_zone`** (owner's ruling E-02). Timestamps become calendar dates
+first, as in date_diff.
