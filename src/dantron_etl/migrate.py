@@ -131,22 +131,18 @@ class _Editor:
         return text
 
     def apply(self, found: Found) -> None:
+        key_node, node = self._locate(found.path)
         if found.kind == "manual":
-            _, node = self._locate(found.path)
             self._by_hand(node, found.sentence)
         elif found.kind == "key":
-            key_node, _ = self._locate(found.path)
             if self._replace(found, key_node):
                 self.data_edits.append(("key", found.path[:-1], found.old, found.new))
         elif found.kind == "value":
-            _, node = self._locate(found.path)
             if self._replace(found, node):
                 self.data_edits.append(("set", found.path, None, found.new))
         elif found.kind == "insert":
-            _, node = self._locate(found.path)
             self._insert(found, node)
         elif found.kind == "call":
-            _, node = self._locate(found.path)
             self._calls(found, node)
 
     def _locate(self, path: tuple[Any, ...]) -> tuple[Any, Any]:

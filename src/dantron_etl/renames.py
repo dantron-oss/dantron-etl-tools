@@ -20,6 +20,7 @@ from typing import Any
 __all__ = [
     "MIGRATE_COMMAND",
     "Found",
+    "call_pattern",
     "find_renames",
     "function_calls",
     "port_map",
@@ -180,13 +181,13 @@ def _key(path: tuple[Any, ...], old: str, new: str, label: str, sentence: str, s
 
 
 def _step_renames(index: int, step: Mapping[str, Any], tool_by_id: Mapping[str, str], registry: Any) -> list[Found]:
+    written = step.get("tool")
+    if not isinstance(written, str):
+        return []
     step_id = step.get("id") if isinstance(step.get("id"), str) else None
     here = f"step {step_id!r}" if step_id is not None else f"step number {index + 1}"
     at = ("steps", index)
-    written = step.get("tool")
     config = step.get("config")
-    if not isinstance(written, str):
-        return []
 
     single_tool, single_key = SINGLE_SHEET_TOOL
     if written == single_tool and isinstance(config, Mapping) and single_key in config:
@@ -212,37 +213,51 @@ def _step_renames(index: int, step: Mapping[str, Any], tool_by_id: Mapping[str, 
 
     inputs = step.get("inputs")
     if isinstance(inputs, Mapping):
-        for port, source in inputs.items():
-            renamed_port = INPUT_PORT_RENAMES.get(tool, {}).get(port) if isinstance(port, str) else None
-            if renamed_port is not None:
-                found.append(
-                    _key(
-                        (*at, "inputs", port),
-                        port,
-                        renamed_port,
-                        f"input port {tool}.{port} -> {renamed_port}",
-                        f"{here}: input port {port!r} is now {renamed_port!r}",
-                        step_id,
-                    )
+        found.extend(_input_renames(tool, inputs, (*at, "inputs"), here, step_id, tool_by_id))
+    return found
+
+
+def _input_renames(
+    tool: str,
+    inputs: Mapping[str, Any],
+    at: tuple[Any, ...],
+    here: str,
+    step_id: str | None,
+    tool_by_id: Mapping[str, str],
+) -> list[Found]:
+    """A step's renamed input ports, and the inputs that read a renamed output port of another step."""
+    found: list[Found] = []
+    for port, source in inputs.items():
+        renamed_port = INPUT_PORT_RENAMES.get(tool, {}).get(port) if isinstance(port, str) else None
+        if renamed_port is not None:
+            found.append(
+                _key(
+                    (*at, port),
+                    port,
+                    renamed_port,
+                    f"input port {tool}.{port} -> {renamed_port}",
+                    f"{here}: input port {port!r} is now {renamed_port!r}",
+                    step_id,
                 )
-            if not isinstance(source, str) or "." not in source:
-                continue
-            source_step, source_port = source.split(".", 1)
-            source_tool = tool_by_id.get(source_step)
-            new_port = OUTPUT_PORT_RENAMES.get(source_tool or "", {}).get(source_port)
-            if new_port is not None:
-                found.append(
-                    Found(
-                        "value",
-                        (*at, "inputs", port),
-                        source,
-                        f"{source_step}.{new_port}",
-                        f"port {source_tool}.{source_port} -> {new_port}",
-                        f"{here}: input {port!r} reads {source!r}, and the {source_tool} output port "
-                        f"{source_port!r} is now {new_port!r}",
-                        step_id,
-                    )
+            )
+        if not isinstance(source, str) or "." not in source:
+            continue
+        source_step, source_port = source.split(".", 1)
+        source_tool = tool_by_id.get(source_step)
+        new_port = OUTPUT_PORT_RENAMES.get(source_tool or "", {}).get(source_port)
+        if new_port is not None:
+            found.append(
+                Found(
+                    "value",
+                    (*at, port),
+                    source,
+                    f"{source_step}.{new_port}",
+                    f"port {source_tool}.{source_port} -> {new_port}",
+                    f"{here}: input {port!r} reads {source!r}, and the {source_tool} output port "
+                    f"{source_port!r} is now {new_port!r}",
+                    step_id,
                 )
+            )
     return found
 
 
@@ -387,7 +402,7 @@ def _reach(
 
 
 def _expression_paths(tool: str, registry: Any) -> tuple[str, ...]:
-    """The paths of a tool's expression fields, read from its template. None for an unknown tool."""
+    """The paths of a tool's expression fields, read from its template. Empty for an unknown tool."""
     from .config import expression_fields
     from .errors import RegistryError
     from .registry import REGISTRY
