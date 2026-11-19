@@ -11,12 +11,14 @@ from the data that happens to contain ``@@`` stays as it is.
 from __future__ import annotations
 
 import html
+import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import cache
 from importlib import resources
+from typing import Any
 
-__all__ = ["escape", "page", "read_asset"]
+__all__ = ["escape", "page", "page_data", "read_asset"]
 
 _MARKER = re.compile(r"@@([a-z_]+)@@")
 
@@ -24,6 +26,15 @@ _MARKER = re.compile(r"@@([a-z_]+)@@")
 def escape(value: object) -> str:
     """``value`` as text that is safe inside HTML, quotes included."""
     return html.escape(str(value), quote=True)
+
+
+def page_data(data: Mapping[str, Any]) -> str:
+    """``data`` as JSON in the page's ``page-data`` script element, for the page's script to read.
+
+    ``</`` is written as ``<\\/`` so a value cannot close the script element early.
+    """
+    text = json.dumps(data, default=str).replace("</", "<\\/")
+    return f'<script type="application/json" id="page-data">{text}</script>'
 
 
 @cache

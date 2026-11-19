@@ -1,7 +1,7 @@
 """Following one entity through a saved run, a window of rows at a time.
 
-The page no longer carries a copy of every port per entity. Instead the server asks the saved
-ports for the rows that belong to one entity, using the same rules as ``focus.slice_trace``.
+The server asks the saved ports for the rows that belong to one entity. It follows the same rules
+as ``focus.slice_trace``.
 """
 
 from __future__ import annotations

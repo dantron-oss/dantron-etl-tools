@@ -6,7 +6,6 @@ and ``static/``. Python only builds the fragments that carry data and puts them 
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -17,7 +16,7 @@ from ..spec import Pipeline
 from ..status import STATUS_LEVELS
 from ..trace import PipelineTrace
 from .assets import escape as _e
-from .assets import page
+from .assets import page, page_data
 from .layout import canvas
 
 # Rows drawn into the page for a slice of one entity, which the service cannot serve.
@@ -296,27 +295,22 @@ def _step_data(
 
 
 def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec | None) -> dict[str, str]:
-    """Every step's data panel, keyed by the step, ready to be written down and fetched one at a time.
+    """Every step's data panel, keyed by the step. They are saved beside the run and fetched one at a time.
 
-    The markup is exactly what the page used to carry: same tables, same headers, same per-column
-    search boxes, same in/out flip, same bodies left for the service. What changed is *when* it is
-    built -- on the real flow, 672 of these came to 7.76 MB of an 8.98 MB page, with 24,937 form
-    controls the browser laid out before it could paint, for the 671 steps nobody had opened.
+    The panels are kept out of the page because, on a large flow, they made up most of its size.
 
-    Keyed off ``spec.order()`` rather than off the trace's events, so every step a reader can pick
-    -- a node on the canvas, a line in the step list -- has a panel behind it. A step the flow can
-    select and the service cannot answer for is a dead end found by clicking.
+    There is one panel for every step in ``spec.order()``, including steps that never ran. So every
+    step a reader can click, on the canvas or in the step list, has a panel behind it.
 
-    Only the everyone view is drawn. One entity's rows are fetched from the service when asked for.
+    Only the view of every row is drawn. One entity's rows are fetched from the server when asked for.
+    ``focus`` is not used.
     """
     return {step_id: _step_data(spec, trace, step_id, EVERYONE) for step_id in spec.order()}
 
 
 def _page_data(spec: Pipeline, focus: FocusSpec | None, run: Mapping[str, Any] | None) -> str:
-    """The page's facts as JSON for its script, safe inside a script element."""
-    data = {"pipeline": spec.name, "focus": focus.label if focus is not None else None, **(run or {})}
-    text = json.dumps(data, default=str).replace("</", "<\\/")
-    return f'<script type="application/json" id="page-data">{text}</script>'
+    """The page's facts for its script: the pipeline, the focus, and the run record."""
+    return page_data({"pipeline": spec.name, "focus": focus.label if focus is not None else None, **(run or {})})
 
 
 def _banner(run: Mapping[str, Any] | None) -> str:
@@ -344,15 +338,11 @@ def build(
 ) -> str:
     """The run as a page: the flow, every step's configuration, and the data of the step being read.
 
-    The panels are no longer in here -- they are written beside the run's ports and fetched as they
-    are opened, which is what :func:`build_panels` is for. One exception, and it is the reason the
-    page opens on anything at all: the step named by ``data-first`` is chosen before any fetch can
-    have answered, so its panel ships in the document. Every other panel in here would be weight for
-    a step nobody has clicked.
+    The page holds the canvas, the step list and each step's configuration. Opened as a plain file,
+    it still says what every step does. The rows need the server.
 
-    What stays is everything a reader has without a service answering: the canvas, the step list and
-    each step's configuration as it was authored. Opened as a plain file the page still says what
-    every step does; it is the rows, and now the tables around them, that need something serving.
+    Each step's data panel is fetched when it is opened (see :func:`build_panels`). The one exception
+    is the first step: the page opens on it before any fetch can answer, so its panel is in the page.
 
     ``run`` is the saved run's record. It goes into the page data and decides the banner.
     """

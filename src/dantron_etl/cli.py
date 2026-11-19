@@ -21,10 +21,15 @@ import time
 import urllib.request
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from . import __version__
 from .paths import ProjectRootNotFound
+
+if TYPE_CHECKING:  # types only: each command imports what it needs when it runs
+    from .trace import StepEvent
+    from .viewer.project import PipelineEntry, Project
+    from .viewer.runs import RunRecord
 
 __all__ = ["COMMAND", "browser_opener", "choose_port", "main"]
 
@@ -211,7 +216,9 @@ def _view(arguments: argparse.Namespace) -> int:
             f"Warning: the viewer is listening on {host or 'every address'}. Anyone who can reach this "
             f"computer on the network can open it and read every row of every run."
         )
-    probe_host = DEFAULT_HOST if host in ANY_ADDRESS or host in LOOPBACK else host
+    # On this computer, or on every address: the viewer is reached, and opened, at 127.0.0.1.
+    reached_locally = host in ANY_ADDRESS or host in LOOPBACK
+    probe_host = DEFAULT_HOST if reached_locally else host
     port, running = choose_port(project.root, preferred=arguments.port, host=probe_host)
     if running:
         url = f"http://{DEFAULT_HOST}:{port}/"
@@ -226,7 +233,7 @@ def _view(arguments: argparse.Namespace) -> int:
         server = start_server(project, host=host, port=port)
     except OSError as error:
         return _refuse(f"The viewer could not start on port {port}: {error}")
-    url = f"http://{DEFAULT_HOST}:{server.port}/" if host in ANY_ADDRESS or host in LOOPBACK else server.url
+    url = f"http://{DEFAULT_HOST}:{server.port}/" if reached_locally else server.url
     if not arguments.no_browser:
         _open_browser(url)
     print(f"Viewer for {project.root} is running at {url}")
@@ -262,15 +269,19 @@ def choose_port(root: Path, *, preferred: int = DEFAULT_PORT, host: str = DEFAUL
             return port, True
     if free is not None:
         return free, False
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    with socket.socket(family, socket.SOCK_STREAM) as probe:
+    with socket.socket(_family(host), socket.SOCK_STREAM) as probe:
         probe.bind((host, 0))
         return probe.getsockname()[1], False
 
 
+def _family(host: str) -> socket.AddressFamily:
+    """IPv6 for an address with a colon in it, IPv4 for any other."""
+    return socket.AF_INET6 if ":" in host else socket.AF_INET
+
+
 def _can_bind(host: str, port: int) -> bool:
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    with socket.socket(family, socket.SOCK_STREAM) as probe:
+    """Whether a server could listen on ``host``:``port`` now."""
+    with socket.socket(_family(host), socket.SOCK_STREAM) as probe:
         if os.name != "nt":
             # Lets a port a stopped viewer just left be used again. It never shares a port in use.
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -377,7 +388,7 @@ def _run(arguments: argparse.Namespace) -> int:
     return _report(record)
 
 
-def _entry(project: Any, asked: str) -> Any:
+def _entry(project: Project, asked: str) -> PipelineEntry:
     """The project's pipeline named ``asked``, or whose file ``asked`` points at."""
     from .errors import name_choices
     from .viewer.project import ProjectError
@@ -394,7 +405,8 @@ def _entry(project: Any, asked: str) -> Any:
     )
 
 
-def _print_event(event: Any) -> None:
+def _print_event(event: StepEvent) -> None:
+    """One line for a step that ended: its rows out and how long it took."""
     shapes = event.outputs
     if len(shapes) == 1:
         rows = f"{shapes[0].rows} rows out"
@@ -403,7 +415,7 @@ def _print_event(event: Any) -> None:
     print(f"  {event.step_id} ({event.tool}): {rows}, {event.duration_ms:.0f} ms", flush=True)
 
 
-def _report(record: Any) -> int:
+def _report(record: RunRecord) -> int:
     """Print how a run ended and where it is saved. Returns the exit code."""
     if record.held_back:
         print(f"Held back, nothing written: {', '.join(record.held_back)}")

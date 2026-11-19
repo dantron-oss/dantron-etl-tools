@@ -31,10 +31,10 @@ from ..focus import FocusError, FocusSpec
 from ..preview import FILTER_PREFIX, PAGE_NAME, PortStore, PreviewError
 from ..trace import StepEvent
 from .assets import escape as _e
-from .assets import page
+from .assets import page, page_data
 from .focus_rows import focus_match
 from .project import PipelineEntry, Project, ProjectError, load_entry, load_project, pipeline_rules
-from .runs import ENTITIES_FILE, RunRecord, execute, last_runs, latest, preview_plan, writes, writes_digest
+from .runs import ENTITIES_FILE, KINDS, RunRecord, execute, last_runs, latest, preview_plan, writes, writes_digest
 
 __all__ = ["MAX_BODY", "ViewerServer", "start_server"]
 
@@ -118,6 +118,11 @@ def _hostname(value: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _progress(state: str, kind: str | None, total: int) -> dict[str, Any]:
+    """A pipeline's progress before any step has ended."""
+    return {"state": state, "kind": kind, "events": [], "total": total, "failed_step": None, "message": None}
+
+
 class _State:
     """What the server holds between requests: the project root, the token, and runs in progress."""
 
@@ -136,10 +141,11 @@ class _State:
             return self.progress.get(name, {}).get("state") == "running"
 
     def snapshot(self, name: str, steps: int) -> dict[str, Any]:
+        """A copy of a pipeline's progress. A pipeline not run since the server started is idle."""
         with self.lock:
             found = self.progress.get(name)
             if found is None:
-                return {"state": "idle", "kind": None, "events": [], "total": steps, "failed_step": None, "message": None}
+                return _progress("idle", None, steps)
             return {**found, "events": list(found["events"])}
 
     def claim(self, name: str, kind: str, steps: int) -> bool:
@@ -147,9 +153,7 @@ class _State:
         with self.lock:
             if self.progress.get(name, {}).get("state") == "running":
                 return False
-            self.progress[name] = {
-                "state": "running", "kind": kind, "events": [], "total": steps, "failed_step": None, "message": None
-            }
+            self.progress[name] = _progress("running", kind, steps)
             return True
 
     def update(self, name: str, **changes: Any) -> None:
@@ -332,11 +336,6 @@ def _whole(query: Mapping[str, list[str]], key: str, default: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _page_data(data: Mapping[str, Any]) -> str:
-    text = json.dumps(data, default=str).replace("</", "<\\/")
-    return f'<script type="application/json" id="page-data">{text}</script>'
-
-
 def _when(started: str | None) -> str:
     return started[:16].replace("T", " ") if started else ""
 
@@ -398,7 +397,7 @@ def _home(state: _State) -> str:
         root=_e(listed["project"]),
         rows=table,
         problems=problem_list,
-        pagedata=_page_data({"project": listed["project"], "pipelines": [p["name"] for p in listed["pipelines"]]}),
+        pagedata=page_data({"project": listed["project"], "pipelines": [p["name"] for p in listed["pipelines"]]}),
     )
 
 
@@ -457,7 +456,7 @@ def _pipeline_page(
         happened=_e(happened),
         messages=messages,
         runbar=_runbar(entry.name, running, kept),
-        pagedata=_page_data(data),
+        pagedata=page_data(data),
     )
 
 
@@ -607,8 +606,14 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 raise _Refused(404, f"no page {'/'.join(segments)!r}")
 
         def _run_page(
-            self, project: Project, entry: PipelineEntry, record: RunRecord | None, slot: str | None, kept: Any
+            self,
+            project: Project,
+            entry: PipelineEntry,
+            record: RunRecord | None,
+            slot: str | None,
+            kept: RunRecord | None,
         ) -> None:
+            """A run's saved page with the run bar in it, or the pipeline's page when there is none to show."""
             if record is None and slot is not None:
                 raise _Refused(404, f"pipeline '{entry.name}' has no {slot} run saved")
             running = state.running(entry.name)
@@ -676,7 +681,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             if entry is None:
                 raise _Refused(404, f"no pipeline {name!r} in this project")
             kind = body.get("kind")
-            if kind not in ("preview", "real"):
+            if kind not in KINDS:
                 raise _Refused(400, "kind must be 'preview' or 'real'")
             if state.running(entry.name):
                 raise _Refused(409, f"pipeline '{entry.name}' is already running")

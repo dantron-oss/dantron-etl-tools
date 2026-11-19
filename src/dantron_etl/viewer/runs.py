@@ -37,6 +37,7 @@ from .render import build, build_panels
 __all__ = [
     "ENTITIES_FILE",
     "FAILED_SUFFIX",
+    "KINDS",
     "RUN_FILE",
     "Plan",
     "RunRecord",
@@ -355,18 +356,19 @@ def _save(project: Project, name: str, good: bool, fill: Callable[[Path], None])
     """Write a run into a hidden folder, then move it into the good or the failed slot."""
     folder = project.runs_folder
     folder.mkdir(parents=True, exist_ok=True)
+    failed_slot = folder / f"{name}{FAILED_SUFFIX}"
+    target = folder / name if good else failed_slot
     incoming = folder / f".{name}.incoming-{secrets.token_hex(6)}"
     incoming.mkdir()
     try:
         fill(incoming)
-        target = folder / (name if good else f"{name}{FAILED_SUFFIX}")
         _swap_in(incoming, target)
     except BaseException:
         shutil.rmtree(incoming, ignore_errors=True)
         raise
-    failed = folder / f"{name}{FAILED_SUFFIX}"
-    if good and failed.exists():
-        shutil.rmtree(failed)
+    # A good run makes the last failed one out of date, so it is deleted.
+    if good and failed_slot.exists():
+        shutil.rmtree(failed_slot)
     return target
 
 
