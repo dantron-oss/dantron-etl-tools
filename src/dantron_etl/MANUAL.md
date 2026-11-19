@@ -513,7 +513,9 @@ Every one of these was measured, most of them the hard way.
 - **A text file states no types at all.** `read_csv` infers, reading the *whole* column before it
   casts. Declare `column_types` as `String` for any column that is an identifier or a name: a
   customer literally called `3600` inferred as a number stops matching the same name everywhere
-  else, and nothing about that failure looks like a failure.
+  else, and nothing about that failure looks like a failure. A column of numbers that a number
+  would change stops the read instead of being guessed: `02134` would lose its zero, and a whole
+  number past 64 bits would be rounded. Declare it `String` to keep it as written.
 
 ### How a figure is shown
 

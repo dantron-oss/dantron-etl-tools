@@ -69,6 +69,10 @@ _TIME_DEFAULT_FORMAT: Final[str] = TIME_DEFAULT_FORMAT
 _INT_LITERAL: Final[re.Pattern[str]] = re.compile(r"[-+]?\d+")
 _FLOAT_LITERAL: Final[re.Pattern[str]] = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 _FRACTION: Final[re.Pattern[str]] = re.compile(r"\.\d+$")
+# A number written with a zero in front of another digit, which reading it as a number would drop.
+_LEADING_ZERO: Final[str] = r"^[-+]?0\d"
+_LEADING_ZERO_PATTERN: Final[re.Pattern[str]] = re.compile(_LEADING_ZERO)
+_WHOLE_NUMBER: Final[str] = r"^[-+]?\d+$"
 
 # A byte a spreadsheet writes and almost nothing else expects; accepted and dropped rather than
 # left to become part of the first column's name.
@@ -184,6 +188,9 @@ class ReadCsv:
                 "would make a column's type depend on where this month's exception happens to sit.",
                 "A value that will not convert to its declared type stops the run naming the column, "
                 "the value and the declared type, rather than becoming a null with no other symptom.",
+                "A column that would be read as numbers stops the run when a number would change a "
+                "value: a leading zero (02134) or a whole number too big for 64 bits. Declare it in "
+                "column_types: String keeps it as written, Int64 or Float64 reads it as a number anyway.",
                 "The encoding is configurable because it is a fact about a file somebody else wrote; "
                 "a byte order mark is accepted and dropped, and bytes invalid in the declared "
                 "encoding are refused rather than read lossily.",
@@ -269,10 +276,11 @@ class ReadCsv:
             for name, raw in zip(columns, fields):
                 grid[name].append(raw if raw != "" else None)
 
+        line_numbers = [line_number for line_number, _ in data_records]
         series = [
             _declared_series(name, grid[name], declared_by_column[name])
             if name in declared_by_column
-            else _infer_series(name, grid[name])
+            else _infer_series(name, grid[name], line_numbers)
             for name in columns
         ]
 
@@ -369,12 +377,15 @@ def _parse_records_quoted(remainder: str, delimiter: str, skip_rows: int) -> lis
     return records
 
 
-def _infer_series(name: str, values: list[str | None]) -> pl.Series:
+def _infer_series(name: str, values: list[str | None], line_numbers: list[int]) -> pl.Series:
     """``values`` typed as a reader would: a whole number, then a figure, then a truth value, then text.
 
     A column with nothing but nulls in it is left as text: there is no non-null value to infer a
     type from, and casting an all-null column would otherwise adopt whichever candidate happened to
     be tried first.
+
+    A column that would read as numbers is refused instead when a number would change what the file
+    says: a leading zero, or a whole number too big for 64 bits (see ``_refuse_a_lossy_number``).
     """
     series = pl.Series(name, values, dtype=pl.String)
     non_null = series.drop_nulls()
@@ -383,9 +394,11 @@ def _infer_series(name: str, values: list[str | None]) -> pl.Series:
 
     for dtype in (pl.Int64, pl.Float64):
         try:
-            return series.cast(dtype, strict=True)
+            typed = series.cast(dtype, strict=True)
         except pl.exceptions.PolarsError:
             continue
+        _refuse_a_lossy_number(series, line_numbers)
+        return typed
 
     if non_null.is_in(["true", "false"]).all():
         frame = series.to_frame()
@@ -394,6 +407,35 @@ def _infer_series(name: str, values: list[str | None]) -> pl.Series:
         return mapped[name]
 
     return series
+
+
+def _refuse_a_lossy_number(series: pl.Series, line_numbers: list[int]) -> None:
+    """Refuse a column of numbers when reading it as numbers would change a value.
+
+    Two cases. A leading zero (``02134``) is dropped by a number. A whole number too big for 64 bits
+    can only be read as a figure, which rounds it. The author settles either one in column_types:
+    String keeps the value as written, and a number type accepts the change.
+    """
+    name = series.name
+    frame = pl.DataFrame({"line": line_numbers, name: series})
+    value = pl.col(name)
+    leading_zero = value.str.contains(_LEADING_ZERO)
+    too_big = value.str.contains(_WHOLE_NUMBER) & value.cast(pl.Int64, strict=False).is_null()
+    offending = frame.filter(leading_zero | too_big)
+    if offending.is_empty():
+        return
+    line, written = offending.row(0)
+    if _LEADING_ZERO_PATTERN.match(written):
+        why = f"read as a number, {written!r} on line {line} would lose its leading zero"
+    else:
+        why = f"{written!r} on line {line} is a whole number too big for Int64, and read as a figure it would be rounded"
+    raise DataError(
+        f"read_csv cannot guess the type of column {name!r}: {why}. Say what the column is in "
+        f"column_types: type String keeps every value as written, and a number type reads it as a "
+        f"number anyway",
+        offending=offending,
+        total=series.len(),
+    )
 
 
 def _declared_series(name: str, values: list[str | None], entry: Mapping[str, Any]) -> pl.Series:
