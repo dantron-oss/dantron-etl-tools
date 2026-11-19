@@ -257,3 +257,23 @@ older one, and the author needs to hear which entry stopped matching.
 **Only `*` is a wildcard; matching is case sensitive.** A header copied from a spreadsheet, such as
 `Total [CAD]`, must select itself and nothing else, so brackets and `?` are literal. An entry equal to
 a column's name selects that column even if it contains `*`.
+
+## rename_columns
+
+**Why it exists.** Without it, a rename is a formula that copies the column under a new name plus a
+select that drops the old one. The copy is appended, so the column moves to the end of the frame,
+and anything reading columns by position gets a different frame without being told. Keeping the
+renamed column where it was is the reason for the tool.
+
+**Renames are applied together.** The list is one mapping over the input's columns, not a sequence,
+so `code -> region` beside `region -> code` swaps the names, and `code -> region` beside
+`region -> territory` needs no temporary name. Applied one at a time, the pairs would either fail
+with a duplicate-column error from polars or end with two columns under one name.
+
+**A collision is refused, but a name freed in the same step is not a collision.** Writing over a
+column that stays loses it silently, so it is refused by name. The check must still allow the swap.
+
+**A rename that changes nothing is refused.** A rename to the same name, a blank name, a name of
+only spaces: each reads as an instruction and is not one. The usual cause is a configuration edited
+halfway, and saying so beats agreeing quietly. Every refusal comes from the configuration and the
+column names, never from a row, so an empty frame is refused the same way.
