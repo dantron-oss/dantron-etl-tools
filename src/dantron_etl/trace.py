@@ -54,7 +54,7 @@ class CachedFrame:
     Two fields because neither is any use alone. The frame without the fingerprint is a number with
     no provenance, and the danger a cache carries is not one that fails to load -- it is one that
     loads perfectly against a pipeline somebody has since edited. The fingerprint is
-    :meth:`~.spec.Pipeline.fingerprint` taken over the closure that produced the port, and
+    :meth:`~.spec.Pipeline.fingerprint` of the port, taken over the closure that produced it, and
     :func:`run_pipeline` compares it before it walks a step.
 
     Frozen because it is evidence of a run that already happened, not a value the run holding it may

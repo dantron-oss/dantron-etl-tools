@@ -626,13 +626,15 @@ port = PortRef("clients_joined", "rows")
 
 later = run_pipeline(
     spec,
-    cached={port: CachedFrame(first.frame(port), spec.fingerprint("clients_joined"))},
+    cached={port: CachedFrame(first.frame(port), spec.fingerprint(port))},
 )
 ```
 
 `CachedFrame` carries the frame **and** a fingerprint, and neither is any use alone. The fingerprint
-is `spec.fingerprint(step_id)`, a hash over that step and every step behind it -- their ids, tools,
-configurations and wiring. Before the run walks a cached port it recomputes that hash and compares:
+is `spec.fingerprint(port)`, a hash over the step that produced the port and every step behind it --
+their ids, tools, configurations and wiring -- and over the port's name, so the `true` frame of a
+split cannot be resumed as its `false` one. For a step with one output port, `spec.fingerprint(step_id)`
+gives the same string. Before the run walks a cached port it recomputes that hash and compares:
 if anything upstream has been edited since, the cache is **refused by name** rather than used.
 
 That refusal is the whole feature. A cache that fails to load is a nuisance; a cache that loads
@@ -645,6 +647,17 @@ have been right to use.
 **The loop this is for:** cache the port just before the part you are editing, then run only from
 there while you iterate. Run whole once at the end -- a cached run proves what your edit did, never
 that the flow as a whole still agrees with its oracle.
+
+**`retain` and `keep`** decide which frames a run holds when it ends. The default, `retain="all"`,
+holds every one. `retain="live"` frees each frame as soon as nothing left in the run reads it, which
+is what a scheduled run of a large flow wants. `keep` names the ports to hold on to anyway:
+
+```python
+from dantron_etl import read_pipeline, run_pipeline
+
+spec = read_pipeline("pipelines/sales.yaml")
+trace = run_pipeline(spec, retain="live", keep=["published.receipt"])
+```
 
 ### The one thing a fingerprint cannot tell you
 

@@ -65,7 +65,7 @@ from .ports import Ports
 from .registry import REGISTRY, ToolRegistry
 from .spec import Pipeline, PortRef
 from .trace import CachedFrame, ColumnCheckError, FrameShape, Level, PipelineTrace, StepEvent, StepFailedError
-from .walk import release_schedule, resolve_cached, resolve_sources, walk_around_cache, walk_for
+from .walk import release_schedule, resolve_cached, resolve_keep, resolve_sources, walk_around_cache, walk_for
 
 __all__ = ["logging_sink", "run_pipeline"]
 
@@ -111,6 +111,7 @@ def run_pipeline(
     retain: Literal["all", "live"] = "all",
     until: str | Collection[str] | None = None,
     cached: Mapping[PortRef | str, CachedFrame] | None = None,
+    keep: Collection[PortRef | str] = (),
     sink: Callable[[StepEvent], None] | None = None,
     run_id: str | None = None,
 ) -> PipelineTrace:
@@ -121,7 +122,8 @@ def run_pipeline(
     configuration still holding an unresolved ``${...}`` placeholder, because a refusal that
     arrives after several steps have already written somewhere is not a refusal; a supplied source
     naming a step, a port or a computed (rather than source) port that does not exist to be
-    supplied.
+    supplied, a supplied value that is not a polars DataFrame, or a source step supplied on some but
+    not all of its ports.
 
     The placeholder scan reads every step, not only the ones ``until`` will reach. A placeholder
     that survived means the loader never finished resolving the document, which is a fact about the
@@ -176,6 +178,13 @@ def run_pipeline(
     otherwise read identically in a log; a port nothing will read again is released, if ``retain``
     says to; and one event is appended to the trace and, if given, passed to ``sink``.
 
+    ``keep`` names ports to hold on to under ``retain="live"``, which otherwise frees a port as soon
+    as nothing left in the run reads it -- including the last port of a flow, and the ports of the
+    steps ``until`` names. ``retain="live", keep=["publish.receipt"]`` frees everything except the
+    receipt. Each entry is a :class:`PortRef`, the text ``"step.port"``, or a step id for all of its
+    ports; a name the pipeline does not have is refused before anything runs. Under ``retain="all"``
+    every port is kept anyway.
+
     A step that raises is reported -- its error event is emitted before the exception leaves this
     function, so a crashed run still has a log of everything up to it -- and then raises
     :class:`StepFailedError`, carrying the partial trace. A sink that raises is reported once, on
@@ -208,7 +217,8 @@ def run_pipeline(
 
     column_refs = spec.column_references()
 
-    schedule = release_schedule(spec, tools_by_step, order) if retain == "live" else {}
+    kept = resolve_keep(spec, tools_by_step, keep)
+    schedule = release_schedule(spec, tools_by_step, order, kept) if retain == "live" else {}
 
     frames: dict[PortRef, pl.DataFrame] = {}
     shapes: dict[PortRef, FrameShape] = {}
@@ -301,16 +311,7 @@ def run_pipeline(
             reported: tuple[str, ...] = ()
             output_frames = {port: cached_frames[PortRef(step_id, port)].frame for port in tool.output_ports}
         elif is_source_step and supplied_refs:
-            if len(supplied_refs) != len(tool.output_ports):
-                missing_ports = [
-                    str(PortRef(step_id, port))
-                    for port in tool.output_ports
-                    if PortRef(step_id, port) not in supplied_frames
-                ]
-                raise RunError(
-                    f"step {step_id!r} was supplied some but not all of its output ports; still "
-                    f"missing: {', '.join(missing_ports)}"
-                )
+            # Every port is supplied: resolve_sources refused a partial supply before the walk.
             origin = "supplied"
             reported = ()
             output_frames = {port: supplied_frames[PortRef(step_id, port)] for port in tool.output_ports}

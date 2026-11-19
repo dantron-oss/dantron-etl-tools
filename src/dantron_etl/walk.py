@@ -16,7 +16,7 @@ from .errors import RunError, name_choices
 from .spec import Pipeline, PortRef
 from .trace import CachedFrame
 
-__all__ = ["release_schedule", "resolve_cached", "resolve_sources", "walk_around_cache", "walk_for"]
+__all__ = ["release_schedule", "resolve_cached", "resolve_keep", "resolve_sources", "walk_around_cache", "walk_for"]
 
 
 def walk_for(spec: Pipeline, until: str | Collection[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -69,7 +69,7 @@ def _named_port(
     spec: Pipeline,
     tools_by_step: Mapping[str, Tool],
     key: PortRef | str,
-    argument: Literal["sources", "cached"],
+    argument: Literal["sources", "cached", "keep"],
 ) -> tuple[PortRef, Tool]:
     """One key of ``sources`` or of ``cached`` read as a port of this flow, with the tool behind it.
 
@@ -128,8 +128,45 @@ def resolve_sources(
                 f"tool ({tool.name!r}) reads input port(s) {', '.join(step_input_ports)}, so handing "
                 f"it a frame would make the flow that ran a different flow from the one in the file"
             )
+        if not isinstance(frame, pl.DataFrame):
+            hint = "; call .collect() on it first" if isinstance(frame, pl.LazyFrame) else ""
+            raise RunError(f"sources supplies {ref!s} with a {type(frame).__name__}, not a polars DataFrame{hint}")
         resolved[ref] = frame
+
+    # Checked here, before the first step runs, like its mirror in resolve_cached: found mid-walk,
+    # the steps before it would already have written their files.
+    for step_id in dict.fromkeys(ref.step for ref in resolved):
+        tool = tools_by_step[step_id]
+        missing = [str(PortRef(step_id, port)) for port in tool.output_ports if PortRef(step_id, port) not in resolved]
+        if missing:
+            raise RunError(
+                f"step {step_id!r} was supplied some but not all of its output ports; still missing: "
+                f"{', '.join(missing)}. A source step is either read or handed every one of its ports"
+            )
     return resolved
+
+
+def resolve_keep(
+    spec: Pipeline,
+    tools_by_step: Mapping[str, Tool],
+    keep: Collection[PortRef | str],
+) -> frozenset[PortRef]:
+    """The ports ``keep`` names, refusing a step or port this flow does not have.
+
+    A step named alone keeps every one of its output ports.
+    """
+    if isinstance(keep, (str, PortRef)):
+        keep = (keep,)
+    kept: set[PortRef] = set()
+    for key in keep:
+        if isinstance(key, str) and "." not in key:
+            if key not in tools_by_step:
+                raise RunError(f"keep names step {key!r}, which this pipeline does not have; {name_choices(key, tools_by_step)}")
+            kept.update(PortRef(key, port) for port in tools_by_step[key].output_ports)
+            continue
+        ref, _ = _named_port(spec, tools_by_step, key, "keep")
+        kept.add(ref)
+    return frozenset(kept)
 
 
 def resolve_cached(
@@ -176,7 +213,14 @@ def resolve_cached(
             )
 
     for ref, entry in resolved.items():
-        if entry.fingerprint != spec.fingerprint(ref.step):
+        if entry.fingerprint != spec.fingerprint(ref):
+            if len(tools_by_step[ref.step].output_ports) > 1 and entry.fingerprint == spec.fingerprint(ref.step):
+                raise RunError(
+                    f"cached port {ref!s} carries the fingerprint of step {ref.step!r}, which has "
+                    f"{len(tools_by_step[ref.step].output_ports)} output ports. Take each port's own "
+                    f"fingerprint, spec.fingerprint(PortRef({ref.step!r}, {ref.port!r})), so a frame put "
+                    f"on the wrong port is refused"
+                )
             raise RunError(
                 f"cached port {ref!s} cannot be used: the configuration that produced it has "
                 f"changed. The fingerprint recorded beside the frame is not the one step "
@@ -236,6 +280,7 @@ def release_schedule(
     spec: Pipeline,
     tools_by_step: Mapping[str, Tool],
     order: tuple[str, ...],
+    keep: Collection[PortRef] = frozenset(),
 ) -> dict[str, tuple[PortRef, ...]]:
     """``step id -> ports to free once that step has finished``, for ``retain="live"``.
 
@@ -249,12 +294,16 @@ def release_schedule(
 
     Both halves of that are the one question -- is this step in the walk? -- asked of a producer by
     walking ``order`` rather than the spec, and of a consumer by looking its step up in ``position``.
+
+    A port in ``keep`` is never due: the caller asked to read it once the run is over.
     """
     position = {step_id: index for index, step_id in enumerate(order)}
     schedule: dict[str, list[PortRef]] = {step_id: [] for step_id in order}
     for step_id in order:
         for port_name in tools_by_step[step_id].output_ports:
             ref = PortRef(step_id, port_name)
+            if ref in keep:
+                continue
             read_at = [position[consumer.step] for consumer in spec.consumers(ref) if consumer.step in position]
             due_at = max(read_at, default=position[step_id])
             schedule[order[due_at]].append(ref)

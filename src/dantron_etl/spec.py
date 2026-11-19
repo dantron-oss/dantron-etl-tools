@@ -185,9 +185,14 @@ class Pipeline:
                     left.append(PortRef(step.id, port))
         return tuple(left)
 
-    def fingerprint(self, step_id: str) -> str:
-        """One string answering "is the configuration that produced this step's ports still the
-        configuration in the file?" -- taken over ``step_id`` and every step behind it.
+    def fingerprint(self, target: "str | PortRef") -> str:
+        """One string answering "is the configuration that produced this port still the
+        configuration in the file?" -- taken over the step and every step behind it.
+
+        ``target`` is a step id, a :class:`PortRef`, or the text ``"step.port"``. A port's
+        fingerprint also covers the port's name, so a cached frame put on the wrong port of a split
+        (its ``true`` frame under ``false``) does not match. For a step with one output port there is
+        nothing to mix up, and the step's fingerprint and its port's are the same string.
 
         The closure, not the step alone, because the rows on a port are the product of everything
         upstream of them: a step whose own config block is untouched produces different rows the
@@ -215,8 +220,7 @@ class Pipeline:
         it produces is wrong in a way nothing here can see. See :func:`~.runner.run_pipeline` for
         what follows from that.
         """
-        self.step(step_id)  # a name this pipeline does not have is refused here, in one wording
-
+        step_id, port = self._fingerprint_target(target)
         closure = self.ancestor_closure((step_id,))
 
         # Sorted by id rather than taken in declaration or dependency order: where a step sits in
@@ -231,8 +235,28 @@ class Pipeline:
             }
             for step in sorted((self.step(name) for name in closure), key=lambda step: step.id)
         ]
-        serialised = json.dumps(payload, default=_canonical_scalar, sort_keys=True, separators=(",", ":"))
+        hashed: Any = payload if port is None else {"steps": payload, "port": port}
+        serialised = json.dumps(hashed, default=_canonical_scalar, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialised.encode("utf8")).hexdigest()
+
+    def _fingerprint_target(self, target: "str | PortRef") -> tuple[str, str | None]:
+        """``(step id, port name to mix in)`` for :meth:`fingerprint`; no port for a one-port step."""
+        if isinstance(target, str) and "." not in target:
+            self.step(target)  # a name this pipeline does not have is refused here, in one wording
+            return target, None
+        if isinstance(target, str):
+            step_id, port = target.split(".", 1)
+        else:
+            step_id, port = target.step, target.port
+        step = self.step(step_id)
+        registry = self.registry if self.registry is not None else REGISTRY
+        ports = tuple(registry.get(step.tool).output_ports)
+        if port not in ports:
+            raise PipelineError(
+                f"step {step_id!r} (tool {step.tool!r}) has no output port {port!r}; its output ports are: "
+                f"{', '.join(ports) or 'none'}"
+            )
+        return step_id, (port if len(ports) > 1 else None)
 
     def ancestor_closure(self, step_ids: Iterable[str]) -> frozenset[str]:
         """``step_ids`` and every step that feeds them, however far back, followed through ``inputs``.
