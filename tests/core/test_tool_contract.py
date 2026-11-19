@@ -3406,7 +3406,7 @@ _OUTPUT_NAMING_TOOLS: Final[Mapping[str, tuple[str, Callable[[str], Mapping[str,
     "assemble_date": ("output", lambda name: {"year": "[year]", "month": "[month]", "output": name}),
     "date_diff": (
         "output",
-        lambda name: {"start": "[opened]", "end": "[closed]", "unit": "days", "output": name},
+        lambda name: {"start": "[opened]", "end": "[closed]", "unit": "day", "counting": "inclusive", "output": name},
     ),
     "record_id": ("output", lambda name: {"output": name}),
     "normalize_text": (

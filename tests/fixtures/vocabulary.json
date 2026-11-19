@@ -394,6 +394,18 @@
     "date_diff": {
       "category": "transform",
       "config": {
+        "counting": {
+          "default": null,
+          "enum": [
+            "inclusive",
+            "elapsed"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
         "end": {
           "default": null,
           "enum": null,
@@ -402,18 +414,6 @@
           "non_empty": false,
           "required": true,
           "type": "expression"
-        },
-        "endpoints": {
-          "default": "both",
-          "enum": [
-            "both",
-            "elapsed"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "string"
         },
         "output": {
           "default": null,
@@ -436,8 +436,8 @@
         "unit": {
           "default": null,
           "enum": [
-            "months",
-            "days"
+            "month",
+            "day"
           ],
           "fields": null,
           "items": null,
@@ -465,17 +465,6 @@
           "required": true,
           "type": "expression"
         },
-        "interval": {
-          "default": "month",
-          "enum": [
-            "month"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "string"
-        },
         "period_column": {
           "default": "period_start",
           "enum": null,
@@ -493,6 +482,17 @@
           "non_empty": false,
           "required": true,
           "type": "expression"
+        },
+        "unit": {
+          "default": "month",
+          "enum": [
+            "month"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
         }
       },
       "input_ports": [

@@ -398,11 +398,11 @@ class TestExpandDateRangeRefusals:
         """
         template = ExpandDateRange().config_template()
 
-        assert set(template) == {"start", "end", "interval", "period_column"}
+        assert set(template) == {"start", "end", "unit", "period_column"}
         assert (template["start"].required, template["end"].required) == (True, True)
         assert expression_fields(template) == ("start", "end"), "the loader seam is the declared type"
-        assert tuple(template["interval"].enum or ()) == ("month",)
-        assert template["interval"].default == "month"
+        assert tuple(template["unit"].enum or ()) == ("month",)
+        assert template["unit"].default == "month"
         assert template["period_column"].default == "period_start"
 
 

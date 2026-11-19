@@ -12,12 +12,9 @@ start's, so January 31 to February 28 is one month and not two, while January 1 
 full twelve. The rule is one sentence, and it has to be in ``help()``, because a reader of a
 configuration cannot guess whether a partial month counts and cannot see the answer in the number.
 
-**``endpoints``, not "inclusive".** "Inclusive" is read two ways -- inclusive of the end date, or
-inclusive of both -- so the field says which unit each end contributes instead. ``both`` counts the
-unit each end falls in (January to December is 12), ``elapsed`` counts only completed units (11).
-``both`` is the default because it is the reading a stated period takes -- a term from January to
-December is a twelve-month term -- and because it is the one that can never come out as zero, which
-makes the default safe for the figure that divides by it.
+**``counting`` is required.** ``inclusive`` counts the unit each end falls in (January to December
+is 12), ``elapsed`` counts only completed units (11), like SQL's DATEDIFF. The two differ by one, and
+the count is a divisor, so the tool takes no default: a flow says which reading it means.
 
 **A backwards range counts negative and keeps its size.** A range whose end falls before its start
 is a defect in the source, not in the arithmetic, and repairing it is a decision (which end was
@@ -27,7 +24,7 @@ a whole flow over a handful of rows; a null would hide them among the rows that 
 a date.
 
 **A null is a null, never a zero.** A missing date on either side gives a null count, which carries
-through the division as a null. A zero would divide a figure by nothing at all, and under ``both``
+through the division as a null. A zero would divide a figure by nothing at all, and under ``inclusive``
 zero is not otherwise reachable at all -- which is what makes a negative count mean exactly one
 thing.
 
@@ -75,7 +72,8 @@ def _config(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "start": "[from_date]",
         "end": "[to_date]",
-        "unit": "months",
+        "unit": "month",
+        "counting": "inclusive",
         "output": "counted",
     }
     base.update(overrides)
@@ -149,19 +147,19 @@ class TestDateDiffCounting:
 
         The expression language has no arithmetic on dates and no cast, so without this unit a flow
         that needs the length of a range in days has no way to get it at all. The two units read the
-        ends the same way, which is the only thing that makes one ``endpoints`` field honest across
+        ends the same way, which is the only thing that makes one ``counting`` field honest across
         both: the same day at both ends is one day, exactly as it is one month.
         """
-        assert _counted([(start, end)], unit="days") == [expected]
+        assert _counted([(start, end)], unit="day") == [expected]
 
-    @pytest.mark.parametrize("unit", ["months", "days"])
+    @pytest.mark.parametrize("unit", ["month", "day"])
     def test_elapsed_is_exactly_one_less_and_is_zero_inside_a_single_unit(self, unit: str) -> None:
         """The other reading of the ends, and the only way this tool produces a zero.
 
         ``elapsed`` counts what has been completed, so a range that has not completed one unit
         counts none -- which is a correct answer and a hazard, because a figure divided by it
-        divides by nothing. That is the argument for ``both`` being the default: under ``both`` a
-        forward count is at least one, so the divisor is always usable.
+        divides by nothing. Under ``inclusive`` a forward count is at least one, so the divisor is
+        always usable.
         """
         pairs = [
             (date(2026, 1, 1), date(2026, 1, 1)),
@@ -171,7 +169,7 @@ class TestDateDiffCounting:
         ]
 
         both = _counted(pairs, unit=unit)
-        elapsed = _counted(pairs, unit=unit, endpoints="elapsed")
+        elapsed = _counted(pairs, unit=unit, counting="elapsed")
 
         assert elapsed == [count - 1 for count in both if count is not None]
         assert elapsed[0] == 0, "the same day at both ends has completed no unit at all"
@@ -180,10 +178,10 @@ class TestDateDiffCounting:
     @pytest.mark.parametrize(
         ("start", "end", "unit", "expected"),
         [
-            pytest.param(date(2026, 1, 1), date(2025, 12, 31), "months", -1, id="a_year_typo_at_the_end"),
-            pytest.param(date(2026, 7, 1), date(2025, 9, 30), "months", -10, id="a_quarter_with_the_wrong_end_year"),
-            pytest.param(date(2026, 2, 1), date(2026, 1, 31), "months", -1, id="one_day_backwards_across_a_month"),
-            pytest.param(date(2026, 1, 2), date(2026, 1, 1), "days", -2, id="one_day_backwards"),
+            pytest.param(date(2026, 1, 1), date(2025, 12, 31), "month", -1, id="a_year_typo_at_the_end"),
+            pytest.param(date(2026, 7, 1), date(2025, 9, 30), "month", -10, id="a_quarter_with_the_wrong_end_year"),
+            pytest.param(date(2026, 2, 1), date(2026, 1, 31), "month", -1, id="one_day_backwards_across_a_month"),
+            pytest.param(date(2026, 1, 2), date(2026, 1, 1), "day", -2, id="one_day_backwards"),
         ],
     )
     def test_a_backwards_range_counts_negative_and_keeps_its_size(
@@ -207,21 +205,21 @@ class TestDateDiffCounting:
     def test_under_elapsed_a_short_backwards_range_cannot_be_told_from_a_forward_one(self) -> None:
         """The cost of the other reading, pinned so nobody discovers it in a report.
 
-        ``elapsed`` is one less than ``both``, in both directions, so a backwards range that has
+        ``elapsed`` is one less than ``inclusive``, in both directions, so a backwards range that has
         not completed a unit counts zero -- indistinguishable from a forward range that has not
-        either. Under ``both`` the same two rows are -1 and 1. This is the second reason ``both`` is
+        either. Under ``inclusive`` the same two rows are -1 and 1. This is the second reason ``inclusive`` is
         the default, and the reason a flow that filters on a negative count must not be run under
         ``elapsed``.
         """
         backwards = (date(2026, 2, 1), date(2026, 1, 31))
         forwards = (date(2026, 1, 31), date(2026, 2, 1))
 
-        assert _counted([backwards, forwards], endpoints="elapsed") == [0, 0]
+        assert _counted([backwards, forwards], counting="elapsed") == [0, 0]
         assert _counted([backwards, forwards]) == [-1, 1], "counting both ends keeps the two apart"
 
-    @pytest.mark.parametrize("endpoints", ["both", "elapsed"])
-    @pytest.mark.parametrize("unit", ["months", "days"])
-    def test_a_missing_date_on_either_side_counts_null_and_never_zero(self, unit: str, endpoints: str) -> None:
+    @pytest.mark.parametrize("counting", ["inclusive", "elapsed"])
+    @pytest.mark.parametrize("unit", ["month", "day"])
+    def test_a_missing_date_on_either_side_counts_null_and_never_zero(self, unit: str, counting: str) -> None:
         """A null divisor makes a null figure; a zero divisor makes a division by nothing.
 
         This is the case a conditional written the obvious way gets wrong: a comparison against a
@@ -236,7 +234,7 @@ class TestDateDiffCounting:
             (date(2026, 1, 1), date(2026, 3, 1)),
         ]
 
-        counts = _counted(pairs, unit=unit, endpoints=endpoints)
+        counts = _counted(pairs, unit=unit, counting=counting)
 
         assert counts[:3] == [None, None, None], "a missing date on either side counts nothing at all"
         assert counts[3] is not None, "and the row beside it still counts"
@@ -257,7 +255,7 @@ class TestDateDiffCounting:
         ]
 
         assert _counted(pairs) == [12, 12]
-        assert _counted(pairs, unit="days") == [365, 365]
+        assert _counted(pairs, unit="day") == [365, 365]
 
     def test_the_count_is_a_signed_whole_number_appended_to_an_untouched_input(self) -> None:
         """A signed integer, because the sign carries the backwards case, and only one column is added.
@@ -331,10 +329,11 @@ class TestDateDiffRefusals:
         [
             pytest.param(_config(unit="years"), "years", id="a_unit_with_no_consumer"),
             pytest.param(_config(unit="weeks"), "weeks", id="a_unit_nobody_asked_for"),
-            pytest.param(_config(unit="month"), "month", id="a_unit_spelled_in_the_singular"),
+            pytest.param(_config(unit="months"), "months", id="a_unit_spelled_in_the_plural"),
             pytest.param(_config(unit=None), "unit", id="a_unit_written_with_no_value"),
-            pytest.param(_config(endpoints=None), "endpoints", id="an_endpoints_written_with_no_value"),
-            pytest.param(_config(endpoints="inclusive"), "inclusive", id="the_word_this_field_deliberately_avoids"),
+            pytest.param(_config(counting=None), "counting", id="a_counting_written_with_no_value"),
+            pytest.param({k: v for k, v in _config().items() if k != "counting"}, "counting", id="no_counting_at_all"),
+            pytest.param(_config(counting="both"), "both", id="the_old_word_for_inclusive"),
             pytest.param(_config(output=" "), "output", id="an_output_name_that_is_only_whitespace"),
         ],
     )
@@ -347,37 +346,36 @@ class TestDateDiffRefusals:
 
         ``years`` is refused because nothing consumes it: whether January 2026 to December 2026 is
         one year or two is a question with two defensible answers and no consumer to settle it, and
-        a unit shipped on speculation would be answered by whoever implemented it. ``inclusive`` is
-        refused because it is the word two readers read two ways, which is exactly why the field is
-        called ``endpoints``. A field written with no value is refused rather than defaulted,
-        because that is what an author gets from an empty YAML value.
+        a unit shipped on speculation would be answered by whoever implemented it. ``both`` is the
+        old spelling of ``inclusive`` and is refused rather than read as it. ``counting`` has no
+        default, so leaving it out is refused, and so is a field written with no value, which is
+        what an author gets from an empty YAML value.
         """
         with pytest.raises(ConfigError) as caught:
             run_tool(DateDiff(), Ports({"rows": _ranges([(date(2026, 1, 1), date(2026, 3, 1))])}), config)
 
         assert named in str(caught.value)
 
-    def test_the_template_pins_two_date_expressions_a_required_unit_and_both_ends_by_default(self) -> None:
-        """``unit`` has no default; ``endpoints`` has the one that cannot come out as zero.
+    def test_the_template_pins_two_date_expressions_and_a_required_unit_and_counting(self) -> None:
+        """Neither ``unit`` nor ``counting`` has a default.
 
         A divisor's unit is not something to infer from silence: a configuration that does not say
-        what it counted produces a figure nobody can check. ``endpoints`` does carry a default,
-        because there is one reading that is both the ordinary one -- a term from January to
-        December is twelve months -- and the safe one, since counting both ends can never give a
-        zero to divide by.
+        what it counted produces a figure nobody can check. The same goes for which ends count,
+        because the two readings differ by one.
         """
         template = DateDiff().config_template()
 
-        assert set(template) == {"start", "end", "unit", "endpoints", "output"}
+        assert set(template) == {"start", "end", "unit", "counting", "output"}
         assert expression_fields(template) == ("start", "end"), "the loader seam is the declared type"
         assert template["start"].required is True
         assert template["end"].required is True
         assert template["output"].required is True
         assert template["unit"].required is True, "a divisor's unit is never inferred from silence"
         assert template["unit"].default is None
-        assert set(template["unit"].enum or ()) == {"months", "days"}
-        assert template["endpoints"].default == "both"
-        assert set(template["endpoints"].enum or ()) == {"both", "elapsed"}
+        assert set(template["unit"].enum or ()) == {"month", "day"}
+        assert template["counting"].required is True, "the two readings differ by one, so neither is assumed"
+        assert template["counting"].default is None
+        assert set(template["counting"].enum or ()) == {"inclusive", "elapsed"}
 
 
 # ---------------------------------------------------------------------------
