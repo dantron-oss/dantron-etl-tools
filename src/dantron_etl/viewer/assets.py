@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Sequence
 from functools import cache
 from importlib import resources
 
@@ -45,11 +46,17 @@ def fill(template: str, values: dict[str, str]) -> str:
     return _MARKER.sub(lambda found: values[found.group(1)], template)
 
 
-def page(kind: str, /, **values: str) -> str:
-    """The page ``kind``: its template filled in, with the shared theme, its stylesheet and its script."""
+def page(kind: str, /, *, scripts: Sequence[str] | None = None, **values: str) -> str:
+    """The page ``kind``: its template filled in, with the shared theme, its stylesheet and its script.
+
+    ``scripts`` names the scripts the page runs, in order. Each one's stylesheet comes too, and each
+    runs as a script element of its own. Left out, the page runs only ``<kind>.js``.
+    """
+    names = [kind] if scripts is None else list(scripts)
+    extra_css = "".join(read_asset(f"{name}.css") for name in names if name != kind)
     values = {
-        "css": read_asset("theme.css") + read_asset(f"{kind}.css"),
-        "script": read_asset(f"{kind}.js"),
+        "css": read_asset("theme.css") + read_asset(f"{kind}.css") + extra_css,
+        "script": "</script>\n<script>".join(read_asset(f"{name}.js") for name in names),
         **values,
     }
     return fill(read_asset(f"{kind}.html"), values)

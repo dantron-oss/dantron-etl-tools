@@ -1,0 +1,22 @@
+/* The home page: one row per pipeline in the project. */
+body { margin:0; }
+.home { max-width:72rem; margin:2rem auto; padding:0 1.25rem; }
+.home h1 { font-size:1.4rem; margin:0 0 .3rem; letter-spacing:-.01em; }
+.home .root { margin:0; color:var(--muted); font-size:.85rem; }
+.home .links { margin:.4rem 0 1.2rem; }
+.home a { color:var(--accent); text-decoration:none; font-weight:600; }
+.home a:hover { text-decoration:underline; }
+table.pipelines { width:100%; border-collapse:collapse; background:var(--surface);
+  border:1px solid var(--line); border-radius:9px; font-size:.88rem; }
+.pipelines th { text-align:left; font:600 .66rem var(--sans); text-transform:uppercase;
+  letter-spacing:.1em; color:var(--muted); padding:.6rem .7rem; border-bottom:1px solid var(--line); }
+.pipelines td { padding:.6rem .7rem; border-bottom:1px solid var(--line); vertical-align:top; }
+.pipelines td code { display:block; font-size:.75rem; color:var(--muted); }
+.pipelines .num { text-align:right; }
+.pipelines .note { margin:.3rem 0 0; color:var(--bad); font-size:.78rem; white-space:pre-wrap; }
+.outcome.finished { color:var(--good); }
+.outcome.failed, .outcome.refused { color:var(--bad); }
+.outcome.never { color:var(--muted); }
+.home .hint { color:var(--muted); font-size:.8rem; }
+.problems h2 { font-size:1rem; margin:1.5rem 0 .4rem; }
+.problems li { font-size:.85rem; margin-bottom:.3rem; white-space:pre-wrap; }

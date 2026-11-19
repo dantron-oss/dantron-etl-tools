@@ -454,16 +454,66 @@ for (const grip of wrap.querySelectorAll('.grip')) {
     grip.addEventListener('pointerup', up);
   });
 }
-// Which entity the picker is on, kept because a panel that arrives after it was chosen has to be
-// put on the same one: the buttons are in the page and the views are in the panel, so the two only
-// meet if the choice is remembered.
-let picked = 'all';
+// Which entity the reader is following, or '' for everyone. Kept because a panel that arrives after
+// it was chosen has to be put on the same one.
+let picked = '';
 
+// Follow one entity: every open port asks the service again for that entity's rows. A panel
+// arrives with its view hidden, so this also shows it.
 function pick(key) {
+  const changed = key !== picked;
   picked = key;
   for (const b of wrap.querySelectorAll('.picker button'))
     b.setAttribute('aria-pressed', String(b.dataset.pick === key));
-  for (const v of wrap.querySelectorAll('.view')) v.hidden = v.dataset.for !== key;
+  for (const v of wrap.querySelectorAll('.view')) v.hidden = false;
+  if (!changed || !LIVE) return;
+  for (const table of wrap.querySelectorAll('table.data[data-port]:not([data-lazy])')) {
+    table.dataset.offset = 0;
+    live(table);
+  }
+}
+
+// The picker's search: every entity the run can be followed by is asked of the service, a page of
+// matches at a time, and each match is a button.
+const pickBox = wrap.querySelector('.picker input.pick');
+let picks = null;
+let pickNote = null;
+
+async function findEntities() {
+  const qs = new URLSearchParams({ q: pickBox.value.trim(), limit: 50 });
+  let answer;
+  try { const r = await fetch('api/entities?' + qs); answer = await r.json(); if (!r.ok) throw new Error(answer.error); }
+  catch (err) { pickNote.textContent = String(err.message || err); return; }
+  const everyone = document.createElement('button');
+  everyone.type = 'button';
+  everyone.dataset.pick = '';
+  everyone.textContent = 'everyone';
+  picks.replaceChildren(everyone, ...answer.values.map(value => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.pick = value;
+    b.textContent = value;
+    b.setAttribute('aria-pressed', String(value === picked));
+    return b;
+  }));
+  pickNote.textContent = answer.reason
+    || answer.matched + ' of ' + answer.total + ' match' + (answer.matched > answer.values.length
+      ? ', showing the first ' + answer.values.length : '');
+}
+
+if (pickBox) {
+  picks = document.createElement('div');
+  picks.className = 'picks';
+  pickNote = document.createElement('span');
+  pickNote.className = 'picknote';
+  pickBox.closest('.picker').append(pickNote, picks);
+  let searching;
+  pickBox.addEventListener('input', () => {
+    if (!pickBox.value.trim() && picked) pick('');
+    clearTimeout(searching);
+    searching = setTimeout(findEntities, 180);
+  });
+  pickBox.addEventListener('focus', () => { if (!picks.children.length) findEntities(); });
 }
 // Two modes. With the service answering, a filter runs over the WHOLE port and a window of rows
 // is fetched; without it -- the page opened as a plain file -- the same boxes narrow the rows that
@@ -543,6 +593,7 @@ async function live(table) {
   // anything that is not a published level, which is why the control offers only those.
   const levelPick = table.querySelector('tr.flts select.lvl');
   if (levelPick && levelPick.value) qs.set('level', levelPick.value);
+  if (picked) qs.set('focus', picked);
   const note = table.closest('.tbl').querySelector('.match');
   const pager = table.closest('.tbl').querySelector('.pager');
   let answer;
@@ -567,9 +618,10 @@ async function live(table) {
   const filtered = answer.matched !== answer.total;
   note.hidden = false;
   const span = from + '-' + to + ' of ';
-  note.textContent = filtered
+  // A port with no column naming the entity is shown whole, and the service says why.
+  note.textContent = (answer.no_grain ? answer.no_grain + ' ' : '') + (filtered
     ? span + answer.matched.toLocaleString() + ' matching (of ' + answer.total.toLocaleString() + ')'
-    : span + answer.total.toLocaleString() + ' rows';
+    : span + answer.total.toLocaleString() + ' rows');
   pager.hidden = false;
   pager.querySelector('.at').textContent = '';
   pager.querySelector('[data-page=prev]').disabled = answer.offset <= 0;
@@ -694,9 +746,11 @@ fetch('api/ports')
   });
 wrap.addEventListener('click', e => {
   const b = e.target.closest('.picker button');
-  if (b) pick(b.dataset.pick);
+  if (!b) return;
+  pickBox.value = b.dataset.pick;
+  pick(b.dataset.pick);
 });
-pick('all');
+pick('');
 // Opened on a step, but NOT traced -- the false is load-time and is argued at choose(). The page
 // arrives showing the whole flow lit, with one step chosen in the panes beside it; the trace starts
 // when the reader points at something.

@@ -378,6 +378,7 @@ def build(
     )
     return page(
         "walkthrough",
+        scripts=("runbar", "walkthrough"),
         name=_e(spec.name),
         summary=summary,
         canvas=canvas(spec, trace),

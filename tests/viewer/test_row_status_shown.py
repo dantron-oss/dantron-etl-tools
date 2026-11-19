@@ -909,7 +909,8 @@ class TestTheMarkReachesTheReader:
 
         keys = _request_keys(reached)
         assert {"port", "offset", "limit"} <= keys, f"the window request no longer asks for a window: {sorted(keys)}"
-        named = {key for key in keys - {"port", "offset", "limit"} if not key.startswith(FILTER_PREFIX)}
+        # ``focus`` names the entity being followed (one value, exact), not a level.
+        named = {key for key in keys - {"port", "offset", "limit", "focus"} if not key.startswith(FILTER_PREFIX)}
         assert len(named) == 1, f"the window request writes down {sorted(named)} beyond the window itself"
         asked = named.pop()
         assert FILTER_PREFIX + asked not in keys, (
