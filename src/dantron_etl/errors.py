@@ -14,6 +14,8 @@ machine had rather than anything a step decided. Every one of them descends from
 flow driver has one type to catch.
 """
 
+import difflib
+from collections.abc import Iterable
 from typing import Any, Final
 
 import polars as pl
@@ -29,6 +31,7 @@ __all__ = [
     "RegistryError",
     "RunError",
     "ToolError",
+    "name_choices",
 ]
 
 
@@ -81,6 +84,27 @@ class ExecutionError(ToolError):
 # into it. The counts are reported separately and are never capped, so nothing about the size of the
 # problem is lost by capping the illustration of it.
 MAX_REPORTED_ROWS: Final[int] = 5
+
+
+# How many names a refusal lists when it says what there is to choose from. A flow can have a
+# thousand steps, and a message listing all of them is a page nobody reads.
+MAX_LISTED_NAMES: Final[int] = 10
+
+
+def name_choices(asked: str, available: Iterable[str], noun: str = "steps") -> str:
+    """The end of a refusal about a name that was not found: the closest names, and what there is.
+
+    Lists every name when there are a few, and the first ten and the total when there are many.
+    """
+    names = [str(name) for name in available]
+    if not names:
+        return f"there are no {noun}"
+    near = difflib.get_close_matches(str(asked), names, n=3)
+    guess = f"did you mean {' or '.join(repr(name) for name in near)}? " if near else ""
+    if len(names) <= MAX_LISTED_NAMES:
+        return f"{guess}{noun} are: {', '.join(names)}"
+    shown = ", ".join(names[:MAX_LISTED_NAMES])
+    return f"{guess}there are {len(names)} {noun}; the first {MAX_LISTED_NAMES} are: {shown}, ..."
 
 
 class DataError(ToolError):

@@ -23,7 +23,9 @@ refusal after several steps have already written somewhere is not a refusal. A c
 expression names is checked against a step's own input frames the moment they exist -- not for
 the whole flow at once, because no tool declares the columns it produces, so an up-front pass
 could only ever reach the steps fed by frames supplied before the run began. That check, and a
-source supplied on only some of its ports, can therefore refuse after earlier steps have written.
+type error in an expression, can therefore refuse after earlier steps have written; every
+refusal about the run's own arguments (``until``, ``sources``, ``cached``, ``keep``, ``base_dir``)
+comes before the first step.
 
 A source step is handed its frame rather than made to read one, because every zero-input tool in
 the catalog opens a file or a database, and a run driven from tests, from a notebook, or from an
@@ -51,23 +53,25 @@ import logging
 import time
 from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, Protocol
 
 import polars as pl
 
 # The runner calls the boundary through this module's own name, run_tool. A caller may replace
 # runner.run_tool to watch every step's output as the run goes; keep the call a bare run_tool(...).
 from .boundary import run_tool
-from .contract import Tool, input_ports_for
+from .config import with_base_dir
+from .contract import Tool, call_tool_code, input_ports_for
 from .errors import RunError, ToolError
 from .ports import Ports
 from .registry import REGISTRY, ToolRegistry
 from .spec import Pipeline, PortRef
 from .trace import CachedFrame, ColumnCheckError, FrameShape, Level, PipelineTrace, StepEvent, StepFailedError
-from .walk import release_schedule, resolve_cached, resolve_sources, walk_around_cache, walk_for
+from .walk import release_schedule, resolve_cached, resolve_keep, resolve_sources, walk_around_cache, walk_for
 
-__all__ = ["logging_sink", "run_pipeline"]
+__all__ = ["LogTarget", "logging_sink", "run_pipeline"]
 
 
 #: Where one step's output frames came from. Not a pair of booleans on the walk, because "ran" and
@@ -88,18 +92,36 @@ _ORIGIN_VERBS: Mapping[_Origin, str] = {
 _RETAIN_MODES: tuple[str, ...] = ("all", "live")
 
 
-def logging_sink(logger: logging.Logger | None = None) -> Callable[[StepEvent], None]:
-    """A sink that writes each event's own message, verbatim, at the log level its own level names.
+class LogTarget(Protocol):
+    """Anything a run can log to: an object with ``info``, ``warning`` and ``error`` methods.
+
+    A ``logging.Logger`` is one. So is the logger an orchestrator hands a job, which is often not a
+    ``logging.Logger`` itself.
+    """
+
+    def info(self, msg: str, /) -> object: ...
+
+    def warning(self, msg: str, /) -> object: ...
+
+    def error(self, msg: str, /) -> object: ...
+
+
+def logging_sink(logger: LogTarget | None = None) -> Callable[[StepEvent], None]:
+    """A sink that writes each event's own message, verbatim, at the level the event names.
+
+    ``logger`` is anything with ``info``, ``warning`` and ``error`` methods (see :class:`LogTarget`),
+    such as a ``logging.Logger`` or an orchestrator's job logger. Left out, it is this module's own
+    logger. An event at level ``"warning"`` goes to ``warning``, so a note such as an empty frame on
+    a port a later step reads is not lost among the info lines.
 
     Verbatim on purpose: a sink that reworded an event would give a reader a second account of the
-    same run to square against the first, and the log line, the trace and a raised exception must
-    stay one wording wherever any of them is read.
+    same run to square against the first.
     """
-    target = logger if logger is not None else logging.getLogger(__name__)
-    levels: Mapping[Level, int] = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+    target: LogTarget = logger if logger is not None else logging.getLogger(__name__)
+    methods: Mapping[Level, str] = {"info": "info", "warning": "warning", "error": "error"}
 
     def sink(event: StepEvent) -> None:
-        target.log(levels[event.level], event.message)
+        getattr(target, methods[event.level])(event.message)
 
     return sink
 
@@ -111,8 +133,10 @@ def run_pipeline(
     retain: Literal["all", "live"] = "all",
     until: str | Collection[str] | None = None,
     cached: Mapping[PortRef | str, CachedFrame] | None = None,
+    keep: Collection[PortRef | str] = (),
     sink: Callable[[StepEvent], None] | None = None,
     run_id: str | None = None,
+    base_dir: str | Path | None = None,
 ) -> PipelineTrace:
     """Run ``spec`` in dependency order -- whole, or as far as ``until`` -- reporting what each step did.
 
@@ -121,7 +145,8 @@ def run_pipeline(
     configuration still holding an unresolved ``${...}`` placeholder, because a refusal that
     arrives after several steps have already written somewhere is not a refusal; a supplied source
     naming a step, a port or a computed (rather than source) port that does not exist to be
-    supplied.
+    supplied, a supplied value that is not a polars DataFrame, or a source step supplied on some but
+    not all of its ports.
 
     The placeholder scan reads every step, not only the ones ``until`` will reach. A placeholder
     that survived means the loader never finished resolving the document, which is a fact about the
@@ -176,6 +201,18 @@ def run_pipeline(
     otherwise read identically in a log; a port nothing will read again is released, if ``retain``
     says to; and one event is appended to the trace and, if given, passed to ``sink``.
 
+    ``keep`` names ports to hold on to under ``retain="live"``, which otherwise frees a port as soon
+    as nothing left in the run reads it -- including the last port of a flow, and the ports of the
+    steps ``until`` names. ``retain="live", keep=["publish.receipt"]`` frees everything except the
+    receipt. Each entry is a :class:`PortRef`, the text ``"step.port"``, or a step id for all of its
+    ports; a name the pipeline does not have is refused before anything runs. Under ``retain="all"``
+    every port is kept anyway.
+
+    ``base_dir`` is where a relative file path in the flow is read from: each tool's path fields
+    (a field its template marks ``file_path``) are joined onto it, so a flow whose paths are
+    relative to its project folder runs from any working directory. Left out, a relative path is
+    read from the working directory, as it always was. An absolute path is never changed.
+
     A step that raises is reported -- its error event is emitted before the exception leaves this
     function, so a crashed run still has a log of everything up to it -- and then raises
     :class:`StepFailedError`, carrying the partial trace. A sink that raises is reported once, on
@@ -208,7 +245,11 @@ def run_pipeline(
 
     column_refs = spec.column_references()
 
-    schedule = release_schedule(spec, tools_by_step, order) if retain == "live" else {}
+    kept = resolve_keep(spec, tools_by_step, keep)
+    folder = Path(base_dir).resolve() if base_dir is not None else None
+    if folder is not None and not folder.is_dir():
+        raise RunError(f"base_dir {str(base_dir)!r} is not a folder that exists")
+    schedule = release_schedule(spec, tools_by_step, order, kept) if retain == "live" else {}
 
     frames: dict[PortRef, pl.DataFrame] = {}
     shapes: dict[PortRef, FrameShape] = {}
@@ -301,23 +342,17 @@ def run_pipeline(
             reported: tuple[str, ...] = ()
             output_frames = {port: cached_frames[PortRef(step_id, port)].frame for port in tool.output_ports}
         elif is_source_step and supplied_refs:
-            if len(supplied_refs) != len(tool.output_ports):
-                missing_ports = [
-                    str(PortRef(step_id, port))
-                    for port in tool.output_ports
-                    if PortRef(step_id, port) not in supplied_frames
-                ]
-                raise RunError(
-                    f"step {step_id!r} was supplied some but not all of its output ports; still "
-                    f"missing: {', '.join(missing_ports)}"
-                )
+            # Every port is supplied: resolve_sources refused a partial supply before the walk.
             origin = "supplied"
             reported = ()
             output_frames = {port: supplied_frames[PortRef(step_id, port)] for port in tool.output_ports}
         else:
             origin = "ran"
             try:
-                result = run_tool(tool, Ports(input_frames), dict(step.config))
+                config = dict(step.config)
+                if folder is not None:
+                    config = with_base_dir(call_tool_code(tool, "config_template", tool.config_template), config, folder)
+                result = run_tool(tool, Ports(input_frames), config)
             except ToolError as failure:
                 message = f"step {step_id!r} ({tool.name}) failed: {failure}"
                 event = StepEvent(

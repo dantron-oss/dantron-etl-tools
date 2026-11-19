@@ -115,6 +115,7 @@ class ReadCsv:
                 description="The file to read; must end in .csv or .tsv.",
                 required=True,
                 non_empty=True,
+                file_path=True,
             ),
             "delimiter": ConfigField(
                 type="string",

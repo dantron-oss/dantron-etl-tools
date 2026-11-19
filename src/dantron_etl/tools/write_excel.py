@@ -131,6 +131,7 @@ class WriteExcel:
                 description="Where the workbook is written; must end in .xlsx.",
                 required=True,
                 non_empty=True,
+                file_path=True,
             ),
             "sheets": ConfigField(
                 type="array",
@@ -293,6 +294,7 @@ class WriteExcel:
                 description="A workbook to start from. It is read and never written: the tool "
                 "copies it to 'path' and writes there. Leave it out to start from nothing.",
                 required=False,
+                file_path=True,
             ),
             "overwrite_sheets": ConfigField(
                 type="boolean",

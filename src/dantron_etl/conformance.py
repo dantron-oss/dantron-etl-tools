@@ -132,7 +132,10 @@ def check_tool(tool: Tool) -> None:
     for port in tool.input_ports:
         _refuse_rewritten_input_port(tool.name, port)
 
-    template = tool.config_template()
+    try:
+        template = call_tool_code(tool, "config_template", tool.config_template)
+    except ToolError as error:
+        raise ConformanceError(f"tool {tool.name!r} could not build its configuration template: {error}") from error
     _check_specs(tool.name, template, prefix="")
 
     before_help = _process_state()
@@ -404,9 +407,9 @@ def _run_example(tool: Tool, template: Mapping[str, ConfigField], example: Worke
     try:
         validate_against_template(template, example.configuration)
         filled = apply_defaults(template, example.configuration)
-        tool.validate_config(filled)
-        tool.validate_inputs(example.inputs, filled)
-    except ConfigError as error:
+        call_tool_code(tool, "validate_config", lambda: tool.validate_config(filled))
+        call_tool_code(tool, "validate_inputs", lambda: tool.validate_inputs(example.inputs, filled))
+    except ToolError as error:
         raise ConformanceError(
             f"tool {tool.name!r} worked example {example.scenario!r} does not validate: {error}"
         ) from error
@@ -544,11 +547,20 @@ def _check_example(tool: Tool, template: Mapping[str, ConfigField], example: Wor
 
 
 def check_registry(registry: ToolRegistry) -> None:
-    """Check every tool in ``registry`` against :func:`check_tool`, so a whole catalog is one call.
+    """Check every tool in ``registry`` against :func:`check_tool`, and report every failure at once.
 
-    The refusals :func:`check_tool` writes itself name the tool they came from, which is what makes
-    a catalog-wide call actionable rather than merely red. An error raised from inside a tool's own
-    template or validation code is not wrapped yet, so that one does not name the tool.
+    Every refusal names the tool it came from, including a failure inside a tool's own template or
+    validation code. One failing tool is reported as it is; several are listed in one
+    :class:`ConformanceError`, so a catalog is fixed in one pass rather than one tool at a time.
     """
+    failures: list[ToolError] = []
     for tool in registry.tools():
-        check_tool(tool)
+        try:
+            check_tool(tool)
+        except ToolError as failure:
+            failures.append(failure)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        listed = "\n".join(f"  - {failure}" for failure in failures)
+        raise ConformanceError(f"{len(failures)} tools do not conform:\n{listed}")

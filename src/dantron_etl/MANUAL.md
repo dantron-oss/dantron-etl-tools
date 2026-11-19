@@ -220,9 +220,20 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
-Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `trim`,
-`len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`,
-`concat`, `format_number`, `uuid5`.
+Available functions: `coalesce`, `round`, `year`, `add_months`, `months_between`, `days_between`,
+`make_date`, `month_end`, `abs`, `lower`, `upper`, `trim`, `len`, `starts_with`, `ends_with`,
+`contains`, `regex_extract`, `regex_replace`, `regex_match`, `concat`, `format_number`, `uuid5`.
+
+**Dates.** `months_between(start, end, counting)` and `days_between(start, end, counting)` count
+whole months or days between two dates, signed, with `counting` either `'inclusive'` (both ends
+count, so the same day is 1) or `'elapsed'` (completed units only). They give exactly what the
+`date_diff` tool gives, from the same code. `make_date(year, month, day)` builds a date from three
+whole numbers and gives null when they name no date, such as 30 February; it is `assemble_date`
+with `on_invalid: set_null`. `month_end(date)` is the last day of that date's month. All four take
+dates; a timestamp in a time zone is refused, so cast it to `Date` first and choose the day. Use
+these instead of casting dates to whole numbers to subtract them: `days_between([from], [to],
+'elapsed')` says what it counts, and a date cast to a number is a count of days since 1970 that a
+reader has to know to trust.
 
 `trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
 inside the text alone.
@@ -260,9 +271,24 @@ Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>
 functions, no attribute access, no subscripting, no lambdas. Those are refused by name, and that
 refusal is a security boundary rather than a preference.
 
-Where the expression is checked against the real frame's schema, a type error is refused before a
-row moves — `upper([quantity])` on a number is caught at load, not inside the query engine at run
-time.
+Loading checks an expression's syntax and the names it uses. Its types are checked when its step
+runs, against the frames that actually arrived and before the step reads a row:
+`upper([quantity])` on a number loads, and is refused when that step starts, not inside the query
+engine. In a long flow that can be minutes into a run, so `until=` (§7b) is the quick way to try a
+new step.
+
+Some expressions that look reasonable never give the answer they seem to, and are refused:
+
+- `[code] = null` is null on every row, so a filter keeps nothing. Write `[code] is null`.
+- `regex_extract([ref], '[0-9]+', 1)` asks for group 1 of a pattern with no parentheses, which
+  would be null on every row. Write `'([0-9]+)'`, or ask for group 0, the whole match.
+- A timestamp compared with a date reads the date as midnight at its start, so
+  `[posted_at] <= date'2025-01-31'` leaves out the 31st after midnight and `[posted_at] =
+  date'2025-01-31'` is almost never true. `>=` and `<` mean what they say and are allowed; for the
+  rest, cast the timestamp to `Date` first, or write the range as `>= start and < next day`.
+- `/` on a `Decimal` column keeps the column's own number of places (100.00 / 3 is 33.33). Cast the
+  column to `Float64` first.
+- A `#` outside quotes is not a comment; put notes in the step's `why`.
 
 **Only some fields are expressions, and it matters.** A tool's template says which: `filter`'s
 `predicate`, `formula`'s `value`, `case_when`'s `when`, `then` and `otherwise`, `group_by`'s
@@ -460,6 +486,8 @@ Every one of these was measured, most of them the hard way.
   `999,999.99`, which looks like a defect and is not — that double is `999999.99499999999534...`.
   If a figure has to be rounded *and* formatted to the same answer, `round` it first and format the
   result. Decide which you want; do not discover the difference in a finished report.
+  On an exact tie `format_number` rounds to the even digit: `2.5` at no places reads `2`, and
+  `0.125` at two reads `0.12`. That rule is fixed; no setting elsewhere in the program can move it.
 - **`uuid5` on a key with a missing part gives a null id, not an id.** A null anywhere in the value
   — straight from a column, or through the `concat` that builds the key — makes the whole id null,
   the way `concat` itself already behaves. The alternative is worse than it looks: hashing a
@@ -506,7 +534,11 @@ Every one of these was measured, most of them the hard way.
 
 - **The integer literal in an expression is 32-bit.** `0` and `1` in a `formula` give a narrower
   column than a database's `BIGINT`. It is the right width for a rank or a small count; use
-  `cast_columns` when the width itself matters.
+  `cast_columns` when the width itself matters. `year()` is 32-bit too, so a very large product
+  such as `year([d]) * 10000000` wraps.
+- **`len()` gives an unsigned whole number.** Arithmetic on it, or on any unsigned column, is done
+  as a signed 64-bit number, so `len([code]) - 5` is -2 for a three-letter code rather than wrapping
+  to about four billion.
 - **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
   zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
   writer drop the zone quietly.
@@ -549,7 +581,9 @@ Every one of these was measured, most of them the hard way.
 ### Paths
 
 - **A relative `path:` resolves against the working directory of the process running the pipeline**,
-  not against the pipeline file. Run from a consistent place, or use absolute paths.
+  not against the pipeline file. Run from a consistent place, use absolute paths, or pass
+  `run_pipeline(spec, base_dir=project_folder)`: then a relative path is read from that folder,
+  whatever the working directory is.
 - **Config names an environment variable, never a secret.** `connection: DATABASE_URL` is the name
   of the variable; the value is read from the environment. No credential may enter a pipeline file,
   so that a definition is safe to commit and safe to hand to someone else as a template.
@@ -626,13 +660,15 @@ port = PortRef("clients_joined", "rows")
 
 later = run_pipeline(
     spec,
-    cached={port: CachedFrame(first.frame(port), spec.fingerprint("clients_joined"))},
+    cached={port: CachedFrame(first.frame(port), spec.fingerprint(port))},
 )
 ```
 
 `CachedFrame` carries the frame **and** a fingerprint, and neither is any use alone. The fingerprint
-is `spec.fingerprint(step_id)`, a hash over that step and every step behind it -- their ids, tools,
-configurations and wiring. Before the run walks a cached port it recomputes that hash and compares:
+is `spec.fingerprint(port)`, a hash over the step that produced the port and every step behind it --
+their ids, tools, configurations and wiring -- and over the port's name, so the `true` frame of a
+split cannot be resumed as its `false` one. For a step with one output port, `spec.fingerprint(step_id)`
+gives the same string. Before the run walks a cached port it recomputes that hash and compares:
 if anything upstream has been edited since, the cache is **refused by name** rather than used.
 
 That refusal is the whole feature. A cache that fails to load is a nuisance; a cache that loads
@@ -645,6 +681,17 @@ have been right to use.
 **The loop this is for:** cache the port just before the part you are editing, then run only from
 there while you iterate. Run whole once at the end -- a cached run proves what your edit did, never
 that the flow as a whole still agrees with its oracle.
+
+**`retain` and `keep`** decide which frames a run holds when it ends. The default, `retain="all"`,
+holds every one. `retain="live"` frees each frame as soon as nothing left in the run reads it, which
+is what a scheduled run of a large flow wants. `keep` names the ports to hold on to anyway:
+
+```python
+from dantron_etl import read_pipeline, run_pipeline
+
+spec = read_pipeline("pipelines/sales.yaml")
+trace = run_pipeline(spec, retain="live", keep=["published.receipt"])
+```
 
 ### The one thing a fingerprint cannot tell you
 
@@ -662,6 +709,10 @@ taken.** Throw one away whenever the sources are reloaded, and take a fresh one.
 This is not an oversight in the hash. Reading the sources to find out whether the cache is stale is
 running the steps the cache exists to skip, so a fingerprint that covered the data would cost exactly
 what it saves. The honest answer is a rule a person follows, which is why it is written here.
+
+The fingerprint does not cover the library either: a cache taken before you upgrade the library, or
+edit it in place, still matches afterwards even when a tool now computes something different. Take
+a fresh cache after changing the library.
 
 ---
 

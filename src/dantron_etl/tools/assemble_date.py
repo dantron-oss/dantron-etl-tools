@@ -24,6 +24,8 @@ from typing import Any, Final
 import polars as pl
 
 from ..authoring import (
+    MAX_YEAR,
+    MIN_YEAR,
     REGISTRY,
     ConfigError,
     ConfigField,
@@ -34,13 +36,13 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
+    date_or_null,
     require_not_blank,
 )
+from ..authoring import days_in_month as month_length
 
 _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("clamp", "set_null", "error")
 _DIGITS_ONLY: Final[str] = r"^[0-9]+$"
-_MIN_YEAR: Final[int] = 1
-_MAX_YEAR: Final[int] = 9999
 
 
 class AssembleDate:
@@ -170,19 +172,10 @@ class AssembleDate:
         text_bad = pl.col("__year_bad") | pl.col("__month_bad") | pl.col("__day_bad")
 
         invalid_month = month_col.is_not_null() & ((month_col < 1) | (month_col > 12))
-        invalid_year = year_col.is_not_null() & ((year_col < _MIN_YEAR) | (year_col > _MAX_YEAR))
+        invalid_year = year_col.is_not_null() & ((year_col < MIN_YEAR) | (year_col > MAX_YEAR))
         hard_invalid = (text_bad | invalid_month | invalid_year).fill_null(False)
 
-        leap = ((year_col % 4 == 0) & (year_col % 100 != 0)) | (year_col % 400 == 0)
-        days_in_month = (
-            pl.when(month_col.is_in([1, 3, 5, 7, 8, 10, 12]))
-            .then(31)
-            .when(month_col.is_in([4, 6, 9, 11]))
-            .then(30)
-            .when(month_col == 2)
-            .then(pl.when(leap).then(29).otherwise(28))
-            .otherwise(None)
-        )
+        days_in_month = month_length(year_col, month_col)
 
         day_out_of_range = (
             day_col.is_not_null()
@@ -221,10 +214,9 @@ class AssembleDate:
                 total=frame.height,
             )
 
-        safe_year = pl.when(pl.col("__buildable")).then(year_col).otherwise(pl.lit(2000))
-        safe_month = pl.when(pl.col("__buildable")).then(month_col).otherwise(pl.lit(1))
-        safe_day = pl.when(pl.col("__buildable")).then(pl.col("__resolved_day")).otherwise(pl.lit(1))
-        date_expr = pl.when(pl.col("__buildable")).then(pl.date(safe_year, safe_month, safe_day)).otherwise(None)
+        # The same build make_date() does, from the one shared function. Every row left is buildable
+        # or missing a part, and date_or_null gives null for the second.
+        date_expr = pl.when(pl.col("__buildable")).then(date_or_null(year_col, month_col, pl.col("__resolved_day")))
 
         result = staged.with_columns(date_expr.alias(config["output"])).select([*frame.columns, config["output"]])
         return Ports({"rows": result})

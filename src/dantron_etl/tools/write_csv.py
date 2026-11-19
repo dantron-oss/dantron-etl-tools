@@ -63,6 +63,7 @@ class WriteCsv:
                 description="Where the file is written; must end in .csv or .tsv.",
                 required=True,
                 non_empty=True,
+                file_path=True,
             ),
             "delimiter": ConfigField(
                 type="string",

@@ -156,7 +156,7 @@ class _Compiler:
             self._check_whole_number(folded)
             return self._typed_value(folded, node)
 
-        operand = self._typed(node.operand)
+        operand = _signed(self._typed(node.operand))
         self._require(operand, Family.NUMBER, "a minus sign needs a number")
         # A null of no type at all has no negation in this engine, which raises rather than
         # answering. So the null is handed back as it stands. There is nothing in it to negate, and
@@ -180,6 +180,14 @@ class _Compiler:
         right = self._typed(node.right)
         for operand in (left, right):
             self._require_arithmetic(operand, symbol)
+            if operation is ast.Div and isinstance(operand.dtype, pl.Decimal):
+                raise error(
+                    self._text,
+                    f"{self._describe(operand)}, and '/' on a decimal column keeps the column's own number of "
+                    f"places (100.00 / 3 gives 33.33, and 7 / 2 at no places gives 4) instead of dividing "
+                    f"exactly; cast the column to Float64 first, with the cast_columns tool",
+                )
+        left, right = _signed(left), _signed(right)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
         dtype = arithmetic_dtype(operation, left.dtype, right.dtype)
         return Typed(built, Family.NUMBER, node, "gives a number", dtype)
@@ -201,6 +209,15 @@ class _Compiler:
 
         if type(operation) not in _COMPARISONS:  # pragma: no cover - the whitelist refused the rest
             raise node_refusal(self._text, operation)
+        for side in (node.left, right_node):
+            if isinstance(side, ast.Name) and side.id == "null":
+                negated = isinstance(operation, ast.NotEq)
+                raise error(
+                    self._text,
+                    f"comparing with null with '{OPERATOR_SYMBOLS[type(operation)]}' is never true: it gives null on "
+                    f"every row, so a filter keeps nothing. To find a missing value write "
+                    f"'is {'not ' if negated else ''}null', as in [code] is {'not ' if negated else ''}null",
+                )
         left = self._typed(node.left)
         right = self._typed(right_node)
         if not compatible(left.family, right.family):
@@ -209,8 +226,34 @@ class _Compiler:
                 f"a comparison needs both sides in the same type family, but {self._describe(left)} and "
                 f"{self._describe(right)}",
             )
+        self._refuse_timestamp_against_date(left, right, operation)
         built = _COMPARISONS[type(operation)](left.expr, right.expr)
         return Typed(built, Family.BOOLEAN, node, "gives a truth value")
+
+    def _refuse_timestamp_against_date(self, left: Typed, right: Typed, operation: ast.cmpop | None) -> None:
+        """Refuse a timestamp compared with a date where reading the date as midnight gives a wrong answer.
+
+        A date compared with a timestamp is read as midnight at its start. That is right for two
+        comparisons: ``[ts] >= date'2025-01-01'`` (on or after that day) and ``[ts] < date'2025-02-01'``
+        (before that day). It is wrong for the rest: ``=`` and ``in`` are false for any time after
+        midnight, ``<=`` leaves out the day itself, which is the classic month-end slip, ``>``
+        takes the day in, and ``!=`` keeps it. ``operation`` is ``None`` for ``in``.
+        """
+        if isinstance(left.dtype, pl.Datetime) and right.dtype == pl.Date:
+            timestamp, calendar_date, safe = left, right, (ast.GtE, ast.Lt)
+        elif isinstance(right.dtype, pl.Datetime) and left.dtype == pl.Date:
+            timestamp, calendar_date, safe = right, left, (ast.LtE, ast.Gt)
+        else:
+            return
+        if operation is not None and isinstance(operation, safe):
+            return
+        raise error(
+            self._text,
+            f"{self._describe(timestamp)}, a timestamp, and {self._describe(calendar_date)}: a date compared with "
+            f"a timestamp is read as midnight at its start, so a time later that day is not equal to it and "
+            f"falls outside '<='. Cast the timestamp to Date first with the cast_columns tool, or write the "
+            f"range as [ts] >= date'2025-01-01' and [ts] < date'2025-02-01'",
+        )
 
     def _null_test(self, node: ast.Compare, right_node: ast.expr, *, negated: bool) -> Typed:
         """``is null`` / ``is not null`` -- the only expressions in this language never themselves null.
@@ -267,6 +310,8 @@ class _Compiler:
                 f"a membership test needs the listed values in the same type family as what they are matched "
                 f"against, but {self._describe(left)} and the list is {listed.value}",
             )
+        for part in parts:
+            self._refuse_timestamp_against_date(left, part, None)
         if listed is Family.NUMBER and any(isinstance(value, float) for value in values):
             values = [value if value is None else float(value) for value in values]
         built = left.expr.is_in(list(values))
@@ -279,6 +324,8 @@ class _Compiler:
     def _name(self, node: ast.Name) -> Typed:
         if node.id in KEYWORD_LITERALS:
             return self._typed_value(KEYWORD_LITERALS[node.id], node)
+        if node.id.lower() in KEYWORD_LITERALS:
+            raise error(self._text, f"{node.id!r} is written {node.id.lower()!r} here, in lower case")
         raise error(
             self._text,
             f"{node.id!r} is not something this language knows: write a column as [{node.id}], text as 'value', or "
@@ -414,6 +461,13 @@ class _Compiler:
                 self._require(typed, param.family, f"{name}() {param.requirement}")
             if param.whole is not None:
                 self._require_whole(typed, f"{name}() {param.whole}")
+            if param.no_time_zone and isinstance(typed.dtype, pl.Datetime) and typed.dtype.time_zone is not None:
+                raise error(
+                    self._text,
+                    f"{self._describe(typed)}, a timestamp in time zone {typed.dtype.time_zone!r}, but {name}() works "
+                    f"on dates, and which day such a timestamp falls on depends on the zone. Cast it to Date "
+                    f"first with the cast_columns tool, so the day is the one you choose",
+                )
             return typed
         return param.read(name, self._spelling.literal(node), POSITIONS[position])
 
@@ -530,3 +584,14 @@ class _Compiler:
                 f"the whole number {value} is outside the range this language holds, which is {_WHOLE_NUMBER_MIN} to "
                 f"{_WHOLE_NUMBER_MAX}",
             )
+
+
+def _signed(typed: Typed) -> Typed:
+    """An unsigned whole number cast to a signed 64-bit one before arithmetic, so it cannot wrap.
+
+    len() and some columns hold unsigned numbers, and 3 - 5 on those wraps to 4,294,967,294 instead
+    of -2. Any other value is handed back as it is.
+    """
+    if typed.dtype is None or not typed.dtype.is_unsigned_integer():
+        return typed
+    return typed._replace(expr=typed.expr.cast(pl.Int64), dtype=pl.Int64())

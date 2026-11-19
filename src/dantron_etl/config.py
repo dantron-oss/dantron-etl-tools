@@ -18,6 +18,7 @@ top level of such a configuration reaches nothing at all.
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
 
 from .errors import ConfigError
@@ -30,6 +31,7 @@ __all__ = [
     "expression_fields",
     "expression_values",
     "require_not_blank",
+    "with_base_dir",
     "validate_against_template",
 ]
 
@@ -97,6 +99,9 @@ class ConfigField:
     items: "ConfigField | None" = None
     fields: "Mapping[str, ConfigField] | None" = None
     non_empty: bool = False
+    #: The field holds the path of a file the tool reads or writes. A run given ``base_dir`` reads a
+    #: relative path in such a field from that folder instead of the working directory.
+    file_path: bool = False
 
 
 def expression_fields(template: Mapping[str, ConfigField]) -> tuple[str, ...]:
@@ -333,3 +338,17 @@ def _check_no_placeholder(path: str, value: Any) -> None:
     elif isinstance(value, dict):
         for item in value.values():
             _check_no_placeholder(path, item)
+
+
+def with_base_dir(template: Mapping[str, ConfigField], config: Mapping[str, Any], base_dir: Path) -> dict[str, Any]:
+    """``config`` with every relative path in a ``file_path`` field joined onto ``base_dir``.
+
+    An absolute path is left as it is, and so is a value holding a ``{`` token such as
+    ``{scratch}``, which something else resolves. Only text values are touched.
+    """
+    resolved = dict(config)
+    for name, spec in template.items():
+        value = resolved.get(name)
+        if spec.file_path and isinstance(value, str) and value and "{" not in value and not Path(value).is_absolute():
+            resolved[name] = str(base_dir / value)
+    return resolved

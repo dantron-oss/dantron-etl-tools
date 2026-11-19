@@ -16,12 +16,13 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
+from types import MappingProxyType
 from typing import Any
 
-from .errors import PipelineError
+from .errors import PipelineError, name_choices
 from .expr import references
 from .config import expression_values
-from .registry import ToolRegistry
+from .registry import REGISTRY, ToolRegistry
 
 __all__ = ["Container", "Lane", "Pipeline", "PortRef", "Step"]
 
@@ -90,8 +91,9 @@ class Step:
 @dataclass(frozen=True, slots=True)
 class Pipeline:
     """A whole flow: its steps in the order they were authored, its lanes, and the registry it was
-    checked against -- needed by :meth:`column_references` and :meth:`container_outputs`, which have to
-    ask a tool for its template and its ports.
+    checked against -- needed by :meth:`column_references`, :meth:`container_outputs` and
+    :meth:`fingerprint`, which have to ask a tool for its template and its ports. A pipeline built in
+    code without a registry is given the shipped one.
 
     ``registry`` does not participate in equality: two specs loaded from the same document against
     the same catalog are the same pipeline, whatever registry object happened to answer for it.
@@ -102,21 +104,38 @@ class Pipeline:
     lanes: tuple[Lane, ...] = ()
     containers: tuple[Container, ...] = ()
     registry: ToolRegistry | None = field(default=None, compare=False, repr=False)
+    # Two lookups built once, so finding a step or the readers of a port does not scan every step.
+    _by_id: Mapping[str, Step] = field(init=False, compare=False, repr=False)
+    _readers: Mapping[PortRef, tuple[PortRef, ...]] = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.registry is None:
+            # Built in code without a registry: use the shipped catalog, as the loader does.
+            object.__setattr__(self, "registry", REGISTRY)
+        by_id: dict[str, Step] = {}
+        for step in self.steps:
+            by_id.setdefault(step.id, step)
+        readers: dict[PortRef, list[PortRef]] = {}
+        for step in self.steps:
+            for port_name, edge in step.inputs.items():
+                readers.setdefault(edge, []).append(PortRef(step.id, port_name))
+        object.__setattr__(self, "_by_id", MappingProxyType(by_id))
+        object.__setattr__(self, "_readers", MappingProxyType({ref: tuple(found) for ref, found in readers.items()}))
 
     def step(self, step_id: str) -> Step:
-        """The step named ``step_id``, or a refusal naming the ids there actually are."""
-        for candidate in self.steps:
-            if candidate.id == step_id:
-                return candidate
-        raise PipelineError(f"no step {step_id!r}; steps are: {', '.join(step.id for step in self.steps)}")
+        """The step named ``step_id``, or a refusal naming the closest ids there are."""
+        found = self._by_id.get(step_id)
+        if found is not None:
+            return found
+        raise PipelineError(f"no step {step_id!r}; {name_choices(step_id, self._by_id)}")
 
     def container(self, container_id: str) -> Container:
         """The container named ``container_id``, or a refusal naming the ones there actually are."""
         for candidate in self.containers:
             if candidate.id == container_id:
                 return candidate
-        declared = ", ".join(container.id for container in self.containers) or "none"
-        raise PipelineError(f"no container {container_id!r}; containers are: {declared}")
+        declared = [container.id for container in self.containers]
+        raise PipelineError(f"no container {container_id!r}; {name_choices(container_id, declared, 'containers')}")
 
     def container_members(self, container_id: str) -> tuple[str, ...]:
         """The steps in ``container_id``, in the order they were declared.
@@ -155,21 +174,26 @@ class Pipeline:
         a reader can check a closed container against and a bigger number that answers to
         nothing.
         """
-        assert self.registry is not None
+        registry = self.registry if self.registry is not None else REGISTRY
         members = set(self.container_members(container_id))
         left: list[PortRef] = []
         for step in self.steps:
             if step.id not in members:
                 continue
-            for port in self.registry.get(step.tool).output_ports:
+            for port in registry.get(step.tool).output_ports:
                 read_by = self.consumers(PortRef(step.id, port))
                 if not read_by or any(ref.step not in members for ref in read_by):
                     left.append(PortRef(step.id, port))
         return tuple(left)
 
-    def fingerprint(self, step_id: str) -> str:
-        """One string answering "is the configuration that produced this step's ports still the
-        configuration in the file?" -- taken over ``step_id`` and every step behind it.
+    def fingerprint(self, target: "str | PortRef") -> str:
+        """One string answering "is the configuration that produced this port still the
+        configuration in the file?" -- taken over the step and every step behind it.
+
+        ``target`` is a step id, a :class:`PortRef`, or the text ``"step.port"``. A port's
+        fingerprint also covers the port's name, so a cached frame put on the wrong port of a split
+        (its ``true`` frame under ``false``) does not match. For a step with one output port there is
+        nothing to mix up, and the step's fingerprint and its port's are the same string.
 
         The closure, not the step alone, because the rows on a port are the product of everything
         upstream of them: a step whose own config block is untouched produces different rows the
@@ -197,8 +221,7 @@ class Pipeline:
         it produces is wrong in a way nothing here can see. See :func:`~.runner.run_pipeline` for
         what follows from that.
         """
-        self.step(step_id)  # a name this pipeline does not have is refused here, in one wording
-
+        step_id, port = self._fingerprint_target(target)
         closure = self.ancestor_closure((step_id,))
 
         # Sorted by id rather than taken in declaration or dependency order: where a step sits in
@@ -213,8 +236,28 @@ class Pipeline:
             }
             for step in sorted((self.step(name) for name in closure), key=lambda step: step.id)
         ]
-        serialised = json.dumps(payload, default=_canonical_scalar, sort_keys=True, separators=(",", ":"))
+        hashed: Any = payload if port is None else {"steps": payload, "port": port}
+        serialised = json.dumps(hashed, default=_canonical_scalar, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(serialised.encode("utf8")).hexdigest()
+
+    def _fingerprint_target(self, target: "str | PortRef") -> tuple[str, str | None]:
+        """``(step id, port name to mix in)`` for :meth:`fingerprint`; no port for a one-port step."""
+        if isinstance(target, str) and "." not in target:
+            self.step(target)  # a name this pipeline does not have is refused here, in one wording
+            return target, None
+        if isinstance(target, str):
+            step_id, port = target.split(".", 1)
+        else:
+            step_id, port = target.step, target.port
+        step = self.step(step_id)
+        registry = self.registry if self.registry is not None else REGISTRY
+        ports = tuple(registry.get(step.tool).output_ports)
+        if port not in ports:
+            raise PipelineError(
+                f"step {step_id!r} (tool {step.tool!r}) has no output port {port!r}; its output ports are: "
+                f"{', '.join(ports) or 'none'}"
+            )
+        return step_id, (port if len(ports) > 1 else None)
 
     def ancestor_closure(self, step_ids: Iterable[str]) -> frozenset[str]:
         """``step_ids`` and every step that feeds them, however far back, followed through ``inputs``.
@@ -240,12 +283,7 @@ class Pipeline:
 
     def consumers(self, source: "PortRef") -> tuple["PortRef", ...]:
         """Every input that is wired to ``source``, in the order the consuming steps were declared."""
-        found: list[PortRef] = []
-        for step in self.steps:
-            for port_name, edge in step.inputs.items():
-                if edge == source:
-                    found.append(PortRef(step.id, port_name))
-        return tuple(found)
+        return self._readers.get(source, ())
 
     def stages(self) -> tuple[str, ...]:
         """Distinct stages, in the order each is first seen among the steps as declared."""
@@ -262,10 +300,10 @@ class Pipeline:
         more: a step whose template has no expression field, or whose expression fields carry no
         value, is simply absent -- there is nothing here to publish about it.
         """
-        assert self.registry is not None
+        registry = self.registry if self.registry is not None else REGISTRY
         result: dict[str, dict[str, frozenset[str]]] = {}
         for step in self.steps:
-            tool = self.registry.get(step.tool)
+            tool = registry.get(step.tool)
             values = expression_values(tool.config_template(), step.config)
             if values:
                 result[step.id] = {path: references(text) for path, text in values}
@@ -337,9 +375,39 @@ def toposort(
                 heapq.heappush(heap, position[downstream])
 
     if len(ordered) != len(step_ids):
-        cycle_steps = sorted((s for s in step_ids if s not in ordered), key=lambda s: position[s])
+        placed = set(ordered)
+        unplaced = [s for s in step_ids if s not in placed]
+        loop = _one_loop(unplaced, inputs_by_step)
+        path = " -> ".join([*(f"{ref.step}.{ref.port} -> {reader}" for reader, ref in loop)])
+        stuck = len(unplaced) - len(loop)
+        tail = (
+            f" {stuck} more step(s) could not be placed either: each is in a loop too, or reads from one."
+            if stuck
+            else ""
+        )
         raise PipelineError(
-            f"a cycle among steps: {', '.join(cycle_steps)}; a flow is walked from its sources, so a "
-            f"loop can never reach a consumer"
+            f"a cycle among steps: {', '.join(reader for reader, _ in loop)}. The loop is {path}. A flow "
+            f"is walked from its sources, so a loop can never reach a consumer.{tail}"
         )
     return tuple(ordered)
+
+
+def _one_loop(unplaced: list[str], inputs_by_step: Mapping[str, Mapping[str, PortRef]]) -> list[tuple[str, PortRef]]:
+    """One loop among the steps the sort could not place, as ``(step, the edge it reads)`` pairs.
+
+    Every unplaced step reads at least one other unplaced step (that is why it could not be placed),
+    so walking upstream along such edges must come back to a step already seen. The steps from that
+    point on are the loop, and nothing that merely depends on it.
+    """
+    stuck = set(unplaced)
+    seen: dict[str, int] = {}
+    walk: list[tuple[str, PortRef]] = []
+    current = unplaced[0]
+    while current not in seen:
+        seen[current] = len(walk)
+        edge = next(ref for ref in inputs_by_step.get(current, {}).values() if ref.step in stuck)
+        walk.append((current, edge))
+        current = edge.step
+    loop = walk[seen[current] :]
+    # Written in the direction the rows flow: from the step read to the step reading it.
+    return list(reversed(loop))
