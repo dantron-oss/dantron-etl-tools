@@ -18,7 +18,10 @@ never heard of the data it was first built against.
 | file | what it is for |
 |---|---|
 | `src/dantron_etl/MANUAL.md` | **How to use the tools to build a pipeline.** Written for agents. Ships inside the package. A test checks it names every tool, every category and every expression function, and states the right tool count. Treat it as authoritative. |
-| `README.md` | The public face: the tool list, install, the ideas worth knowing. |
+| `README.md` | The public face: what it is, a quick start that runs, the ideas worth knowing, links. |
+| `docs/` | The documentation for people: quickstart, concepts, the pipeline file, expressions, one page per tool, cookbook, checking, the command, upgrading. `docs/design/` holds the reasoning behind decisions. |
+| `CONTRIBUTING.md` | Setup, tests, the rules for adding a tool, a function or a rename, and what a pull request is held to. |
+| `CHANGELOG.md` | What changed in each release, for users. |
 | this file | How to **build and change the library itself**, and the rules behind it. |
 
 This file does not repeat the manual. If a question is about writing a pipeline, the answer is in
@@ -27,10 +30,11 @@ the manual.
 ## Commands
 
 ```bash
-uv sync --extra dev                         # set up from uv.lock. Plain `uv sync` leaves out pytest, ruff, orjson
-.venv/bin/pytest tests/ -q                  # ~4,000 tests, about a minute (pyproject puts src/ and the root on the path)
+uv sync --extra dev                         # set up from uv.lock. Plain `uv sync` leaves out pytest and ruff
+.venv/bin/pytest tests/ -q                  # about 4,900 tests, about a minute and a half (pyproject puts src/ on the path)
 .venv/bin/pytest tests/tools/test_join.py -q   # one tool's tests; one area is tests/core, tests/expr, tests/tools ...
-.venv/bin/ruff check src tests              # lint. This is the gate
+.venv/bin/ruff check src tests docs/_build  # lint. This is the gate
+.venv/bin/python docs/_build/generate.py    # rewrite the generated docs pages; a test fails while they are stale
 .venv/bin/dantron-etl view                   # the viewer for this checkout's pipelines (pipelines/fixture.yaml)
 .venv/bin/dantron-etl run fixture            # preview the fixture flow and save the run; --write for a real run
 .venv/bin/dantron-etl catalog                # writes output_files/tool_catalog.{html,json}
@@ -39,15 +43,16 @@ uv sync --extra dev                         # set up from uv.lock. Plain `uv syn
 
 The tests are laid out by area: `core/` (the contract, config, registry, loader, runner, trace,
 focus, preview, paths, database plumbing), `expr/`, `tools/` (one file per tool, named after it),
-`viewer/` (the page, the project, runs, the server and the command), `package/` (what ships: the client-neutral boundary, the sdist, the
+`viewer/` (the page, the project, runs, the server and the command), `package/` (what ships: the client-neutral boundary, the sdist, the generated docs pages, the
 vocabulary snapshot, the documentation examples) and `flows/` (end-to-end flows and property checks).
 Shared fixtures are in `tests/conftest.py`, data files in `tests/fixtures/`. Test file names must
 be unique across folders: there is no `__init__.py`, so pytest imports each file by its name alone.
 
 The `Makefile` holds shortcuts for all of these (`make` lists them): `make test`, `make test-all`
-(starts the test Postgres too), `make run p=<name>`, `make view`, `make catalog`. Each is one command and nothing
-more, so on Windows, which has no `make`, the command itself is what to run. Keep it that way: logic
-goes in Python, where it is tested and runs on both systems.
+(starts the test Postgres too), `make check p=<file>`, `make run p=<name>`, `make view`,
+`make docs`, `make build`. Each runs one command, so on Windows, which has no `make`, the command
+itself is what to run. Keep it that way: logic goes in Python, where it is tested and runs on both
+systems.
 
 A project is a folder with `pipelines/*.yaml` in it, and optionally `etl-project.yaml` saying where
 each pipeline's rules come from and which column to follow (README, "The project settings file").
@@ -55,13 +60,15 @@ This checkout is one: `fixture` is the worked example, with its settings in
 `pipelines/fixture/settings.yaml`. The command never reshapes data: it runs the flow, saves what the
 run produced, and draws it.
 
-The versions are fixed in `uv.lock`, which is committed. Keep it that way: without it, a fresh
+The version number is written once, as `__version__` in `src/dantron_etl/__init__.py`;
+`pyproject.toml` reads it from there. The versions of dependencies are fixed in `uv.lock`, which is
+committed. Keep it that way: without it, a fresh
 checkout resolves the newest of everything, and once that meant polars 2.x (40 failing tests) and a
 ruff with new default rules (147 lint findings). `pyproject.toml` caps polars below 2 and pins ruff
 exactly for the same reason. Moving either one is a deliberate change: raise the bound, fix what
 breaks, run `uv lock`, and commit the lock with the fix.
 
-About 160 tests need Postgres. They read a DSN from `DANTRON_TEST_POSTGRES` and **skip** without
+About 50 tests need Postgres. They read a DSN from `DANTRON_TEST_POSTGRES` and **skip** without
 it, so a checkout with no database still runs everything else. If you change `read_table`,
 `write_table`, `publish_tables` or `db.py`, set it and run them. `compose.yaml` holds a throwaway
 server for exactly this, on port 5434 so it misses any other Postgres on the machine:
@@ -118,7 +125,10 @@ than the one you are editing. If anything looks impossible, run
 | `viewer/` | Not imported by `import dantron_etl`. `project.py` finds a project and its pipelines (`etl-project.yaml`); `runs.py` runs one as a preview or for real and saves it safely (`save_run` saves a run a project's own script made); `server.py` is the local viewer; `render.py`, `layout.py` and `assets.py` draw a run's page from `templates/` and `static/`; `catalog_page.py` draws the catalog; `scaffold.py` and `scaffold/` are `dantron-etl new`. They render and run; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
-The counts in `MANUAL.md` are test-checked. The ones in docstrings and in `README.md` are not.
+The counts in `MANUAL.md` and `README.md` are test-checked. Counts in docstrings are not: leave
+them out. The pages under `docs/tools/`, the function table in `docs/expressions.md`, the key tables
+in `docs/pipeline-file.md`, the rename table in `docs/upgrading.md` and the help in
+`docs/command.md` are generated by `docs/_build/generate.py`. Never edit them by hand.
 
 ## The rules
 
@@ -126,15 +136,21 @@ These are not style preferences. Each one was learned by getting it wrong.
 
 ### The library stays client-neutral
 
-- No client or product name, and no client vocabulary, in anything under `src/dantron_etl/` —
-  code, docstrings, comments, examples, the manual. `tests/package/test_boundary.py` holds the
-  banned words (`FORBIDDEN_TERMS`) and fails the build on any of them. In `.md` files the package's
-  own name is allowed; in `.py` files it is not, which is why imports are relative.
-- No import of a client package, an orchestrator, or pandas (`FORBIDDEN_IMPORTS`). The boundary
-  test imports every module in a clean interpreter to prove it.
-- Keep this file, commit messages and test names neutral too, even though no test checks them.
-  Write "a revenue flow" or "a client's ledger", not the client's name. The repo is meant to be
-  handed to the next client as is.
+- **Nothing in this repository may identify a client**, even while it is private: not code,
+  docstrings, comments, examples, tests, test data, docs, workflows, file names, commit messages,
+  branch names or tag names. Write "a client", "a revenue flow" or "a client's ledger", never the
+  name or its systems.
+- The words that would identify a client are not in the repository either, because the list would
+  name them. `tests/package/test_boundary.py` reads them from `.forbidden-terms` at the top of the
+  checkout (git ignores it; one word per line, `#` for comments) or from `ETL_FORBIDDEN_TERMS`
+  (comma-separated), and checks every tracked file. With neither it skips and says so. If you work
+  in a checkout without the file, ask the owner for it before committing. CONTRIBUTING.md explains
+  it in neutral words.
+- No import of a client package, an orchestrator, or pandas. The generic names are in the boundary
+  test; a client's package name comes from the same local list. The test imports every module in a
+  clean interpreter to prove it, and scans the source and the tests for imports at any depth.
+- The package's own name never appears in a `.py` file under `src/`, which is why imports are
+  relative. Documents may name it.
 
 ### A new tool is a last resort
 
@@ -235,11 +251,13 @@ constant with every test still green.
 
 ### Write plainly
 
-Docstrings, `description`, `notes`, `why` and commit messages are read by finance people and by
-developers at other clients. The existing prose is accurate but too dense, and it reads as
-machine-written. A rewrite pass is owed across `src/dantron_etl/`. **Do not start it unprompted.**
-Write anything new in the plainer style: short sentences, one idea each, what it does before why.
-Manual §4b has the full rules and a worked before-and-after.
+Docstrings, `description`, `notes`, `why`, docs and commit messages are read by finance people and
+by developers at other clients. Say what the thing does first, in one plain sentence. Then how to
+use it. Then, only if a reader would otherwise get it wrong, the one rule that matters. Short
+sentences, one idea each, everyday words. History, rejected alternatives and long justifications
+go in a short note under `docs/design/`, linked from the code with one line
+(`# Why: docs/design/<topic>.md#<anchor>`). Manual §4b has the full rules and a worked
+before-and-after.
 
 ### The owner
 
@@ -263,6 +281,7 @@ Each function is defined once, in the function table (`DEFINITIONS` in `expr/fun
    test refuses an entry with a part missing.
 3. Write its tests. The tests from the commit that added `uuid5` (`f22c8a3`) are a good template.
 4. Add it to `MANUAL.md` §4.2. A test checks the manual lists every function.
+5. Run `docs/_build/generate.py` so `docs/expressions.md` lists it.
 
 ### Adding a tool
 
@@ -276,11 +295,20 @@ everything it needs from `authoring.py`. Checklist:
 4. `validate_config` for cross-field rules only. `validate_inputs` for anything answerable from the
    schema.
 5. Tests for the tool, including the mirror cases above.
-6. Add it to the table in `MANUAL.md` §3.1 **and update the count** there and in `README.md`.
-7. Regenerate the catalog and look at the tool's page.
+6. Add it to the table in `MANUAL.md` §3.1 and in `README.md`, **and update the count** in both.
+7. Run `docs/_build/generate.py`, and look at the tool's page in `docs/tools/` and in the catalog.
 
 A tool whose input ports depend on its configuration (like `write_excel`, one port per sheet)
 implements `input_ports_for` and leaves `input_ports` empty. Never both. See `DerivesInputPorts`.
+
+### Renaming something a pipeline file says
+
+A tool, setting, port, value or function name is a promise to every pipeline. A rename goes through
+`src/dantron_etl/renames.py`: add the old and new name there, and the loader refuses the old name
+with the new one, `dantron-etl migrate` rewrites old files, and the upgrade page's table follows
+after `docs/_build/generate.py`. Update the vocabulary snapshot, `tests/fixtures/vocabulary.json`,
+in the same commit: its test fails on any change to a name a pipeline can write. Add a line to
+`CHANGELOG.md`.
 
 ### Changing an existing tool
 
@@ -329,5 +357,6 @@ yet proven; a second, unrelated pipeline is the real test of every abstraction h
 - `develop` is the working branch. Work happens on `feature/<name>` and merges into `develop` with
   `--no-ff`, titled `Merge feature/<name> into develop`. `main` trails `develop`.
 - `develop` is also GitHub's default branch, so a pull request targets it unless told otherwise.
+- Branch and tag names are client-neutral, like everything else here.
 - Commit titles are plain sentences that say what changed for the reader ("Publish a set of related
   tables, all of them or none of them"). The body explains why, in plain prose.
