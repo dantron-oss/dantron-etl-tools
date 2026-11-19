@@ -324,6 +324,8 @@ class _Compiler:
     def _name(self, node: ast.Name) -> Typed:
         if node.id in KEYWORD_LITERALS:
             return self._typed_value(KEYWORD_LITERALS[node.id], node)
+        if node.id.lower() in KEYWORD_LITERALS:
+            raise error(self._text, f"{node.id!r} is written {node.id.lower()!r} here, in lower case")
         raise error(
             self._text,
             f"{node.id!r} is not something this language knows: write a column as [{node.id}], text as 'value', or "

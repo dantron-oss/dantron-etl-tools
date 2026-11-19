@@ -69,6 +69,10 @@ class TestASyntaxErrorSaysWhereAndHints:
     def test_a_spelling_from_another_language_gets_a_hint(self, text: str, hint: str) -> None:
         assert hint in _refusal(text)
 
+    @pytest.mark.parametrize("word", ["NULL", "Null", "FALSE"])
+    def test_a_keyword_value_in_capitals_is_told_to_be_lower_case(self, word: str) -> None:
+        assert f"written {word.lower()!r} here, in lower case" in _refusal(f"[a] = {word}")
+
     def test_the_place_is_given_in_the_authors_text(self) -> None:
         message = _refusal("[status] = 'PAID' AND [amount] > 0")
         assert "near character 19, at `AND [amount] > 0`" in message
