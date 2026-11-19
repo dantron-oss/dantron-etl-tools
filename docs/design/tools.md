@@ -521,3 +521,30 @@ nothing has asked yet, and an allowed value with no tests behind it is worse tha
 
 **A zone-aware timestamp needs `in_zone`** (owner's ruling E-02). Timestamps become calendar dates
 first, as in date_diff.
+
+## normalize_text
+
+**It exists to make a join key.** The join is only as good as the key, so the key must come out the
+same whichever side of a join, and whenever, the step runs.
+
+**`operations` chooses; `OPERATION_ORDER` orders.** The clean-ups enable each other: folding accents
+lets `SARL` be recognised as the suffix `sarl`, and removing punctuation lets `Ltd.` be recognised as
+`ltd`. A caller-chosen order could run an enabling step after the one it enables, and the step would
+stop being idempotent: running it twice would give a different key from running it once.
+Whitespace collapsing runs last because removing a suffix leaves the space before it. Listing an
+operation twice is refused: it shows the list was read as a sequence.
+
+**Suffix words are configuration.** A jurisdiction's company suffixes are not this library's to know.
+Stripping repeats until a pass changes nothing, which also keeps it idempotent; a cap of 64 passes is a
+safety margin only.
+
+**Accents use NFKD.** It splits an accented letter into letter plus mark, and the mark is removed. As a
+compatibility decomposition it also turns full-width and ligature spellings into plain letters, with
+nothing transliterated.
+
+**Punctuation is deleted, not spaced.** `A.B.C.` meets `ABC`, and a curly apostrophe meets a straight
+one. Whitespace means any Unicode space, because a name pasted from a spreadsheet often carries a
+non-breaking space.
+
+**A key that cleans to nothing is null.** A column of empty strings would join every unusable name to
+every other one.
