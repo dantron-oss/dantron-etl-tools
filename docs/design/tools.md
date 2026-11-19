@@ -834,3 +834,41 @@ never takes this path.
 
 **Rows come in no particular order.** A database promises none without ORDER BY; a step that needs
 order sorts first.
+
+## write_table
+
+**`replace` is one transaction.** It empties the table and loads the frame as one unit, so a write that
+fails part way (a NOT NULL column fed a null, two rows claiming one key) leaves yesterday's figures,
+not an empty table. The failure it rules out: a build that deletes yesterday's numbers, falls over on
+row 400, and reports an error over an empty table.
+
+**It never creates a table.** A table made from what a frame inferred today has types decided by one
+day's data and no key, no NOT NULL, no index (the constraints that make replace safe), and a typo in
+`table` would quietly create a second table and leave the real one stale. DDL belongs in a reviewed
+migration.
+
+**`mode` has no default.** `replace` and `append` differ in whether running a flow twice is safe.
+
+**Columns must match exactly, in any order.** An extra column would be dropped, a missing one filled
+with null where a figure belongs; a case-only difference is refused, not guessed. Values that will not
+fit a column's declared type (text in an integer column, a fraction) are refused before anything is
+written. These checks live in `_table_load.py`, shared with publish_tables.
+
+**An empty frame stops the run unless `allow_empty`.** A replace of nothing is the loudest and most
+expensive silence a nightly build can leave.
+
+**The output passes the rows on,** not a receipt: a receipt loses the data a flow may want to write
+twice or check, and its interesting fields would drift between runs in a way an example cannot pin.
+
+**Finding the offending rows.** When the database refuses a load, the step names the rows. Two routes
+must give the same answer. Replaying the load row by row costs three round trips per row (for 130,000
+rows, a failed build that looks wedged), so the table's rules are read from the catalog first and the
+frame is judged in memory: missing required values per column, then repeated keys walked in order,
+keeping only keys from rows actually accepted (a refused row's key stays free; judging the frame as
+written blames the wrong rows once two key rules are in play). When appending, keys already in the
+table count, fetched in one statement. This route declines, falling back to the replay, when the table
+has a rule it cannot judge (a check expression, a foreign key), when SQLite would fill a null rowid key
+itself, when reading the rules fails (logged, since it would otherwise show only as slowness), or when
+it finds nothing wrong with a load the server just refused. The replay attempts every row inside a
+discarded transaction, each in the loader's own undo, because on one driver a failed statement poisons
+the rest of the transaction.

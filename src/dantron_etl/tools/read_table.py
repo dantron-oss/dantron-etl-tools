@@ -91,8 +91,8 @@ class ReadTable:
                 "connection opens.",
             ),
             field_help={
-                "connection": "Set the variable in your environment or .env file, for example "
-                "SOURCE_DATABASE_URL=postgresql://user:password@host/db.",
+                "connection": "For example 'SOURCE_DATABASE_URL'. Set that variable in the environment "
+                "the flow runs in.",
                 "schema": "For example 'sales'. The table is then read as sales.orders.",
                 "table": "For example 'orders'.",
             },
