@@ -40,9 +40,7 @@ from ..db import (
     TableRules,
     driver_for,
     open_connection,
-    probe_columns,
     qualified_name,
-    require_matching_columns,
     resolve_connection_uri,
     validate_identifier,
 )
@@ -55,6 +53,7 @@ from ..authoring import (
     WorkedExample,
     example_database,
 )
+from ._table_load import require_landable_columns, require_matching_table, require_rows
 
 _MODE_ENUM = ("replace", "append")
 
@@ -121,6 +120,9 @@ class WriteTable:
                 "flow is safe, and either default would choose one of them silently.",
                 "An empty frame stops the run unless 'allow_empty' says otherwise: a replace of "
                 "nothing empties the table, the loudest silence an upstream step can leave behind.",
+                "A column whose values will not fit the type the table declares for it is refused "
+                "before anything is written, naming the column: text in a whole-number column, or "
+                "a fraction. These are the same checks publish_tables runs.",
                 "The output port hands the same rows on unchanged, so this sink is composable "
                 "rather than terminal by construction.",
             ),
@@ -138,27 +140,21 @@ class WriteTable:
         validate_identifier(config["table"], "table")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a table that is not there, a column disagreement, or an unwelcome empty frame.
+        """Refuse a table that is not there, a column disagreement, an unwelcome empty frame, or a
+        column whose values will not fit the column the table declares.
 
-        All three are checked here, ahead of ``execute``, so that nothing is emptied or loaded on
-        the strength of a configuration that was already wrong: probing the table's columns is the
-        same query that proves the table exists, and the frame's own columns are compared against
-        it before a single row moves.
+        All of them are checked here, ahead of ``execute``, so nothing is emptied or loaded on the
+        strength of a configuration that was already wrong. They are the same checks publish_tables
+        runs, from the same module.
         """
         frame = inputs["rows"]
         uri = resolve_connection_uri(config["connection"], "connection")
         qualified = qualified_name(config["schema"], config["table"])
         with open_connection(uri) as connection:
-            table_columns = probe_columns(connection, qualified)
-
-        require_matching_columns(frame.columns, table_columns, qualified)
-
-        if frame.height == 0 and not config["allow_empty"]:
-            raise DataError(
-                f"write_table refuses an empty frame for table {qualified!r}; set allow_empty to accept it",
-                offending=frame,
-                total=0,
-            )
+            require_matching_table(connection, frame, qualified)
+            require_rows("write_table", frame, qualified, config["allow_empty"])
+            declared = driver_for(connection).declared_column_types(connection, config["schema"], config["table"])
+        require_landable_columns(frame, declared, qualified)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
@@ -240,7 +236,7 @@ def _write_rows(
     except loader.driver_errors as error:
         raise DataError(
             f"writing table {qualified!r} failed: {error}",
-            offending=frame.head(0),
+            offending=None,
             total=frame.height,
         ) from error
 

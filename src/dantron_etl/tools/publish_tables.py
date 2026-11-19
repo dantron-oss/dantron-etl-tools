@@ -38,7 +38,12 @@ second table and leave the real one going stale. DDL belongs in a migration some
 **A column that cannot land in its table's column is refused rather than written.** One of the two
 engines has no opinion about this at all: sqlite stores the text ``'heavy'`` in a column declared
 ``integer`` and reports success. So the frames are read against the destination's own declared types
-before anything is emptied, and the refusal names the column.
+before anything is emptied, and the refusal names the column. ``write_table`` runs the same checks,
+from the same module (``_table_load``).
+
+**A merge needs one row per key.** A null in a key column, or the same key twice, is refused
+before anything is written: two rows would be blended into one stored row, and a null key would add
+a row on every run.
 
 Everything answerable from the configuration alone is refused in :meth:`PublishTables.validate_config`
 and everything needing the frames and the server in :meth:`PublishTables.validate_inputs`, both of
@@ -59,9 +64,7 @@ from ..db import (
     RowLoader,
     driver_for,
     open_connection,
-    probe_columns,
     qualified_name,
-    require_matching_columns,
     resolve_connection_uri,
     validate_identifier,
 )
@@ -75,6 +78,7 @@ from ..authoring import (
     WorkedExample,
     example_database,
 )
+from ._table_load import require_landable_columns, require_matching_table, require_one_row_per_key, require_rows
 
 #: Spelled so a definition file hands each of them over as the word itself.
 _MODE_ENUM: Final[tuple[str, ...]] = ("replace", "append", "merge")
@@ -236,6 +240,8 @@ class PublishTables:
                 "A merge writes coalesce(incoming, published): a value overwrites and a gap is "
                 "filled, but a null the build has nothing to say about leaves the published value "
                 "standing rather than blanking it.",
+                "A merge needs one row per key. A frame with a null in a key column, or the same "
+                "key twice, is refused before anything is written, naming the key and the rows.",
                 "'mode' has no default: the three differ in whether re-running the flow is safe, "
                 "and an append-only log is the one table a rebuild must never rewrite.",
                 "An empty frame stops the whole publish -- not merely its own table -- unless that "
@@ -305,19 +311,20 @@ class PublishTables:
             loader = driver_for(connection)
             for entry in entries:
                 frame = inputs[entry.port]
-                if frame.height == 0 and not entry.allow_empty:
-                    raise DataError(
-                        f"publish_tables refuses an empty frame for table {entry.qualified!r}, and "
-                        f"the publish is one unit, so nothing else is written either; set "
-                        f"allow_empty on that entry to accept it",
-                        offending=frame,
-                        total=0,
-                    )
-                _require_landable_columns(
+                require_rows(
+                    "publish_tables",
+                    frame,
+                    entry.qualified,
+                    entry.allow_empty,
+                    consequence=", and the publish is one unit, so nothing else is written either",
+                )
+                require_landable_columns(
                     frame,
                     loader.declared_column_types(connection, config["schema"], entry.table),
                     entry.qualified,
                 )
+                if entry.mode == "merge":
+                    require_one_row_per_key(frame, entry.key, entry.qualified)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         """Write every table inside one transaction, and hand back one row of accounting for it.
@@ -434,74 +441,13 @@ def _require_a_table_these_rows_can_be_published_to(
     splices those names into its ``ON CONFLICT``, and a name that came back from the server's own
     catalog is a name the statement can safely carry.
     """
-    table_columns = probe_columns(connection, entry.qualified)
-    require_matching_columns(frame.columns, table_columns, entry.qualified, stamp=stamp)
+    table_columns = require_matching_table(connection, frame, entry.qualified, stamp)
     missing = [column for column in entry.key if column not in table_columns]
     if missing:
         raise ConfigError(
             f"the merge key for table {entry.qualified!r} names column(s) nobody carries: "
             f"{', '.join(missing)}; the table has: {', '.join(table_columns)}"
         )
-
-
-def _require_landable_columns(
-    frame: pl.DataFrame,
-    declared: Mapping[str, str | None],
-    qualified: str,
-) -> None:
-    """Refuse a column whose values will not go into the column the table declared, naming it.
-
-    Worth doing here rather than leaving to the engine because neither engine does it usefully. One
-    says nothing at all -- sqlite stores ``'heavy'`` in an ``integer`` column and reports success --
-    and the other says it at load time, in its own words, about a copy stream: by which point the
-    publish has already emptied the tables ahead of this one, and what a reader is told is about a
-    stream rather than about a column they can go and look at.
-
-    A type this library does not recognise is passed over rather than refused. A domain, an enum, a
-    JSON column: each is a column something else has an opinion about, and refusing on a reading
-    this side did not understand would stop a publish that was perfectly correct.
-    """
-    for column, dtype in frame.schema.items():
-        wanted = declared.get(column)
-        if wanted is None or _fits(dtype, wanted):
-            continue
-        raise DataError(
-            f"column {column!r} carries {dtype} where table {qualified!r} declares its column as "
-            f"{wanted}; nothing is published",
-            offending=frame,
-            total=frame.height,
-        )
-
-
-#: The base dtype each remaining declared type is, for the types that admit no widening at all.
-_DECLARED_BASE: Final[Mapping[str, Any]] = {
-    "String": pl.String,
-    "Boolean": pl.Boolean,
-    "Date": pl.Date,
-    "Datetime": pl.Datetime,
-    "Time": pl.Time,
-}
-
-
-def _fits(dtype: pl.DataType, declared: str) -> bool:
-    """Whether a frame column of ``dtype`` can land in a column declared ``declared``.
-
-    A column of nothing but nulls fits anywhere: it carries no value to be wrong about. A whole
-    number lands in a decimal column, because widening loses nothing; a decimal does not land in a
-    whole-number column, because narrowing does, and quietly. Everything else has to be the type it
-    says it is.
-    """
-    if dtype == pl.Null:
-        return True
-    if declared == "Int64":
-        return dtype.is_integer()
-    if declared == "Float64":
-        return dtype.is_numeric()
-    base = _DECLARED_BASE.get(declared)
-    # A declared type this module has no entry for is passed over, exactly as an unrecognised SQL
-    # type is. The two vocabularies live in different modules and the reading side is a safety net:
-    # one growing a name the other has not learned should cost the check, never the publish.
-    return base is None or dtype.base_type() == base
 
 
 def _publish_one(
@@ -532,11 +478,8 @@ def _publish_one(
     except loader.driver_errors as error:
         raise DataError(
             f"publishing table {entry.qualified!r} was refused: {error}; the publish is one unit, "
-            f"so none of its tables was written. Which rows offended is not worked out here -- "
-            f"naming them means reading the table on a connection that is not holding a publish "
-            f"open, which is write_table's job over a single table -- so the count that follows is "
-            f"no rows examined rather than no rows at fault",
-            offending=frame.head(0),
+            f"so none of its tables was written. Which rows offended is not worked out here",
+            offending=None,
             total=frame.height,
         ) from error
 

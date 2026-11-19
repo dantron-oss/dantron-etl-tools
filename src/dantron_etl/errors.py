@@ -102,10 +102,17 @@ class DataError(ToolError):
     run: the one way an error type can do real damage.
     """
 
-    def __init__(self, refusal: str, *, offending: pl.DataFrame, total: int) -> None:
-        self.offending_rows: int = offending.height
+    def __init__(self, refusal: str, *, offending: pl.DataFrame | None, total: int) -> None:
         self.total_rows: int = total
-        self.examples: tuple[dict[str, Any], ...] = tuple(offending.head(MAX_REPORTED_ROWS).to_dicts())
+        if offending is None:
+            # The rows were refused as a whole and never looked at one by one, so no count of
+            # offending rows exists. Saying "0 of N" would read as "no row was at fault".
+            self.offending_rows: int | None = None
+            self.examples: tuple[dict[str, Any], ...] = ()
+            super().__init__(f"{refusal}: {total} row(s), not examined one by one")
+            return
+        self.offending_rows = offending.height
+        self.examples = tuple(offending.head(MAX_REPORTED_ROWS).to_dicts())
         shown = f", starting with {'; '.join(str(row) for row in self.examples)}" if self.examples else ""
         super().__init__(f"{refusal}: {self.offending_rows} of {self.total_rows} row(s) offend{shown}")
 
