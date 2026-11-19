@@ -76,7 +76,8 @@ class RecordId:
             examples=(_default_start_example(), _zero_start_example()),
             notes=(
                 "This step decides no order of its own. On an unsorted frame the numbers are only "
-                "as meaningful as the order the rows happened to be in.",
+                "as meaningful as the order the rows happened to be in. A read_table hands rows "
+                "over in no fixed order, so a Sort belongs between the two.",
             ),
             field_help={
                 "output": "The new column goes on the end. A name already in use is refused. There "

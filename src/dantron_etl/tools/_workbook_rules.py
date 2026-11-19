@@ -17,8 +17,8 @@ _DATETIME_FORMAT: Final[str] = "yyyy-mm-dd hh:mm:ss"
 
 #: Each dtype a frame can carry, as the one name a rule may call it. Built from the shared
 #: vocabulary rather than written out again, so a type this library learns to name is a type a
-#: format rule can speak about on the same day. A dtype missing from it -- an Int32, say -- is named
-#: by no rule, and a rule about the type it is closest to does not reach it.
+#: format rule can speak about on the same day. A whole number of any width answers to Int64 (see
+#: ``_declared_name``). Any other dtype missing from it -- a Float32, say -- is named by no rule.
 _DECLARED_NAME: Final[Mapping[Any, str]] = {DECLARED_DTYPE[name].base_type(): name for name in DECLARED_TYPES}
 
 
@@ -57,10 +57,21 @@ def resolve_rules(
         if name in by_column:
             reached[name] = by_column[name]
             continue
-        declared = _DECLARED_NAME.get(dtype.base_type())
+        declared = _declared_name(dtype)
         if declared in by_type:
             reached[name] = by_type[declared]
     return reached
+
+
+def _declared_name(dtype: pl.DataType) -> str | None:
+    """The name a rule calls ``dtype`` by. Every width of whole number is Int64.
+
+    A formula makes a whole-number literal 32-bit, so a rule about Int64 that skipped Int32 would
+    miss a column like ``flag = 1``. Only how the cell is shown depends on this, never its value.
+    """
+    if dtype.is_integer():
+        return "Int64"
+    return _DECLARED_NAME.get(dtype.base_type())
 
 
 def column_formats(

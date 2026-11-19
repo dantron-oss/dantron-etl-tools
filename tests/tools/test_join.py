@@ -816,3 +816,81 @@ class TestHowDecidesWhichRowsReachMatched:
                     Ports({"left": _entries(), "right": _headers()}),
                     {"keys": ["group_id"], "how": unsupported},
                 )
+
+
+class TestKeyTypesAreCheckedOnTheSchema:
+    """Two key columns the engine cannot compare are refused before any row moves, naming both.
+
+    The engine used to refuse them only once rows were moving, as a 'failed while running' error
+    in its own words. A key column typed Null, which is what an empty branch or an all-missing
+    column gives, takes the other side's type instead, as union does.
+    """
+
+    @pytest.mark.parametrize(
+        ("left_type", "right_type"),
+        [
+            (pl.Int64, pl.Float64),
+            (pl.Float64, pl.Int64),
+            (pl.String, pl.Int64),
+            (pl.Date, pl.Datetime("us")),
+            (pl.Datetime("us", "UTC"), pl.Datetime("us")),
+        ],
+    )
+    @pytest.mark.parametrize("height", [2, 0], ids=["with_rows", "with_no_rows"])
+    def test_key_types_that_cannot_be_compared_are_refused_by_name(
+        self, left_type: pl.DataType, right_type: pl.DataType, height: int
+    ) -> None:
+        left = (
+            pl.DataFrame({"id": [1, 2], "a": [1, 2]}).with_columns(pl.lit(None).cast(left_type).alias("k")).head(height)
+        )
+        right = (
+            pl.DataFrame({"code": [1, 2], "b": [1, 2]})
+            .with_columns(pl.lit(None).cast(right_type).alias("key"))
+            .head(height)
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            _run(left, right, {"left_keys": ["id", "k"], "right_keys": ["code", "key"]})
+
+        message = str(caught.value)
+        for word in ("'k'", "'key'", str(left_type), str(right_type), "cast_columns", "left_keys"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    def test_whole_numbers_of_two_widths_still_pair(self) -> None:
+        """The mirror: Int32 against Int64 is compared as numbers, as it always was."""
+        left = pl.DataFrame({"k": pl.Series([1, 2], dtype=pl.Int32), "a": ["x", "y"]})
+        right = pl.DataFrame({"k": [2, 3], "b": ["p", "q"]})
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].rows() == [(2, "y", "p")]
+
+    @pytest.mark.parametrize("null_side", ["left", "right"])
+    @pytest.mark.parametrize("how", ["inner", "left"])
+    def test_a_key_typed_null_takes_the_other_sides_type_and_pairs_nothing(self, null_side: str, how: str) -> None:
+        typed = pl.DataFrame({"k": ["x", "y"], "v": [1, 2]})
+        untyped = pl.DataFrame({"k": [None, None], "w": [3, 4]})
+        left, right = (untyped, typed) if null_side == "left" else (typed, untyped)
+
+        result = _run(left, right, {"keys": ["k"], "how": how})
+
+        assert_frame_equal(result["left_only"], left)
+        assert_frame_equal(result["right_only"], right)
+        expected_joined = left.height if how == "left" else 0
+        assert result["joined"].height == expected_joined
+        assert result["joined"].schema["k"] == pl.String
+
+    def test_two_keys_typed_null_join_as_before(self) -> None:
+        left = pl.DataFrame({"k": [None], "v": [1]})
+        right = pl.DataFrame({"k": [None], "w": [2]})
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].height == 0
+        assert_frame_equal(result["left_only"], left)
+        assert_frame_equal(result["right_only"], right)
+
+    def test_the_help_warns_that_decimal_keys_pair_only_on_exact_equality(self) -> None:
+        notes = " ".join(Join().help().notes)
+
+        assert "Float" in notes and "0.1 + 0.2" in notes

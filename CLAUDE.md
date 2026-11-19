@@ -191,7 +191,8 @@ fail when it stops being true.
 
 ### Other standing rules
 
-- **Do not mutate an input frame.** The boundary checks each input's schema before and after a step.
+- **Do not mutate an input frame.** The boundary hands each tool a copy of its inputs, so a change
+  cannot leak, and refuses a change to the copy's columns or row count.
 - **Vectorised only.** No row-by-row Python inside a tool. (`format_number` and `uuid5` are the
   known per-row exceptions, documented as such.)
 - **Import polars and the standard library at module level, nothing else.** YAML, openpyxl and
@@ -303,8 +304,9 @@ Lessons from that consumer that belong to the library:
   nothing reported it because the refusal was correct. A consumer needs its own freshness alert.
 - **A cache fingerprint covers the file, never the data.** A cached port taken before the sources
   were reloaded resumes over yesterday's figures with a clean-looking run. Manual §7b.
-- **`write_excel`'s `overwrite_sheets` governs a tab, not the file.** A tab the step stops writing stays in
-  the existing workbook until the file itself is deleted.
+- **A tab the flow stopped writing used to linger in the pack.** `write_excel` once wrote into the
+  file already at `path`, so a removed tab stayed until someone deleted the file. It now builds the
+  workbook from its template, or from nothing, and never reads the file at `path`.
 - **A dead-end step is refused at load**, so removing an output orphans its whole upstream chain one
   refusal at a time. Dropping six report tabs from that flow took 74 steps with them. Work out the
   whole chain from the wiring first rather than deleting step by step.

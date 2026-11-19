@@ -69,7 +69,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dantron_etl.authoring import ConfigError, Ports, ToolError, run_tool
+from dantron_etl.authoring import ConfigError, DataError, Ports, ToolError, run_tool
 from dantron_etl.contract import input_ports_for
 from dantron_etl.tools.publish_tables import PublishTables
 
@@ -688,6 +688,79 @@ class TestAnEmptyFrameStopsThePublish:
         assert result["receipt"]["entry_series"][0] == 0
         assert target.read("entry_series") == [], "the entry that allowed an empty frame was not replaced by it"
         assert len(target.read("entry_rows")) == 2, "the rest of the publish did not go ahead"
+
+
+class TestAMergeNeedsOneRowPerKey:
+    """A merge matches each incoming row to one published row, so the key has to pick out one row.
+
+    Two rows with the same key would be blended into one stored row on one engine and refused on
+    the other. A null key never matches, so it would add a new row on every run. Both are refused
+    before anything is written, naming the key and the rows.
+    """
+
+    @pytest.mark.parametrize(
+        ("parties", "named"),
+        [
+            pytest.param(
+                {"party": ["a", "c", "a"], "label": ["Alpha", "Gamma", None], "amount": [11.0, 30.0, 12.0]},
+                "'a'",
+                id="the_same_key_twice",
+            ),
+            pytest.param(
+                {"party": ["c", None], "label": ["Gamma", "Nobody"], "amount": [30.0, 1.0]},
+                "null",
+                id="a_null_key",
+            ),
+        ],
+    )
+    def test_a_repeated_or_null_key_is_refused_and_nothing_is_published(
+        self, target: _Target, parties: dict[str, list[Any]], named: str
+    ) -> None:
+        before = _as_it_was()
+
+        with pytest.raises(DataError) as caught:
+            run_tool(PublishTables(), _frames(parties=pl.DataFrame(parties)), _publish(target))
+
+        message = str(caught.value)
+        assert "entry_parties" in message and "party" in message and named in message, message
+        assert target.everything() == before, "a merge that could not match one row per key published anyway"
+
+    def test_a_key_of_two_columns_repeats_only_when_both_repeat(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        database = tmp_path / "pairs.db"
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute("create table pairs (a text, b integer, v real, primary key (a, b))")
+            connection.commit()
+        monkeypatch.setenv(_VARIABLE, f"sqlite:///{database}")
+        config = {"connection": _VARIABLE, "tables": [{"port": "p", "table": "pairs", "mode": "merge", "keys": ["a", "b"]}]}
+
+        run_tool(PublishTables(), Ports({"p": pl.DataFrame({"a": ["x", "x"], "b": [1, 2], "v": [1.0, 2.0]})}), config)
+
+        for repeated in (
+            pl.DataFrame({"a": ["x", "x"], "b": [1, 1], "v": [1.0, 2.0]}),
+            pl.DataFrame({"a": ["x", "x"], "b": [1, None], "v": [1.0, 2.0]}),
+        ):
+            with pytest.raises(DataError):
+                run_tool(PublishTables(), Ports({"p": repeated}), config)
+
+    def test_a_replace_or_an_append_is_not_held_to_one_row_per_key(self, target: _Target) -> None:
+        """Only a merge matches on a key. A replace or append leaves keys to the table's own rules."""
+        changes = pl.DataFrame({"entry_id": [3, 3, None], "movement": [1.0, 2.0, 3.0]})
+
+        run_tool(PublishTables(), _frames(changes=changes), _publish(target))
+
+        assert len(target.read("entry_changes")) == 4
+
+
+class TestAFailedLoadSaysItDidNotExamineTheRows:
+    """A publish the engine refused has not looked at its rows one by one, and says so plainly."""
+
+    def test_the_refusal_does_not_claim_that_no_row_was_at_fault(self, target: _Target) -> None:
+        with pytest.raises(DataError) as caught:
+            run_tool(PublishTables(), _frames(audit=_a_bad_audit()), _publish(target))
+
+        message = str(caught.value)
+        assert "0 of" not in message, message
+        assert "2 row(s), not examined one by one" in message, message
 
 
 class TestThePortsComeFromTheTablesNamed:

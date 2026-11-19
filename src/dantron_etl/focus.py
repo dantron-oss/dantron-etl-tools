@@ -275,9 +275,21 @@ def _refuse_unheld_value(trace: PipelineTrace, focus: FocusSpec, value: Any) -> 
             return
     if checked_any:
         raise UnknownEntityError(
-            f"{focus.label} {value!r} is not held by any column-resolved, retained port on this "
-            f"trace; call available_entities(trace, focus) to see which {focus.label} values are"
+            f"{_failure_first(trace)}{focus.label} {value!r} is not held by any column-resolved, retained "
+            f"port on this trace; call available_entities(trace, focus) to see which {focus.label} values are"
         )
+
+
+def _failure_first(trace: PipelineTrace) -> str:
+    """The step failure that ended ``trace``, as the opening sentence of a refusal, or nothing.
+
+    A focus refusal on a run that failed is almost always caused by the failure: the ports the focus
+    needed were never reached. So the failure is what the reader is told first.
+    """
+    last = trace.events[-1] if trace.events else None
+    if last is None or last.level != "error":
+        return ""
+    return f"The run stopped when step {last.step_id!r} failed: {last.message}. Because of that, "
 
 
 def _build_slice(trace: PipelineTrace, focus: FocusSpec, port: PortRef, value: Any) -> PortSlice:
@@ -445,10 +457,15 @@ def available_entities(
     resolvable = [(p, focus.identity_column(trace.shapes[p].columns)) for p in ports_to_scan]
     retained = [(p, column) for p, column in resolvable if column is not None and p in trace.frames]
     if not retained:
+        scanned = ", ".join(str(p) for p in ports_to_scan) or "none"
+        advice = (
+            f"; call run_pipeline(..., retain='all') to get a list of {focus.label} values"
+            if trace.retain != "all"
+            else f"; none of those ports has a column that holds the {focus.label}"
+        )
         raise MissingEvidenceError(
-            f"no column-resolved port among {', '.join(str(p) for p in ports_to_scan) or 'none'} has "
-            f"a retained frame (retain={trace.retain!r}); call run_pipeline(..., retain='all') to get "
-            f"a list of {focus.label} values"
+            f"{_failure_first(trace)}no column-resolved port among {scanned} has a retained frame "
+            f"(retain={trace.retain!r}){advice}"
         )
 
     order: list[Any] = []

@@ -712,6 +712,10 @@ class TestSecurity:
         natural key is three columns of text -- and nothing else on this list can turn several
         values into one stable id. It is the standard library's version 5, not an invention, so
         the id a flow writes is the id anything else computing it the same way would write.
+
+        ``months_between``, ``days_between``, ``make_date`` and ``month_end`` came together: flows
+        were casting dates to whole numbers to subtract them. Each answers what a tool already does
+        (``date_diff``, ``assemble_date``), from the same shared code.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
@@ -719,6 +723,10 @@ class TestSecurity:
             "round",
             "year",
             "add_months",
+            "months_between",
+            "days_between",
+            "make_date",
+            "month_end",
             "abs",
             "lower",
             "upper",
@@ -1041,8 +1049,9 @@ class TestSchemaDtypeChecking:
             ("[flag] = true", [True, False, True, None]),
             ("[flag] and not [flag]", [False, False, False, None]),
             ("not ([code] = 'X')", [True, True, True, None]),
-            # null is in every family: it is the one literal that may meet any column at all.
-            ("[qty] = null", [None, None, None, None]),
+            # null is in every family: it is the one literal that may meet any column at all. (A
+            # comparison with null, as in [qty] = null, is refused: see test_expr_refusals.py.)
+            ("coalesce([qty], null) is null", [False, False, False, True]),
             ("coalesce([code], null) is null", [False, False, False, True]),
             ("[code] in ('A', null)", [True, False, False, None]),
         ],
@@ -1919,7 +1928,6 @@ KEPT_ROWS: tuple[tuple[str, list[int]], ...] = (
     ('[seen] is null', [4, 6]),
     ('[code] is null', [4]),
     ('[code] is not null', [1, 2, 3, 5, 6, 7, 8, 9, 10]),
-    ('[code] = null', []),
     ("[code] in ('A', 'B')", [1, 2, 7]),
     ("[code] not in ('A', 'B')", [3, 5, 6, 8, 9, 10]),
     ('[qty] in (1, 3)', [1, 3, 5, 7]),
@@ -1981,7 +1989,6 @@ NULL_LOGIC_CASES: tuple[tuple[str, Any], ...] = (
     ("[code] = 'A'", None),
     ("[code] != 'A'", None),
     ("not ([code] = 'A')", None),
-    ("[code] = null", None),
     ("[code] in ('A', 'B')", None),
     ("[code] not in ('A', 'B')", None),
     ("[code] = 'A' and false", False),

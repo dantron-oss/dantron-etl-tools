@@ -10,8 +10,8 @@ is the config everybody writes first. It would be wrong on the second key of the
 **The sort is stable.** Rows that tie on every key keep the order they arrived in. The rest of the
 library builds on that promise. A generated row number is a sort followed by a count. An unstable
 sort would make that number depend on how the engine laid the rows out rather than on the data, so
-the same pipeline run twice would give two different answers. The query engine promises nothing
-here on its own, so the sort asks for stability explicitly.
+the same pipeline run twice would give two different answers. The query engine does not keep that
+promise in every case on its own, so the sort adds each row's arrival position as its last key.
 
 **A direction or a placement written with no value is refused.** A definition file spells that
 `direction:`, and it arrives here as nothing at all. Read as "not configured", it would run the
@@ -104,6 +104,9 @@ class Sort:
             notes=(
                 "Missing values go last by default, in either direction. Write 'nulls: first' on a "
                 "key to put them on top.",
+                "A not-a-number value (what 0/0 gives) sorts as larger than every number: after "
+                "them ascending, before them descending. It is not a missing value, so 'nulls' "
+                "does not move it.",
                 "A direction or a placement written with no value is refused, not defaulted. A "
                 "definition file spells 'direction:' when its author meant to say something.",
             ),
@@ -145,27 +148,25 @@ class Sort:
         require_columns(inputs["rows"], [key["column"] for key in config["by"]], "by", "rows")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
-        """Sort, asking for stability out loud."""
+        """Sort, with each row's arrival position as the last key, so ties keep their order."""
         frame = inputs["rows"]
         keys = config["by"]
 
+        # The arrival position is the final key, always ascending. Rows that tie on every key the
+        # author wrote are then ordered by where they arrived, which is what stability means.
+        #
+        # Do not replace it with polars' own stability flag alone. When every key is missing on
+        # every row and at least one key sorts descending, polars 1.38 reorders the rows (one key:
+        # in reverse) even when asked to keep their order. record_id numbers rows after a sort, so
+        # the reordering would reach the identifiers. The flag stays as well: it costs nothing and
+        # says what is meant.
+        arrival = pl.int_range(pl.len())
         return Ports(
             {
                 "rows": frame.sort(
-                    [key["column"] for key in keys],
-                    descending=[key.get("direction", _DEFAULT_DIRECTION) == "desc" for key in keys],
-                    nulls_last=[key.get("nulls", _DEFAULT_NULLS) == "last" for key in keys],
-                    # Do not drop this flag. It is what keeps tied rows in the order they arrived.
-                    # The record_id tool is built on top of this sort: it numbers rows where they
-                    # lie, so without stability the identifier it generates follows the engine's
-                    # internal layout rather than the data, and the same pipeline run twice can
-                    # number the same rows differently.
-                    #
-                    # The engine really does reorder ties without it. Measured on a two-key sort of
-                    # 216 rows with 20 tied groups: the two orderings diverge at row 7. An earlier
-                    # probe of single-key sorts, up to a million rows, found no divergence and led
-                    # to a note here saying the flag could not be caught by a test. That note was
-                    # wrong -- it had measured one shape and drawn a general conclusion.
+                    [pl.col(key["column"]) for key in keys] + [arrival],
+                    descending=[key.get("direction", _DEFAULT_DIRECTION) == "desc" for key in keys] + [False],
+                    nulls_last=[key.get("nulls", _DEFAULT_NULLS) == "last" for key in keys] + [False],
                     maintain_order=True,
                 )
             }

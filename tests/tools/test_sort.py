@@ -663,17 +663,23 @@ class TestSortOnAKeyThatSeparatesNothing:
     shuffling ties on a flat key has something to fail against.
     """
 
+    @pytest.mark.parametrize("direction", ["asc", "desc"])
     @pytest.mark.parametrize("nulls", ["last", "first"])
-    def test_a_key_that_is_missing_on_every_row_leaves_the_frame_alone(self, nulls: str) -> None:
-        """Every row ties, so the output is the input. Both placements give the same answer.
+    def test_a_key_that_is_missing_on_every_row_leaves_the_frame_alone(self, nulls: str, direction: str) -> None:
+        """Every row ties, so the output is the input. Both placements and both directions agree.
 
         Where missing values go stops meaning anything when they are the only values there are. A
         tool that took the all-missing case down a path of its own would show it here, and the two
-        placements would disagree.
+        placements would disagree. polars took that path once: sorted descending on this one key,
+        it handed the rows back in reverse.
         """
         frame = _flat_key_rows(1000, None)
 
-        result = run_tool(Sort(), Ports({"rows": frame}), {"by": [{"column": "period", "nulls": nulls}]})
+        result = run_tool(
+            Sort(),
+            Ports({"rows": frame}),
+            {"by": [{"column": "period", "direction": direction, "nulls": nulls}]},
+        )
 
         assert_frame_equal(result["rows"], frame)
         assert result["rows"]["position"].to_list() == list(range(1000)), "the rows arrived in this order"
@@ -768,3 +774,22 @@ class TestSortFeedingRecordId:
 
         assert dict(zip(ascending["code"], ascending["row_no"], strict=True)) == {"a": 1, "b": 2, "c": 3}
         assert dict(zip(descending["code"], descending["row_no"], strict=True)) == {"c": 1, "b": 2, "a": 3}
+
+
+@pytest.mark.parametrize(
+    ("direction", "nulls", "expected"),
+    [
+        ("asc", "last", ["1.0", "5.0", "nan", "None"]),
+        ("asc", "first", ["None", "1.0", "5.0", "nan"]),
+        ("desc", "last", ["nan", "5.0", "1.0", "None"]),
+        ("desc", "first", ["None", "nan", "5.0", "1.0"]),
+    ],
+)
+def test_not_a_number_sorts_as_larger_than_every_number(direction: str, nulls: str, expected: list[str]) -> None:
+    """Not-a-number goes after every number ascending and before them descending; a null goes where 'nulls' says."""
+    rows = pl.DataFrame({"x": [1.0, None, float("nan"), 5.0]})
+
+    result = run_tool(Sort(), Ports({"rows": rows}), {"by": [{"column": "x", "direction": direction, "nulls": nulls}]})
+
+    assert [str(value) for value in result["rows"]["x"].to_list()] == expected
+    assert any("not-a-number" in note for note in Sort().help().notes)

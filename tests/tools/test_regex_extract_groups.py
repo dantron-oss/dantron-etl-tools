@@ -970,3 +970,32 @@ class TestEveryMatchInTheCatalog:
         assert out.height > example.inputs["rows"].height, "some text in the example must match more than once"
         assert out[number].null_count() >= 1, "and some row must match nothing and still be there"
         assert example.check_row_order, "the order of matches is part of the claim"
+
+
+class TestAGroupThePatternMakesOptional:
+    """On a match, a group the pattern itself makes optional can still be null.
+
+    The help used to promise that a match fills every group. A group marked optional with '?', or
+    one side of an alternative, is left empty on a match that did not need it. A row that matches
+    nothing is still null in every group.
+    """
+
+    def test_an_optional_group_is_null_on_a_match_that_skipped_it(self) -> None:
+        frame = pl.DataFrame({"note": ["12kg", "12", "kg"]})
+
+        result = _extract(frame, r"(?P<num>\d+)(?P<unit>[a-z]+)?")
+
+        assert result.select("num", "unit").rows() == [("12", "kg"), ("12", None), (None, None)]
+
+    def test_the_side_of_an_alternative_that_did_not_match_is_null(self) -> None:
+        frame = pl.DataFrame({"note": ["A1", "B2", "C3"]})
+
+        result = _extract(frame, r"(?P<a>A\d)|(?P<b>B\d)")
+
+        assert result.select("a", "b").rows() == [("A1", None), (None, "B2"), (None, None)]
+
+    def test_the_help_states_it(self) -> None:
+        text = RegexExtractGroups().help().detailed_description
+
+        assert "optional" in text
+        assert "fills every group" not in text

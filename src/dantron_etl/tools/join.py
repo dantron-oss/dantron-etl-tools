@@ -1,11 +1,11 @@
-"""Join: two input ports, three output ports, and no join type between them.
+"""Join: two input ports, three output ports, and one pairing behind them.
 
-**There is no `join_type`.** Inner, left, right and outer are not four behaviours a configuration
-picks between; they are four ways of reading the same pairing. So this tool always does the pairing
-once and hands back all three of its results on named ports -- `joined` for the pairs, `left_only`
-and `right_only` for the rows of each side that found nobody -- and which join a flow performed is
-decided by which of those ports it wires. A left join reads `joined` and `left_only`; an outer join
-reads all three; an anti-join reads `left_only` alone. What that buys is the orphan check for free:
+**`how` chooses between inner and left; the ports do the rest.** This tool does the pairing once
+and hands back all three of its results on named ports -- `joined` for the pairs, `left_only` and
+`right_only` for the rows of each side that found nobody. `how: left` also keeps every left row on
+`joined`, with the right-hand columns null where nothing paired. A right join is the same join with
+the inputs swapped, an outer join reads all three ports, and an anti-join reads `left_only` alone,
+so none of those is an option. What the ports buy is the orphan check for free:
 the rows a pairing failed to account for are an edge a flow can route to a report or an assertion,
 rather than a number someone reconstructs afterwards with a second join they have to remember to
 write.
@@ -120,8 +120,10 @@ class Join:
             detailed_description=(
                 "One pairing, three ports: `joined` carries a row per pair, so a key repeated on the "
                 "right fans one left row into a copy per match, and `left_only` / `right_only` carry "
-                "the rows of each side that paired with nothing -- which is why there is no join-type "
-                "option to choose between. An orphan port carries its own side's columns exactly as "
+                "the rows of each side that paired with nothing. 'how' chooses between an inner "
+                "and a left join. An outer or anti join is read from the ports instead, and a right "
+                "join is this join with the inputs swapped. An "
+                "orphan port carries its own side's columns exactly as "
                 "they arrived: no suffix, no columns from the other side, because an unpaired row is "
                 "an input row, not a join result with nulls in it."
             ),
@@ -144,6 +146,14 @@ class Join:
                 "right-input order, and each orphan port in its own side's order -- so a flow that "
                 "writes files gets diffs that do not churn. It is not a semantic guarantee: a step "
                 "that needs a meaningful order still needs a Sort in front of it.",
+                "Each key pair must hold types that can be compared: whole numbers of two widths "
+                "pair, but a whole number against a decimal, or a date against a timestamp, is "
+                "refused before any row moves. Use cast_columns first. A key column typed Null, "
+                "as an empty branch gives, takes the other side's type, and none of its rows pair.",
+                "A Float key pairs only on exact equality. 0.1 + 0.2 and 0.3 print alike and do "
+                "not pair, so both rows land on the orphan ports. Float keys straight from a "
+                "source pair as expected; a key computed with arithmetic is safer rounded or cast "
+                "to text first.",
             ),
             field_help={
                 "how": "'inner' keeps only the rows that paired. 'left' keeps every left row, "
@@ -218,6 +228,7 @@ class Join:
 
         require_columns(left, left_keys, "keys" if shared else "left_keys", "left")
         require_columns(right, right_keys, "keys" if shared else "right_keys", "right")
+        _refuse_keys_that_cannot_be_compared(left, right, left_keys, right_keys, shared)
 
         _refuse_unsettled_collision(
             left.columns,
@@ -229,6 +240,23 @@ class Join:
         suffix = config["suffix"]
         left_keys, right_keys = _key_columns(config)
         right_names = _joined_right_names(left.columns, right.columns, right_keys, suffix)
+
+        if _a_key_is_typed_null(left, right, left_keys, right_keys):
+            # A key column typed Null holds nothing but missing values, and a missing value never
+            # pairs. So no row pairs, and each side's rows are all its own orphans, exactly as they
+            # arrived. The Null column takes the other side's type for the join itself, as union
+            # does, so 'joined' has the columns and types it has on any other run.
+            left_typed, right_typed = _null_keys_typed(left, right, left_keys, right_keys)
+            joined = left_typed.join(
+                right_typed,
+                left_on=left_keys,
+                right_on=right_keys,
+                how="inner" if config["how"] == "inner" else "left",
+                suffix=suffix,
+                nulls_equal=False,
+                maintain_order="left_right",
+            ).select(*left.columns, *right_names.values())
+            return Ports({"joined": joined, "left_only": left, "right_only": right})
 
         # `maintain_order` is what turns three query-engine artefacts into the documented order; the
         # inputs themselves are never touched, so a frame fanning out to two branches is safe.
@@ -280,6 +308,61 @@ def _key_columns(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     if shared is not None:
         return list(shared), list(shared)
     return list(config["left_keys"]), list(config["right_keys"])
+
+
+def _refuse_keys_that_cannot_be_compared(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    left_keys: Sequence[str],
+    right_keys: Sequence[str],
+    shared: bool,
+) -> None:
+    """Refuse a key pair whose two types the engine will not compare, naming both columns.
+
+    The engine is asked directly, with two empty one-column frames, so this check accepts exactly
+    the pairs a join accepts (Int32 against Int64 is fine; Int64 against Float64 is not). A side
+    typed Null is left out: it takes the other side's type when the join runs.
+    """
+    for left_key, right_key in zip(left_keys, right_keys, strict=True):
+        left_type, right_type = left.schema[left_key], right.schema[right_key]
+        if pl.Null in (left_type, right_type):
+            continue
+        probe_left = pl.DataFrame(schema={"key": left_type})
+        probe_right = pl.DataFrame(schema={"key": right_type})
+        try:
+            probe_left.join(probe_right, on="key", how="inner")
+        except pl.exceptions.PolarsError:
+            field = "keys" if shared else "left_keys' and 'right_keys"
+            raise ConfigError(
+                f"config field '{field}' pairs left column {left_key!r}, which holds {left_type}, with "
+                f"right column {right_key!r}, which holds {right_type}; the two types cannot be "
+                f"compared, so no row could pair. Use cast_columns before this step so both hold the "
+                f"same type"
+            ) from None
+
+
+def _a_key_is_typed_null(
+    left: pl.DataFrame, right: pl.DataFrame, left_keys: Sequence[str], right_keys: Sequence[str]
+) -> bool:
+    """Whether one side of a key pair is typed Null while the other side is not."""
+    return any(
+        (left.schema[left_key] == pl.Null) != (right.schema[right_key] == pl.Null)
+        for left_key, right_key in zip(left_keys, right_keys, strict=True)
+    )
+
+
+def _null_keys_typed(
+    left: pl.DataFrame, right: pl.DataFrame, left_keys: Sequence[str], right_keys: Sequence[str]
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Both frames, with each key column typed Null cast to its partner's type."""
+    left_casts, right_casts = {}, {}
+    for left_key, right_key in zip(left_keys, right_keys, strict=True):
+        left_type, right_type = left.schema[left_key], right.schema[right_key]
+        if left_type == pl.Null and right_type != pl.Null:
+            left_casts[left_key] = right_type
+        elif right_type == pl.Null and left_type != pl.Null:
+            right_casts[right_key] = left_type
+    return left.cast(left_casts), right.cast(right_casts)
 
 
 def _joined_right_names(

@@ -488,3 +488,49 @@ class TestFormulaStillRefusesABlankNameInItsOwnWords:
             )
 
         assert "columns[1].name" in str(caught.value), f"the blank entry is the second one: {caught.value}"
+
+
+class TestEveryEntryReadsTheInputAsItArrived:
+    """Every entry in one formula step reads the frame as it arrived, like SQL's SELECT.
+
+    An entry that reads a column an earlier entry in the same step replaces gets the old value,
+    not the new one. A flow relies on this to keep a copy of a key beside the replaced key.
+    Alteryx's Formula tool works top to bottom instead, so the help says it plainly.
+    """
+
+    def test_an_entry_reading_a_column_replaced_above_it_gets_the_old_value(self) -> None:
+        config = {
+            "columns": [
+                {"name": "amount", "value": "[amount] * 2", "replace": True},
+                {"name": "total", "value": "[amount] + 1"},
+            ]
+        }
+
+        result = run_tool(Formula(), Ports({"rows": pl.DataFrame({"amount": [10.0]})}), config)["rows"]
+
+        assert result.rows() == [(20.0, 11.0)]
+
+    def test_the_same_two_entries_in_the_other_order_give_the_same_answer(self) -> None:
+        """The mirror: the order of the entries changes the column order, never a value."""
+        config = {
+            "columns": [
+                {"name": "total", "value": "[amount] + 1"},
+                {"name": "amount", "value": "[amount] * 2", "replace": True},
+            ]
+        }
+
+        result = run_tool(Formula(), Ports({"rows": pl.DataFrame({"amount": [10.0]})}), config)["rows"]
+
+        assert result.select("amount", "total").rows() == [(20.0, 11.0)]
+
+    def test_an_entry_reading_a_column_added_above_it_is_refused(self) -> None:
+        config = {"columns": [{"name": "doubled", "value": "[amount] * 2"}, {"name": "total", "value": "[doubled] + 1"}]}
+
+        with pytest.raises(ToolError, match="doubled"):
+            run_tool(Formula(), Ports({"rows": pl.DataFrame({"amount": [10.0]})}), config)
+
+    def test_the_help_shows_the_old_value_case(self) -> None:
+        text = Formula().help().detailed_description
+
+        for phrase in ("as it arrived", "old value", "two formula steps"):
+            assert phrase in text, f"the help should say {phrase!r}: {text}"

@@ -1,14 +1,13 @@
 """write_excel: opening the one workbook, and making room for each tab in it.
 
-The workbook is loaded from the template, from the file already at ``path``, or started new, and it
-is opened exactly once. The refusals that can only be answered with it open live here too: a tab
+The workbook is loaded from the template, or started new, and it is opened exactly once. The file
+already at ``path`` is never read. The refusals that can only be answered with it open live here too: a tab
 already there with no permission to replace it, and a table name the workbook already uses. Part of
 ``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 from ..authoring import ConfigError
@@ -19,10 +18,9 @@ from ._workbook_checks import table_name
 def opened_once(path: str, template: str | None) -> Iterator[Any]:
     """The one workbook every tab is written into, opened once and closed however the run ends.
 
-    Three ways in, and exactly one load among them. A template is loaded and saved elsewhere, so it
-    survives the run. A workbook already at ``path`` and no template means loading that file and
-    writing into it, because this tool never removes a tab it was not told about. Otherwise the book
-    is new.
+    Two ways in. A template is loaded, and saved to ``path``, so the template survives the run.
+    Otherwise the book is new. The file already at ``path`` is never read: each run writes the same
+    file whatever an earlier run left there.
 
     ``openpyxl`` is imported here rather than at the top of the module, and named if it is missing,
     the way this library reaches for a database driver only when a database is asked for. Every tool
@@ -39,8 +37,6 @@ def opened_once(path: str, template: str | None) -> Iterator[Any]:
 
     if template is not None:
         book = openpyxl.load_workbook(template)
-    elif Path(path).exists():
-        book = openpyxl.load_workbook(path)
     else:
         book = openpyxl.Workbook()
         # A new workbook arrives with one empty tab nobody asked for.
@@ -68,7 +64,7 @@ def empty_tab(book: Any, sheet: str, *, replace: bool) -> Any:
     if not replace:
         raise ConfigError(
             f"write_excel refuses to overwrite the tab {sheet!r}, which is already in the "
-            f"workbook; set overwrite_sheets: true to overwrite it deliberately, or write to a tab of "
+            f"template; set overwrite_sheets: true to overwrite it deliberately, or write to a tab of "
             f"another name"
         )
 

@@ -1279,16 +1279,16 @@ def _trimmed_frame() -> pl.DataFrame:
 
 def _cache(spec: Pipeline, port: PortRef, frame: pl.DataFrame) -> dict[PortRef, CachedFrame]:
     """One cached port, carrying the fingerprint a previous run of ``spec`` would have written beside it."""
-    return {port: CachedFrame(frame, spec.fingerprint(port.step))}
+    return {port: CachedFrame(frame, spec.fingerprint(port))}
 
 
 def _cache_every_port(spec: Pipeline, frames: Mapping[PortRef, pl.DataFrame]) -> dict[PortRef, CachedFrame]:
-    """Every port of one step, each carrying the fingerprint of the step that produced it.
+    """Every port of one step, each carrying its own fingerprint.
 
     A step may only be cached on all of its ports or none, so this is the shape a cache of any step
     that produces more than one frame actually has.
     """
-    return {port: CachedFrame(frame, spec.fingerprint(port.step)) for port, frame in frames.items()}
+    return {port: CachedFrame(frame, spec.fingerprint(port)) for port, frame in frames.items()}
 
 
 def _kept_frames() -> dict[PortRef, pl.DataFrame]:

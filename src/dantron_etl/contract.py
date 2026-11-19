@@ -134,6 +134,11 @@ class Tool(Protocol):
     called wherever it happens to exist, because the second shape is a rule that holds while an
     author remembers. A tool with nothing to add writes ``return None``; the cost of the gate being
     real is that a tool without the member is not a :class:`Tool` at all.
+
+    ``validate_config`` must not look at the outside world: no file, no database, no environment
+    variable. The loader calls it, and a flow has to load the same way whatever is on disk, so a
+    viewer or a dead-end check can read it. A check on a file belongs in ``validate_inputs``, which
+    runs only when the step runs.
     """
 
     name: str

@@ -82,10 +82,13 @@ class Formula:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every entry's expression is compiled against the frame that arrived, so entry two "
-                "can never see entry one's output -- only two Formula steps in sequence can. A "
-                "replaced column keeps the position it already had; a new one is appended in the "
-                "order the list gives."
+                "Every entry reads the frame as it arrived, not as the entries above it left it. "
+                "If one entry replaces 'amount' with '[amount] * 2' and the next computes "
+                "'[amount] + 1', the second reads the old value: 10 becomes 20 and 11, not 20 and "
+                "21. An entry that reads a column an entry above it adds is refused, because that "
+                "column is not on the input. To read a value this step computes, use two formula "
+                "steps in sequence. A replaced column keeps the position it already had; a new one "
+                "is appended in the order the list gives."
             ),
             examples=(_monthly_figure_example(), _multi_column_with_replace_example()),
             notes=(

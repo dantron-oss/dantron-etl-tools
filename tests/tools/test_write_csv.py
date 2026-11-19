@@ -379,6 +379,33 @@ class TestRefusalsAboutTheFile:
         assert str(target) in message, "and the path it declined to destroy"
         assert target.read_bytes() == b"last month's extract", "a refused write must not have touched it"
 
+    def test_the_refusal_of_an_existing_file_says_exactly_what_to_add_to_the_step(self, tmp_path: Path) -> None:
+        """The second run of a new flow is where this refusal is met, so it says the line to write."""
+        target = tmp_path / "extract.csv"
+        target.write_bytes(b"last month's extract")
+
+        with pytest.raises(ConfigError) as caught:
+            WriteCsv().validate_config({"path": str(target), "delimiter": ",", "overwrite": False})
+
+        assert "add 'overwrite: true'" in str(caught.value)
+
+    @pytest.mark.parametrize("folder", ["missing", "missing/deeper"])
+    def test_a_folder_that_is_not_there_is_refused_before_the_flow_runs(self, tmp_path: Path, folder: str) -> None:
+        """Found at load, naming the folder, rather than as a bare error after every step has run."""
+        target = tmp_path / folder / "extract.csv"
+
+        with pytest.raises(ConfigError) as caught:
+            WriteCsv().validate_config({"path": str(target), "delimiter": ",", "overwrite": True})
+
+        message = str(caught.value)
+        assert str(target.parent) in message and "'path'" in message, message
+
+    def test_a_path_whose_folder_is_a_file_is_refused_the_same_way(self, tmp_path: Path) -> None:
+        (tmp_path / "taken").write_bytes(b"")
+
+        with pytest.raises(ConfigError):
+            WriteCsv().validate_config({"path": str(tmp_path / "taken" / "x.csv"), "delimiter": ",", "overwrite": True})
+
     @pytest.mark.parametrize(
         ("name", "accepted"),
         [

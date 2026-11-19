@@ -51,24 +51,15 @@ from ..authoring import (
     WorkedExample,
     scratch_path,
 )
-
-# The seven dtype names a declared column may use, spelled the way the query engine already spells
-# them in every dtype this catalog prints -- a second vocabulary for the same seven things would be
-# the two-dialect mistake this library refuses elsewhere.
-
-# The declared-type vocabulary lives in one place, because more than one tool lets a flow name a
-# column's type and two spellings of the same words drift. Bound to module names here so the rest of
-# this file reads as it always did; DECLARED_TYPES stays part of this tool's published surface.
-_TEMPORAL_TYPES: Final[frozenset[str]] = TEMPORAL_TYPES
-_DECLARED_DTYPE: Final[dict[str, pl.DataType]] = DECLARED_DTYPE
-
-_DATE_DEFAULT_FORMAT: Final[str] = DATE_DEFAULT_FORMAT
-_DATETIME_DEFAULT_FORMAT: Final[str] = DATETIME_DEFAULT_FORMAT
-_TIME_DEFAULT_FORMAT: Final[str] = TIME_DEFAULT_FORMAT
+from ._files import require_file_to_read, validate_delimiter
 
 _INT_LITERAL: Final[re.Pattern[str]] = re.compile(r"[-+]?\d+")
 _FLOAT_LITERAL: Final[re.Pattern[str]] = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 _FRACTION: Final[re.Pattern[str]] = re.compile(r"\.\d+$")
+# A number written with a zero in front of another digit, which reading it as a number would drop.
+_LEADING_ZERO: Final[str] = r"^[-+]?0\d"
+_LEADING_ZERO_PATTERN: Final[re.Pattern[str]] = re.compile(_LEADING_ZERO)
+_WHOLE_NUMBER: Final[str] = r"^[-+]?\d+$"
 
 # A byte a spreadsheet writes and almost nothing else expects; accepted and dropped rather than
 # left to become part of the first column's name.
@@ -115,6 +106,7 @@ class ReadCsv:
                 description="The file to read; must end in .csv or .tsv.",
                 required=True,
                 non_empty=True,
+                file_path=True,
             ),
             "delimiter": ConfigField(
                 type="string",
@@ -184,6 +176,9 @@ class ReadCsv:
                 "would make a column's type depend on where this month's exception happens to sit.",
                 "A value that will not convert to its declared type stops the run naming the column, "
                 "the value and the declared type, rather than becoming a null with no other symptom.",
+                "A column that would be read as numbers stops the run when a number would change a "
+                "value: a leading zero (02134) or a whole number too big for 64 bits. Declare it in "
+                "column_types: String keeps it as written, Int64 or Float64 reads it as a number anyway.",
                 "The encoding is configurable because it is a fact about a file somebody else wrote; "
                 "a byte order mark is accepted and dropped, and bytes invalid in the declared "
                 "encoding are refused rather than read lossily.",
@@ -204,6 +199,7 @@ class ReadCsv:
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
             raise ConfigError(f"read_csv only reads {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
+        validate_delimiter(config["delimiter"])
         if config["skip_rows"] < 0:
             raise ConfigError(f"config field 'skip_rows' must not be negative, got {config['skip_rows']}")
         _validate_column_types(config["column_types"] or [])
@@ -214,9 +210,8 @@ class ReadCsv:
         A source has no ports to check columns against, so this is the one question this phase can
         still answer for it: is the world this configuration describes actually there?
         """
+        require_file_to_read("read_csv", config["path"])
         path = Path(config["path"])
-        if not path.is_file():
-            raise ConfigError(f"read_csv found no file at '{config['path']}'")
         if path.stat().st_size == 0:
             raise ConfigError(f"read_csv found no bytes in '{config['path']}'")
 
@@ -269,10 +264,11 @@ class ReadCsv:
             for name, raw in zip(columns, fields):
                 grid[name].append(raw if raw != "" else None)
 
+        line_numbers = [line_number for line_number, _ in data_records]
         series = [
             _declared_series(name, grid[name], declared_by_column[name])
             if name in declared_by_column
-            else _infer_series(name, grid[name])
+            else _infer_series(name, grid[name], line_numbers)
             for name in columns
         ]
 
@@ -289,10 +285,10 @@ def _validate_column_types(column_types: Sequence[Mapping[str, Any]]) -> None:
         if column in seen:
             raise ConfigError(f"read_csv declares column_types for column {column!r} more than once")
         seen.add(column)
-        if fmt is not None and declared_type not in _TEMPORAL_TYPES:
+        if fmt is not None and declared_type not in TEMPORAL_TYPES:
             raise ConfigError(
                 f"read_csv refuses a format on column {column!r}: format only constrains "
-                f"{', '.join(sorted(_TEMPORAL_TYPES))}, not {declared_type!r}"
+                f"{', '.join(sorted(TEMPORAL_TYPES))}, not {declared_type!r}"
             )
 
 
@@ -300,7 +296,7 @@ def _validate_header(fields: Sequence[str]) -> None:
     """Refuse a header that repeats or omits a name, rather than repair it in this reader's own words."""
     seen: set[str] = set()
     for index, value in enumerate(fields, start=1):
-        if value == "":
+        if value.strip() == "":
             raise ConfigError(
                 f"read_csv refuses a header with a blank heading at position {index}; a header cannot be guessed"
             )
@@ -369,12 +365,15 @@ def _parse_records_quoted(remainder: str, delimiter: str, skip_rows: int) -> lis
     return records
 
 
-def _infer_series(name: str, values: list[str | None]) -> pl.Series:
+def _infer_series(name: str, values: list[str | None], line_numbers: list[int]) -> pl.Series:
     """``values`` typed as a reader would: a whole number, then a figure, then a truth value, then text.
 
     A column with nothing but nulls in it is left as text: there is no non-null value to infer a
     type from, and casting an all-null column would otherwise adopt whichever candidate happened to
     be tried first.
+
+    A column that would read as numbers is refused instead when a number would change what the file
+    says: a leading zero, or a whole number too big for 64 bits (see ``_refuse_a_lossy_number``).
     """
     series = pl.Series(name, values, dtype=pl.String)
     non_null = series.drop_nulls()
@@ -383,9 +382,11 @@ def _infer_series(name: str, values: list[str | None]) -> pl.Series:
 
     for dtype in (pl.Int64, pl.Float64):
         try:
-            return series.cast(dtype, strict=True)
+            typed = series.cast(dtype, strict=True)
         except pl.exceptions.PolarsError:
             continue
+        _refuse_a_lossy_number(series, line_numbers)
+        return typed
 
     if non_null.is_in(["true", "false"]).all():
         frame = series.to_frame()
@@ -394,6 +395,35 @@ def _infer_series(name: str, values: list[str | None]) -> pl.Series:
         return mapped[name]
 
     return series
+
+
+def _refuse_a_lossy_number(series: pl.Series, line_numbers: list[int]) -> None:
+    """Refuse a column of numbers when reading it as numbers would change a value.
+
+    Two cases. A leading zero (``02134``) is dropped by a number. A whole number too big for 64 bits
+    can only be read as a figure, which rounds it. The author settles either one in column_types:
+    String keeps the value as written, and a number type accepts the change.
+    """
+    name = series.name
+    frame = pl.DataFrame({"line": line_numbers, name: series})
+    value = pl.col(name)
+    leading_zero = value.str.contains(_LEADING_ZERO)
+    too_big = value.str.contains(_WHOLE_NUMBER) & value.cast(pl.Int64, strict=False).is_null()
+    offending = frame.filter(leading_zero | too_big)
+    if offending.is_empty():
+        return
+    line, written = offending.row(0)
+    if _LEADING_ZERO_PATTERN.match(written):
+        why = f"read as a number, {written!r} on line {line} would lose its leading zero"
+    else:
+        why = f"{written!r} on line {line} is a whole number too big for Int64, and read as a figure it would be rounded"
+    raise DataError(
+        f"read_csv cannot guess the type of column {name!r}: {why}. Say what the column is in "
+        f"column_types: type String keeps every value as written, and a number type reads it as a "
+        f"number anyway",
+        offending=offending,
+        total=series.len(),
+    )
 
 
 def _declared_series(name: str, values: list[str | None], entry: Mapping[str, Any]) -> pl.Series:
@@ -419,7 +449,7 @@ def _declared_series(name: str, values: list[str | None], entry: Mapping[str, An
             total=len(values),
         )
 
-    return pl.Series(name, converted, dtype=_DECLARED_DTYPE[declared_type])
+    return pl.Series(name, converted, dtype=DECLARED_DTYPE[declared_type])
 
 
 def _converter(declared_type: str, fmt: str | None) -> Callable[[str], Any]:
@@ -432,13 +462,13 @@ def _converter(declared_type: str, fmt: str | None) -> Callable[[str], Any]:
     if declared_type == "Boolean":
         return _parse_boolean
     if declared_type == "Date":
-        resolved = fmt or _DATE_DEFAULT_FORMAT
+        resolved = fmt or DATE_DEFAULT_FORMAT
         return lambda text: dt.datetime.strptime(text, resolved).date()
     if declared_type == "Datetime":
-        resolved = fmt or _DATETIME_DEFAULT_FORMAT
+        resolved = fmt or DATETIME_DEFAULT_FORMAT
         return lambda text: dt.datetime.strptime(_truncate_fraction(text, resolved), resolved)
     if declared_type == "Time":
-        resolved = fmt or _TIME_DEFAULT_FORMAT
+        resolved = fmt or TIME_DEFAULT_FORMAT
         return lambda text: dt.datetime.strptime(_truncate_fraction(text, resolved), resolved).time()
     raise AssertionError(f"unreachable declared type {declared_type!r}")  # pragma: no cover
 

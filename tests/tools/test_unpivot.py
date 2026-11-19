@@ -1730,3 +1730,13 @@ class TestExcludeNullsIsDeclaredAndDocumented:
         empty_strings_in = sum(int((frame[name] == "").sum()) for name in melted if frame.schema[name] == pl.String)
         assert empty_strings_in > 0, "the example must hold an empty string, to show it is kept"
         assert int((output[values] == "").sum()) == empty_strings_in, "and every empty string comes through"
+
+
+@pytest.mark.parametrize("field", ["names_to", "values_to"])
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_new_column_name_is_refused_when_the_pipeline_loads(field: str, blank: str) -> None:
+    """Whitespace is as blank as nothing: a column called '   ' cannot be referred to later."""
+    config = {"by": ["code"], "names_to": "period", "values_to": "amount", field: blank}
+
+    with pytest.raises(ConfigError, match=f"'{field}' must not be"):
+        run_tool(Unpivot(), Ports({"rows": pl.DataFrame({"code": ["a"], "p1": [1.0]})}), config)

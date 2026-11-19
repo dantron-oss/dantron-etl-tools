@@ -15,12 +15,13 @@ contributed zero columns would be a whitelist failing open -- the schema has mov
 written against an older one, and the author needs to be told which pattern stopped matching, not
 handed back fewer columns than they asked for.
 
-**Matching is case sensitive**, by way of :func:`fnmatch.fnmatchcase` rather than
-:func:`fnmatch.fnmatch`: the latter folds case on some platforms, which would make this tool keep a
-column the author did not ask for, and only on one operating system.
+**Only `*` is a wildcard, and matching is case sensitive.** An entry that is exactly a column's
+name selects that column. Otherwise an entry holding `*` is a pattern, where `*` stands for any run
+of characters and everything else is read as written. Brackets and `?` are not wildcards: a header
+copied from a spreadsheet, such as `Total [CAD]`, has to select itself and nothing else.
 """
 
-import fnmatch
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
@@ -51,11 +52,14 @@ class SelectColumns:
         return {
             "columns": ConfigField(
                 type="array",
-                description="Column-name patterns (`*` allowed, case sensitive); at least one is "
-                "required and each must match at least one column.",
+                description="Column names, or patterns where `*` stands for any run of characters "
+                "(case sensitive); at least one is required and each must match at least one column.",
                 required=True,
                 non_empty=True,
-                items=ConfigField(type="string", description="One literal column name or `*` wildcard pattern."),
+                items=ConfigField(
+                    type="string",
+                    description="One column name, or a pattern using `*`. Nothing else is a wildcard.",
+                ),
             ),
             "action": ConfigField(
                 type="string",
@@ -80,7 +84,8 @@ class SelectColumns:
             ),
             field_help={
                 "columns": "Patterns are matched case-sensitively against the frame's columns; a "
-                "column matched by more than one pattern is kept only once, at its first appearance.",
+                "column matched by more than one pattern is kept only once, at its first appearance. "
+                "Only `*` is a wildcard: brackets and `?` are read as part of the name.",
                 "action": "'keep' selects only the listed columns; 'drop' selects everything else, in "
                 "the frame's own order.",
             },
@@ -114,7 +119,7 @@ def _selection(available: Sequence[str], config: Mapping[str, Any]) -> list[str]
     selected: list[str] = []
     seen: set[str] = set()
     for pattern in config["columns"]:
-        matches = [name for name in available if fnmatch.fnmatchcase(name, pattern)]
+        matches = _matches(available, pattern)
         if not matches:
             raise ConfigError(
                 f"config field 'columns' pattern {pattern!r} matches no column of the input; the "
@@ -133,6 +138,16 @@ def _selection(available: Sequence[str], config: Mapping[str, Any]) -> list[str]
         raise ConfigError("config field 'columns' selects nothing: 'action: drop' removed every column of the input")
 
     return selected
+
+
+def _matches(available: Sequence[str], entry: str) -> list[str]:
+    """The columns one entry selects: itself if it is a column's name, else what its `*`s match."""
+    if entry in available:
+        return [entry]
+    if "*" not in entry:
+        return []
+    pattern = re.compile(".*".join(re.escape(part) for part in entry.split("*")), re.DOTALL)
+    return [name for name in available if pattern.fullmatch(name)]
 
 
 def _wildcard_example() -> WorkedExample:

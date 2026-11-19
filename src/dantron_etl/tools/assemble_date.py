@@ -24,6 +24,8 @@ from typing import Any, Final
 import polars as pl
 
 from ..authoring import (
+    MAX_YEAR,
+    MIN_YEAR,
     REGISTRY,
     ConfigError,
     ConfigField,
@@ -34,13 +36,15 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
+    date_or_null,
     require_not_blank,
+    row_status,
+    value_caption,
 )
+from ..authoring import days_in_month as month_length
 
 _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("clamp", "set_null", "error")
 _DIGITS_ONLY: Final[str] = r"^[0-9]+$"
-_MIN_YEAR: Final[int] = 1
-_MAX_YEAR: Final[int] = 9999
 
 
 class AssembleDate:
@@ -101,6 +105,9 @@ class AssembleDate:
                 "A null part gives a null date under every policy, including 'error': a part nobody "
                 "supplied is a different question from a part that names an impossible date, and "
                 "conflating them would fail a whole run over rows nobody filled in.",
+                "Under 'set_null', a row whose parts make no date gets an empty date, and the step "
+                "says so: a note counts those rows, and each one is marked with the parts it held. "
+                "A row with a missing part is not marked; it was never a date to begin with.",
             ),
             field_help={
                 "on_invalid": "Spelled 'set_null', never 'null': an unquoted null in a definition file "
@@ -170,19 +177,10 @@ class AssembleDate:
         text_bad = pl.col("__year_bad") | pl.col("__month_bad") | pl.col("__day_bad")
 
         invalid_month = month_col.is_not_null() & ((month_col < 1) | (month_col > 12))
-        invalid_year = year_col.is_not_null() & ((year_col < _MIN_YEAR) | (year_col > _MAX_YEAR))
+        invalid_year = year_col.is_not_null() & ((year_col < MIN_YEAR) | (year_col > MAX_YEAR))
         hard_invalid = (text_bad | invalid_month | invalid_year).fill_null(False)
 
-        leap = ((year_col % 4 == 0) & (year_col % 100 != 0)) | (year_col % 400 == 0)
-        days_in_month = (
-            pl.when(month_col.is_in([1, 3, 5, 7, 8, 10, 12]))
-            .then(31)
-            .when(month_col.is_in([4, 6, 9, 11]))
-            .then(30)
-            .when(month_col == 2)
-            .then(pl.when(leap).then(29).otherwise(28))
-            .otherwise(None)
-        )
+        days_in_month = month_length(year_col, month_col)
 
         day_out_of_range = (
             day_col.is_not_null()
@@ -221,13 +219,38 @@ class AssembleDate:
                 total=frame.height,
             )
 
-        safe_year = pl.when(pl.col("__buildable")).then(year_col).otherwise(pl.lit(2000))
-        safe_month = pl.when(pl.col("__buildable")).then(month_col).otherwise(pl.lit(1))
-        safe_day = pl.when(pl.col("__buildable")).then(pl.col("__resolved_day")).otherwise(pl.lit(1))
-        date_expr = pl.when(pl.col("__buildable")).then(pl.date(safe_year, safe_month, safe_day)).otherwise(None)
+        # The same build make_date() does, from the one shared function. Every row left is buildable
+        # or missing a part, and date_or_null gives null for the second.
+        date_expr = pl.when(pl.col("__buildable")).then(date_or_null(year_col, month_col, pl.col("__resolved_day")))
 
         result = staged.with_columns(date_expr.alias(config["output"])).select([*frame.columns, config["output"]])
+        if policy == "set_null" and staged["__offending"].any():
+            reasons, note = _emptied_report(staged, config["output"])
+            return Ports(
+                {"rows": result}, notes=[note], status={"rows": row_status([(config["output"], reasons)], frame.height)}
+            )
         return Ports({"rows": result})
+
+
+def _emptied_report(staged: pl.DataFrame, output: str) -> tuple[pl.Series, str]:
+    """One reason per row whose parts made no date under 'set_null', and the note counting them."""
+    parts = pl.format(
+        "year {}, month {}, day {}",
+        value_caption("__year_raw"),
+        value_caption("__month_raw"),
+        value_caption("__day_raw"),
+    )
+    described = staged.select(
+        pl.when(pl.col("__offending")).then(pl.format("{} do not make a date, so it is empty", parts)).alias("reason"),
+        parts.alias("parts"),
+    )
+    emptied = int(staged["__offending"].sum())
+    example = described.filter(staged["__offending"])["parts"][0]
+    note = (
+        f"{emptied:,} of {staged.height:,} rows got an empty {output!r} because their parts do not "
+        f"make a date (for example {example})"
+    )
+    return described["reason"], note
 
 
 def _read_part(series: pl.Series) -> tuple[pl.Expr, pl.Expr]:

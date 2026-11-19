@@ -76,6 +76,9 @@ class Value:
     family: Family | None
     requirement: str
     whole: str | None = None
+    #: Refuse a zone-aware timestamp. Which day such a timestamp falls on depends on a zone, and a
+    #: function that works on dates has no way to know which one the author meant.
+    no_time_zone: bool = False
 
 
 class WholeNumber:
@@ -101,6 +104,19 @@ class QuotedText:
     def read(self, name: str, value: Any, position: str) -> str:
         if not isinstance(value, str):
             raise Refusal(f"{name}() needs quoted text as its {position} argument: {self.reason}")
+        return value
+
+
+@dataclass(frozen=True)
+class Choice:
+    """One of a fixed set of words, quoted in the file: a decision a reviewer reads in the line."""
+
+    options: tuple[str, ...]
+
+    def read(self, name: str, value: Any, position: str) -> str:
+        if not isinstance(value, str) or value not in self.options:
+            listed = " or ".join(f"'{option}'" for option in self.options)
+            raise Refusal(f"{name}() needs {listed}, in quotes, as its {position} argument")
         return value
 
 
@@ -142,4 +158,4 @@ class Namespace:
             ) from None
 
 
-Param = Value | WholeNumber | QuotedText | Pattern | Namespace
+Param = Value | WholeNumber | QuotedText | Pattern | Namespace | Choice

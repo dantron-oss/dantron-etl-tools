@@ -7,14 +7,14 @@ run that stopped.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 import polars as pl
 
-from .errors import RunError
+from .errors import RunError, name_choices
 from .spec import PortRef
 
 __all__ = [
@@ -54,7 +54,7 @@ class CachedFrame:
     Two fields because neither is any use alone. The frame without the fingerprint is a number with
     no provenance, and the danger a cache carries is not one that fails to load -- it is one that
     loads perfectly against a pipeline somebody has since edited. The fingerprint is
-    :meth:`~.spec.Pipeline.fingerprint` taken over the closure that produced the port, and
+    :meth:`~.spec.Pipeline.fingerprint` of the port, taken over the closure that produced it, and
     :func:`run_pipeline` compares it before it walks a step.
 
     Frozen because it is evidence of a run that already happened, not a value the run holding it may
@@ -100,40 +100,48 @@ class StepEvent:
     run_id: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
 class StepFailedError(RunError):
-    """A step's own tool refused, mid-run. ``__cause__`` is that refusal, exactly as the tool raised
-    it -- a :class:`~.errors.DataError` says go and look at the rows, an
-    :class:`~.errors.ExecutionError` says go and look at the run, and flattening the two into one
-    wording would erase that choice.
+    """A step failed mid-run. ``__cause__`` is the tool's own refusal, exactly as it was raised.
+
+    A :class:`~.errors.DataError` cause says go and look at the rows; an
+    :class:`~.errors.ExecutionError` says go and look at the run.
+
+    ``step_id``, ``event`` and ``trace`` are read-only. ``trace`` is the run up to the failure,
+    frames included, so a caller can still save or show what ran before it.
+
+    A plain exception class, not a frozen dataclass: Python and pytest write to an exception's
+    ``__traceback__`` and notes, and a frozen dataclass refuses those writes with a second error.
     """
 
-    step_id: str
-    event: StepEvent
-    trace: "PipelineTrace"
-
     def __init__(self, step_id: str, event: StepEvent, trace: "PipelineTrace") -> None:
-        RunError.__init__(self, event.message)
-        object.__setattr__(self, "step_id", step_id)
-        object.__setattr__(self, "event", event)
-        object.__setattr__(self, "trace", trace)
+        super().__init__(event.message)
+        self._step_id = step_id
+        self._event = event
+        self._trace = trace
+
+    @property
+    def step_id(self) -> str:
+        return self._step_id
+
+    @property
+    def event(self) -> StepEvent:
+        return self._event
+
+    @property
+    def trace(self) -> "PipelineTrace":
+        return self._trace
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Rebuilt from its three fields, so it can be copied and sent to another process.
+        return (type(self), (self._step_id, self._event, self._trace))
 
 
-@dataclass(frozen=True, slots=True)
-class ColumnCheckError(RunError):
-    """A step's configuration names a column that none of its input frames carry, caught the moment
-    those frames exist rather than by letting the tool discover it.
+class ColumnCheckError(StepFailedError):
+    """A step's configuration names a column that none of its input frames carry.
+
+    Caught the moment those frames exist, before the tool runs. A kind of :class:`StepFailedError`,
+    so ``except StepFailedError`` catches it too.
     """
-
-    step_id: str
-    event: StepEvent
-    trace: "PipelineTrace"
-
-    def __init__(self, step_id: str, event: StepEvent, trace: "PipelineTrace") -> None:
-        RunError.__init__(self, event.message)
-        object.__setattr__(self, "step_id", step_id)
-        object.__setattr__(self, "event", event)
-        object.__setattr__(self, "trace", trace)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,22 +186,100 @@ class PipelineTrace:
     until: tuple[str, ...] = ()
     cached: tuple[PortRef, ...] = ()
     run_id: str | None = None
+    # Each step's event by its id, built once so looking one up does not scan the run.
+    _by_step: Mapping[str, StepEvent] = field(init=False, compare=False, repr=False)
 
-    def frame(self, port: PortRef) -> pl.DataFrame:
-        """The frame ``port`` produced, or a refusal naming why it cannot be handed back."""
-        if port in self.frames:
-            return self.frames[port]
-        if port in self.shapes:
+    def __post_init__(self) -> None:
+        by_step: dict[str, StepEvent] = {}
+        for event in self.events:
+            by_step.setdefault(event.step_id, event)
+        object.__setattr__(self, "_by_step", MappingProxyType(by_step))
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # The read-only mappings cannot be pickled as they are, so they travel as plain dicts and are
+        # wrapped again on the way back in.
+        return (
+            _rebuilt_trace,
+            (
+                self.pipeline,
+                self.retain,
+                self.events,
+                dict(self.shapes),
+                dict(self.frames),
+                dict(self.status),
+                self.until,
+                self.cached,
+                self.run_id,
+            ),
+        )
+
+    def frame(self, port: PortRef | str) -> pl.DataFrame:
+        """The frame ``port`` produced, or a refusal naming why it cannot be handed back.
+
+        ``port`` is a :class:`PortRef`, the text ``"step.port"``, or a step id alone when that step
+        produced exactly one port.
+        """
+        ref = self._port(port)
+        if ref in self.frames:
+            return self.frames[ref]
+        if ref in self.shapes:
             raise RunError(
-                f"port {port!s} produced a frame, but it was released under retain={self.retain!r} "
-                f"before this trace was read; its shape is still on trace.shapes"
+                f"port {ref!s} produced a frame, but it was released under retain={self.retain!r} "
+                f"before this trace was read; its shape is still on trace.shapes. Pass it in keep= to "
+                f"hold on to it"
             )
-        raise RunError(f"no port {port!s} on this trace; ports are: {', '.join(str(p) for p in self.shapes)}")
+        raise RunError(f"no port {ref!s} on this trace; {name_choices(str(ref), map(str, self.shapes), 'ports')}")
+
+    def _port(self, port: PortRef | str) -> PortRef:
+        """``port`` as a :class:`PortRef`, read from any of the three spellings :meth:`frame` takes."""
+        if isinstance(port, PortRef):
+            return port
+        if not isinstance(port, str):
+            raise RunError(f"a port is a PortRef or the text 'step.port'; got {port!r}")
+        if "." in port:
+            step_id, port_name = port.split(".", 1)
+            return PortRef(step_id, port_name)
+        produced = [ref for ref in self.shapes if ref.step == port]
+        if len(produced) == 1:
+            return produced[0]
+        if produced:
+            raise RunError(
+                f"step {port!r} produced {len(produced)} ports, so name one: "
+                f"{', '.join(str(ref) for ref in produced)}"
+            )
+        raise RunError(f"no step {port!r} produced a port on this trace; {name_choices(port, self._by_step, 'steps that ran')}")
 
     def event(self, step_id: str) -> StepEvent:
         """The event ``step_id`` reported, or a refusal listing the steps that actually ran."""
-        for candidate in self.events:
-            if candidate.step_id == step_id:
-                return candidate
-        ran = ", ".join(event.step_id for event in self.events) or "none"
-        raise RunError(f"no event for step {step_id!r}; steps that ran: {ran}")
+        found = self._by_step.get(step_id)
+        if found is not None:
+            return found
+        raise RunError(f"no event for step {step_id!r}; {name_choices(step_id, self._by_step, 'steps that ran')}")
+
+    def event_or_none(self, step_id: str) -> StepEvent | None:
+        """The event ``step_id`` reported, or ``None`` when it did not run."""
+        return self._by_step.get(step_id)
+
+def _rebuilt_trace(
+    pipeline: str,
+    retain: Literal["all", "live"],
+    events: tuple[StepEvent, ...],
+    shapes: dict[PortRef, FrameShape],
+    frames: dict[PortRef, pl.DataFrame],
+    status: dict[PortRef, pl.DataFrame],
+    until: tuple[str, ...],
+    cached: tuple[PortRef, ...],
+    run_id: str | None,
+) -> PipelineTrace:
+    """A trace from its pickled parts. See :meth:`PipelineTrace.__reduce__`."""
+    return PipelineTrace(
+        pipeline=pipeline,
+        retain=retain,
+        events=events,
+        shapes=MappingProxyType(shapes),
+        frames=MappingProxyType(frames),
+        status=MappingProxyType(status),
+        until=until,
+        cached=cached,
+        run_id=run_id,
+    )

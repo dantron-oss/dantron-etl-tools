@@ -20,11 +20,12 @@ from dantron_etl.loader import load_pipeline
 TOOLS_DIR = Path(dantron_etl.__file__).parent / "tools"
 
 # The modules that hold the tool contract, one job each.
-CORE_MODULES = ("boundary", "config", "conformance", "contract", "errors", "example_world", "frame_checks",
-                "ports", "registry", "status")
+CORE_MODULES = ("boundary", "config", "conformance", "contract", "errors", "example_world", "expr", "expr.dates",
+                "frame_checks", "ports", "registry", "status")
 
 # Where each name the package root exports is defined.
 ROOT_HOMES = {
+    "dead_ends": "loader",
     "load_pipeline": "loader",
     "read_pipeline": "loader",
     "run_pipeline": "runner",
@@ -109,7 +110,7 @@ def test_the_retired_import_modules_are_gone(retired: str) -> None:
 
 def test_the_runner_exports_only_what_it_defines() -> None:
     """The trace names live in ``trace`` and are exported from the package root, not again here."""
-    assert sorted(runner.__all__) == ["logging_sink", "run_pipeline"]
+    assert sorted(runner.__all__) == ["LogTarget", "logging_sink", "run_pipeline"]
 
 
 def test_a_wrapper_put_on_runner_run_tool_sees_every_step_that_runs(monkeypatch: pytest.MonkeyPatch) -> None:

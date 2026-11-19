@@ -14,6 +14,8 @@ machine had rather than anything a step decided. Every one of them descends from
 flow driver has one type to catch.
 """
 
+import difflib
+from collections.abc import Iterable
 from typing import Any, Final
 
 import polars as pl
@@ -29,6 +31,7 @@ __all__ = [
     "RegistryError",
     "RunError",
     "ToolError",
+    "name_choices",
 ]
 
 
@@ -83,6 +86,27 @@ class ExecutionError(ToolError):
 MAX_REPORTED_ROWS: Final[int] = 5
 
 
+# How many names a refusal lists when it says what there is to choose from. A flow can have a
+# thousand steps, and a message listing all of them is a page nobody reads.
+MAX_LISTED_NAMES: Final[int] = 10
+
+
+def name_choices(asked: str, available: Iterable[str], noun: str = "steps") -> str:
+    """The end of a refusal about a name that was not found: the closest names, and what there is.
+
+    Lists every name when there are a few, and the first ten and the total when there are many.
+    """
+    names = [str(name) for name in available]
+    if not names:
+        return f"there are no {noun}"
+    near = difflib.get_close_matches(str(asked), names, n=3)
+    guess = f"did you mean {' or '.join(repr(name) for name in near)}? " if near else ""
+    if len(names) <= MAX_LISTED_NAMES:
+        return f"{guess}{noun} are: {', '.join(names)}"
+    shown = ", ".join(names[:MAX_LISTED_NAMES])
+    return f"{guess}there are {len(names)} {noun}; the first {MAX_LISTED_NAMES} are: {shown}, ..."
+
+
 class DataError(ToolError):
     """The rows themselves were wrong -- a deliberate refusal about values, not about a set-up.
 
@@ -102,10 +126,17 @@ class DataError(ToolError):
     run: the one way an error type can do real damage.
     """
 
-    def __init__(self, refusal: str, *, offending: pl.DataFrame, total: int) -> None:
-        self.offending_rows: int = offending.height
+    def __init__(self, refusal: str, *, offending: pl.DataFrame | None, total: int) -> None:
         self.total_rows: int = total
-        self.examples: tuple[dict[str, Any], ...] = tuple(offending.head(MAX_REPORTED_ROWS).to_dicts())
+        if offending is None:
+            # The rows were refused as a whole and never looked at one by one, so no count of
+            # offending rows exists. Saying "0 of N" would read as "no row was at fault".
+            self.offending_rows: int | None = None
+            self.examples: tuple[dict[str, Any], ...] = ()
+            super().__init__(f"{refusal}: {total} row(s), not examined one by one")
+            return
+        self.offending_rows = offending.height
+        self.examples = tuple(offending.head(MAX_REPORTED_ROWS).to_dicts())
         shown = f", starting with {'; '.join(str(row) for row in self.examples)}" if self.examples else ""
         super().__init__(f"{refusal}: {self.offending_rows} of {self.total_rows} row(s) offend{shown}")
 

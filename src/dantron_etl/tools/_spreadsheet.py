@@ -23,6 +23,9 @@ MAX_DATA_ROWS: Final[int] = MAX_SHEET_ROWS - 1
 # 2**53 or some rounder-looking number nearby.
 MAX_EXACT_INTEGER: Final[int] = 2**53 - 1
 
+# The most characters one cell holds. A longer text would be cut to this length without a word.
+MAX_CELL_TEXT: Final[int] = 32_767
+
 # What a workbook lets a tab be called. Published alongside the limits above, and for the same
 # reason. These are the destination's rules rather than this tool's, and every tool in the catalog
 # that writes a workbook reads this one copy. Two copies would eventually be two different rules.

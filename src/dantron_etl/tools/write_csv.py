@@ -23,7 +23,6 @@ writes a header-only file**, because that is a real, empty delivery, not a run t
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Final
 
 import polars as pl
@@ -38,10 +37,9 @@ from ..authoring import (
     WorkedExample,
     scratch_path,
 )
+from ._files import refuse_to_overwrite, require_output_folder, validate_delimiter
 
 _ACCEPTED_EXTENSIONS: Final[tuple[str, ...]] = (".csv", ".tsv")
-_QUOTE_CHAR: Final[str] = '"'
-_FORBIDDEN_DELIMITERS: Final[frozenset[str]] = frozenset({_QUOTE_CHAR, "\n", "\r"})
 
 _PLAIN_PATH: Final[str] = f"{SCRATCH_TOKEN}/plain.csv"
 _OVERWRITE_PATH: Final[str] = f"{SCRATCH_TOKEN}/overwrite.csv"
@@ -63,6 +61,7 @@ class WriteCsv:
                 description="Where the file is written; must end in .csv or .tsv.",
                 required=True,
                 non_empty=True,
+                file_path=True,
             ),
             "delimiter": ConfigField(
                 type="string",
@@ -108,22 +107,19 @@ class WriteCsv:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse the wrong format, an unusable delimiter, or an overwrite nobody authorised.
+        """Refuse the wrong format, an unusable delimiter, a missing folder, or an overwrite nobody authorised.
 
-        All three are answerable from the configuration alone, before a file is ever opened, so each
+        All four are answerable from the configuration alone, before a file is ever opened, so each
         is refused here rather than partway through a write that would otherwise have to be undone.
         """
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
             raise ConfigError(f"write_csv only writes {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
 
-        _validate_delimiter(config["delimiter"])
+        validate_delimiter(config["delimiter"])
 
-        if Path(path).exists() and not config["overwrite"]:
-            raise ConfigError(
-                f"write_csv refuses to overwrite the file already at '{path}'; set overwrite: true "
-                "to overwrite it deliberately"
-            )
+        require_output_folder("write_csv", path)
+        refuse_to_overwrite("write_csv", path, "overwrite", config["overwrite"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a column a line of text cannot carry honestly, before a byte is written.
@@ -144,16 +140,6 @@ class WriteCsv:
         frame = inputs["rows"]
         _write_csv(frame, config["path"], config["delimiter"])
         return Ports({"rows": frame})
-
-
-def _validate_delimiter(delimiter: str) -> None:
-    """Refuse a delimiter that is not exactly one character, or that is the quote or a line ending."""
-    if len(delimiter) != 1:
-        raise ConfigError(f"config field 'delimiter' must be exactly one character, got {delimiter!r}")
-    if delimiter in _FORBIDDEN_DELIMITERS:
-        raise ConfigError(
-            f"config field 'delimiter' may not be {delimiter!r}: it is the quote character or a line ending"
-        )
 
 
 def _write_csv(frame: pl.DataFrame, path: str, delimiter: str) -> None:

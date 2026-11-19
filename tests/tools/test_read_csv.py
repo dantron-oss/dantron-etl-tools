@@ -147,10 +147,22 @@ class TestWhatAColumnComesBackAs:
                 id="but_a_date_is_text_until_somebody_declares_it",
             ),
             pytest.param(
-                ["007", "010"],
+                ["0", "0.5", "-0.25", "10"],
+                pl.Float64,
+                [0.0, 0.5, -0.25, 10.0],
+                id="a_zero_before_the_point_is_not_a_leading_zero",
+            ),
+            pytest.param(
+                ["9223372036854775807", "-9223372036854775808"],
                 pl.Int64,
-                [7, 10],
-                id="and_an_order_number_loses_its_zeros_which_is_what_the_override_is_for",
+                [9223372036854775807, -9223372036854775808],
+                id="the_largest_whole_numbers_64_bits_hold_are_still_whole_numbers",
+            ),
+            pytest.param(
+                ["007", "A12"],
+                pl.String,
+                ["007", "A12"],
+                id="a_code_column_that_is_not_all_numbers_is_text_zeros_and_all",
             ),
             pytest.param(["", ""], pl.String, [None, None], id="a_column_of_blanks_is_text_holding_nothing"),
             pytest.param(
@@ -168,13 +180,10 @@ class TestWhatAColumnComesBackAs:
         expected_dtype: pl.DataType,
         expected: Sequence[Any],
     ) -> None:
-        """Inference is the default because it is right most of the time; these are the times it is not.
+        """Inference is the default because it is right most of the time; these are the edges of it.
 
-        The leading-zero case is the canonical one and the reason ``column_types`` exists: the
-        column reads as a whole number, ``007`` becomes ``7``, and nothing downstream can recover
-        the zeros because they are gone before any step sees the frame. It is pinned as inference's
-        behaviour rather than fixed, because fixing it would mean inferring nothing at all and
-        making the first step after every read a cast.
+        A column of codes that is not all numbers stays text, zeros and all. A column that is all
+        numbers but carries a leading zero is refused rather than read; that is the next test.
 
         The date case is the other: a date in a file is text, because deciding that a column of
         eight digits and two separators is a date -- and in which order -- is a guess the file
@@ -200,6 +209,65 @@ class TestWhatAColumnComesBackAs:
         assert rows.schema["value"] == expected_dtype
         assert rows["value"].to_list() == list(expected)
         assert rows.height == len(written), "and nothing is dropped on the way to deciding"
+
+    @pytest.mark.parametrize(
+        ("written", "line", "offender"),
+        [
+            pytest.param(["007", "010"], 2, "007", id="an_order_number_with_its_zeros"),
+            pytest.param(["12", "-007"], 3, "-007", id="a_signed_one"),
+            pytest.param(["1.5", "00.5"], 3, "00.5", id="a_figure_written_with_a_zero_in_front"),
+            pytest.param([str(n) for n in range(1, 201)] + ["02134"], 202, "02134", id="one_line_in_two_hundred"),
+            pytest.param(["12345678901234567890", "7"], 2, "12345678901234567890", id="a_whole_number_past_64_bits"),
+            pytest.param(["1.5", "-99999999999999999999"], 3, "-99999999999999999999", id="beside_figures_too"),
+        ],
+    )
+    def test_a_column_a_number_would_change_is_refused_rather_than_guessed(
+        self,
+        tmp_path: Path,
+        written: Sequence[str],
+        line: int,
+        offender: str,
+    ) -> None:
+        """Inference stops where reading a column as numbers would change what the file says.
+
+        A leading zero is dropped by a number, and a whole number past 64 bits can only be read as a
+        rounded figure. Either way the value no longer matches the file, and nothing downstream can
+        get it back. So the read stops and names the column, the line and the value, and says what
+        to write in column_types.
+        """
+        with pytest.raises(DataError) as caught:
+            _laid_out(tmp_path, "value\n" + "".join(f"{value}\n" for value in written))
+
+        message = str(caught.value)
+        assert "'value'" in message, f"names the column: {message}"
+        assert offender in message, f"names the value: {message}"
+        assert f"line {line}" in message, f"names the line: {message}"
+        assert "column_types" in message and "String" in message, f"says what to write: {message}"
+
+    @pytest.mark.parametrize(
+        ("declared", "written", "expected_dtype", "expected"),
+        [
+            pytest.param("String", "007", pl.String, "007", id="text_keeps_the_zeros"),
+            pytest.param("Int64", "007", pl.Int64, 7, id="a_number_drops_them_because_the_author_said_so"),
+            pytest.param("String", "12345678901234567890", pl.String, "12345678901234567890", id="text_keeps_digits"),
+            pytest.param("Float64", "12345678901234567890", pl.Float64, 1.2345678901234567e19, id="a_figure_rounds"),
+        ],
+    )
+    def test_a_declared_column_is_never_refused_for_what_a_number_would_change(
+        self,
+        tmp_path: Path,
+        declared: str,
+        written: str,
+        expected_dtype: pl.DataType,
+        expected: Any,
+    ) -> None:
+        """The refusal is about guessing. Once the author states the type, the read does as told."""
+        rows = _laid_out(
+            tmp_path, f"value\n{written}\n", column_types=[{"column": "value", "type": declared}]
+        )
+
+        assert rows.schema["value"] == expected_dtype
+        assert rows["value"].to_list() == [expected]
 
     @pytest.mark.parametrize(
         ("entry", "written", "expected_dtype", "expected"),
@@ -638,6 +706,7 @@ class TestTheBytesAndTheShapeOfTheFile:
         [
             pytest.param("key,amount,key", "key", id="a_heading_used_twice"),
             pytest.param("key,,code", "2", id="a_heading_left_blank"),
+            pytest.param("key,  ,code", "2", id="a_heading_of_only_spaces_is_blank_too_as_in_a_workbook"),
         ],
     )
     def test_a_header_line_that_repeats_or_omits_a_name_is_refused_rather_than_renamed(
@@ -671,6 +740,32 @@ class TestTheBytesAndTheShapeOfTheFile:
 
 class TestRefusalsAboutTheFile:
     """Every way this tool can fail to read at all, in this library's words rather than a reader's."""
+
+    @pytest.mark.parametrize(
+        ("delimiter", "accepted"),
+        [
+            pytest.param("\t", True, id="a_tab"),
+            pytest.param(";", True, id="a_semicolon"),
+            pytest.param("||", False, id="two_characters"),
+            pytest.param('"', False, id="the_quote_character"),
+            pytest.param("\n", False, id="a_line_ending"),
+        ],
+    )
+    def test_a_delimiter_is_one_character_and_not_the_quote_as_the_writer_requires(
+        self, tmp_path: Path, delimiter: str, accepted: bool
+    ) -> None:
+        """Checked before the file is read, in the same words as write_csv, so both tools agree."""
+        target = _file(tmp_path / "extract.csv", f"key{delimiter}code\nr1{delimiter}A\n")
+        tool = ReadCsv()
+        config = apply_defaults(tool.config_template(), {"path": str(target), "delimiter": delimiter})
+
+        if accepted:
+            tool.validate_config(config)
+            assert _read({"path": str(target), "delimiter": delimiter}).columns == ["key", "code"]
+            return
+        with pytest.raises(ConfigError) as caught:
+            tool.validate_config(config)
+        assert "'delimiter'" in str(caught.value)
 
     @pytest.mark.parametrize(
         ("situation", "name"),

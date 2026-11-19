@@ -29,7 +29,7 @@ from .errors import (
 )
 from .expr import ExpressionError
 from .focus import FocusSpec, RelatedKey, slice_trace
-from .loader import load_pipeline, read_pipeline
+from .loader import dead_ends, load_pipeline, read_pipeline
 from .paths import project_root
 from .registry import REGISTRY, get_tool
 from .runner import run_pipeline
@@ -42,6 +42,7 @@ __all__ = [
     "__version__",
     "tools",
     # load and run a flow
+    "dead_ends",
     "load_pipeline",
     "read_pipeline",
     "run_pipeline",

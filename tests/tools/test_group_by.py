@@ -71,7 +71,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.config import expression_fields
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.group_by import AGGREGATE_FUNCTIONS, GroupBy
@@ -1050,3 +1050,109 @@ class TestFirstWhenTheFirstValueIsNull:
                 schema={"code": pl.String, "first_amount": pl.Float64, "first_note": pl.String},
             ),
         )
+
+
+class TestAnAggregateOfAFixedValueIsRefused:
+    """An aggregation whose 'value' reads no column is refused before anything runs.
+
+    polars aggregates a fixed value once per group, not once per row. So ``sum`` of ``1``, which
+    is SQL's ``SUM(1)``, gave 1 for a group of five rows, and the run reported success.
+    """
+
+    @pytest.mark.parametrize(
+        ("function", "value"),
+        [
+            ("sum", "1"),
+            ("sum", "2 * 3"),
+            ("count_non_null", "1"),
+            ("n_unique", "1"),
+            ("min", "1"),
+            ("max", "1"),
+            ("first", "1"),
+            ("join_text", "'x'"),
+        ],
+    )
+    @pytest.mark.parametrize("height", [5, 0], ids=["a_frame_with_rows", "a_frame_with_no_rows"])
+    def test_a_value_that_names_no_column_is_refused_by_name(self, function: str, value: str, height: int) -> None:
+        aggregations = [_aggregation("lines", "count"), _aggregation("fixed", function, value)]
+
+        with pytest.raises(ConfigError) as caught:
+            run_tool(GroupBy(), Ports({"rows": _rows().head(height)}), {"by": ["code"], "aggregations": aggregations})
+
+        message = str(caught.value)
+        for word in ("aggregations[1].value", value, "no column", "'count'", "formula"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    def test_the_refusal_comes_from_the_configuration_alone(self) -> None:
+        """No frame is needed, so a pipeline file is refused when it loads."""
+        config = {"by": ["code"], "aggregations": [_aggregation("fixed", "sum", "1")]}
+
+        with pytest.raises(ConfigError, match=r"aggregations\[0\]\.value"):
+            GroupBy().validate_config(config)
+
+    def test_a_value_that_reads_a_column_is_aggregated_once_per_row(self) -> None:
+        """The mirror: the same fixed value, tied to a column, sums to the row count of each group."""
+        config = {
+            "by": ["code"],
+            "aggregations": [_aggregation("ones", "sum", "[qty] * 0 + 1"), _aggregation("lines", "count")],
+        }
+
+        result = _grouped(_rows(), config)
+
+        assert result["ones"].to_list() == result["lines"].to_list() == [2, 2, 1]
+
+
+class TestATotalTooLargeForItsTypeStopsTheRun:
+    """A sum of 32-bit whole numbers keeps its type, and a total that does not fit stops the run.
+
+    polars adds up an Int32 column into an Int32 and wraps a total past about 2.1 billion round to a
+    negative number. The type is kept, so a pipeline that runs today produces the same columns; a
+    total that would have wrapped is refused instead, naming the aggregation.
+    """
+
+    @pytest.mark.parametrize(
+        ("dtype", "values"),
+        [
+            (pl.Int32, [2_000_000_000, 2_000_000_000]),
+            (pl.Int32, [-2_000_000_000, -2_000_000_000]),
+            (pl.UInt32, [4_000_000_000, 4_000_000_000]),
+        ],
+        ids=["int32_above", "int32_below", "uint32_above"],
+    )
+    def test_a_total_past_the_types_limit_is_refused_by_name(self, dtype: pl.DataType, values: list[int]) -> None:
+        rows = pl.DataFrame({"g": [1, 1, 2], "v": pl.Series([*values, 5], dtype=dtype)})
+        config = {"by": ["g"], "aggregations": [_aggregation("total", "sum", "[v]")]}
+
+        with pytest.raises(DataError) as caught:
+            run_tool(GroupBy(), Ports({"rows": rows}), config)
+
+        message = str(caught.value)
+        for word in ("'total'", "aggregations[0]", str(dtype), "cast_columns", "Int64", "1 of 2"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    @pytest.mark.parametrize("dtype", [pl.Int32, pl.UInt32])
+    def test_a_total_that_fits_keeps_the_columns_type_and_value(self, dtype: pl.DataType) -> None:
+        """The mirror: a total just inside the limit, a null group and an empty frame keep the type."""
+        limit = 2_147_483_647 if dtype == pl.Int32 else 4_294_967_295
+        rows = pl.DataFrame(
+            {"g": [1, 1, 2, 3], "v": pl.Series([limit - 1, 1, 7, None], dtype=dtype)},
+        )
+        config = {"by": ["g"], "aggregations": [_aggregation("total", "sum", "[v]")]}
+
+        result = _grouped(rows, config)
+        empty = _grouped(rows.head(0), config)
+
+        assert result["total"].dtype == dtype
+        assert result["total"].to_list() == [limit, 7, None]
+        assert empty.schema["total"] == dtype
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_aggregation_name_is_refused_when_the_pipeline_loads(blank: str) -> None:
+    """A column with no name cannot be referred to by any later step, so it is never written."""
+    config = {"by": ["code"], "aggregations": [_aggregation("total", "sum", "[amount]"), _aggregation(blank, "count")]}
+
+    with pytest.raises(ConfigError, match=r"'aggregations\[1\]\.name' must not be blank"):
+        GroupBy().validate_config(config)
+    with pytest.raises(ConfigError, match=r"'aggregations\[1\]\.name' must not be blank"):
+        run_tool(GroupBy(), Ports({"rows": _rows()}), config)
