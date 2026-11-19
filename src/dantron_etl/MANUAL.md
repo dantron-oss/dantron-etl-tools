@@ -149,9 +149,22 @@ Every step has `id`, `tool`, `config`, and `inputs` (except a source, which read
 
 The loader refuses any key it does not know, at every level: the top of the file (`name`, `steps`,
 `lanes`, `containers`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `container`,
-`why`), a lane (`id`, `title`, `order`) and a container (`id`, `title`). A misspelt key would otherwise be dropped
-without a word. The refusal names the key and suggests the one you probably meant. `stage` is free
-text, so a misspelt stage is not caught: it draws as a stage of its own.
+`why`), a lane (`id`, `title`, `order`) and a container (`id`, `title`). A misspelt key would
+otherwise be dropped without a word. The refusal names the key and suggests the one you probably
+meant. `stage` is free text, so a misspelt stage is not caught: it draws as a stage of its own.
+
+**A file written for an older version of the library** may use names that have since been renamed
+(`groups`, a join's `matched` port, `strip()` and others). The loader refuses it, says what each old
+name is now called, and names the command that rewrites the file:
+
+```bash
+python -m dantron_etl.migrate pipelines/          # a dry run: what would change, file by file
+python -m dantron_etl.migrate --write pipelines/  # apply it
+```
+
+It edits the file's text, so comments, layout and `why` text are kept exactly. Pass the rules files
+too: an expression in one is migrated the same way. Python code is not rewritten; the command
+prints the renamed Python names to change by hand.
 
 **`why` is required to be useful.** It is the sentence a reader sees next to the number. Write what
 the step decides and why that is the right decision, not what the configuration already says.

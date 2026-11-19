@@ -68,6 +68,9 @@ uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools
 uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/DanTron-Inc/dantron-etl-tools"
 ```
 
+A pipeline file written for an older version is refused at load with the new name of each renamed
+word; `python -m dantron_etl.migrate --write <file-or-folder>` rewrites it, keeping its comments.
+
 Postgres drivers are an extra, deliberately: `read_table` and `write_table` import theirs lazily by
 URI scheme and name the package to install when it is missing, and SQLite needs nothing at all —
 which is what lets every worked example in the catalog execute with no server.

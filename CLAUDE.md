@@ -101,6 +101,8 @@ than the one you are editing. If anything looks impossible, run
 | `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
 | `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Container`, the walk order, the fingerprint. |
 | `rules.py` | Resolving `${rules.*}` references in a step's configuration. |
+| `renames.py` | The one table of names retired in a release and what each is now called. The loader's refusals and the migration read it. |
+| `migrate.py` | `python -m dantron_etl.migrate`: rewrites old pipeline and rules files to the current names by editing their text, so comments and layout survive. |
 | `loader.py` | `read_pipeline` and `load_pipeline`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
 | `walk.py` | Works out a run before it starts: which steps `until=` and `cached=` leave to walk, the frames handed in, and when each frame can be freed. |
 | `trace.py` | What a run leaves behind: `StepEvent`, `PipelineTrace`, `CachedFrame`, and the failures that carry a partial trace. |
