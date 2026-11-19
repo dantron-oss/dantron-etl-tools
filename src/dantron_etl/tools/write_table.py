@@ -45,7 +45,7 @@ class WriteTable:
     """Load `rows` into a named table by `mode`, and pass the same rows on."""
 
     name = "write_table"
-    description = "Load a table into a database table, replacing its rows or adding to them."
+    description = "Save rows to one database table, replacing what is there or adding to it."
     category = "output"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -90,7 +90,7 @@ class WriteTable:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Use write_table to load a table into one existing database table. 'replace' empties "
+                "Use write_table to save rows into one existing database table. 'replace' empties "
                 "it and loads the rows in one transaction, so a load that fails part way leaves the "
                 "old rows in place, never an empty table. 'append' adds the rows. The same rows pass "
                 "on through `rows`. To load several related tables together, use publish_tables."

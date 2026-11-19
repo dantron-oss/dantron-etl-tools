@@ -40,7 +40,7 @@ class ReadTable:
     """Read every row of one named table onto the `rows` port."""
 
     name = "read_table"
-    description = "Read a database table into a table."
+    description = "Read every row of one database table."
     category = "input"
     input_ports = ()
     output_ports = ("rows",)
