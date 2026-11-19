@@ -280,53 +280,6 @@
         "rows"
       ]
     },
-    "connected_components": {
-      "category": "transform",
-      "config": {
-        "component_column": {
-          "default": "component",
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": false,
-          "type": "string"
-        },
-        "left": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "node_column": {
-          "default": "node",
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": false,
-          "type": "string"
-        },
-        "right": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        }
-      },
-      "input_ports": [
-        "edges"
-      ],
-      "output_ports": [
-        "rows"
-      ]
-    },
     "cross_tab": {
       "category": "transform",
       "config": {
@@ -788,6 +741,53 @@
       "output_ports": [
         "rows",
         "dropped"
+      ]
+    },
+    "make_groups": {
+      "category": "transform",
+      "config": {
+        "group_column": {
+          "default": "group",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "left": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "record_column": {
+          "default": "record",
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": false,
+          "type": "string"
+        },
+        "right": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "pairs"
+      ],
+      "output_ports": [
+        "rows"
       ]
     },
     "match_one_to_one": {

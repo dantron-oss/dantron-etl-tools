@@ -1,6 +1,6 @@
-"""Tests for the ConnectedComponents tool: put every record linked by a chain of edges into one group.
+"""Tests for the MakeGroups tool: put every record linked by a chain of pairs into one group.
 
-The tool reads one input port, ``edges``. Each row names two endpoints, in the columns that config
+The tool reads one input port, ``pairs``. Each row names two endpoints, in the columns that config
 fields ``left`` and ``right`` name. It writes one output port, ``rows``: one row per distinct node,
 carrying the node and the id of the component it belongs to.
 
@@ -48,7 +48,7 @@ from dantron_etl.tool import (
     expression_fields,
     run_tool,
 )
-from dantron_etl.tools.connected_components import ConnectedComponents
+from dantron_etl.tools.make_groups import MakeGroups
 
 _CONFIG: dict[str, Any] = {"left": "item", "right": "linked_item"}
 
@@ -72,7 +72,7 @@ def _edges(pairs: Iterable[tuple[Any, Any]], dtype: type[pl.DataType] | pl.DataT
 
 def _run(edges: pl.DataFrame, config: Mapping[str, Any] | None = None) -> pl.DataFrame:
     """Run the tool through the boundary, which is the only way a tool is ever run."""
-    result = run_tool(ConnectedComponents(), Ports({"edges": edges}), dict(config or _CONFIG))
+    result = run_tool(MakeGroups(), Ports({"pairs": edges}), dict(config or _CONFIG))
     assert result.names == ("rows",)
     return result["rows"]
 
@@ -80,8 +80,8 @@ def _run(edges: pl.DataFrame, config: Mapping[str, Any] | None = None) -> pl.Dat
 def _expected(
     pairs: Mapping[Hashable, Hashable] | Iterable[tuple[Any, Any]],
     dtype: type[pl.DataType] | pl.DataType = pl.Int64,
-    node: str = "node",
-    component: str = "component",
+    node: str = "record",
+    component: str = "group",
 ) -> pl.DataFrame:
     """The frame a reader expects, from (node, component) pairs, sorted by (component, node)."""
     rows = sorted(dict(pairs).items(), key=lambda item: (item[1], item[0]))
@@ -140,7 +140,7 @@ def _random_pairs(seed: int) -> list[tuple[int | None, int | None]]:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectedComponentsGrouping:
+class TestMakeGroupsGrouping:
     """Which nodes end up together, and what the group is called."""
 
     def test_a_chain_puts_every_node_in_one_component_named_by_its_smallest_member(self) -> None:
@@ -163,7 +163,7 @@ class TestConnectedComponentsGrouping:
         result = _run(edges)
 
         assert_frame_equal(result, _expected({1: 1, 2: 1, 3: 1, 4: 4, 7: 4, 8: 4}))
-        assert result["component"].n_unique() == 2
+        assert result["group"].n_unique() == 2
 
     def test_a_cycle_and_repeated_edges_give_each_node_exactly_once(self) -> None:
         """A cycle must not loop forever, and an edge given three times is still one link."""
@@ -172,7 +172,7 @@ class TestConnectedComponentsGrouping:
         result = _run(edges)
 
         assert_frame_equal(result, _expected({5: 5, 6: 5, 7: 5}))
-        assert result["node"].is_unique().all(), "a node appears once, however many edges name it"
+        assert result["record"].is_unique().all(), "a node appears once, however many edges name it"
 
     def test_a_self_edge_isolates_a_node_but_does_not_cut_off_a_linked_one(self) -> None:
         """(4, 4) is node 4 alone. (2, 2) beside (1, 2) leaves 2 in the component with 1."""
@@ -193,8 +193,8 @@ class TestConnectedComponentsGrouping:
         result = _run(edges)
 
         assert_frame_equal(result, _expected({3: 3, 8: 8, 11: 8}))
-        assert result["node"].null_count() == 0
-        assert result["component"].null_count() == 0
+        assert result["record"].null_count() == 0
+        assert result["group"].null_count() == 0
 
     def test_edges_whose_endpoints_are_all_null_give_no_rows_but_keep_the_columns(self) -> None:
         """Both-null rows contribute nothing, and an empty result is still typed like a full one."""
@@ -202,7 +202,7 @@ class TestConnectedComponentsGrouping:
             result = _run(edges)
 
             assert result.height == 0
-            assert result.schema == pl.Schema({"node": pl.Int64, "component": pl.Int64})
+            assert result.schema == pl.Schema({"record": pl.Int64, "group": pl.Int64})
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ class TestConnectedComponentsGrouping:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectedComponentsOrder:
+class TestMakeGroupsOrder:
     """The same edges give the same frame, however they arrive."""
 
     @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
@@ -254,8 +254,8 @@ class TestConnectedComponentsOrder:
         result = _run(_edges(pairs))
 
         assert result.height == length
-        assert result["node"].to_list() == list(range(length))
-        assert (result["component"] == 0).all()
+        assert result["record"].to_list() == list(range(length))
+        assert (result["group"] == 0).all()
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ class TestConnectedComponentsOrder:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectedComponentsColumns:
+class TestMakeGroupsColumns:
     """What the output carries: two columns, named by config, typed like the endpoints."""
 
     def test_text_nodes_take_configured_column_names_and_other_columns_are_not_carried(self) -> None:
@@ -279,7 +279,7 @@ class TestConnectedComponentsColumns:
                 "evidence": ["reference", "allocation", "self", "manual"],
             }
         )
-        config = {"left": "doc", "right": "other_doc", "node_column": "doc_id", "component_column": "group_id"}
+        config = {"left": "doc", "right": "other_doc", "record_column": "doc_id", "group_column": "group_id"}
 
         result = _run(edges, config)
 
@@ -307,18 +307,18 @@ def _refusal_cases() -> list[Any]:
         pytest.param(ints, {"left": "item", "right": "missing_col"}, "missing_col", id="right_not_on_edges"),
         pytest.param(mixed, _CONFIG, "linked_item", id="left_and_right_of_different_types"),
         pytest.param(
-            ints, {**_CONFIG, "node_column": "same", "component_column": "same"}, "same", id="one_name_for_both_outputs"
+            ints, {**_CONFIG, "record_column": "same", "group_column": "same"}, "same", id="one_name_for_both_outputs"
         ),
-        pytest.param(ints, {**_CONFIG, "node_column": "   "}, "node_column", id="blank_node_column"),
-        pytest.param(ints, {**_CONFIG, "component_column": "   "}, "component_column", id="blank_component_column"),
-        pytest.param(ints, {**_CONFIG, "component_column": ""}, "component_column", id="empty_component_column"),
+        pytest.param(ints, {**_CONFIG, "record_column": "   "}, "record_column", id="blank_record_column"),
+        pytest.param(ints, {**_CONFIG, "group_column": "   "}, "group_column", id="blank_group_column"),
+        pytest.param(ints, {**_CONFIG, "group_column": ""}, "group_column", id="empty_group_column"),
         pytest.param(ints, {"right": "linked_item"}, "left", id="no_left_at_all"),
         pytest.param(ints, {"left": "item"}, "right", id="no_right_at_all"),
         pytest.param(ints, {**_CONFIG, "depth": 5}, "depth", id="a_field_nobody_declared"),
     ]
 
 
-class TestConnectedComponentsRefusals:
+class TestMakeGroupsRefusals:
     """Refused by name, off the schema, before any row is read."""
 
     @pytest.mark.parametrize(("edges", "config", "named"), _refusal_cases())
@@ -350,8 +350,8 @@ class TestConnectedComponentsRefusals:
         for edges, config in (
             (ints, _CONFIG),
             (texts, _CONFIG),
-            (ints, {**_CONFIG, "node_column": "a", "component_column": "b"}),
-            (ints, {**_CONFIG, "node_column": "item", "component_column": "linked_item"}),
+            (ints, {**_CONFIG, "record_column": "a", "group_column": "b"}),
+            (ints, {**_CONFIG, "record_column": "item", "group_column": "linked_item"}),
         ):
             for height in (3, 0):
                 result = _run(edges.head(height), config)
@@ -363,37 +363,37 @@ class TestConnectedComponentsRefusals:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectedComponentsInTheCatalog:
+class TestMakeGroupsInTheCatalog:
     """Ports, template and examples meet the contract every tool meets."""
 
     def test_the_tool_declares_its_ports_template_and_examples(self) -> None:
         """One port in, one port out, two required endpoint columns and two defaulted output names."""
-        tool = ConnectedComponents()
+        tool = MakeGroups()
 
         check_tool(tool)
 
-        assert tool.name == "connected_components"
+        assert tool.name == "make_groups"
         assert tool.category == "transform"
         assert tool.category in CATEGORIES
-        assert tuple(tool.input_ports) == ("edges",)
+        assert tuple(tool.input_ports) == ("pairs",)
         assert tuple(tool.output_ports) == ("rows",)
 
         template = tool.config_template()
-        assert set(template) == {"left", "right", "node_column", "component_column"}
+        assert set(template) == {"left", "right", "record_column", "group_column"}
         for name in ("left", "right"):
             assert template[name].type == "string", name
             assert template[name].required is True, f"{name}: an edge has no default endpoint"
             assert template[name].non_empty is True, name
-        assert template["node_column"].type == "string"
-        assert template["node_column"].default == "node"
-        assert template["component_column"].type == "string"
-        assert template["component_column"].default == "component"
+        assert template["record_column"].type == "string"
+        assert template["record_column"].default == "record"
+        assert template["group_column"].type == "string"
+        assert template["group_column"].default == "group"
         assert expression_fields(template) == (), "endpoints are columns, not conditions"
 
         help_ = tool.help()
         assert help_.examples, "a worked example is required"
         for example in help_.examples:
-            assert set(example.inputs.names) == {"edges"}
+            assert set(example.inputs.names) == {"pairs"}
             assert set(example.outputs.names) == {"rows"}
         assert any(
             example.outputs["rows"].group_by(example.outputs["rows"].columns[1]).len()["len"].max() >= 3
@@ -405,5 +405,5 @@ class TestConnectedComponentsInTheCatalog:
 
     def test_the_tool_is_in_the_shipped_catalog(self) -> None:
         """Registered under its machine name. The whole catalog is checked once, in tests/core/test_registry.py."""
-        assert "connected_components" in REGISTRY
-        assert isinstance(REGISTRY.get("connected_components"), ConnectedComponents)
+        assert "make_groups" in REGISTRY
+        assert isinstance(REGISTRY.get("make_groups"), MakeGroups)

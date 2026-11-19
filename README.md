@@ -34,7 +34,7 @@ file a non-developer can read.
 |---|---|
 | **input** | `read_csv`, `read_excel`, `read_table` |
 | **preparation** | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| **transform** | `assemble_date`, `case_when`, `connected_components`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `unpivot` |
+| **transform** | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
 | **combine** | `join`, `union` |
 | **text** | `normalize_text`, `regex_extract_groups` |
 | **assert** | `assert_rows` |
