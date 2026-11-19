@@ -111,6 +111,12 @@ def _read_back(path: Path, sheet: str) -> pl.DataFrame:
     return pl.read_excel(path, sheet_name=sheet, drop_empty_cols=False, raise_if_empty=False)
 
 
+def _parts(path: Path) -> dict[str, bytes]:
+    """Every part of a workbook file, by name, as bytes. The creation stamp is left out: it is the clock."""
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist() if name != "docProps/core.xml"}
+
+
 def _tab_names(path: Path) -> list[str]:
     """The tabs of the workbook, in the order a person opening it sees them."""
     book = openpyxl.load_workbook(path)
@@ -778,8 +784,8 @@ class TestWritingIntoATemplate:
 # ---------------------------------------------------------------------------
 
 
-class TestReplaceGovernsTheTabNotTheFile:
-    """The core difference from the single-sheet sink, where the same word governs the whole file."""
+class TestWhatOverwriteSheetsGoverns:
+    """One permission for anything already there: a file at ``path``, or a template tab a sheet names."""
 
     @pytest.mark.parametrize(
         ("overwrite", "outcome"),
@@ -829,33 +835,77 @@ class TestReplaceGovernsTheTabNotTheFile:
         assert _read_back(target, "Summary")["code"].to_list() == ["a", "a", "a"], "the tab was not replaced"
         _notes_survived(target)
 
-    def test_without_a_template_an_existing_workbook_is_written_into_rather_than_flattened(
+    def test_without_a_template_the_workbook_is_built_from_nothing_so_a_stale_tab_does_not_survive(
         self,
         tmp_path: Path,
     ) -> None:
-        """The decision that keeps ``overwrite_sheets`` meaning one thing: ``path`` is its own template.
+        """The file at ``path`` is never read. A run writes the same file whatever an earlier run left.
 
-        Something has to happen when ``path`` already holds a workbook and no template is named, and
-        the only two coherent answers are "write into it" and "destroy it". Destroying it would make
-        ``overwrite_sheets`` govern the file after all, in the one case where it is least visible, and it is
-        the unrecoverable answer. Writing into it makes the rule exceptionless: this tool never
-        removes a tab it was not told about.
-
-        The cost is real and is worth writing down. A flow whose tab names change between runs --
-        one tab per month, say -- accumulates tabs in a workbook that nobody ever clears out. The
-        fix is a template, which fixes what the pack contains; and the accumulation is visible in
-        the file, where the alternative failure is not.
+        Reading it would keep every tab a flow has stopped writing, forever, and the file would
+        depend on its own history. A curated tab that should survive belongs in a template.
         """
         target = _template(tmp_path / "pack.xlsx", tabs=("Notes",))
 
         _write(
             {"one": _rows("a")},
-            {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures"}]},
+            {"path": str(target), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]},
         )
 
-        _notes_survived(target)
-        assert _tab_names(target) == ["Notes", "Figures"]
+        assert _tab_names(target) == ["Figures"]
         assert _read_back(target, "Figures")["code"].to_list() == ["a", "a", "a"]
+
+    @pytest.mark.parametrize("with_template", [False, True], ids=["no_template", "from_a_template"])
+    def test_a_file_already_at_the_path_is_refused_at_load_unless_the_step_says_it_may_be_replaced(
+        self,
+        tmp_path: Path,
+        with_template: bool,
+    ) -> None:
+        """Refused when the flow loads, before any step runs, and the message says what to add."""
+        target = tmp_path / "pack.xlsx"
+        target.write_bytes(b"last month's pack")
+        config: dict[str, Any] = {
+            "path": str(target),
+            "template": str(_template(tmp_path / "template.xlsx")) if with_template else None,
+            "overwrite_sheets": False,
+            "sheets": [{"port": "one", "sheet": "Figures"}],
+        }
+
+        with pytest.raises(ConfigError) as caught:
+            WriteExcel().validate_config(config)
+
+        message = str(caught.value)
+        assert str(target) in message and "add 'overwrite_sheets: true'" in message, message
+        assert target.read_bytes() == b"last month's pack"
+
+    def test_a_second_run_writes_the_same_file_as_the_first(self, tmp_path: Path) -> None:
+        """Every part of the file, byte for byte, so the result cannot depend on what was there."""
+        target = tmp_path / "pack.xlsx"
+        config = {
+            "path": str(target),
+            "overwrite_sheets": True,
+            "sheets": [
+                {"port": "one", "sheet": "Figures", "formats": [{"type": "Float64", "format": "#,##0.00"}]},
+                {"port": "two", "sheet": "Checks"},
+            ],
+        }
+        frames = {"one": _rows("a"), "two": _rows("b").head(0)}
+
+        _write(frames, config)
+        first = _parts(target)
+        _write(frames, config)
+
+        assert _parts(target) == first
+
+    @pytest.mark.parametrize("folder", ["missing", "missing/deeper"])
+    def test_a_folder_that_is_not_there_is_refused_before_the_flow_runs(self, tmp_path: Path, folder: str) -> None:
+        target = tmp_path / folder / "pack.xlsx"
+
+        with pytest.raises(ConfigError) as caught:
+            WriteExcel().validate_config(
+                {"path": str(target), "template": None, "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "F"}]}
+            )
+
+        assert str(target.parent) in str(caught.value)
 
     def test_a_replaced_tab_in_the_middle_of_the_pack_comes_back_in_the_middle_of_the_pack(
         self,
@@ -1359,6 +1409,12 @@ class TestOneLoadAndOneSave:
         _write({"one": _rows("a")}, {"path": str(plain), "sheets": [{"port": "one", "sheet": "Figures"}]})
         from_nothing = (list(loads), list(saves))
 
+        loads.clear()
+        saves.clear()
+        again = {"path": str(plain), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]}
+        _write({"one": _rows("a")}, again)
+        over_a_pack = (list(loads), list(saves))
+
         monkeypatch.undo()
 
         assert from_a_template == ([str(template)], [str(target)]), (
@@ -1369,6 +1425,7 @@ class TestOneLoadAndOneSave:
             f"a run with no template and no pack yet opened {len(from_nothing[0])} workbook(s); "
             f"there is nothing to open"
         )
+        assert over_a_pack == ([], [str(plain)]), "with no template, the file already at 'path' is never opened"
         assert _tab_names(target) == ["Notes", "Summary", *tabs]
         assert _read_back(target, "Third")["code"].to_list() == ["c", "c", "c"], (
             "the delivered pack is not the workbook the tabs were written into"
