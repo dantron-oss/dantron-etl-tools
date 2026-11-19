@@ -72,7 +72,7 @@ class Filter:
             ),
             field_help={
                 "predicate": "For example: [status] = 'active' and [amount] > 0. It is one "
-                "expression; 'dantron-etl functions' lists what it may use.",
+                "expression; the command's 'functions' list shows what it may use.",
                 "nulls": "Leave it as 'exclude' unless rows with a missing value should be kept.",
             },
         )
