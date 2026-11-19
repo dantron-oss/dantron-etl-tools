@@ -212,3 +212,27 @@ class TestUnsignedArithmeticDoesNotWrap:
 
     def test_len_on_its_own_still_gives_what_it_gave(self) -> None:
         assert FRAME.select(compile_expr("len([s])", FRAME.schema).alias("x"))["x"].dtype == pl.UInt32
+
+
+class TestFormatNumberIgnoresTheProcessWideRounding:
+    """format_number rounds half to even on the exact value, whatever any other code set."""
+
+    @pytest.mark.parametrize("rounding", ["ROUND_HALF_UP", "ROUND_DOWN", "ROUND_CEILING", "ROUND_05UP"])
+    def test_a_changed_context_moves_nothing(self, rounding: str) -> None:
+        import decimal
+
+        frame = pl.DataFrame({"x": [0.125, 2.5, 1234.5, 651623.799, -2.5]})
+        expr = compile_expr("format_number([x], 2, ',', '.')", frame.schema).alias("a")
+        whole = compile_expr("format_number([x], 0, ',', '.')", frame.schema).alias("b")
+        expected = frame.select(expr, whole)
+        saved = decimal.getcontext().rounding
+        saved_default = decimal.DefaultContext.rounding
+        try:
+            decimal.getcontext().rounding = getattr(decimal, rounding)
+            decimal.DefaultContext.rounding = getattr(decimal, rounding)
+            assert frame.select(expr, whole).equals(expected)
+        finally:
+            decimal.getcontext().rounding = saved
+            decimal.DefaultContext.rounding = saved_default
+        assert expected["a"].to_list() == ["0.12", "2.50", "1,234.50", "651,623.80", "-2.50"]
+        assert expected["b"].to_list() == ["0", "2", "1,234", "651,624", "-2"]

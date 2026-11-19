@@ -475,6 +475,8 @@ Every one of these was measured, most of them the hard way.
   `999,999.99`, which looks like a defect and is not — that double is `999999.99499999999534...`.
   If a figure has to be rounded *and* formatted to the same answer, `round` it first and format the
   result. Decide which you want; do not discover the difference in a finished report.
+  On an exact tie `format_number` rounds to the even digit: `2.5` at no places reads `2`, and
+  `0.125` at two reads `0.12`. That rule is fixed; no setting elsewhere in the program can move it.
 - **`uuid5` on a key with a missing part gives a null id, not an id.** A null anywhere in the value
   — straight from a column, or through the `concat` that builds the key — makes the whole id null,
   the way `concat` itself already behaves. The alternative is worse than it looks: hashing a

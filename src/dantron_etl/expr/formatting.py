@@ -4,8 +4,12 @@ This is the per-row writer behind format_number(): the digits grouped in threes,
 places, and the separators the author stated.
 """
 
-from decimal import Decimal
-from typing import Any
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_EVEN, Context, Decimal, localcontext
+from typing import Any, Final
+
+# The one rounding format_number uses, whatever the process-wide decimal context says. Every field is
+# stated, because a bare Context() copies the process-wide defaults, which can be changed too.
+_ROUNDING: Final[Context] = Context(prec=MAX_PREC, rounding=ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)
 
 
 def _grouped(digits: str, separator: str) -> str:
@@ -54,7 +58,11 @@ def written_as_text(value: Any, decimals: int, thousands: str, point: str) -> st
     # Decimal(inf) renders 'Infinity', which _grouped() would put in a report cell as 'In,fin,ity'.
     if not number.is_finite():
         return None
-    rendered = format(number.copy_abs(), f".{decimals}f")
+    # format() rounds a Decimal with the current thread's context, which any code in the process
+    # may have changed. The rounding is stated here instead: half to even on the exact value,
+    # which is what the default context does, so a figure cannot move with someone else's setting.
+    with localcontext(_ROUNDING):
+        rendered = format(number.copy_abs(), f".{decimals}f")
     whole, _, fraction = rendered.partition(".")
     text = _grouped(whole, thousands)
     if fraction:
