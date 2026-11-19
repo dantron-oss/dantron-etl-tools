@@ -19,8 +19,10 @@ from typing import Any
 
 from .config import apply_defaults, validate_against_template
 from .contract import TERMINAL_CATEGORIES, input_ports_for
-from .errors import ConfigError, PipelineError, RegistryError
+from .errors import ConfigError, PipelineError, RegistryError, ToolError
+from .expr import ExpressionError
 from .registry import REGISTRY, ToolRegistry
+from .renames import MIGRATE_COMMAND, retired_names
 from .rules import resolve_rules
 from .spec import Container, Lane, Pipeline, PortRef, Step, toposort
 
@@ -48,7 +50,26 @@ def load_pipeline(
 
     ``document`` is a plain mapping because a file format is not part of what a pipeline *is* --
     see :func:`read_pipeline` for the file-reading convenience built on top of this.
+
+    When the document is refused and it still uses names that were renamed, the refusal says so:
+    the same error, with the old names and the command that migrates the file added at the end.
     """
+    try:
+        return _load_pipeline(document, rules, registry)
+    except (ToolError, ExpressionError) as error:
+        renamed = retired_names(document, registry)
+        if not renamed:
+            raise
+        listed = "".join(f"\n- {sentence}" for sentence in renamed)
+        hint = f"\nThis file uses names that were renamed:{listed}\nTo rewrite it in the new names, run: {MIGRATE_COMMAND} <file>"
+        raise type(error)(f"{error}{hint}") from error
+
+
+def _load_pipeline(
+    document: Mapping[str, Any],
+    rules: Mapping[str, Any] | None,
+    registry: ToolRegistry | None,
+) -> Pipeline:
     rules = rules if rules is not None else {}
     active_registry = registry if registry is not None else REGISTRY
 
