@@ -51,6 +51,7 @@ from ..authoring import (
     WorkedExample,
     scratch_path,
 )
+from ._files import require_file_to_read, validate_delimiter
 
 # The seven dtype names a declared column may use, spelled the way the query engine already spells
 # them in every dtype this catalog prints -- a second vocabulary for the same seven things would be
@@ -211,6 +212,7 @@ class ReadCsv:
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
             raise ConfigError(f"read_csv only reads {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
+        validate_delimiter(config["delimiter"])
         if config["skip_rows"] < 0:
             raise ConfigError(f"config field 'skip_rows' must not be negative, got {config['skip_rows']}")
         _validate_column_types(config["column_types"] or [])
@@ -221,9 +223,8 @@ class ReadCsv:
         A source has no ports to check columns against, so this is the one question this phase can
         still answer for it: is the world this configuration describes actually there?
         """
+        require_file_to_read("read_csv", config["path"])
         path = Path(config["path"])
-        if not path.is_file():
-            raise ConfigError(f"read_csv found no file at '{config['path']}'")
         if path.stat().st_size == 0:
             raise ConfigError(f"read_csv found no bytes in '{config['path']}'")
 
@@ -308,7 +309,7 @@ def _validate_header(fields: Sequence[str]) -> None:
     """Refuse a header that repeats or omits a name, rather than repair it in this reader's own words."""
     seen: set[str] = set()
     for index, value in enumerate(fields, start=1):
-        if value == "":
+        if value.strip() == "":
             raise ConfigError(
                 f"read_csv refuses a header with a blank heading at position {index}; a header cannot be guessed"
             )

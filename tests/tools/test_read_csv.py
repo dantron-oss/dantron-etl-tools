@@ -706,6 +706,7 @@ class TestTheBytesAndTheShapeOfTheFile:
         [
             pytest.param("key,amount,key", "key", id="a_heading_used_twice"),
             pytest.param("key,,code", "2", id="a_heading_left_blank"),
+            pytest.param("key,  ,code", "2", id="a_heading_of_only_spaces_is_blank_too_as_in_a_workbook"),
         ],
     )
     def test_a_header_line_that_repeats_or_omits_a_name_is_refused_rather_than_renamed(
@@ -739,6 +740,32 @@ class TestTheBytesAndTheShapeOfTheFile:
 
 class TestRefusalsAboutTheFile:
     """Every way this tool can fail to read at all, in this library's words rather than a reader's."""
+
+    @pytest.mark.parametrize(
+        ("delimiter", "accepted"),
+        [
+            pytest.param("\t", True, id="a_tab"),
+            pytest.param(";", True, id="a_semicolon"),
+            pytest.param("||", False, id="two_characters"),
+            pytest.param('"', False, id="the_quote_character"),
+            pytest.param("\n", False, id="a_line_ending"),
+        ],
+    )
+    def test_a_delimiter_is_one_character_and_not_the_quote_as_the_writer_requires(
+        self, tmp_path: Path, delimiter: str, accepted: bool
+    ) -> None:
+        """Checked before the file is read, in the same words as write_csv, so both tools agree."""
+        target = _file(tmp_path / "extract.csv", f"key{delimiter}code\nr1{delimiter}A\n")
+        tool = ReadCsv()
+        config = apply_defaults(tool.config_template(), {"path": str(target), "delimiter": delimiter})
+
+        if accepted:
+            tool.validate_config(config)
+            assert _read({"path": str(target), "delimiter": delimiter}).columns == ["key", "code"]
+            return
+        with pytest.raises(ConfigError) as caught:
+            tool.validate_config(config)
+        assert "'delimiter'" in str(caught.value)
 
     @pytest.mark.parametrize(
         ("situation", "name"),

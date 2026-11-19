@@ -38,10 +38,9 @@ from ..authoring import (
     WorkedExample,
     scratch_path,
 )
+from ._files import validate_delimiter
 
 _ACCEPTED_EXTENSIONS: Final[tuple[str, ...]] = (".csv", ".tsv")
-_QUOTE_CHAR: Final[str] = '"'
-_FORBIDDEN_DELIMITERS: Final[frozenset[str]] = frozenset({_QUOTE_CHAR, "\n", "\r"})
 
 _PLAIN_PATH: Final[str] = f"{SCRATCH_TOKEN}/plain.csv"
 _OVERWRITE_PATH: Final[str] = f"{SCRATCH_TOKEN}/overwrite.csv"
@@ -117,7 +116,7 @@ class WriteCsv:
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
             raise ConfigError(f"write_csv only writes {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
 
-        _validate_delimiter(config["delimiter"])
+        validate_delimiter(config["delimiter"])
 
         if Path(path).exists() and not config["overwrite"]:
             raise ConfigError(
@@ -144,16 +143,6 @@ class WriteCsv:
         frame = inputs["rows"]
         _write_csv(frame, config["path"], config["delimiter"])
         return Ports({"rows": frame})
-
-
-def _validate_delimiter(delimiter: str) -> None:
-    """Refuse a delimiter that is not exactly one character, or that is the quote or a line ending."""
-    if len(delimiter) != 1:
-        raise ConfigError(f"config field 'delimiter' must be exactly one character, got {delimiter!r}")
-    if delimiter in _FORBIDDEN_DELIMITERS:
-        raise ConfigError(
-            f"config field 'delimiter' may not be {delimiter!r}: it is the quote character or a line ending"
-        )
 
 
 def _write_csv(frame: pl.DataFrame, path: str, delimiter: str) -> None:

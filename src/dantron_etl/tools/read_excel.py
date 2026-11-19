@@ -14,17 +14,17 @@ What comes back is what the sheet holds, not what somebody once put in. A column
 written as floats comes back whole. The engine decides each column's type from its first 100 rows,
 so text inside those rows makes the column text. Text further down a column of figures would read
 as null, and so would a word the engine treats as missing (``n/a``, ``#N/A``); the read stops
-instead and points to ``as_text``. A header row is a sheet's schema, so a repeated heading, a blank one, or one that is a date
-or a truth value is refused rather than repaired. Two headings that read the same count as repeated,
-such as the number 2026 and the text "2026": this library's own vocabulary for either -- ``key_1``, ``__UNNAMED__1`` -- would
-otherwise leak into a flow's own column names, silently, the moment a downstream step names the
-column that came first.
+instead and points to ``as_text``.
+
+A header row is a sheet's schema. A repeated heading, a blank one, or one that is a date or a truth
+value is refused rather than repaired, and two headings that read the same (the number 2026 and the
+text "2026") count as repeated. Repaired, the engine's own names -- ``key_1``, ``__UNNAMED__1`` --
+would leak into a flow's column names the moment a downstream step names one of them.
 """
 
 import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Final
 
 import fastexcel
@@ -43,6 +43,7 @@ from ..authoring import (
     check_output_column,
     scratch_path,
 )
+from ._files import require_file_to_read
 
 _EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/rows.xlsx"
 _MONTHS_EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/months.xlsx"
@@ -220,17 +221,14 @@ class ReadExcel:
             ) from error
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        return None
+        """Refuse a workbook that is not there, before any step of the flow does work."""
+        require_file_to_read("read_excel", config["path"])
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         path = config["path"]
         sheet = config.get("sheet")
         has_header = config["has_header"]
         skip_rows = config["skip_rows"]
-
-        target = Path(path)
-        if not target.exists():
-            raise ConfigError(f"read_excel found no file at '{path}'")
 
         try:
             reader = fastexcel.read_excel(path)

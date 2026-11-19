@@ -358,6 +358,21 @@ class TestRefusalsAnAuthorCanActOn:
         assert "Figures" in message and "Read Me" in message and "Checks" in message, "and the ones that exist"
         assert not isinstance(caught.value, ExecutionError), "a named tab that is absent is not a surprise"
 
+    @pytest.mark.parametrize("situation", ["absent", "directory"])
+    def test_a_workbook_that_is_not_there_is_refused_before_anything_runs_as_read_csv_does(
+        self, tmp_path: Path, situation: str
+    ) -> None:
+        """Asked in validate_inputs, the phase that runs before any step of a flow does work."""
+        target = tmp_path / "pack.xlsx"
+        if situation == "directory":
+            target.mkdir()
+        tool = ReadExcel()
+
+        with pytest.raises(ConfigError) as caught:
+            tool.validate_inputs(Ports(), {"path": str(target), "sheet": "Figures"})
+
+        assert str(target) in str(caught.value)
+
     @pytest.mark.parametrize(
         "situation",
         [
