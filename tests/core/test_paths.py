@@ -59,10 +59,9 @@ import pytest
 
 from dantron_etl.paths import ROOT_ENV_VAR, ROOT_MARKERS, ProjectRootNotFound, project_root
 
-# Anchored on this test file rather than on ``acme.paths.PROJECT_ROOT``, deliberately. The checkout
-# under test is the one this file sits in; importing the client's answer to that question would make
-# the tests agree with whichever checkout happened to be installed -- which is the defect, not the
-# measurement of it.
+# Anchored on this test file, not on a consuming project's own root setting. The checkout under
+# test is the one this file sits in. Asking a consumer would make the tests agree with whichever
+# checkout happened to be installed.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPO_SRC = REPO_ROOT / "src"
 LIBRARY_SRC = REPO_SRC / "dantron_etl"
@@ -76,9 +75,9 @@ ROOT_ENV_VAR_NAME = "ETL_PROJECT_ROOT"
 # Subprocess probes
 #
 # Every claim about what a module imports, or about what it resolves at import time, is measured in
-# a fresh interpreter. The pytest session has already imported acme (conftest.py does) and already
-# has this repository's root on sys.path, so an in-process check of either would pass vacuously --
-# the same reasoning the existing boundary test states for its own subprocess.
+# a fresh interpreter. The pytest session has already imported plenty and already has this
+# repository's root on sys.path, so an in-process check of either would pass without proving
+# anything. The boundary test uses a subprocess for the same reason.
 # ---------------------------------------------------------------------------
 
 #: Import the library's paths module from a nominated sys.path entry and report every module-level
@@ -274,7 +273,7 @@ class TestTheEnvironmentVariableOverrides:
 
         Both sides of the same rule. A typo in a deployment variable is the likeliest way this is
         ever wrong in production, and trusting the override because somebody set it deliberately is
-        how ``ACME_PROJECT_ROOT`` pointing at a stale checkout goes unnoticed: every subsequent read
+        how a project-root variable pointing at a stale checkout goes unnoticed: every subsequent read
         finds a directory that exists and files that are simply the wrong ones. Refusing here costs a
         restart; accepting costs a rebuild from the wrong source.
         """

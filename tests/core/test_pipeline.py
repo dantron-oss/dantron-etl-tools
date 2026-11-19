@@ -1532,7 +1532,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
 # Containers: a title over a handful of steps
 #
 # Six hundred and seventy-two boxes on a canvas cannot be followed. A few dozen titled containers
-# can -- "fetch the crm accounts and put the header row back" says in one line what six boxes
+# can -- "fetch the account list and put the header row back" says in one line what six boxes
 # say in six, and a reader who trusts that line never has to open it.
 #
 # The shape is a `container` field on the step and a `containers:` block giving each id a title. Steps stay

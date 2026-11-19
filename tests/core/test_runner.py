@@ -1707,7 +1707,7 @@ class TestATraceSaysWhichPortsCameOutOfACache:
 
         A trace reports the ports it resumed from in the order the run reached them, because that is
         the order everything else on the trace is in and a reader following a walkthrough page from
-        top to bottom has no second ordering to reconcile. With one cached step the claim is
+        top to bottom has no second ordering to match up. With one cached step the claim is
         untestable -- run order, declaration order and sorted order are one sequence -- so the two
         here are handed over backwards.
         """
