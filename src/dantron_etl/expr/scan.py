@@ -34,15 +34,40 @@ _DIGITS: Final[str] = "0123456789"
 _QUOTED_TEXT_ADVICE: Final[str] = "write text in single quotes, like 'PAID'"
 
 
+# Characters outside quotes and brackets that are never part of this language, with what to write.
+# '#' would otherwise start a comment in the parser underneath and drop the rest of the line, and a
+# backslash would join two lines -- both silently.
+_REFUSED_CHARACTERS: Final[dict[str, str]] = {
+    "#": "'#' is not a comment in this language, and everything after it would be ignored: put a note in "
+    "the step's why instead",
+    "\\": "a backslash outside quotes is not part of this language",
+    "\u2018": "a curly quote is not part of this language, so write text in straight single quotes, like 'PAID'",
+    "\u2019": "a curly quote is not part of this language, so write text in straight single quotes, like 'PAID'",
+    "\u201c": "a curly quote is not part of this language, so write text in straight single quotes, like 'PAID'",
+    "\u201d": "a curly quote is not part of this language, so write text in straight single quotes, like 'PAID'",
+}
+
+
 class Scanned:
-    """The result of one forward scan: parseable text, plus the tables its indices point into."""
+    """The result of one forward scan: parseable text, plus the tables its indices point into.
 
-    __slots__ = ("columns", "literals", "source")
+    ``origins`` gives, for each character of ``source``, where it came from in the author's text, so
+    a syntax error found in ``source`` can be pointed at in the text the author wrote.
+    """
 
-    def __init__(self, source: str, columns: tuple[str, ...], literals: tuple[Any, ...]) -> None:
+    __slots__ = ("columns", "literals", "origins", "source")
+
+    def __init__(
+        self,
+        source: str,
+        columns: tuple[str, ...],
+        literals: tuple[Any, ...],
+        origins: tuple[int, ...] = (),
+    ) -> None:
         self.source = source
         self.columns = columns
         self.literals = literals
+        self.origins = origins
 
 
 class _Table:
@@ -79,17 +104,33 @@ def scan(text: str) -> Scanned:
     it does not.
     """
     pieces: list[str] = []
+    origins: list[int] = []
     columns = _Table()
     literals = _Table()
     index = 0
     length = len(text)
 
+    def emit(piece: str, start: int, verbatim: bool = False) -> None:
+        pieces.append(piece)
+        origins.extend(range(start, start + len(piece)) if verbatim else [start] * len(piece))
+
     while index < length:
         char = text[index]
 
+        refused = _REFUSED_CHARACTERS.get(char)
+        if refused is not None:
+            raise error(text, f"{refused} (character {index + 1})")
+        if not char.isascii():
+            raise error(
+                text,
+                f"{char!r} (character {index + 1}) is not part of this language: outside quotes and square "
+                f"brackets an expression is written in plain ASCII letters, digits and operators",
+            )
+
         if char == "'":
+            start = index
             value, index = _read_quoted(text, index)
-            pieces.append(f"{LITERAL_FN}({literals.intern(value)})")
+            emit(f"{LITERAL_FN}({literals.intern(value)})", start)
             continue
 
         if char == '"':
@@ -102,7 +143,7 @@ def scan(text: str) -> Scanned:
             name = text[index + 1 : end].strip()
             if not name:
                 raise error(text, "'[]' is an empty column reference, so name a column between the brackets")
-            pieces.append(f"{COLUMN_FN}({columns.intern(name)})")
+            emit(f"{COLUMN_FN}({columns.intern(name)})", index)
             index = end + 1
             continue
 
@@ -110,8 +151,9 @@ def scan(text: str) -> Scanned:
             raise error(text, "a ']' has no matching '[', so the bracket around a column name is unbalanced")
 
         if char in _DIGITS:
+            start = index
             span, index = _read_number(text, index)
-            pieces.append(span)
+            emit(span, start, verbatim=True)
             continue
 
         if char.isalpha() or char == "_":
@@ -125,18 +167,21 @@ def scan(text: str) -> Scanned:
                     fallback = f"{_QUOTED_TEXT_ADVICE}, or a date as date'2026-01-01'"
                     hint = _QUOTE_PREFIX_HINTS.get(word.lower(), fallback)
                     raise error(text, f"an unsupported literal prefix {word!r} appears before quoted text: {hint}")
+                start = index
                 raw, index = _read_quoted(text, end)
-                pieces.append(f"{LITERAL_FN}({literals.intern(_parse_date(text, raw))})")
+                emit(f"{LITERAL_FN}({literals.intern(_parse_date(text, raw))})", start)
                 continue
 
-            if word in _RESERVED_CALLS and _next_visible(text, end) == "(":
+            # col and lit are the scan's own names, so they are refused wherever they appear, not only
+            # before '(' -- '(lit)(0)' would otherwise reach the parser as a call.
+            if word in (COLUMN_FN, LITERAL_FN) or (word in _RESERVED_CALLS and _next_visible(text, end) == "("):
                 raise error(
                     text,
                     f"{word!r} is reserved for this language's own use and cannot be called: write a column as "
                     f"[name], text as 'value', and a date as date'2026-01-01'",
                 )
 
-            pieces.append(word)
+            emit(word, index, verbatim=True)
             index = end
             continue
 
@@ -145,21 +190,21 @@ def scan(text: str) -> Scanned:
                 raise error(text, "'==' is not how equality is written here, so use a single '=' instead")
             # ``!=``, ``<=`` and ``>=`` already mean what they say; only a lone '=' is a comparison
             # in this language and has to be doubled for the parser.
-            pieces.append("=" if index > 0 and text[index - 1] in "!<>" else "==")
+            emit("=" if index > 0 and text[index - 1] in "!<>" else "==", index)
             index += 1
             continue
 
         if char == "!":
             if text[index + 1 : index + 2] != "=":
                 raise error(text, "'!' on its own is not an operator here, so write '!=' to test for inequality")
-            pieces.append("!")
+            emit("!", index)
             index += 1
             continue
 
-        pieces.append(char)
+        emit(char, index)
         index += 1
 
-    return Scanned("".join(pieces), tuple(columns.values), tuple(literals.values))
+    return Scanned("".join(pieces), tuple(columns.values), tuple(literals.values), tuple(origins))
 
 
 def _read_quoted(text: str, quote_at: int) -> tuple[str, int]:
