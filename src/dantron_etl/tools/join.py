@@ -1,11 +1,11 @@
-"""Join: two input ports, three output ports, and no join type between them.
+"""Join: two input ports, three output ports, and one pairing behind them.
 
-**There is no `join_type`.** Inner, left, right and outer are not four behaviours a configuration
-picks between; they are four ways of reading the same pairing. So this tool always does the pairing
-once and hands back all three of its results on named ports -- `joined` for the pairs, `left_only`
-and `right_only` for the rows of each side that found nobody -- and which join a flow performed is
-decided by which of those ports it wires. A left join reads `joined` and `left_only`; an outer join
-reads all three; an anti-join reads `left_only` alone. What that buys is the orphan check for free:
+**`how` chooses between inner and left; the ports do the rest.** This tool does the pairing once
+and hands back all three of its results on named ports -- `joined` for the pairs, `left_only` and
+`right_only` for the rows of each side that found nobody. `how: left` also keeps every left row on
+`joined`, with the right-hand columns null where nothing paired. A right join is the same join with
+the inputs swapped, an outer join reads all three ports, and an anti-join reads `left_only` alone,
+so none of those is an option. What the ports buy is the orphan check for free:
 the rows a pairing failed to account for are an edge a flow can route to a report or an assertion,
 rather than a number someone reconstructs afterwards with a second join they have to remember to
 write.
@@ -120,8 +120,10 @@ class Join:
             detailed_description=(
                 "One pairing, three ports: `joined` carries a row per pair, so a key repeated on the "
                 "right fans one left row into a copy per match, and `left_only` / `right_only` carry "
-                "the rows of each side that paired with nothing -- which is why there is no join-type "
-                "option to choose between. An orphan port carries its own side's columns exactly as "
+                "the rows of each side that paired with nothing. 'how' chooses between an inner "
+                "and a left join. An outer or anti join is read from the ports instead, and a right "
+                "join is this join with the inputs swapped. An "
+                "orphan port carries its own side's columns exactly as "
                 "they arrived: no suffix, no columns from the other side, because an unpaired row is "
                 "an input row, not a join result with nulls in it."
             ),
