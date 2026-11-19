@@ -122,3 +122,46 @@ class TestLoggingSinkTakesAnyLoggerShapedObject:
             run_pipeline(spec, sources={"rows.rows": pl.DataFrame({"n": [1, 2]})}, sink=logging_sink(log))
         assert [level for level, _ in log.lines] == ["info", "warning", "error"]
         assert log.lines[1][1].startswith("step 'kept'") and log.lines[2][1].startswith("step 'checked'")
+
+
+class TestAFocusRefusalOnAFailedRunLeadsWithTheFailure:
+    """A run that stops at its first step reaches no port with the focus column. The step's own
+    failure is the cause, so it is the first thing a focus refusal says."""
+
+    def _failed_at_the_first_step(self, tmp_path):
+        from dantron_etl.loader import load_pipeline as load
+
+        spec = load(
+            {
+                "name": "fails first",
+                "steps": [
+                    {"id": "entries", "tool": "read_csv", "config": {"path": str(tmp_path / "missing.csv")}},
+                    {"id": "checked", "tool": "assert_rows", "config": {"predicate": "[party] != ''"}, "inputs": {"rows": "entries.rows"}},
+                ],
+            }
+        )
+        with pytest.raises(StepFailedError) as raised:
+            run_pipeline(spec)
+        return raised.value.trace
+
+    def test_available_entities_names_the_failed_step_first(self, tmp_path) -> None:
+        from dantron_etl import FocusSpec
+        from dantron_etl.focus import MissingEvidenceError, available_entities
+
+        trace = self._failed_at_the_first_step(tmp_path)
+        with pytest.raises(MissingEvidenceError) as raised:
+            available_entities(trace, FocusSpec(label="party", identity=("party",)))
+        message = str(raised.value)
+        assert message.startswith("The run stopped when step 'entries' failed")
+        assert "missing.csv" in message
+        assert "call run_pipeline" not in message, "the run already kept every frame; that advice is wrong here"
+
+    def test_a_run_that_finished_says_nothing_about_a_failure(self) -> None:
+        from dantron_etl import FocusSpec
+        from dantron_etl.focus import MissingEvidenceError, available_entities
+
+        spec = load_pipeline(_document())
+        trace = run_pipeline(spec, sources={"rows.rows": pl.DataFrame({"n": [1]})})
+        with pytest.raises(MissingEvidenceError) as raised:
+            available_entities(trace, FocusSpec(label="party", identity=("party",)))
+        assert "stopped" not in str(raised.value)
