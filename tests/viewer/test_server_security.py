@@ -169,7 +169,7 @@ class TestRunToken:
             other.shutdown()
 
     def test_the_token_is_in_the_served_page_and_not_in_the_saved_one(self, served: Served) -> None:
-        served_page = call(served.server, "GET", "/orders/").text
+        served_page = call(served.server, "GET", "/orders/good/").text
         assert meta_token(served_page) == served.server.token
         saved = (load_project(served.root).runs_folder / "orders" / PAGE_NAME).read_text(encoding="utf8")
         assert served.server.token not in saved

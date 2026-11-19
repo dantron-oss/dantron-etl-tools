@@ -38,6 +38,7 @@ __all__ = [
     "DEFAULT_PIPELINE_FOLDERS",
     "DEFAULT_RUNS_FOLDER",
     "PIPELINE_NAME",
+    "RESERVED_NAMES",
     "SETTINGS_FILE",
     "PipelineEntry",
     "Project",
@@ -51,6 +52,9 @@ __all__ = [
 DEFAULT_PIPELINE_FOLDERS = ("pipelines",)
 DEFAULT_RUNS_FOLDER = "output_files/runs"
 PIPELINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+#: Names the viewer uses for its own addresses, so a pipeline cannot have them.
+RESERVED_NAMES = frozenset({"api", "catalog"})
 
 #: The older settings file, kept beside a pipeline's inputs: ``<folder>/<name>/settings.yaml``.
 OLD_SETTINGS_FILE = "settings.yaml"
@@ -230,6 +234,7 @@ def _shown(path: Path, root: Path) -> str:
 def _discover(root: Path, folders: tuple[Path, ...], problems: list[str]) -> dict[str, Path]:
     """Pipeline files by name, directly inside each folder. The first folder wins a shared name."""
     found: dict[str, Path] = {}
+    by_folded: dict[str, Path] = {}
     for folder in folders:
         if not folder.is_dir():
             problems.append(f"The pipeline folder {_shown(folder, root)} does not exist.")
@@ -241,13 +246,20 @@ def _discover(root: Path, folders: tuple[Path, ...], problems: list[str]) -> dic
                     f"Skipped {_shown(path, root)}: '{name}' is not a pipeline name. "
                     f"Use letters, digits, '_' and '-' only, starting with a letter or digit."
                 )
-            elif name in found:
+            elif name in RESERVED_NAMES:
                 problems.append(
-                    f"Skipped {_shown(path, root)}: a pipeline called '{name}' was already found at "
-                    f"{_shown(found[name], root)}. Rename one of them."
+                    f"Skipped {_shown(path, root)}: '{name}' is reserved for the viewer's own pages. Rename the file."
+                )
+            elif name.casefold() in by_folded:
+                first = by_folded[name.casefold()]
+                same = "" if first.stem == name else " (names that differ only in capitals are the same name)"
+                problems.append(
+                    f"Skipped {_shown(path, root)}: a pipeline called '{first.stem}' was already found at "
+                    f"{_shown(first, root)}{same}. Rename one of them."
                 )
             elif _is_pipeline_or_unreadable(path):
                 found[name] = path.resolve()
+                by_folded[name.casefold()] = path
             else:
                 problems.append(f"Skipped {_shown(path, root)}: it has no 'steps' list, so it is not a pipeline.")
     return found

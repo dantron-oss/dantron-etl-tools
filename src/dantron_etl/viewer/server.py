@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 from ..cli import VIEWER_APP
 from ..errors import ToolError
 from ..expr import ExpressionError
+from ..focus import FocusError, FocusSpec
 from ..preview import FILTER_PREFIX, PAGE_NAME, PortStore, PreviewError
 from ..trace import StepEvent
 from .assets import escape as _e
@@ -272,8 +273,11 @@ def _entities(directory: Path, query: Mapping[str, list[str]]) -> dict[str, Any]
     return found
 
 
-def _rows(directory: Path, entry: PipelineEntry, query: Mapping[str, list[str]]) -> dict[str, Any]:
-    """One window of a saved port, narrowed by the column filters, a level and one entity."""
+def _rows(directory: Path, name: str, focus: FocusSpec | None, query: Mapping[str, list[str]]) -> dict[str, Any]:
+    """One window of a saved port, narrowed by the column filters, a level and one entity.
+
+    ``focus`` is the one the run was saved with, so a later change to the settings does not change it.
+    """
     store = PortStore(directory)
     port = _one(query, "port")
     filters = {key[len(FILTER_PREFIX) :]: values[0] for key, values in query.items() if key.startswith(FILTER_PREFIX)}
@@ -282,9 +286,9 @@ def _rows(directory: Path, entry: PipelineEntry, query: Mapping[str, list[str]])
     match = None
     no_grain = None
     if focus_value is not None:
-        if entry.focus is None:
-            raise PreviewError(f"pipeline '{entry.name}' has no focus set, so its rows cannot be narrowed to one")
-        how, found = focus_match(store, entry.focus, port, focus_value[0])
+        if focus is None:
+            raise PreviewError(f"this run of pipeline '{name}' follows no entity, so its rows cannot be narrowed to one")
+        how, found = focus_match(store, focus, port, focus_value[0])
         if how == "match":
             match = found
         else:
@@ -364,6 +368,11 @@ def _home(state: _State) -> str:
     for item in listed["pipelines"]:
         name, last = item["name"], item["last"]
         note = f'<p class="note">{_e(item["problem"])}</p>' if item["problem"] else ""
+        if last and last["previous_good"]:
+            note += (
+                f'<p class="note">The last good run, from {_e(_when(last["previous_good"]))}, is kept. '
+                f'<a href="/{_e(name)}/good/">Open it</a></p>'
+            )
         rows.append(
             "<tr>"
             f'<td><a href="/{_e(name)}/">{_e(item["title"])}</a><code>{_e(name)}</code>{note}</td>'
@@ -393,10 +402,18 @@ def _home(state: _State) -> str:
     )
 
 
+def _has_page_or_kept(good: RunRecord | None, failed: RunRecord | None) -> bool:
+    """Whether ``/<name>/`` moves to a slot: some run has a page, or a bad attempt kept a good run."""
+    if good is not None and failed is not None:
+        return True
+    only = good or failed
+    return only is not None and (only.directory / PAGE_NAME).is_file()
+
+
 def _runbar(name: str, running: bool, kept: RunRecord | None = None) -> str:
     """The run buttons and the progress line, with a link to the last good run when it was kept."""
     kept_line = (
-        f'<p class="banner kept">The last good run, started {_e(_when(kept.started))}, is kept. '
+        f'<p class="banner kept">The last good run, from {_e(_when(kept.started))}, is kept. '
         f'<a href="/{_e(name)}/good/">Open the last good run</a></p>'
         if kept is not None
         else ""
@@ -410,7 +427,9 @@ def _runbar(name: str, running: bool, kept: RunRecord | None = None) -> str:
     )
 
 
-def _pipeline_page(project: Project, entry: PipelineEntry, record: RunRecord | None, running: bool) -> str:
+def _pipeline_page(
+    project: Project, entry: PipelineEntry, record: RunRecord | None, running: bool, kept: RunRecord | None = None
+) -> str:
     """The page for a pipeline with no run page to show: never run, refused, or saved without one."""
     if record is None:
         happened = "This pipeline has not been run yet."
@@ -437,7 +456,7 @@ def _pipeline_page(project: Project, entry: PipelineEntry, record: RunRecord | N
         title=_e(entry.title),
         happened=_e(happened),
         messages=messages,
-        runbar=_runbar(entry.name, running),
+        runbar=_runbar(entry.name, running, kept),
         pagedata=_page_data(data),
     )
 
@@ -498,8 +517,13 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
         def _html(self, body: bytes) -> None:
             self._send(200, body, "text/html; charset=utf-8")
 
-        def _redirect(self, to: str) -> None:
-            self.send_response(301)
+        def _require_token(self) -> None:
+            sent = self.headers.get("X-Run-Token", "")
+            if not secrets.compare_digest(sent.encode("utf8"), state.token.encode("utf8")):
+                raise _Refused(403, "this request does not carry the viewer's run token; reload the page")
+
+        def _redirect(self, to: str, status: int = 301) -> None:
+            self.send_response(status)
             self.send_header("Location", to)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -513,7 +537,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 answer()
             except _Refused as refusal:
                 self._json(refusal.status, refusal.payload)
-            except PreviewError as refusal:
+            except (PreviewError, FocusError) as refusal:
                 self._json(400, {"error": str(refusal)})
             except ToolError as refusal:
                 self._json(500, {"error": str(refusal)})
@@ -556,6 +580,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 self._redirect(f"/{name}/")
                 return
             if rest == ["api", "plan"]:
+                self._require_token()
                 self._json(200, _plan(project, entry))
                 return
             if rest == ["api", "progress"]:
@@ -569,12 +594,15 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                     return
             good, failed = last_runs(project.runs_folder, name)
             record = {"good": good, "failed": failed, None: latest(good, failed)}[slot]
-            if rest == [""]:
+            if rest == [""] and slot is None and _has_page_or_kept(good, failed):
+                # A page's api/ requests are relative, so serving it from its slot keeps them on its run.
+                self._redirect(f"/{name}/{'failed' if record is failed else 'good'}/", 303)
+            elif rest == [""]:
                 self._run_page(project, entry, record, slot, good if record is failed else None)
             elif len(rest) == 2 and rest[0] == "api" and rest[1] in SLOT_APIS:
                 if record is None:
                     raise _Refused(404, f"pipeline '{name}' has no saved run here")
-                self._slot_api(rest[1], record.directory, entry, query)
+                self._slot_api(rest[1], record, entry, query)
             else:
                 raise _Refused(404, f"no page {'/'.join(segments)!r}")
 
@@ -586,12 +614,13 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             running = state.running(entry.name)
             saved = record.directory / PAGE_NAME if record is not None else None
             if saved is None or not saved.is_file():
-                self._html(_served(_pipeline_page(project, entry, record, running), state.token))
+                self._html(_served(_pipeline_page(project, entry, record, running, kept), state.token))
                 return
             runbar = _runbar(entry.name, running, kept)
             self._html(_served(saved.read_text(encoding="utf-8"), state.token, runbar))
 
-        def _slot_api(self, what: str, directory: Path, entry: PipelineEntry, query: Mapping[str, list[str]]) -> None:
+        def _slot_api(self, what: str, record: RunRecord, entry: PipelineEntry, query: Mapping[str, list[str]]) -> None:
+            directory = record.directory
             if what == "entities":
                 self._json(200, _entities(directory, query))
                 return
@@ -602,7 +631,8 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             if what == "ports":
                 self._json(200, {"ports": store.ports()})
             elif what == "rows":
-                self._json(200, _rows(directory, entry, query))
+                focus = record.focus if record.kind != "unknown" else entry.focus
+                self._json(200, _rows(directory, entry.name, focus, query))
             else:
                 self._html(store.panel(_one(query, "step")).encode("utf-8"))
 
@@ -618,9 +648,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                     allowed.add(_hostname(self.headers.get("Host")) or "")
                 if _hostname(origin) not in allowed:
                     raise _Refused(403, "a run may only be started from this viewer's own pages")
-            sent = self.headers.get("X-Run-Token", "")
-            if not secrets.compare_digest(sent.encode("utf8"), state.token.encode("utf8")):
-                raise _Refused(403, "this request does not carry the viewer's run token; reload the page")
+            self._require_token()
             body = self._body()
             self._start(body)
 

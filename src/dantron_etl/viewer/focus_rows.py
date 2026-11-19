@@ -10,7 +10,7 @@ from typing import Any
 
 import polars as pl
 
-from ..focus import FocusSpec
+from ..focus import FocusSpec, RelatedKeyError
 from ..preview import PortStore, PreviewError, _inside
 from ..spec import PortRef
 
@@ -43,22 +43,25 @@ def focus_match(store: PortStore, focus: FocusSpec, port: str, value: str) -> tu
 
     Returns ``("match", {column: [texts]})``, or ``("no_grain", reason)`` for a port with no column
     naming the entity. A port named in ``focus.via`` is matched on its key, using the key values
-    found at the port it learns from.
+    found at the port it learns from. A via port that cannot be narrowed that way raises
+    ``RelatedKeyError`` naming it, as ``focus.slice_trace`` does.
     """
     step, _, name = port.partition(".")
     related = focus.via.get(PortRef(step, name))
     if related is not None:
         origin = f"{related.from_port.step}.{related.from_port.port}"
+        if related.key not in _columns(store, port):
+            raise RelatedKeyError(f"port {port} has no column {related.key!r} to match the related key on")
         origin_columns = _columns(store, origin)
+        if related.key not in origin_columns:
+            raise RelatedKeyError(
+                f"port {port} learns its key {related.key!r} from {origin}, which has no such column"
+            )
         identity = focus.identity_column(tuple(origin_columns))
         if identity is None:
-            return "no_grain", (
-                f"port {port} is reached through {origin}, but {origin} has no column naming a {focus.label}"
+            raise RelatedKeyError(
+                f"port {port} learns its key from {origin}, but {origin} has no column naming a {focus.label}"
             )
-        if related.key not in origin_columns:
-            return "no_grain", f"port {origin} has no column {related.key!r} to learn the key from"
-        if related.key not in _columns(store, port):
-            return "no_grain", f"port {port} has no column {related.key!r} to match the key on"
         learned = _texts(store, origin, {identity: [str(value)]}, related.key)
         return "match", {related.key: learned}
 

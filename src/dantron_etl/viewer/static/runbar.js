@@ -114,7 +114,8 @@
   async function real(name) {
     let plan;
     try {
-      const answer = await fetch(base(name) + 'api/plan');
+      // The plan loads the pipeline, which may run project code, so it needs the token too.
+      const answer = await fetch(base(name) + 'api/plan', { headers: { 'X-Run-Token': token } });
       plan = await answer.json();
       if (!answer.ok) throw new Error(plan.error);
     } catch (err) {

@@ -245,16 +245,23 @@ def _view(arguments: argparse.Namespace) -> int:
 def choose_port(root: Path, *, preferred: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> tuple[int, bool]:
     """The port to serve on, and whether a viewer for ``root`` already runs there.
 
-    The preferred port when it is free. The same port when a viewer for this project holds it.
-    Otherwise the first free port of 8900 to 8919, then any free port.
+    The preferred port when it is free. A port of 8900 to 8919 when a viewer for this project
+    already holds it or the preferred one. Otherwise the first free port of those, then any free port.
     """
     if _can_bind(host, preferred):
         return preferred, False
     if _viewer_for(root, host, preferred):
         return preferred, True
+    free = None
     for port in SPARE_PORTS:
-        if port != preferred and _can_bind(host, port):
-            return port, False
+        if port == preferred:
+            continue
+        if _can_bind(host, port):
+            free = port if free is None else free
+        elif _viewer_for(root, host, port):
+            return port, True
+    if free is not None:
+        return free, False
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as probe:
         probe.bind((host, 0))
@@ -275,12 +282,13 @@ def _can_bind(host: str, port: int) -> bool:
 
 
 def _viewer_for(root: Path, host: str, port: int) -> bool:
-    """Whether the server on ``port`` is a viewer for the project at ``root``."""
+    """Whether the server on ``port`` is a viewer for the project at ``root``. Proxy settings are ignored."""
     import json
 
     shown = f"[{host}]" if ":" in host else host
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(f"http://{shown}:{port}/api/whoami", timeout=1) as response:
+        with opener.open(f"http://{shown}:{port}/api/whoami", timeout=1) as response:
             answer = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError):
         return False

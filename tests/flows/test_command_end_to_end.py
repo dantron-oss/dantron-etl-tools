@@ -193,7 +193,7 @@ class TestAPreviewOfTheExample:
 
 class TestThePageAndItsPanels:
     def test_every_step_the_canvas_draws_is_a_step_of_the_file_and_has_a_panel(self, previewed: Previewed) -> None:
-        page = get_text(previewed.server, f"/{NAME}/")
+        page = get_text(previewed.server, f"/{NAME}/good/")
         drawn = drawn_steps(page)
 
         assert sorted(drawn) == sorted(step["id"] for step in previewed.document["steps"])
@@ -218,7 +218,7 @@ class TestThePageAndItsPanels:
         saved = page_data((folder / PAGE_NAME).read_text(encoding="utf-8"))
 
         assert {key: saved.get(key) for key in record} == record
-        assert page_data(get_text(previewed.server, f"/{NAME}/")) == saved
+        assert page_data(get_text(previewed.server, f"/{NAME}/good/")) == saved
 
     def test_the_entity_picker_offers_every_customer_found_in_any_saved_port(self, previewed: Previewed) -> None:
         offered = get_json(previewed.server, f"/{NAME}/api/entities?limit=500")

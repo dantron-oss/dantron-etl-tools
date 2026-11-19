@@ -222,6 +222,17 @@ def get_json(server: ViewerServer, target: str) -> Any:
     return answer.json()
 
 
+def get_plan(server: ViewerServer, name: str) -> Answer:
+    """The plan loads the pipeline, so it is asked for with the run token, as the page does."""
+    return call(server, "GET", f"/{name}/api/plan", headers={"X-Run-Token": server.token})
+
+
+def plan_json(server: ViewerServer, name: str) -> Any:
+    answer = get_plan(server, name)
+    assert answer.status == 200, (name, answer.status, answer.text[:500])
+    return answer.json()
+
+
 def post_run(server: ViewerServer, payload: dict[str, Any]) -> Answer:
     headers = {"Content-Type": "application/json", "X-Run-Token": server.token}
     return call(server, "POST", "/api/run", body=json.dumps(payload).encode("utf8"), headers=headers)
@@ -402,7 +413,7 @@ class TestListing:
         assert get_json(listed.server, "/api/whoami") == {"app": "dantron-etl viewer", "project": str(listed.root)}
 
     def test_the_plan_lists_what_a_real_run_would_write(self, listed: Served) -> None:
-        plan = get_json(listed.server, "/orders/api/plan")
+        plan = plan_json(listed.server, "orders")
         assert plan["steps"] == 5
         assert plan["preview"] == {"runs": ["read", "keep", "totals"], "held_back": ["save", "audit"]}
         assert [(w["step"], w["kind"]) for w in plan["writes"]] == [("save", "file")]
@@ -411,7 +422,7 @@ class TestListing:
         assert plan["problem"] is None
 
     def test_a_pipeline_needing_rules_says_what_to_add_to_the_settings(self, listed: Served) -> None:
-        plan = get(listed.server, "/needs_rules/api/plan").text
+        plan = get_plan(listed.server, "needs_rules").text
         page = html.unescape(get(listed.server, "/needs_rules/").text)
         for told in (plan, page):
             assert "etl-project.yaml" in told
@@ -464,7 +475,7 @@ class TestPreviewRun:
             assert window["total"] == entry["rows"], port
 
     def test_the_drawn_graph_equals_the_wiring_in_the_file(self, previewed: Served) -> None:
-        page = get(previewed.server, "/orders/").text
+        page = get(previewed.server, "/orders/good/").text
         assert edges(page) == wiring(previewed.root / "pipelines" / "orders.yaml")
 
     def test_entities_lists_every_party_and_a_search_can_match_nothing_or_be_capped(self, previewed: Served) -> None:
@@ -496,7 +507,7 @@ class TestPreviewRun:
         assert window["matched"] < window["total"]
 
     def test_the_page_carries_the_run_record(self, previewed: Served) -> None:
-        data = page_data(get(previewed.server, "/orders/").text)
+        data = page_data(get(previewed.server, "/orders/good/").text)
         assert set(find_key(data, "held_back")) == {"save", "audit"}
         assert find_key(data, "outcome") == "finished"
         good = page_data(get(previewed.server, "/orders/good/").text)
@@ -552,7 +563,7 @@ class TestFailedRun:
         assert port_names(get_json(failed.server, "/orders/failed/api/ports")) == {"read.rows"}
 
     def test_the_pipeline_page_shows_the_failure(self, failed: Served) -> None:
-        page = get(failed.server, "/orders/").text
+        page = get(failed.server, "/orders/failed/").text
         data = page_data(page)
         assert find_key(data, "outcome") == "failed"
         assert find_key(data, "failed_step") == "keep"
@@ -595,7 +606,7 @@ def nothing_ran(served: Served, name: str) -> None:
 
 class TestRealRun:
     def test_a_confirmed_real_run_writes_its_target(self, real: Served) -> None:
-        digest = get_json(real.server, "/orders/api/plan")["digest"]
+        digest = plan_json(real.server, "orders")["digest"]
         answer = post_run(real.server, {"pipeline": "orders", "kind": "real", "confirm": "orders", "digest": digest})
         assert answer.status == 202
         assert wait_done(real.server, "orders")["state"] == "finished"
@@ -619,7 +630,7 @@ class TestRealRun:
     def test_a_real_run_without_the_right_confirmation_writes_nothing(
         self, real: Served, change: dict[str, Any], refused_with: set[int]
     ) -> None:
-        digest = get_json(real.server, "/ledger/api/plan")["digest"]
+        digest = plan_json(real.server, "ledger")["digest"]
         payload: dict[str, Any] = {"pipeline": "ledger", "kind": "real", "confirm": "ledger", "digest": digest}
         payload.update(change)
         payload = {key: value for key, value in payload.items() if value is not None}
@@ -631,12 +642,12 @@ class TestRealRun:
         nothing_ran(real, "ledger")
 
     def test_a_stale_digest_is_refused_with_the_fresh_plan(self, real: Served) -> None:
-        stale = get_json(real.server, "/moving/api/plan")["digest"]
+        stale = plan_json(real.server, "moving")["digest"]
         moved = real.root / "output" / "moved_elsewhere.csv"
         (real.root / "pipelines" / "moving.yaml").write_text(
             orders_flow(real.root, "moving", target=moved), encoding="utf8"
         )
-        fresh = get_json(real.server, "/moving/api/plan")["digest"]
+        fresh = plan_json(real.server, "moving")["digest"]
         assert fresh != stale
 
         answer = post_run(real.server, {"pipeline": "moving", "kind": "real", "confirm": "moving", "digest": stale})

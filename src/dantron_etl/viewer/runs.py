@@ -9,24 +9,29 @@ refused goes into ``<name>.failed`` and leaves ``<name>``, the last good run, as
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import secrets
 import shutil
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 from ..errors import ToolError
 from ..expr import ExpressionError
-from ..focus import FocusError, FocusSpec, available_entities
+from ..focus import EntityOption, FocusError, FocusSpec, available_entities
 from ..preview import MANIFEST, PAGE_NAME, persist_panels, persist_trace
 from ..runner import run_pipeline
 from ..spec import Pipeline
 from ..trace import PipelineTrace, StepEvent, StepFailedError
 from .project import Project, PipelineEntry, ProjectError, load_entry
+from .project_settings import parse_focus
 from .render import build, build_panels
 
 __all__ = [
@@ -49,6 +54,10 @@ FAILED_SUFFIX = ".failed"
 ENTITIES_FILE = "entities.json"
 WRITER_CATEGORY = "output"
 KINDS = ("preview", "real")
+
+#: Held while a slot folder is moved aside and replaced, so a reader never puts back a folder a
+#: save in this process has only just moved aside.
+_SWAP_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -85,13 +94,18 @@ def preview_plan(spec: Pipeline) -> Plan:
 
 @dataclass(frozen=True)
 class Write:
-    """One thing a writer step changes: a file, a table, or something else it names."""
+    """One thing a writer step changes: a file, a table, or something else it names.
+
+    ``settings`` is the writer step's whole configuration as compact JSON, so the digest changes
+    when any setting does, not only the ones ``detail`` puts into words.
+    """
 
     step: str
     tool: str
     kind: str
     target: str
     detail: str
+    settings: str
 
 
 def _plain(value: Any) -> Any:
@@ -127,20 +141,31 @@ def _sheet_names(sheets: Any) -> list[str]:
     return names
 
 
-def _detail(config: Mapping[str, Any], template: Mapping[str, Any], mode: Any = None) -> str:
+def _either(config: Mapping[str, Any], template: Mapping[str, Any], key: str, yes: str, no: str) -> list[str]:
+    """``yes`` or ``no`` for an on-or-off setting the step or its tool has, else nothing."""
+    if key not in config and key not in template:
+        return []
+    return [yes if _setting(config, template, key) else no]
+
+
+def _detail(config: Mapping[str, Any], template: Mapping[str, Any]) -> str:
     """The plain words that go with a write: how it treats what is there, and where it goes."""
-    parts = []
-    if "overwrite" in config or "overwrite" in template:
-        if _setting(config, template, "overwrite"):
-            parts.append("overwrites the file")
-        else:
-            parts.append("stops if the file is already there")
+    parts = _either(config, template, "overwrite", "overwrites the file", "stops if the file is already there")
     names = _sheet_names(config.get("sheets"))
     if names:
         parts.append(f"sheets: {', '.join(names)}")
-    mode = mode if mode is not None else _setting(config, template, "mode")
+    parts += _either(
+        config, template, "overwrite_sheets", "replaces sheets already there", "stops if a sheet is already there"
+    )
+    if config.get("template"):
+        parts.append(f"starts from template {config['template']}")
+    mode = _setting(config, template, "mode")
     if mode is not None:
         parts.append(f"mode {mode}")
+    keys = config.get("keys")
+    if keys:
+        parts.append(f"keys: {', '.join(map(str, keys)) if isinstance(keys, list | tuple) else keys}")
+    parts += _either(config, template, "allow_empty", "writes even when there are no rows", "stops when there are no rows")
     connection = config.get("connection")
     if connection:
         parts.append(f"database named by {connection}")
@@ -163,27 +188,28 @@ def writes(spec: Pipeline, root: Path) -> tuple[Write, ...]:
             continue
         config = step.config
         template = tool.config_template()
+        settings = _compact(config)
         tables = config.get("tables")
         if isinstance(config.get("path"), str):
             target = str(Path(root) / config["path"])
-            found.append(Write(step_id, step.tool, "file", target, _detail(config, template)))
+            found.append(Write(step_id, step.tool, "file", target, _detail(config, template), settings))
         elif isinstance(config.get("table"), str):
             target = _table_name(config.get("schema"), config["table"])
-            found.append(Write(step_id, step.tool, "table", target, _detail(config, template)))
+            found.append(Write(step_id, step.tool, "table", target, _detail(config, template), settings))
         elif isinstance(tables, list | tuple) and tables and all(
             isinstance(item, Mapping) and isinstance(item.get("table"), str) for item in tables
         ):
             for item in tables:
                 target = _table_name(item.get("schema", config.get("schema")), item["table"])
-                detail = _detail(config, template, mode=item.get("mode"))
-                found.append(Write(step_id, step.tool, "table", target, detail))
+                detail = _detail({**config, **item}, template)
+                found.append(Write(step_id, step.tool, "table", target, detail, settings))
         else:
-            found.append(Write(step_id, step.tool, "other", _compact(config), ""))
+            found.append(Write(step_id, step.tool, "other", settings, "", settings))
     return tuple(found)
 
 
 def writes_digest(found: Sequence[Write]) -> str:
-    """A fingerprint of what a real run writes. It changes when any target or detail changes."""
+    """A fingerprint of what a real run writes. It changes when any write or any writer setting changes."""
     text = json.dumps([asdict(one) for one in found], sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf8")).hexdigest()
 
@@ -208,6 +234,23 @@ class RunRecord:
     failed_step: str | None
     message: str | None
     directory: Path
+    focus: FocusSpec | None = None
+
+
+def _focus_data(focus: FocusSpec | None) -> dict[str, Any] | None:
+    """A focus in the form the settings file takes, to save with a run."""
+    if focus is None:
+        return None
+    via = {str(port): {"from": str(rule.from_port), "key": rule.key} for port, rule in focus.via.items()}
+    return {"columns": list(focus.identity), "via": via}
+
+
+def _saved_focus(data: Mapping[str, Any], name: str) -> FocusSpec | None:
+    """The focus a run was saved with, or None when it had none or it does not read back."""
+    try:
+        return parse_focus(data.get("focus"), name, "a saved run")
+    except ProjectError:
+        return None
 
 
 def _now() -> str:
@@ -239,6 +282,7 @@ def _read(directory: Path, name: str) -> RunRecord | None:
                 failed_step=data.get("failed_step"),
                 message=data.get("message"),
                 directory=directory,
+                focus=_saved_focus(data, name),
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             return _unknown(name, directory, record_file)
@@ -247,10 +291,25 @@ def _read(directory: Path, name: str) -> RunRecord | None:
     return None
 
 
+def _recover(folder: Path, slot: str) -> None:
+    """Put back a run a save moved aside and then stopped before putting the new one in."""
+    with _SWAP_LOCK:
+        if (folder / slot).exists():
+            return
+        aside = sorted(folder.glob(f".{slot}.old-*"), key=lambda path: path.stat().st_mtime)
+        if aside:
+            with contextlib.suppress(OSError):
+                aside[-1].rename(folder / slot)
+
+
 def last_runs(runs_folder: Path, name: str) -> tuple[RunRecord | None, RunRecord | None]:
     """The last good run and the last failed or refused one, each ``None`` when there is none."""
     folder = Path(runs_folder)
-    return _read(folder / name, name), _read(folder / f"{name}{FAILED_SUFFIX}", name)
+    slots = (name, f"{name}{FAILED_SUFFIX}")
+    if folder.is_dir():
+        for slot in slots:
+            _recover(folder, slot)
+    return _read(folder / slots[0], name), _read(folder / slots[1], name)
 
 
 def _when(record: RunRecord) -> datetime:
@@ -271,17 +330,25 @@ def latest(good: RunRecord | None, failed: RunRecord | None) -> RunRecord | None
 def _swap_in(incoming: Path, target: Path) -> None:
     """Put ``incoming`` where ``target`` is. The old folder is moved aside first, then deleted."""
     aside = None
-    if target.exists():
-        aside = target.with_name(f".{target.name}.old-{secrets.token_hex(6)}")
-        target.rename(aside)
-    try:
-        incoming.rename(target)
-    except OSError:
-        if aside is not None:
-            aside.rename(target)
-        raise
+    with _SWAP_LOCK:
+        if target.exists():
+            aside = target.with_name(f".{target.name}.old-{secrets.token_hex(6)}")
+            target.rename(aside)
+        try:
+            incoming.rename(target)
+        except OSError:
+            if aside is not None:
+                aside.rename(target)
+            raise
     if aside is not None:
         shutil.rmtree(aside, ignore_errors=True)
+
+
+def _clear_incoming(folder: Path, name: str) -> None:
+    """Delete folders an interrupted save of this pipeline left behind."""
+    if folder.is_dir():
+        for stale in folder.glob(f".{name}.incoming-*"):
+            shutil.rmtree(stale, ignore_errors=True)
 
 
 def _save(project: Project, name: str, good: bool, fill: Callable[[Path], None]) -> Path:
@@ -308,14 +375,31 @@ def _write_record(directory: Path, record: Mapping[str, Any]) -> None:
 
 
 def _record(directory: Path, data: Mapping[str, Any]) -> RunRecord:
-    return RunRecord(**{**data, "held_back": tuple(data["held_back"]), "directory": directory})
+    fields = {**data, "held_back": tuple(data["held_back"]), "directory": directory}
+    fields["focus"] = _saved_focus(data, str(data["pipeline"]))
+    return RunRecord(**fields)
+
+
+def _as_text(trace: PipelineTrace, focus: FocusSpec, options: Sequence[EntityOption]) -> list[str]:
+    """Each entity value as the text the row matching compares with: its column cast to String."""
+    by_type: dict[pl.DataType, list[int]] = {}
+    for at, option in enumerate(options):
+        port = option.ports[0]
+        column = focus.identity_column(trace.shapes[port].columns)
+        by_type.setdefault(trace.frames[port].schema[column], []).append(at)
+    texts = [""] * len(options)
+    for dtype, places in by_type.items():
+        values = pl.Series([options[at].value for at in places], dtype=dtype).cast(pl.String, strict=False)
+        for at, text in zip(places, values.to_list(), strict=True):
+            texts[at] = text
+    return texts
 
 
 def _entities(trace: PipelineTrace, focus: FocusSpec) -> dict[str, Any]:
     """Every entity the run can be followed by, as text. A focus that cannot list them says why."""
     found: dict[str, Any] = {"label": focus.label, "columns": list(focus.identity)}
     try:
-        found["values"] = [str(option.value) for option in available_entities(trace, focus)]
+        found["values"] = _as_text(trace, focus, available_entities(trace, focus))
     except FocusError as reason:
         found["values"] = []
         found["reason"] = str(reason)
@@ -345,6 +429,7 @@ def execute(
 
     if kind not in KINDS:
         raise ProjectError(f"a run is 'preview' or 'real', not {kind!r}")
+    _clear_incoming(project.runs_folder, entry.name)
     data: dict[str, Any] = {
         "pipeline": entry.name,
         "kind": kind,
@@ -356,6 +441,7 @@ def execute(
         "held_back": [],
         "failed_step": None,
         "message": None,
+        "focus": _focus_data(entry.focus),
     }
     try:
         spec = load_entry(project, entry)
