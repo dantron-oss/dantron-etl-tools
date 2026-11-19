@@ -1,39 +1,10 @@
-"""MatchOneToOne: take the best pairs first, and never use a key twice.
+"""MatchOneToOne: take the best candidate pairs first, and never use a key twice.
 
-Each row of ``candidates`` is one possible pairing of a left key with a right key. The tool walks the
-candidates from best to worst and accepts a pair when neither of its keys has been used yet. A join
-and a filter cannot say this, because whether a candidate is still open depends on which candidates
-were accepted before it.
+Each row of `candidates` is one possible pair of a left key and a right key. The best pairs are
+accepted first; a pair is accepted only while both its keys are free. Whether a candidate is still
+open depends on earlier choices, which no join or filter can express.
 
-**The order of the walk.** The configured ``priority`` columns come first, each in its own direction,
-like ``sort``. A direction left out means ascending. Missing values sort last. The tool then adds the
-left key ascending and the right key ascending as the last two tie-breaks. So two candidates are
-never in an undecided order, and the result does not depend on the order the rows arrived in. Both
-output ports come out in this order.
-
-**Two output ports.** ``accepted`` holds the pairs taken. ``rejected`` holds every other candidate.
-Every input row leaves on exactly one of them, with all its columns, like ``filter``.
-
-**Ties.** With ``ties: first`` (the default), the walk order decides: candidates equal on every
-priority column fall to the smaller left key, then the smaller right key.
-
-With ``ties: refuse``, the walk stops at each candidate whose two keys are both free and looks for a
-rival. A rival is another candidate that shares the left key (or the right key), has exactly the
-same values on every priority column, and is still available. Available means neither of its keys
-has been taken or refused yet. Two missing values count as the same value here. The key tie-break
-never counts as a difference. A key with a rival is refused. It stays unmatched for the rest of the
-walk, and every candidate naming it is rejected. A refusal never takes the key on the other side of
-the pair, so that key stays free for other candidates.
-
-**A missing key pairs with nothing**, as in ``join``, which follows SQL's ``=``. A candidate with a
-missing left or right key goes to ``rejected`` and takes no key from anyone.
-
-**How the walk runs on whole columns.** It goes in rounds. In each round, every open candidate whose
-outcome no earlier open candidate can still change is decided at once. Under ``first`` that is a
-candidate that comes first for both its keys. Under ``refuse`` it must also come before every open
-candidate that could change whether its rivals are still available. The best open candidate always
-qualifies, so each round decides at least one. The number of rounds grows with the longest chain of
-candidates pushed to a second choice, not with the number of rows.
+Why: docs/design/tools.md#match_one_to_one
 """
 
 from collections.abc import Mapping
@@ -62,7 +33,7 @@ class MatchOneToOne:
     """Accept the best candidate pairs first, so no left key and no right key is matched twice."""
 
     name = "match_one_to_one"
-    description = "Pair left keys with right keys one to one, taking the best candidates first."
+    description = "Pair items one to one from a list of possible pairs, taking the best pairs first."
     category = "preparation"
     input_ports = ("candidates",)
     output_ports = ("accepted", "rejected")
@@ -118,42 +89,45 @@ class MatchOneToOne:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Each row is one possible pair of a left key and a right key. The tool walks the rows "
-                "from best to worst by 'priority', then by left key, then by right key. It accepts a "
-                "pair when neither key has been used. Accepted pairs go to 'accepted'. Every other "
-                "row goes to 'rejected'. Each row leaves on exactly one port, with all its columns, "
-                "and both ports come out in the walk order."
+                "Use match_one_to_one when each item may be paired at most once, such as matching "
+                "payments to invoices where several invoices could fit. Each input row is one possible "
+                "pair, with columns that rank it, such as the gap in days or amount. The best pairs "
+                "are taken first, and a pair is taken only if neither of its keys is used yet. Taken "
+                "pairs go to `accepted`; every other row goes to `rejected`, with all its columns."
             ),
             examples=(_first_example(), _refuse_example()),
             notes=(
+                "Rows are ranked by 'priority', then by left key, then by right key, both ascending, "
+                "so the result does not depend on the order the rows arrived in. Both ports come out "
+                "in that order.",
                 "A missing left or right key pairs with nothing, as a null key does in a SQL join. "
-                "That row goes to 'rejected' and uses no key.",
-                "Under 'refuse', a rival is another candidate that shares a key, has the same values "
-                "on every priority column, and has neither key taken or refused yet. Two missing "
-                "values count as the same. A key with a rival is refused and stays unmatched. The "
-                "key on the other side stays free.",
-                "Under 'refuse', two rows with the same keys and the same priority values are rivals "
-                "of each other. Both keys are refused. Remove repeated rows first if they are copies.",
+                "That row goes to `rejected` and uses no key.",
+                "With 'ties: first', candidates equal on every priority column go to the smaller left "
+                "key, then the smaller right key.",
+                "With 'ties: refuse', a key whose best candidates are equal is refused: it stays "
+                "unmatched, and every candidate naming it is rejected. The key on the other side stays "
+                "free for others.",
+                "Under 'refuse', a rival is another candidate that shares a key, has the same values on "
+                "every priority column, and has neither key taken or refused yet. Two missing values "
+                "count as the same.",
+                "Under 'refuse', two rows with the same keys and the same priority values are rivals of "
+                "each other, so both keys are refused. Remove repeated rows first if they are copies.",
                 "Missing values in a priority column sort last, in either direction.",
                 "Two rows with the same keys and the same priority values come out in the order they "
                 "arrived. Nothing else tells them apart.",
             ),
             field_help={
-                "left_key": "The left key. Each left key is accepted at most once.",
-                "right_key": "The right key. Each right key is accepted at most once. Must be a "
-                "different column from 'left_key'.",
-                "priority": "A list of ranking columns, each with an optional 'direction'. Later "
-                "columns only break ties left by earlier ones.",
-                "ties": "'first' (the default) or 'refuse'.",
+                "left_key": "For example 'invoice_id'. Each left key is accepted at most once.",
+                "right_key": "For example 'payment_id'. Each right key is accepted at most once. It "
+                "must be a different column from 'left_key'.",
+                "priority": "For example [{column: day_gap}, {column: amount_gap}]. Later columns only "
+                "break ties left by earlier ones.",
+                "ties": "Use 'refuse' when an equally good second choice should be looked at by a person.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """The rules a template cannot state: one column on both sides, and the same checks as sort.
-
-        Like sort, a priority entry with a blank column, a direction given with no value, or a
-        column named twice is refused, by its path.
-        """
+        """Refuse the same column on both sides, and the priority checks sort makes, by path."""
         if config["left_key"] == config["right_key"]:
             raise ConfigError(
                 f"config fields 'left_key' and 'right_key' both name {config['left_key']!r}; a pair needs a left "
@@ -178,7 +152,7 @@ class MatchOneToOne:
             seen[column] = index
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Both key columns and every priority column have to be on the input."""
+        """Refuse a key or priority column that is not on the input."""
         frame = inputs["candidates"]
         require_columns(frame, [config["left_key"]], "left_key", "candidates")
         require_columns(frame, [config["right_key"]], "right_key", "candidates")
@@ -213,8 +187,8 @@ class MatchOneToOne:
 
         refuse = config["ties"] == "refuse"
         accepted: list[pl.Series] = []
-        # The walk runs in rounds. `work` holds the open candidates: not yet decided, and both keys
-        # still free. A round decides every open candidate that no earlier open candidate can affect.
+        # The walk runs in rounds (docs/design/tools.md#match_one_to_one). `work` holds the open
+        # candidates. A round decides every open candidate that no earlier open candidate can affect.
         #
         # - 'first': a candidate's fate depends only on its own two keys. If no earlier open
         #   candidate shares either key, nothing can take them first, so it is accepted now.

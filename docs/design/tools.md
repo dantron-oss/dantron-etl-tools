@@ -574,3 +574,36 @@ text beside the match, as `\b` and `\B` do. So each distinct text is searched on
 and a text where they differ is refused; a pattern that can match empty text is the usual cause.
 `match_number_column` is required, because without it two rows from one text cannot be told apart.
 `position_column` is refused, because one offset cannot describe several matches.
+
+## match_one_to_one
+
+**Why a tool.** Whether a candidate is still open depends on which candidates were accepted before
+it. A join and a filter cannot say that.
+
+**The walk order is total.** `priority` columns first, each in its own direction like sort, missing
+values last; then the left key and the right key, ascending. No two candidates are ever in an undecided
+order, so the result does not depend on arrival order. Both ports come out in walk order.
+
+**Two ports, like filter.** Every input row leaves on exactly one of `accepted` or `rejected`, with all
+its columns.
+
+**A missing key pairs with nothing,** as join follows SQL's `=`. Such a row is rejected and takes no
+key.
+
+**`ties: refuse`.** The walk stops at each candidate whose keys are both free and looks for a rival:
+another candidate sharing a key, equal on every priority column, and still available (neither key
+taken or refused). Two nulls count as equal here, and the key tie-break never counts as a difference. A
+key with a rival is refused: it stays unmatched and every candidate naming it is rejected. A refusal
+never takes the key on the other side.
+
+**The walk runs on whole columns, in rounds.** Each round decides at once every open candidate whose
+outcome no earlier open candidate can change. Under `first`, that is a candidate that comes first for
+both its keys. Under `refuse` it must also come before every open candidate that could change whether
+its rivals are still available (everything one key away, and one key further). Two candidates decided
+in the same round are never that close, so deciding them together gives the same answer as walking one
+at a time. The best open candidate always qualifies, so each round decides at least one, and the number
+of rounds grows with the longest chain of second choices, not with the row count.
+
+**A polars trap.** Taking one window over another inside a single expression gave wrong answers, so the
+first window ("near") is written to a column before the second ("reach") reads it. A regression test
+pins that case.
