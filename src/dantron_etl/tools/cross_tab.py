@@ -1,58 +1,9 @@
-"""CrossTab: turn a long frame wide. One row per key, one column per value of a key column.
+"""CrossTab: turn a long frame wide: one row per 'by' key, one column per value of a key column.
 
-The shape this exists for is a series. One row per key and period becomes one row per key with a
-column per period. That is how a person reads a figure that moves over time.
+The new columns are sorted as text, and the key column must already be text. A cell with no rows is
+null, never zero. The aggregates are group_by's, imported, not copied.
 
-**The new columns are sorted.** Not in the order the values happened to arrive. A reader scans
-them across a page, so the order has to come from the values themselves.
-
-**A value of ``names_from`` has to be text already.** A column name is text. Turning a number or a date
-into text is a formatting choice with several right answers. Choosing one here would freeze it into
-every cross tab this library produces. So a column of another type is refused, and the step that
-formats runs in front. That also settles what sorted means: sorted as text.
-
-**A cell with no row under it is null.** Not zero, and there is no field to make it zero. "No rows
-for this key in this period" and "nothing was measured" are the same fact. A zero is a figure
-somebody measured. Once a fabricated zero is in the frame, nothing downstream can tell it from a
-real one. GroupBy already rules this way about summing a group whose values are all missing, and
-the two tools have to agree.
-
-That ruling has a cost, and the cost is worth stating. The value column names come from the data.
-So no later step can name them in its own configuration, and nobody can write a per-column repair
-after this one. The honest way to close that gap is one generic fill step, taking a frame and a
-policy, written once. Until somebody asks for it the gap stays open rather than being papered over
-here.
-
-**A null or a blank in the ``names_from`` column stops the run.** Dropping those rows would delete their
-figures from the tab, with nothing left to say a row had been there. Giving them a column of their
-own is worse. Every name available is a name the data could also carry, so a literal "unknown"
-would merge with the null group in silence. A blank fails the same way: ``""`` is not a heading a
-reader can point at. Null and blank are also the same fact written two ways, one by each extract
-that wrote the file, so one rule covers both. The tool refuses, names the column and counts the
-rows. The fix is upstream, where an author decides whether to drop them or label them.
-
-**A new column name that collides with a 'by' column is refused.** This is the hazard
-:func:`~.authoring.check_output_column` exists for, one step removed. The name is in the rows rather
-than in the configuration, so it can only be checked once the rows have been seen. Left alone, one
-of the two columns wins and the other is gone. A name that collides with a column outside 'by'
-is fine, because only the 'by' columns survive into the output.
-
-**The aggregates are GroupBy's published set**, not a second copy of it. Two whitelists in one
-catalog drift. A reader who learned the list from one tool would write a configuration the other
-refuses. Borrowing the names means answering for every one of them here: each has a branch of its
-own, so an aggregate added to that set cannot fall through to whatever this code ends with and fill
-a finance grid with a plausible number under the wrong name.
-
-**``join_text`` fills a cell the way it fills a group.** Same order -- the rows as they arrived --
-same skipping of what is missing, and the same empty string for a cell whose values are all
-missing. It takes GroupBy's default separator rather than a field here, because one aggregate fills
-every cell of a tab and a per-cell separator would be a fifth field on a template whose four fields
-are the point. A cell with *no* row under it stays null, which is this tool's ruling everywhere and
-is a distinction GroupBy never has to make: a group with no rows does not exist.
-
-**``values_from`` is required whichever aggregate is chosen.** That includes ``count``, which counts
-rows and reads no column. GroupBy can tell the two apart because it names each output column. Here
-one aggregate fills every cell, so the field is always there and ``count`` ignores it.
+Why: docs/design/tools.md#cross_tab
 """
 
 from collections.abc import Mapping, Sequence
@@ -80,10 +31,10 @@ from .group_by import (
 
 
 class CrossTab:
-    """One row per distinct combination of 'by', one column per distinct value of `on`, holding an aggregate."""
+    """One row per combination of 'by', one column per value of `names_from`, each cell an aggregate."""
 
     name = "cross_tab"
-    description = "Turn `rows` wide: one row per combination of 'by', one column per value of a key column."
+    description = "Turn a long table into a grid, with one column per value, such as one column per month."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -92,32 +43,31 @@ class CrossTab:
         return {
             "by": ConfigField(
                 type="array",
-                description="The column names that stay as rows. One output row per distinct "
-                "combination of them, in the order each combination first appeared.",
+                description="The columns that stay as rows, such as ['customer'].",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="string",
-                    description="One column name; naming the same column twice counts it once.",
+                    description="One column that stays as a row label. Naming it twice counts it once.",
                 ),
             ),
             "names_from": ConfigField(
                 type="string",
-                description="The column whose values become the new columns. It has to hold text "
-                "already, and no row may leave it empty.",
+                description="The column whose values become the new column headings, such as 'month'. "
+                "It must hold text.",
                 required=True,
                 non_empty=True,
             ),
             "values_from": ConfigField(
                 type="string",
-                description="The column each cell is computed from. Required whichever aggregate "
-                "is chosen; 'count' counts rows and ignores it.",
+                description="The column that fills the cells, such as 'amount'. Needed even for "
+                "'count', which ignores it.",
                 required=True,
                 non_empty=True,
             ),
             "function": ConfigField(
                 type="string",
-                description="How the rows that land in one cell become one value, drawn from the aggregates that ship.",
+                description="How the rows in one cell become one value, such as 'sum' or 'count'.",
                 required=True,
                 enum=tuple(sorted(AGGREGATE_FUNCTIONS)),
             ),
@@ -126,57 +76,48 @@ class CrossTab:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "One output row per distinct combination of 'by', in the order each combination "
-                "first appeared. One new column per distinct value of 'names_from', in sorted "
-                "order, "
-                "because a reader scans those columns across a page. Each cell holds the chosen "
-                "aggregate of 'values_from' over the rows that landed in it. The 'by' columns come "
-                "first and keep their types; the new columns take their type from the aggregate. "
-                "Every other column disappears, so a cross tab is usually the last shaping step "
-                "before a report."
+                "Use cross_tab to turn a long table into a grid, like a pivot table: one row per "
+                "customer and one column per month, say. `rows` has the 'by' columns first, in the "
+                "order each combination first appears, then one column per value of 'names_from', "
+                "sorted as text. Each cell holds the 'function' of 'values_from' over its rows. Every "
+                "other column is dropped, so this is usually the last step before a report."
             ),
             examples=(_totals_by_period_example(), _counts_by_period_example(), _joined_notes_example()),
             notes=(
-                "A cell with no row under it is null, and there is no way to make it zero. Zero is "
-                "a measured amount and null is the absence of one, and nothing downstream can tell "
-                "a fabricated zero from a real one.",
-                "The values of 'names_from' become column names, so that column has to hold text "
-                "already. "
-                "Format a number or a date into text in the step before this one, where the "
-                "formatting is written down.",
-                "'join_text' fills a cell the way it fills a group: the rows in the order they "
-                "arrived, joined by GroupBy's separator, with the missing values skipped. A cell "
-                "whose values are all missing joins to the empty string, and a cell with no row "
-                "under it stays null, which is the one distinction this tool has to make and "
-                "GroupBy never does.",
-                "A row whose 'names_from' value is missing or blank stops the run. It cannot be "
-                "given a column without inventing a name the data could also carry, and dropping it would "
-                "take its figures out of the tab in silence. A blank is refused with the null "
-                "because they are the same fact written two ways.",
-                "'first' is the first row's value in a cell as the rows arrive, null included; "
-                "'first_non_null' is the first value that is there. 'count_distinct' skips nulls, as "
-                "SQL's COUNT(DISTINCT) does. These are GroupBy's rules, for the same reason.",
-                "A 'sum' cell keeps the type of 'values_from'. A total of Int32 or UInt32 values "
-                "that does not fit in that type stops the run rather than wrapping round to a wrong "
-                "number. Cast the column to Int64 first if totals can be that large.",
+                "A cell with no rows under it is null, and there is no setting to make it zero. A "
+                "zero would look like a measured amount.",
+                "'sum' of a cell whose values are all null is null too, as in group_by.",
+                "'names_from' must hold text, because its values become column names. Format a number "
+                "or date as text in an earlier step. The new columns are sorted as text.",
+                "A row whose 'names_from' value is null or blank stops the run, naming the column and "
+                "counting the rows. Label or drop those rows in an earlier step.",
+                "A null and a blank are refused together, as the same missing fact written two ways. "
+                "A value of only spaces counts as blank.",
+                "A 'names_from' value that equals a 'by' column's name is refused, because one of the "
+                "two columns would be lost. A clash with any other input column is fine, since it is "
+                "dropped.",
+                "A column cannot be both in 'by' and the 'names_from' or 'values_from' column.",
+                "The functions are group_by's, with group_by's rules: 'first' takes the first row's "
+                "value even when null, 'first_non_null' the first value there is, and "
+                "'count_distinct' skips nulls, as SQL's COUNT(DISTINCT) does.",
+                "'join_text' fills a cell as it fills a group: values in arrival order, joined with a "
+                "comma and a space, nulls skipped. A cell whose values are all null is empty text.",
+                "So with 'join_text', a cell with rows but no values is empty text, while a cell with "
+                "no rows is null. group_by never has the second case.",
+                "'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that "
+                "type, the run stops instead of giving a wrong number. Cast to Int64 first if totals "
+                "can be that large.",
             ),
             field_help={
-                "by": "What stays as rows. Repeating a column counts it once.",
-                "names_from": "What becomes columns. Its values are the new column names, sorted.",
-                "values_from": "What fills the cells, before the aggregate is applied to it.",
-                "function": "How several rows in one cell become one value.",
+                "by": "For example ['customer_id']. Each different combination becomes one row.",
+                "names_from": "For example 'month', holding text such as '2026-01'.",
+                "values_from": "For example 'amount'.",
+                "function": "For example 'sum'. The list is the same as group_by's.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """The rules about the configuration alone: a column cannot be in 'by' and elsewhere.
-
-        The 'by' columns are the ones that survive into the output as themselves. A column that is
-        also the key would put its own values into the column names, and a column that is also the
-        measure would be aggregated and carried forward at once. Each refusal names both fields,
-        because an author looking at four fields that all name columns needs to be told which two
-        overlap.
-        """
+        """Refuse a column that is both in 'by' and the names_from or values_from column, naming both fields."""
         by_columns = set(_by_columns(config))
         for name in ("names_from", "values_from"):
             column = config[name]
@@ -188,11 +129,9 @@ class CrossTab:
                 )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """What only the incoming schema can answer, read off the column names and types alone.
+        """Check the columns and types against the schema, so an empty frame is refused the same way.
 
-        A frame of a million rows and a frame of none are refused identically here. That matters
-        more for this tool than for most. Waiting until a value of 'names_from' had been seen
-        would let a frame with no rows through, and the run would report success having produced nothing.
+        Waiting for a value of 'names_from' would let an empty frame through with nothing produced.
         """
         frame = inputs["rows"]
         require_columns(frame, _by_columns(config), "by", "rows")
@@ -245,14 +184,9 @@ def _by_columns(config: Mapping[str, Any]) -> list[str]:
 
 
 def _refuse_unusable_keys(frame: pl.DataFrame, key: str) -> None:
-    """Refuse a run where any row has no usable value in the column that becomes the column names.
+    """Refuse any row whose names_from value is null or blank, since it cannot become a column name.
 
-    Null and blank are refused together, by one rule. They are the same fact written two ways. One
-    extract leaves an unfilled period null, and the next writes it as an empty string. Splitting
-    them into two rules would make the answer depend on who produced the file.
-
-    Whitespace-only counts as blank. A heading of three spaces is no more readable than an empty
-    one, and the rest of this library already reads a whitespace-only string as blank.
+    Null and blank are one rule: different extracts write the same missing period both ways.
     """
     unusable = pl.col(key).is_null() | (pl.col(key).str.strip_chars() == "")
     offending = frame.filter(unusable)
@@ -300,24 +234,14 @@ def _cell(config: Mapping[str, Any], name: str, measure_dtype: pl.DataType) -> p
     measure = pl.col(config["values_from"]).filter(here)
     aggregate = config["function"]
 
-    # This guard is the ruling, and it is the line somebody will simplify away. Do not.
-    #
-    # An absent cell has to come back null, and the aggregate on its own will not say so. The
-    # engine counts no rows as 0 and adds no rows up to 0. Neither is a figure anybody measured,
-    # and once one of them is in the frame nothing downstream can tell it from a real one.
-    #
-    # 'sum' asks a stricter question than the rest: not "did a row land here" but "did a value".
-    # A cell holding rows whose values are all missing sums to 0 too, and that is the same lie.
-    # GroupBy already rules this way on the same question, and the two tools have to agree.
+    # Do not remove this guard: polars gives 0 for a cell with no rows, and for 'sum' of only
+    # nulls. Both must be null. Why: docs/design/tools.md#cross_tab
     measured = measure.is_not_null().any() if aggregate == "sum" else here.any()
     return pl.when(measured).then(_aggregate(measure, aggregate, measure_dtype)).otherwise(None).alias(name)
 
 
 def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> pl.Expr:
-    """The chosen aggregate over one cell's values, before :func:`_cell` guards it.
-
-    `measure` is already filtered to the rows of this cell, so a row count is its length.
-    """
+    """The chosen aggregate over one cell's values; `_cell` makes an empty cell null."""
     if aggregate == "count":
         return measure.len().cast(pl.Int64)
     if aggregate == "sum":
@@ -333,17 +257,11 @@ def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> 
     if aggregate == "first_non_null":
         return measure.drop_nulls().first()
     if aggregate == "join_text":
-        # GroupBy's separator, not one of this tool's own. One aggregate fills every cell here, so
-        # a separator would be a fifth field on a template whose four fields are the point, and a
-        # grid of joined text read across a page wants the one separator a reader already knows.
+        # group_by's default separator; this tool has no separator setting.
         return measure.str.join(DEFAULT_SEPARATOR)
     if aggregate == "max":
         return measure.max()
-    # The module docstring says an aggregate added to the published set cannot fall through to
-    # whatever this function ends with; this is the line that enforces it rather than asserting it.
-    # Ending on ``max`` is how ``first`` filled cells with maxima before it had a branch, and the
-    # next aggregate borrowed from GroupBy would have done the same thing silently. The name is
-    # already whitelisted by then, so reaching here is a library change, not an author's mistake.
+    # Reached only if AGGREGATE_FUNCTIONS grew without a branch here. Never fall through to a default.
     raise AssertionError(f"unreachable aggregate {aggregate!r}")  # pragma: no cover
 
 
@@ -371,11 +289,10 @@ def _totals_by_period_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a total per code and period, with one cell holding nothing",
+        scenario="total amount per code and period",
         configuration={"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
-        explanation="'period' first appears as p2 and then p1, and the columns still come back "
-        "sorted, p1 before p2. Code B has no row in p2, so that cell is null. It is not zero: "
-        "nobody measured anything there.",
+        explanation="The periods arrive as p2 then p1, but the columns are sorted: p1, then p2. Code B has no row "
+        "in p2, so that cell is null, not zero.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -406,11 +323,10 @@ def _counts_by_period_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="how many rows landed in each cell, rather than what they add up to",
+        scenario="count the rows in each cell",
         configuration={"by": ["code"], "names_from": "period", "values_from": "amount", "function": "count"},
-        explanation="Two rows share code A in p1, so that cell holds 2. Code B has no row in p1 at "
-        "all, so its cell is null rather than 0. There was nothing there to count. 'count' reads no "
-        "column, but 'values_from' is still written down, because every cell here uses one aggregate.",
+        explanation="Two rows have code A in p1, so that cell is 2. Code B has no row in p1, so its cell is null, "
+        "not 0. 'count' ignores 'values_from', but it is still written.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -440,14 +356,10 @@ def _joined_notes_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a grid of notes, showing the two empty cells that do not mean the same thing",
+        scenario="a grid of notes, where two empty-looking cells mean different things",
         configuration={"by": ["code"], "names_from": "period", "values_from": "note", "function": "join_text"},
-        explanation="Both empty-looking cells of the p2 column are the point. Code A has a row in "
-        "p2 whose note is missing, so there was something there and it said nothing: the missing "
-        "value is skipped rather than joined in as a gap, nothing is left to join, and the cell is "
-        "the empty string. Code B has no row in p2 at all, so the cell is null -- this tool's "
-        "ruling everywhere, and the only reason the two differ, because joining the values of an "
-        "empty cell would otherwise give the empty string as well.",
+        explanation="Code A has a row in p2 with no note, so its cell is empty text: there was a row, with "
+        "nothing to join. Code B has no row in p2 at all, so its cell is null.",
         inputs=inputs,
         outputs=outputs,
     )

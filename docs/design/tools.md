@@ -631,3 +631,39 @@ the links are rewritten between the groups that remain. It always ends: a record
 smaller number, so pointers never loop, and each round the larger end of every remaining link stops
 being a group. On a single chain at least half the groups go each round, so 200,000 records in a chain
 take at most 18 rounds.
+
+## cross_tab
+
+**For series.** One row per key and period becomes one row per key with a column per period, which is
+how a person reads a figure over time.
+
+**Columns are sorted, as text.** A reader scans them across a page, so the order comes from the values,
+not from arrival. The key column must already be text: turning a number or date into a heading is a
+formatting choice with several right answers, and choosing one here would freeze it into every cross
+tab. The formatting step runs in front.
+
+**An empty cell is null, never zero.** "No rows for this key in this period" and "nothing was measured"
+are the same fact; a zero is a figure someone measured, and once a made-up zero is in the frame nothing
+later can tell it from a real one. polars counts no rows as 0 and sums no rows to 0, so each cell is
+guarded. `sum` asks the stricter question "did a value land here", because a cell of only nulls also
+sums to 0; group_by rules the same way. The cost: the column names come from data, so no later step can
+name them to repair them. The honest fix would be one generic fill step, written once; until someone
+asks, the gap stays open rather than being papered over here.
+
+**A null or blank key stops the run.** Dropping those rows would delete their figures from the grid
+silently. Giving them a column is worse: any name chosen ("unknown") is a name the data could also
+carry, and would merge with it silently. Null and blank are one rule because different extracts write
+the same missing period both ways. The fix belongs upstream, where an author decides to drop or label.
+
+**A key value equal to a 'by' column's name is refused.** The name comes from the rows, so it can only
+be checked once they are seen. Left alone one column would replace the other.
+
+**The aggregates are group_by's set, imported.** Two lists drift, and a reader who learned one would
+write a configuration the other refuses. Each aggregate has its own branch and an unknown one raises:
+ending on `max` is how `first` once filled cells with maxima.
+
+**`join_text`** works as in group_by and uses its default separator; one aggregate fills every cell, so
+a separator setting would be a fifth field on a tool whose four fields are the point. A cell with rows
+but no values is empty text; a cell with no rows stays null, a distinction group_by never has to make.
+
+**`values_from` is always required**, even for `count`, because one aggregate fills every cell.
