@@ -12,17 +12,13 @@ from typing import Any, Final
 from .errors import error
 
 
-# The scan's own output vocabulary. A column reference and a quoted literal are both rewritten to a
-# call on one of these names carrying nothing but an integer index into a table the scan built, so
-# the text handed to the parser contains no author-supplied characters at all. These names are
-# refused in the incoming text (see ``scan``) precisely so that the only way to produce one is to
-# write ``[name]``, ``'text'`` or ``date'...'`` -- the internal spelling is unreachable by hand.
+# The scan's own call names. [name] and 'text' become col(n) and lit(n), indexes into tables the
+# scan builds. These names are refused in the author's text, so they cannot be written by hand.
 COLUMN_FN: Final[str] = "col"
 LITERAL_FN: Final[str] = "lit"
 _RESERVED_CALLS: Final[frozenset[str]] = frozenset({COLUMN_FN, LITERAL_FN, "date"})
 
-# A quote may be preceded by ``date`` and nothing else. Every other prefix Python would accept is
-# named here so the refusal can say what the author reached for.
+# Only `date` may come before a quote; the other prefixes Python accepts are named for the refusal.
 _QUOTE_PREFIX_HINTS: Final[dict[str, str]] = {
     "f": "an f-string (JoinedStr / FormattedValue) is not part of this language",
     "b": "a bytes literal (Bytes) is not part of this language",
@@ -34,9 +30,8 @@ _DIGITS: Final[str] = "0123456789"
 _QUOTED_TEXT_ADVICE: Final[str] = "write text in single quotes, like 'PAID'"
 
 
-# Characters outside quotes and brackets that are never part of this language, with what to write.
-# '#' would otherwise start a comment in the parser underneath and drop the rest of the line, and a
-# backslash would join two lines -- both silently.
+# Characters never allowed outside quotes and brackets, with what to write instead. '#' would start
+# a comment and a backslash would join lines, both silently.
 _REFUSED_CHARACTERS: Final[dict[str, str]] = {
     "#": "'#' is not a comment in this language, and everything after it would be ignored: put a note in "
     "the step's why instead",
@@ -90,18 +85,11 @@ class _Table:
 
 
 def scan(text: str) -> Scanned:
-    """Rewrite the author's syntax in one forward pass, tracking whether we are inside a literal.
+    """Rewrite the author's syntax in one forward pass, tracking whether it is inside a quoted value.
 
-    A scan rather than a regular expression, because this is where a rewrite-then-parse design
-    goes wrong. ``[note] = 'a=b'`` and ``[note] = 'x [y]'`` both contain characters this function
-    rewrites; a blind substitution corrupts the literal, and the corruption then looks like a data
-    problem rather than a parser problem. Quoted text is opaque here: it is lifted out into a table
-    and replaced by an index, which also means an escape sequence, a stray backslash or a smuggled
-    quote cannot change the text that reaches the parser.
-
-    A number is the one author-written value that passes through as characters, so the scan is also
-    where a number is held to the spellings this language has -- the parser underneath reads several
-    it does not.
+    Quoted text and column names are lifted into tables and replaced by numbered calls, so no character
+    the author typed reaches the parser. A number passes through as characters, so it is checked here
+    against the spellings this language allows.
     """
     pieces: list[str] = []
     origins: list[int] = []
@@ -172,8 +160,7 @@ def scan(text: str) -> Scanned:
                 emit(f"{LITERAL_FN}({literals.intern(_parse_date(text, raw))})", start)
                 continue
 
-            # col and lit are the scan's own names, so they are refused wherever they appear, not only
-            # before '(' -- '(lit)(0)' would otherwise reach the parser as a call.
+            # Refused everywhere, not only before '(': '(lit)(0)' would otherwise parse as a call.
             if word in (COLUMN_FN, LITERAL_FN) or (word in _RESERVED_CALLS and _next_visible(text, end) == "("):
                 raise error(
                     text,
@@ -188,8 +175,7 @@ def scan(text: str) -> Scanned:
         if char == "=":
             if text[index + 1 : index + 2] == "=":
                 raise error(text, "'==' is not how equality is written here, so use a single '=' instead")
-            # ``!=``, ``<=`` and ``>=`` already mean what they say; only a lone '=' is a comparison
-            # in this language and has to be doubled for the parser.
+            # Only a lone '=' needs doubling; '!=', '<=' and '>=' are already right.
             emit("=" if index > 0 and text[index - 1] in "!<>" else "==", index)
             index += 1
             continue
@@ -208,16 +194,10 @@ def scan(text: str) -> Scanned:
 
 
 def _read_quoted(text: str, quote_at: int) -> tuple[str, int]:
-    """The text a literal holds, and the index just past the quote that closed it.
+    """The text a quoted value holds, and the index just past its closing quote.
 
-    A doubled quote inside the literal is one quote, the way SQL and Excel spell it: ``'O''Brian'``
-    is the seven characters ``O'Brian``. The doubling is undone here, before the parser underneath
-    ever sees the text, because that parser would read two adjacent literals as implicit
-    concatenation -- ``O`` followed by ``Brian`` -- and hand back a plausible value nobody wrote.
-
-    A doubled quote is an escape only when the literal continues past it, so ``''`` on its own is
-    still the empty string, and a literal whose last quote was spent on an escape is simply one
-    that never closes.
+    A doubled quote is one quote, as in SQL and Excel: 'O''Brian' is O'Brian. Undone here, because Python
+    would read two adjacent literals as one joined string. `''` alone is still the empty string.
     """
     parts: list[str] = []
     index = quote_at + 1
@@ -235,13 +215,9 @@ def _read_quoted(text: str, quote_at: int) -> tuple[str, int]:
 
 
 def _read_number(text: str, start: int) -> tuple[str, int]:
-    """One number, in the only shapes this language has: digits, a decimal point, an exponent.
+    """One number, in this language's only shapes: digits, a point, an exponent.
 
-    Everything the parser underneath would also accept is refused here instead, because each of
-    those spellings arrives from an author who meant something else. ``0x10`` is sixteen, written by
-    someone thinking about a code that looks like hex; ``1_000`` is a thousand carrying a separator
-    this language does not have. Anything touching the end of a number -- a letter, another digit
-    group, a second point -- is therefore refused rather than reinterpreted.
+    `0x10`, `1_000`, or anything touching the end of a number is refused rather than reinterpreted.
     """
     length = len(text)
     index = start
@@ -263,8 +239,7 @@ def _read_number(text: str, start: int) -> tuple[str, int]:
     span = text[start:index]
     trailing = text[index : index + 1]
     if trailing and (trailing.isalnum() or trailing in "_."):
-        # Quote the whole run the author typed, not just the first character that spoiled it: an
-        # author who wrote 0x10 is looking for 0x10 in the message, not for '0x'.
+        # Quote the whole run typed (0x10), not just the first bad character.
         end = index
         while end < len(text) and (text[end].isalnum() or text[end] in "_."):
             end += 1
@@ -280,13 +255,9 @@ def _read_number(text: str, start: int) -> tuple[str, int]:
 
 
 def _check_decimal(text: str, span: str) -> None:
-    """Refuse a decimal that does not survive as the number written.
+    """Refuse a decimal that does not survive as the number written: `1e400` (infinity) and `1e-400` (zero).
 
-    Both directions cost money, and both are silent. ``1e400`` arrives as infinity, so
-    ``[amount] < 1e400`` keeps every row for an author who typed one character too many. Its mirror
-    ``1e-400`` arrives as exactly zero, which turns a tolerance into "anything at all". Exponent
-    notation itself stays legal, because ``1e-9`` is how a tolerance is written and the alternative
-    spelling is a row of zeros a reviewer has to count.
+    Exponents stay legal, because `1e-9` is how a tolerance is written.
     """
     value = float(span)
     if not math.isfinite(value):
@@ -305,12 +276,7 @@ def _check_decimal(text: str, span: str) -> None:
 
 
 def _parse_date(text: str, raw: str) -> date:
-    """A calendar date from ``date'YYYY-MM-DD'``.
-
-    The prefix-tagged form is deliberate. A postfix cast (``'2026-01-01'::date``) would introduce a
-    cast operator, and the obvious next request after one cast is every other cast -- growing the
-    grammar, which this design refuses to do. Tagging keeps a date a literal.
-    """
+    """A calendar date from `date'YYYY-MM-DD'`, a tagged literal rather than a cast operator."""
     try:
         return date.fromisoformat(raw)
     except ValueError:
