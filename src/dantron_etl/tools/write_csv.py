@@ -23,7 +23,6 @@ writes a header-only file**, because that is a real, empty delivery, not a run t
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Final
 
 import polars as pl
@@ -38,7 +37,7 @@ from ..authoring import (
     WorkedExample,
     scratch_path,
 )
-from ._files import validate_delimiter
+from ._files import refuse_to_overwrite, require_output_folder, validate_delimiter
 
 _ACCEPTED_EXTENSIONS: Final[tuple[str, ...]] = (".csv", ".tsv")
 
@@ -107,9 +106,9 @@ class WriteCsv:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse the wrong format, an unusable delimiter, or an overwrite nobody authorised.
+        """Refuse the wrong format, an unusable delimiter, a missing folder, or an overwrite nobody authorised.
 
-        All three are answerable from the configuration alone, before a file is ever opened, so each
+        All four are answerable from the configuration alone, before a file is ever opened, so each
         is refused here rather than partway through a write that would otherwise have to be undone.
         """
         path = config["path"]
@@ -118,11 +117,8 @@ class WriteCsv:
 
         validate_delimiter(config["delimiter"])
 
-        if Path(path).exists() and not config["overwrite"]:
-            raise ConfigError(
-                f"write_csv refuses to overwrite the file already at '{path}'; set overwrite: true "
-                "to overwrite it deliberately"
-            )
+        require_output_folder("write_csv", path)
+        refuse_to_overwrite("write_csv", path, "overwrite", config["overwrite"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a column a line of text cannot carry honestly, before a byte is written.
