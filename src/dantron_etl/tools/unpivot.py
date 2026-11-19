@@ -108,7 +108,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES
+from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, cut_fractions, fraction_refusal
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -240,6 +240,9 @@ class Unpivot:
                 "a column every period, with text beside it that therefore cannot be named in "
                 "'by'. Reading it as the type it is keeps a figure a figure; reading the lot as "
                 "text loses a digit to whatever shortens it later.",
+                "A decimal with a fraction does not convert to 'values_type: Int64': 1.99 would "
+                "lose its fraction without a word, so it is treated as a value that will not convert. "
+                "Round it first.",
                 "'on_invalid' says what a value that will not convert to 'values_type' does: "
                 "'error' stops the run, 'set_null' leaves it null and reports how many out of how "
                 "many, raising the step to a warning. It is refused without 'values_type', because "
@@ -480,7 +483,9 @@ def _stated_values(
             # Float64 -- arrives from here as an ExecutionError rather than a DataError. Closing it
             # belongs to a change that closes it in `cast_columns` too, or the two tools answer one
             # question differently again.
+            cut = cut_fractions(frame[column], target)
             read = frame[column].cast(target, strict=False)
+            read = pl.select(pl.when(cut).then(None).otherwise(read)).to_series().alias(column)
             failed = frame[column].is_not_null() & read.is_null()
             if failed.any():
                 reasons, note = unreadable_report(frame, column, failed, declared)
@@ -491,6 +496,13 @@ def _stated_values(
                 blocks.append(row_status([], frame.height))
             values[column] = read
             continue
+        cut = cut_fractions(frame[column], target)
+        if cut.any():
+            raise DataError(
+                fraction_refusal(column, frame[column].filter(cut), declared, melted=True),
+                offending=frame.filter(cut),
+                total=frame.height,
+            )
         try:
             values[column] = frame[column].cast(target)
         except Exception as error:

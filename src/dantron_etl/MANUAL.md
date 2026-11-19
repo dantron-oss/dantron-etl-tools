@@ -545,6 +545,9 @@ Every one of these was measured, most of them the hard way.
 - **`len()` gives an unsigned whole number.** Arithmetic on it, or on any unsigned column, is done
   as a signed 64-bit number, so `len([code]) - 5` is -2 for a three-letter code rather than wrapping
   to about four billion.
+- **A decimal becomes a whole number only when it already is one.** `cast_columns` (and `unpivot`'s
+  `values_type`) reads `12.0` as `Int64` 12, but stops on `1.99`, naming the column and the values,
+  because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
