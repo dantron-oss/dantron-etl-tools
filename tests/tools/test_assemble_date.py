@@ -484,3 +484,54 @@ class TestAssembleDateInTheCatalog:
         """Registered under its machine name. The whole catalog is checked once, in tests/core/test_registry.py."""
         assert "assemble_date" in REGISTRY
         assert isinstance(REGISTRY.get("assemble_date"), AssembleDate)
+
+
+class TestSetNullSaysWhatItEmptied:
+    """'set_null' carries a row whose parts make no date with an empty date, and says so.
+
+    It used to null the date and say nothing, so a reader could not tell an impossible date from
+    a missing one. cast_columns and unpivot count and mark every value their 'set_null' empties;
+    this does the same: one note counting the rows, and a per-row reason quoting the parts.
+    """
+
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "key": [1, 2, 3, 4, 5],
+                "year_part": ["2026", "2026", "2026", None, "2026"],
+                "month_part": ["2", "13", "2", "3", "4"],
+                "day_part": ["30", "1", "x", "1", "5"],
+            }
+        )
+
+    def test_each_row_that_made_no_date_is_marked_with_its_parts(self) -> None:
+        result = run_tool(AssembleDate(), Ports({"rows": self._frame()}), _config(on_invalid="set_null"))
+
+        assert result["rows"]["period_start"].to_list() == [None, None, None, None, date(2026, 4, 5)]
+        status = result.status["rows"]
+        assert status["level"].to_list() == ["warning", "warning", "warning", "ok", "ok"]
+        details = [reasons[0]["detail"] if reasons else None for reasons in status["reason"].to_list()]
+        columns = [reasons[0]["column"] if reasons else None for reasons in status["reason"].to_list()]
+        assert columns == ["period_start"] * 3 + [None, None]
+        for detail, parts in zip(details[:3], (("'2026'", "'2'", "'30'"), ("'13'",), ("'x'",)), strict=True):
+            for part in parts:
+                assert part in detail, f"the reason should quote {part}: {detail}"
+
+    def test_the_note_counts_the_rows_and_quotes_an_example(self) -> None:
+        result = run_tool(AssembleDate(), Ports({"rows": self._frame()}), _config(on_invalid="set_null"))
+
+        assert len(result.notes) == 1
+        note = result.notes[0]
+        for word in ("3 of 5", "period_start", "'30'", "empty"):
+            assert word in note, f"the note should say {word!r}: {note}"
+
+    @pytest.mark.parametrize("height", [5, 0])
+    def test_a_missing_part_or_a_clean_frame_reports_nothing(self, height: int) -> None:
+        """The mirror: a null part is missing data, not an emptied date, so it is not marked."""
+        frame = self._frame().filter(pl.col("key").is_in([4, 5])).head(height)
+
+        result = run_tool(AssembleDate(), Ports({"rows": frame}), _config(on_invalid="set_null"))
+
+        assert result.notes == ()
+        assert result.status is None or "rows" not in result.status
