@@ -2822,30 +2822,22 @@ class TestFormatNumberWritesANumberAsText:
         """
         assert scalar(text) == expected
 
-    def test_rounding_follows_the_double_the_column_holds_not_the_decimal_that_was_typed(self) -> None:
-        """``-15.215`` at two places is ``-15.21``, because that is what the double actually is.
+    def test_a_half_is_written_the_way_round_rounds_it_whatever_the_double_holds(self) -> None:
+        """``-15.215`` at two places is ``-15.22``, from ``format_number`` and from ``round`` alike.
 
-        The two candidate rulings disagree, and they disagree on money. ``-15.215`` cannot be held
-        by a double: the value in the column is ``-15.2149999999999998578...``, so rounding *that*
-        to two places gives ``-15.21``. Rounding the decimal somebody typed gives ``-15.22``.
-
-        The first is chosen, because the figure in the report has to be a faithful rendering of the
-        value the pipeline computed -- a formatter that rounds the *literal* is inventing a value
-        that was never in the frame, and it would disagree with every other reading of that column.
-        The cost is stated rather than hidden: this language's ``round()`` takes the other view, so
-        ``round([x], 2)`` and ``format_number([x], 2, ...)`` can differ in the last place, and the
-        second assertion here exists so that nobody discovers that in a report.
-
-        ``2.675`` and ``1.005`` are the two everybody meets first -- both are below their apparent
-        half, so both round down.
+        The owner's ruling: a half rounds away from zero, as a spreadsheet's ROUND does, on the
+        decimal a person reads. ``-15.215`` is held as ``-15.2149999999999998578...``, which is below
+        the half, and is still read as the half it was written as. ``format_number`` writes what
+        ``round`` gives, so the two cannot disagree in the last place. (Before the ruling the two
+        disagreed here: the writer gave ``-15.21``.)
         """
-        assert scalar("format_number(-15.215, 2, ',', '.')") == "-15.21"
+        assert scalar("format_number(-15.215, 2, ',', '.')") == "-15.22"
         assert scalar("round(-15.215, 2)") == -15.22
 
-        assert scalar("format_number(2.675, 2, ',', '.')") == "2.67"
-        assert scalar("format_number(1.005, 2, ',', '.')") == "1.00"
-        # A tie the double really does hold ties to even, the way the engine and Python both do.
-        assert scalar("format_number(1.125, 2, ',', '.')") == "1.12"
+        assert scalar("format_number(2.675, 2, ',', '.')") == "2.68"
+        assert scalar("format_number(1.005, 2, ',', '.')") == "1.01"
+        # A tie the double really does hold goes away from zero too, not to the even digit.
+        assert scalar("format_number(1.125, 2, ',', '.')") == "1.13"
         assert scalar("format_number(1.135, 2, ',', '.')") == "1.14"
 
     @pytest.mark.parametrize(
@@ -2856,9 +2848,9 @@ class TestFormatNumberWritesANumberAsText:
             ("format_number(999.999, 2, ',', '.')", "1,000.00"),
             ("format_number(9.999, 2, ',', '.')", "10.00"),
             ("format_number(-999999.999, 2, ',', '.')", "-1,000,000.00"),
-            # ... and 999999.995 is the one that looks like it should carry and does not, because
-            # the double is 999999.99499999999534..., just under the half.
-            ("format_number(999999.995, 2, ',', '.')", "999,999.99"),
+            # ... and 999999.995 carries too: it is held as 999999.99499999999534..., just under
+            # the half, and read as the half it was written as.
+            ("format_number(999999.995, 2, ',', '.')", "1,000,000.00"),
             # Past 2^53 the spacing between doubles is wider than a cent, so the digits written are
             # the ones the double holds and the decimals are zeros. Written out rather than left to
             # be found in a report.
@@ -3112,7 +3104,9 @@ class TestFormatNumberWritesANumberAsText:
             # Every digit asked for is below the half, so they all come out zero -- and the sign in
             # front of them is then the only thing left saying which side of zero the figure was on.
             ("format_number(-0.004, 2, ',', '.')", "-0.00"),
-            ("format_number(-0.5, 0, ',', '.')", "-0"),
+            ("format_number(-0.004, 0, ',', '.')", "-0"),
+            # A half goes away from zero, so -0.5 at no places is -1 and has digits of its own.
+            ("format_number(-0.5, 0, ',', '.')", "-1"),
             ("format_number(-0.5, 2, ',', '.')", "-0.50"),
             # ... and a value that *is* zero has no side to be on, so it is written without a sign.
             ("format_number(-0.0, 2, ',', '.')", "0.00"),
@@ -3139,7 +3133,7 @@ class TestFormatNumberWritesANumberAsText:
             ("format_number(1234.5, 2, '', '')", "123450"),
             # Nothing is written after the whole number when no places were asked for, so an empty
             # decimal separator changes nothing and no separator is left dangling at the end.
-            ("format_number(1234.5, 0, ',', '')", "1,234"),
+            ("format_number(1234.5, 0, ',', '')", "1,235"),
         ],
     )
     def test_an_empty_decimal_separator_runs_the_places_onto_the_whole_number(self, text: str, expected: str) -> None:
@@ -3171,13 +3165,11 @@ class TestFormatNumberWritesANumberAsText:
         assert scalar("format_number(null, 2, ',', '.')") is None
 
     def test_a_decimal_column_is_written_from_the_value_it_really_holds(self) -> None:
-        """``-15.215`` held as a decimal reads ``-15.22``; held as a double it reads ``-15.21``.
+        """``-15.215`` reads ``-15.22`` held as a decimal and held as a double.
 
-        The two answers disagree, and the disagreement is the ruling rather than a bug in it. One
-        rule is in force in both -- write the value the column holds -- and the columns hold
-        different values. A ``Decimal`` column holds ``-15.215`` exactly, which is a true tie and
-        ties to even, giving ``-15.22``. A ``Float64`` column holds ``-15.2149999999999998578...``,
-        which is below the half, giving ``-15.21``.
+        A ``Decimal`` column holds ``-15.215`` exactly, a true half, which goes away from zero. A
+        ``Float64`` column holds ``-15.2149999999999998578...``, which is read to fifteen digits as
+        the half it was written as, and goes the same way. (Before the ruling the two disagreed.)
 
         Worth stating side by side because ``Decimal`` is the dtype a database read produces for a
         money column -- ``write_excel`` carries an explicit refusal for it,
@@ -3188,7 +3180,7 @@ class TestFormatNumberWritesANumberAsText:
         assert checked(held, "format_number([paid], 2, ',', '.')") == ["-15.22", "1,234.50", None]
 
         as_double = held.with_columns(pl.col("paid").cast(pl.Float64))
-        assert checked(as_double, "format_number([paid], 2, ',', '.')") == ["-15.21", "1,234.50", None]
+        assert checked(as_double, "format_number([paid], 2, ',', '.')") == ["-15.22", "1,234.50", None]
 
     def test_the_figures_do_not_move_when_the_process_wide_decimal_context_changes(self) -> None:
         """The same four answers inside a context of 5 digits rounding half up as outside it.
@@ -3211,7 +3203,7 @@ class TestFormatNumberWritesANumberAsText:
 
             assert scalar("format_number(651623.8, 2, ',', '.')") == "651,623.80"
             assert scalar("format_number(-1832.015, 2, ',', '.')") == "-1,832.02"
-            assert scalar("format_number(-15.215, 2, ',', '.')") == "-15.21"
+            assert scalar("format_number(-15.215, 2, ',', '.')") == "-15.22"
             assert scalar("format_number(9007199254740993, 2, ',', '.')") == "9,007,199,254,740,993.00"
 
     def test_a_separator_and_a_rewrite_are_each_refused_in_their_own_words(self, frame: pl.DataFrame) -> None:

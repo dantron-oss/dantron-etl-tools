@@ -25,7 +25,7 @@ def _grouped(digits: str, separator: str) -> str:
     return separator.join([digits[:lead], *(digits[at : at + 3] for at in range(lead, len(digits), 3))])
 
 
-def written_as_text(value: Any, decimals: int, thousands: str, point: str) -> str | None:
+def written_as_text(value: Any, decimals: int, thousands: str, point: str, *, negative: bool | None = None) -> str | None:
     """One number written out, faithful to the value the column holds.
 
     "Faithful to the value" is the single rule, and it has two readings because there are two ways
@@ -46,6 +46,10 @@ def written_as_text(value: Any, decimals: int, thousands: str, point: str) -> st
     already gets, for the same reason: whoever reads the cell has to be able to tell "no figure"
     from a figure, and never be handed a plausible-looking wrong one.
 
+    ``negative`` says whether to write a minus sign, for a caller that rounded the value first and
+    so may hand over a zero that was below zero before it was rounded. Left out, the sign is read
+    from ``value``.
+
     copy_abs() and not abs(), because abs() on a Decimal is a *context* operation: it rounds its
     result to the process-wide context's prec using its rounding, so a prec set by any library
     anywhere in the process would move a published figure -- 651,623.80 silently becomes
@@ -59,12 +63,14 @@ def written_as_text(value: Any, decimals: int, thousands: str, point: str) -> st
     if not number.is_finite():
         return None
     # format() rounds a Decimal with the current thread's context, which any code in the process
-    # may have changed. The rounding is stated here instead: half to even on the exact value,
-    # which is what the default context does, so a figure cannot move with someone else's setting.
+    # may have changed. The rounding is stated here instead, so a figure cannot move with someone
+    # else's setting. format_number() hands over a value round() has already rounded, so this
+    # meets a half only on a value round() returned as it was, past its fifteenth digit.
     with localcontext(_ROUNDING):
         rendered = format(number.copy_abs(), f".{decimals}f")
     whole, _, fraction = rendered.partition(".")
     text = _grouped(whole, thousands)
     if fraction:
         text = f"{text}{point}{fraction}"
-    return f"-{text}" if number < 0 else text
+    below_zero = number < 0 if negative is None else negative
+    return f"-{text}" if below_zero else text

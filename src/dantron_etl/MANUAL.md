@@ -242,9 +242,9 @@ inside the text alone.
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`
 gives `123.456,789`. All four arguments are required, because nothing in this language has a
 default, and you state both separators rather than having one chosen for you. The last three are
-quoted decisions written in the file, never columns. See section 5 for how its rounding differs
-from `round`, and note that it works a row at a time, as `uuid5` does — put it at the end of a
-flow, on the rows somebody reads, not in the middle of one.
+quoted decisions written in the file, never columns. It writes what `round` gives (section 5),
+and it works a row at a time, as `uuid5` does — put it at the end of a flow, on the rows somebody
+reads, not in the middle of one.
 
 `uuid5(namespace, value)` derives a stable id: one 36-character column where the natural key is
 three or four columns of text, which is a poor thing to join on and a worse thing to quote in a
@@ -478,16 +478,16 @@ Every one of these was measured, most of them the hard way.
   which in a library for amounts is unacceptable. The consequence is that a pattern cannot
   rearrange what it matched. `regex_extract` does return capture groups, so pull the pieces out and
   put them back together with `concat`.
-- **`format_number` and `round` disagree in the last place, and both are right.**
-  `round([x], 2)` on `-15.215` gives `-15.22`; `format_number([x], 2, ',', '.')` gives `-15.21`.
-  Neither is a bug. `round` rounds the decimal you wrote. `format_number` writes out the value the
-  column actually holds, and a column cannot hold `-15.215`: the nearest double is
-  `-15.21499999999999985789...`, which is below the half. The same rule makes `999999.995` read
-  `999,999.99`, which looks like a defect and is not — that double is `999999.99499999999534...`.
-  If a figure has to be rounded *and* formatted to the same answer, `round` it first and format the
-  result. Decide which you want; do not discover the difference in a finished report.
-  On an exact tie `format_number` rounds to the even digit: `2.5` at no places reads `2`, and
-  `0.125` at two reads `0.12`. That rule is fixed; no setting elsewhere in the program can move it.
+- **`round` rounds a half away from zero, as a spreadsheet's ROUND does, on the number as you read
+  it.** `round(2.5, 0)` is `3`, `round(-2.5, 0)` is `-3` and `round(0.125, 2)` is `0.13`. A double
+  cannot hold `1.005` (it holds `1.00499999999999989...`), yet `round(1.005, 2)` is `1.01`: a
+  decimal is read to 15 significant digits, the precision a spreadsheet works to, so a value that
+  differs from a half only past its fifteenth digit is a half. That also catches arithmetic:
+  `476.725` computed as `476.72499999999997` still rounds to `476.73`. When the digit you round on
+  lies past the fifteenth significant digit, the value comes back unchanged. A whole-number column
+  is unchanged; an exact decimal column rounds its own digits the same way.
+- **`format_number` writes what `round` gives**, so the two never disagree: `-15.215` at two places
+  is `-15.22` from both. A negative figure that rounds to zero keeps its minus sign, `-0.00`.
 - **`uuid5` on a key with a missing part gives a null id, not an id.** A null anywhere in the value
   — straight from a column, or through the `concat` that builds the key — makes the whole id null,
   the way `concat` itself already behaves. The alternative is worse than it looks: hashing a

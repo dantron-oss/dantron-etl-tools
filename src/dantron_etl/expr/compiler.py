@@ -442,7 +442,8 @@ class _Compiler:
             family = self._one_family(operands, f"{name}() {params[0].requirement}")
         else:
             family = function.result
-        built = function.to_polars(*(self._built(param, argument) for param, argument in zip(params, arguments)))
+        typed = {"dtype": operands[0].dtype} if function.typed else {}
+        built = function.to_polars(*(self._built(param, argument) for param, argument in zip(params, arguments)), **typed)
 
         if function.result_dtype == "common":
             dtype = combined_dtype([operand.dtype for operand in operands])

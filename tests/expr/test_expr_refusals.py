@@ -219,7 +219,7 @@ class TestUnsignedArithmeticDoesNotWrap:
 
 
 class TestFormatNumberIgnoresTheProcessWideRounding:
-    """format_number rounds half to even on the exact value, whatever any other code set."""
+    """format_number rounds a half away from zero, as round() does, whatever any other code set."""
 
     @pytest.mark.parametrize("rounding", ["ROUND_HALF_UP", "ROUND_DOWN", "ROUND_CEILING", "ROUND_05UP"])
     def test_a_changed_context_moves_nothing(self, rounding: str) -> None:
@@ -238,5 +238,5 @@ class TestFormatNumberIgnoresTheProcessWideRounding:
         finally:
             decimal.getcontext().rounding = saved
             decimal.DefaultContext.rounding = saved_default
-        assert expected["a"].to_list() == ["0.12", "2.50", "1,234.50", "651,623.80", "-2.50"]
-        assert expected["b"].to_list() == ["0", "2", "1,234", "651,624", "-2"]
+        assert expected["a"].to_list() == ["0.13", "2.50", "1,234.50", "651,623.80", "-2.50"]
+        assert expected["b"].to_list() == ["0", "3", "1,235", "651,624", "-3"]
