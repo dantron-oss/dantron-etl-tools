@@ -3415,7 +3415,7 @@ _OUTPUT_NAMING_TOOLS: Final[Mapping[str, tuple[str, Callable[[str], Mapping[str,
     ),
     "case_when": (
         "output",
-        lambda name: {"rules": [{"when": "[count] > 1", "then": "'big'"}], "output": name},
+        lambda name: {"cases": [{"when": "[count] > 1", "then": "'big'"}], "output": name},
     ),
     "regex_extract_groups": (
         "position_column",

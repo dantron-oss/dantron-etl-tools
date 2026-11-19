@@ -477,8 +477,8 @@ Every one of these was measured, most of them the hard way.
   and `formula` take the flag, and it is a statement that the column is there to be written over. A
   misspelled name fails the run instead of quietly writing a new column and leaving the one you
   meant to repair with its old values. Without the flag, a name the input already carries is
-  refused; with it, the column is written where it already was, and the rules read the values that
-  were there before the step ran — so a rule may read the column it writes. Reading the old values
+  refused; with it, the column is written where it already was, and the cases read the values that
+  were there before the step ran — so a case may read the column it writes. Reading the old values
   is not the same as keeping them — the column is written in full, so a row no rung reached takes
   `otherwise`, or null when there is none. A ladder that repairs three rows and has no `otherwise`
   nulls every other row of the column.

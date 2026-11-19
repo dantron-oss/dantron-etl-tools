@@ -1,15 +1,15 @@
-"""CaseWhen: an ordered ladder of rules, the first one a row satisfies deciding it.
+"""CaseWhen: an ordered ladder of cases, the first one a row satisfies deciding it.
 
 A single condition and value is Formula's job when there is only one; the reason this tool exists
-is the ladder that has more than one, and where the rules can overlap -- a disposition that reads
+is the ladder that has more than one, and where the cases can overlap -- a disposition that reads
 "superseded" before it ever asks whether the amount is missing, even though a superseded row might
-also have no amount. So rules are read in the order they are configured, and the row is labelled by
+also have no amount. So cases are read in the order they are configured, and the row is labelled by
 the first one it satisfies. Nothing later "optimises" that into an order-independent form: an
 overlapping ladder has exactly one correct reading, and it is the one the author wrote down.
 
 A condition is three-valued, matching the query engine underneath rather than folk intuition: a
 comparison against a missing value is null, not false, so a row whose condition cannot be answered
-is not a match for that rule and falls through to the next one -- and, failing all of them, to
+is not a match for that case and falls through to the next one -- and, failing all of them, to
 ``otherwise`` or to null.
 
 Every ``then`` and the optional ``otherwise`` are required to agree on one coarse family of value --
@@ -25,7 +25,7 @@ such column, it is refused too, because the flag claims a column is there to rep
 misspelling would otherwise write a new one while the column meant for repair kept its old values.
 
 A replaced column is written where it already was, and every branch is compiled against the frame as
-it arrived -- so a rule may read the column it writes, and reads the values that were there before
+it arrived -- so a case may read the column it writes, and reads the values that were there before
 this step ran, which is what the blank-to-null and collapse-a-status steps this flag exists for all
 do.
 """
@@ -75,19 +75,19 @@ def _family_of(dtype: pl.DataType) -> str:
 
 
 class CaseWhen:
-    """Label every row of ``rows`` by the first rule it satisfies, or ``otherwise``, or null."""
+    """Label every row of ``rows`` by the first case it satisfies, or ``otherwise``, or null."""
 
     name = "case_when"
-    description = "Add a column labelling each row by the first rule it satisfies in an ordered ladder."
+    description = "Add a column labelling each row by the first case it satisfies in an ordered ladder."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
-            "rules": ConfigField(
+            "cases": ConfigField(
                 type="array",
-                description="The ladder, read in order; the first rule a row satisfies decides it. "
+                description="The ladder, read in order; the first case a row satisfies decides it. "
                 "An empty ladder is refused rather than treated as a constant column.",
                 required=True,
                 items=ConfigField(
@@ -97,13 +97,13 @@ class CaseWhen:
                     fields={
                         "when": ConfigField(
                             type="expression",
-                            description="The condition for this rule; a row whose condition is "
-                            "null, not true, falls through to the next rule.",
+                            description="The condition for this case; a row whose condition is "
+                            "null, not true, falls through to the next case.",
                             required=True,
                         ),
                         "then": ConfigField(
                             type="expression",
-                            description="The value a row matching this rule is given; must agree "
+                            description="The value a row matching this case is given; must agree "
                             "in type family with every other 'then' and with 'otherwise'.",
                             required=True,
                         ),
@@ -112,7 +112,7 @@ class CaseWhen:
             ),
             "otherwise": ConfigField(
                 type="expression",
-                description="The value a row that satisfies no rule is given; left out, such a row is null.",
+                description="The value a row that satisfies no case is given; left out, such a row is null.",
                 required=False,
             ),
             "output": ConfigField(
@@ -130,18 +130,18 @@ class CaseWhen:
         return ToolHelp(
             detailed_description=(
                 "Rules are read in order and the first one a row satisfies decides it, even where "
-                "rules overlap. A null condition is not a match, so such a row falls through rather "
+                "cases overlap. A null condition is not a match, so such a row falls through rather "
                 "than being folded into false. Every 'then' and 'otherwise' must agree on one family "
                 "of value -- text, number, date, or truth value -- checked before a single row runs. "
-                "Under 'replace' the ladder writes the whole column rather than only the rows a rule "
+                "Under 'replace' the ladder writes the whole column rather than only the rows a case "
                 "matched, so a row no rung reached takes 'otherwise', or null when there is none."
             ),
             examples=(_disposition_ladder_example(), _no_otherwise_example(), _replacing_example()),
             notes=(
                 "A branch that gives null belongs to every family, because a null does; it is never "
                 "the disagreement that gets refused.",
-                "A replacement writes the whole column rather than only the rows a rule matched, so "
-                "a row no rule reached takes 'otherwise', or null when there is none, exactly as it "
+                "A replacement writes the whole column rather than only the rows a case matched, so "
+                "a row no case reached takes 'otherwise', or null when there is none, exactly as it "
                 "would in a new column, instead of keeping the value it had.",
             ),
         )
@@ -149,7 +149,7 @@ class CaseWhen:
     def validate_config(self, config: Mapping[str, Any]) -> None:
         """Refuse what ``required`` cannot: a ladder with no rungs at all.
 
-        ``required=True`` on ``rules`` is satisfied by ``[]`` -- an empty list is a value -- so a
+        ``required=True`` on ``cases`` is satisfied by ``[]`` -- an empty list is a value -- so a
         ladder emptied by a loader reaches here rather than the template. It is refused rather than
         run as a constant column, because a constant column is what Formula is for and says so.
 
@@ -158,8 +158,8 @@ class CaseWhen:
         input carries, so without the flag it writes a column called '', and with it the run is
         refused for a column that is not there.
         """
-        if not config["rules"]:
-            raise ConfigError("config field 'rules' must name at least one rule")
+        if not config["cases"]:
+            raise ConfigError("config field 'cases' must name at least one case")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Every condition must be a truth value, every value must agree with the others, in family.
@@ -170,25 +170,25 @@ class CaseWhen:
         frame = inputs["rows"]
         check_output_column(frame, config["output"], "output", replace=config["replace"])
 
-        for index, rule in enumerate(config["rules"]):
-            compile_predicate_for(frame, rule["when"], f"rules[{index}].when")
+        for index, case in enumerate(config["cases"]):
+            compile_predicate_for(frame, case["when"], f"cases[{index}].when")
 
         reference: tuple[str, str, str] | None = None
-        for index, rule in enumerate(config["rules"]):
-            reference = _check_family(frame, rule["then"], f"rules[{index}].then", reference)
+        for index, case in enumerate(config["cases"]):
+            reference = _check_family(frame, case["then"], f"cases[{index}].then", reference)
         if config.get("otherwise") is not None:
             _check_family(frame, config["otherwise"], "otherwise", reference)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
-        rules = config["rules"]
+        cases = config["cases"]
 
-        ladder = pl.when(compile_predicate_for(frame, rules[0]["when"], "rules[0].when")).then(
-            compile_for(frame, rules[0]["then"], "rules[0].then")
+        ladder = pl.when(compile_predicate_for(frame, cases[0]["when"], "cases[0].when")).then(
+            compile_for(frame, cases[0]["then"], "cases[0].then")
         )
-        for index, rule in enumerate(rules[1:], start=1):
-            ladder = ladder.when(compile_predicate_for(frame, rule["when"], f"rules[{index}].when")).then(
-                compile_for(frame, rule["then"], f"rules[{index}].then")
+        for index, case in enumerate(cases[1:], start=1):
+            ladder = ladder.when(compile_predicate_for(frame, case["when"], f"cases[{index}].when")).then(
+                compile_for(frame, case["then"], f"cases[{index}].then")
             )
         if config.get("otherwise") is not None:
             ladder = ladder.otherwise(compile_for(frame, config["otherwise"], "otherwise"))
@@ -258,7 +258,7 @@ def _disposition_ladder_example() -> WorkedExample:
     return WorkedExample(
         scenario="an eight-branch ladder reduced to three rungs and a fall-through",
         configuration={
-            "rules": [
+            "cases": [
                 {"when": "[status] = 'superseded'", "then": "'superseded'"},
                 {"when": "[amount] = 0", "then": "'zero_total'"},
                 {"when": "[category] is null", "then": "'no_category'"},
@@ -266,7 +266,7 @@ def _disposition_ladder_example() -> WorkedExample:
             "otherwise": "'counted'",
             "output": "disposition",
         },
-        explanation="Each row is labelled by the first rule it satisfies; the last row satisfies "
+        explanation="Each row is labelled by the first case it satisfies; the last row satisfies "
         "none of the three and falls through to 'otherwise' rather than being left unlabelled.",
         inputs=inputs,
         outputs=outputs,
@@ -287,9 +287,9 @@ def _no_otherwise_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="with no 'otherwise', a row matching no rule is left null rather than labelled",
-        configuration={"rules": [{"when": "[amount] < 0", "then": "'negative'"}], "output": "band"},
-        explanation="The second row satisfies no rule and no fallback is configured, so it is null "
+        scenario="with no 'otherwise', a row matching no case is left null rather than labelled",
+        configuration={"cases": [{"when": "[amount] < 0", "then": "'negative'"}], "output": "band"},
+        explanation="The second row satisfies no case and no fallback is configured, so it is null "
         "rather than silently taking a label that was never written for it.",
         inputs=inputs,
         outputs=outputs,
@@ -302,13 +302,13 @@ def _replacing_example() -> WorkedExample:
     return WorkedExample(
         scenario="a ladder reads the column it writes, and writes it back in place",
         configuration={
-            "rules": [{"when": "strip([company]) = ''", "then": "null"}],
+            "cases": [{"when": "strip([company]) = ''", "then": "null"}],
             "otherwise": "strip([company])",
             "output": "company",
             "replace": True,
         },
         explanation="'replace: true' says the overwrite was meant, so 'company' keeps its position "
-        "and no column is added; the rules read the values that were there before this step ran.",
+        "and no column is added; the cases read the values that were there before this step ran.",
         inputs=inputs,
         outputs=outputs,
     )

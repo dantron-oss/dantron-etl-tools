@@ -30,7 +30,7 @@ mistake is a column of plausible-looking strings that nobody notices. A branch w
 ``null`` belongs to every family, because a null does.
 
 **A ladder with no rules is refused.** ``required=True`` treats only a missing value as missing, so
-``rules: []`` reaches the tool. It is either a mistake or a constant column; a constant column is
+``cases: []`` reaches the tool. It is either a mistake or a constant column; a constant column is
 Formula's job, and it says what it means, whereas an empty ladder is exactly the shape a loader
 produces when the rules were dropped from a file -- and it would quietly write a column of
 ``otherwise``, or of nulls.
@@ -83,7 +83,7 @@ from dantron_etl.tools.formula import Formula
 # ---------------------------------------------------------------------------
 
 _LADDER: Mapping[str, Any] = {
-    "rules": [
+    "cases": [
         {"when": "[status] in ('superseded', 'replaced')", "then": "'superseded'"},
         {"when": "[amount] = 0", "then": "'zero_total'"},
         {"when": "[category] is null", "then": "'no_category'"},
@@ -192,12 +192,12 @@ class TestCaseWhenOrder:
         first = run_tool(
             CaseWhen(),
             Ports({"rows": frame}),
-            {"rules": [negative, not_positive], "otherwise": "'positive'", "output": "band"},
+            {"cases": [negative, not_positive], "otherwise": "'positive'", "output": "band"},
         )
         second = run_tool(
             CaseWhen(),
             Ports({"rows": frame}),
-            {"rules": [not_positive, negative], "otherwise": "'positive'", "output": "band"},
+            {"cases": [not_positive, negative], "otherwise": "'positive'", "output": "band"},
         )
 
         assert first["rows"]["band"].to_list() == ["negative", "positive", "not_positive"]
@@ -232,7 +232,7 @@ class TestCaseWhenOrder:
             "counted",
         ]
         assert out["disposition"].null_count() == 0, "every row carries the reason it counts or does not"
-        assert set(out["disposition"].to_list()) == {rule["then"].strip("'") for rule in _LADDER["rules"]} | {
+        assert set(out["disposition"].to_list()) == {rule["then"].strip("'") for rule in _LADDER["cases"]} | {
             "counted"
         }, "every branch of the ladder is reached by some row, and the fall-through by one more"
         assert out.columns == [*frame.columns, "disposition"], "one column appended, the rest untouched"
@@ -243,7 +243,7 @@ class TestCaseWhenOrder:
         [
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[code] = 'A1'", "then": "'first'"},
                         {"when": "[code] is null", "then": "'missing'"},
                     ],
@@ -254,12 +254,12 @@ class TestCaseWhenOrder:
                 id="the_null_row_falls_past_a_condition_it_cannot_answer",
             ),
             pytest.param(
-                {"rules": [{"when": "[code] = 'A1'", "then": "'first'"}], "output": "band"},
+                {"cases": [{"when": "[code] = 'A1'", "then": "'first'"}], "output": "band"},
                 ["first", None, None],
                 id="with_no_otherwise_the_rows_no_rule_matched_are_null",
             ),
             pytest.param(
-                {"rules": [{"when": "[code] = 'A1'", "then": "'first'"}], "otherwise": "'other'", "output": "band"},
+                {"cases": [{"when": "[code] = 'A1'", "then": "'first'"}], "otherwise": "'other'", "output": "band"},
                 ["first", "other", "other"],
                 id="with_an_otherwise_a_null_row_takes_it_like_any_other_unmatched_row",
             ),
@@ -294,19 +294,19 @@ class TestCaseWhenBranchTypes:
         [
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[code] = 'A1'", "then": "'first'"},
                         {"when": "[amount] > 0", "then": "[amount] * 2"},
                     ],
                     "output": "band",
                 },
-                "rules[1].then",
+                "cases[1].then",
                 "[amount] * 2",
                 id="one_arm_gives_text_and_another_gives_a_number",
             ),
             pytest.param(
                 {
-                    "rules": [{"when": "[code] = 'A1'", "then": "'first'"}],
+                    "cases": [{"when": "[code] = 'A1'", "then": "'first'"}],
                     "otherwise": "[amount]",
                     "output": "band",
                 },
@@ -316,13 +316,13 @@ class TestCaseWhenBranchTypes:
             ),
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[code] = 'A1'", "then": "[amount]"},
                         {"when": "[amount] > 0", "then": "starts_with([code], 'B')"},
                     ],
                     "output": "band",
                 },
-                "rules[1].then",
+                "cases[1].then",
                 "starts_with([code], 'B')",
                 id="a_truth_value_beside_a_number",
             ),
@@ -353,7 +353,7 @@ class TestCaseWhenBranchTypes:
         [
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[code] = 'A1'", "then": "1"},
                         {"when": "[amount] < 0", "then": "[amount] / 2"},
                     ],
@@ -366,7 +366,7 @@ class TestCaseWhenBranchTypes:
             ),
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[code] = 'A1'", "then": "'first'"},
                         {"when": "[amount] < 0", "then": "null"},
                     ],
@@ -434,7 +434,7 @@ class TestCaseWhenRefusals:
         """
         frame = _rows().head(height)
         config = {
-            "rules": [{"when": "[code] = 'A1'", "then": "'first'"}, {"when": when, "then": "'second'"}],
+            "cases": [{"when": "[code] = 'A1'", "then": "'first'"}, {"when": when, "then": "'second'"}],
             "output": "band",
         }
 
@@ -444,10 +444,10 @@ class TestCaseWhenRefusals:
         message = str(caught.value)
         assert named in message, f"refusal should name {named!r}: {message}"
         assert when in message, f"refusal should quote the condition: {message}"
-        assert "rules[1].when" in message, f"refusal should report the path: {message}"
+        assert "cases[1].when" in message, f"refusal should report the path: {message}"
 
     def test_a_ladder_with_no_rules_is_refused_by_the_tool(self) -> None:
-        """``rules: []`` passes the template and must be refused by the tool, naming the field.
+        """``cases: []`` passes the template and must be refused by the tool, naming the field.
 
         ``required=True`` treats only a missing value as missing, so an empty list arrives at
         ``execute`` looking configured. It is the shape a loader produces when the rules were
@@ -455,13 +455,13 @@ class TestCaseWhenRefusals:
         that reads as if the ladder had run. A genuine constant column is Formula's job, where it
         says so.
         """
-        config = {"rules": [], "otherwise": "'counted'", "output": "disposition"}
+        config = {"cases": [], "otherwise": "'counted'", "output": "disposition"}
         validate_against_template(CaseWhen().config_template(), config)
 
         with pytest.raises(ConfigError) as caught:
             run_tool(CaseWhen(), Ports({"rows": _rows()}), config)
 
-        assert "rules" in str(caught.value)
+        assert "cases" in str(caught.value)
 
     def test_the_output_column_must_not_silently_replace_an_input_column(self) -> None:
         """An ``output`` naming a column the input already holds is refused, naming the column.
@@ -471,7 +471,7 @@ class TestCaseWhenRefusals:
         Saying ``replace: true`` is how an author says they meant it; saying nothing means they did
         not, and this is the configuration that said nothing.
         """
-        config = {"rules": [{"when": "[amount] > 0", "then": "'positive'"}], "output": "code"}
+        config = {"cases": [{"when": "[amount] > 0", "then": "'positive'"}], "output": "code"}
 
         with pytest.raises(ToolError) as caught:
             run_tool(CaseWhen(), Ports({"rows": _rows()}), config)
@@ -483,25 +483,25 @@ class TestCaseWhenRefusals:
         [
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[amount] > 0", "then": "'first'"},
                         {"when": "[cdoe] = 'B2'", "then": "'second'"},
                     ],
                     "output": "band",
                 },
                 "cdoe",
-                "rules[1].when",
+                "cases[1].when",
                 id="a_column_that_is_not_there_in_a_condition",
             ),
             pytest.param(
-                {"rules": [{"when": "[amount] > 0", "then": "[amont]"}], "output": "band"},
+                {"cases": [{"when": "[amount] > 0", "then": "[amont]"}], "output": "band"},
                 "amont",
-                "rules[0].then",
+                "cases[0].then",
                 id="a_column_that_is_not_there_in_a_value",
             ),
             pytest.param(
                 {
-                    "rules": [{"when": "[amount] > 0", "then": "'first'"}],
+                    "cases": [{"when": "[amount] > 0", "then": "'first'"}],
                     "otherwise": "upper([amount])",
                     "output": "band",
                 },
@@ -554,7 +554,7 @@ def _blanking_ladder(*, replace: bool | None = True) -> dict[str, Any]:
     and each of those needed a rename step first purely to move the name out of the way.
     """
     config: dict[str, Any] = {
-        "rules": [
+        "cases": [
             {"when": "[status] = 'superseded'", "then": "'superseded_co'"},
             {"when": "strip([company]) = ''", "then": "null"},
         ],
@@ -679,7 +679,7 @@ class TestCaseWhenReplaces:
             pytest.param(
                 "status",
                 {
-                    "rules": [{"when": "[amount] > 0", "then": "[amount] * 2"}],
+                    "cases": [{"when": "[amount] > 0", "then": "[amount] * 2"}],
                     "otherwise": "[amount]",
                     "output": "status",
                     "replace": True,
@@ -691,7 +691,7 @@ class TestCaseWhenReplaces:
             pytest.param(
                 "amount",
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[amount] > 0", "then": "'positive'"},
                         {"when": "[amount] = 0", "then": "'zero'"},
                     ],
@@ -744,7 +744,7 @@ class TestCaseWhenReplaces:
             ),
             pytest.param(
                 {
-                    "rules": [{"when": "[status] = 'superseded'", "then": "'superseded_co'"}],
+                    "cases": [{"when": "[status] = 'superseded'", "then": "'superseded_co'"}],
                     "output": "company",
                     "replace": True,
                 },
@@ -790,33 +790,33 @@ class TestCaseWhenReplaces:
         [
             pytest.param(
                 {
-                    "rules": [
+                    "cases": [
                         {"when": "[status] = 'void'", "then": "'unknown'"},
                         {"when": "[amount] > 0", "then": "[amount] * 2"},
                     ],
                     "output": "company",
                     "replace": True,
                 },
-                "rules[1].then",
+                "cases[1].then",
                 id="branches_still_have_to_agree_with_each_other",
             ),
             pytest.param(
                 {
-                    "rules": [{"when": "[company]", "then": "'named'"}],
+                    "cases": [{"when": "[company]", "then": "'named'"}],
                     "output": "company",
                     "replace": True,
                 },
-                "rules[0].when",
+                "cases[0].when",
                 id="a_condition_still_has_to_be_a_truth_value",
             ),
             pytest.param(
-                {"rules": [], "otherwise": "'anything'", "output": "company", "replace": True},
-                "rules",
+                {"cases": [], "otherwise": "'anything'", "output": "company", "replace": True},
+                "cases",
                 id="an_empty_ladder_is_still_refused",
             ),
             pytest.param(
                 {
-                    "rules": [{"when": "[staus] = 'void'", "then": "'unknown'"}],
+                    "cases": [{"when": "[staus] = 'void'", "then": "'unknown'"}],
                     "output": "company",
                     "replace": True,
                 },
@@ -872,7 +872,7 @@ class TestCaseWhenReplaces:
         """
         frame = _existing()
         config = {
-            "rules": [
+            "cases": [
                 {"when": "[status] = 'open'", "then": "'void'"},
                 {"when": "[status] = 'void'", "then": "'unknown'"},
             ],
@@ -924,7 +924,7 @@ class TestCaseWhenReplaces:
         value.
         """
         config = {
-            "rules": [
+            "cases": [
                 {"when": "[status] = 'superseded'", "then": "'superseded_co'"},
                 {"when": "strip([company]) = ''", "then": "null", "replace": written},
             ],
@@ -936,7 +936,7 @@ class TestCaseWhenReplaces:
         with pytest.raises(ToolError) as caught:
             run_tool(CaseWhen(), Ports({"rows": _existing()}), config)
 
-        assert "rules[1].replace" in str(caught.value), (
+        assert "cases[1].replace" in str(caught.value), (
             f"refusal should name the path the stray flag sits at: {caught.value}"
         )
 
@@ -986,31 +986,31 @@ class TestCaseWhenTemplateAndCatalog:
         """Both halves of the seam, on the configuration the nested shape was designed against.
 
         CaseWhen has one top-level expression field, the fallback, and every other expression it
-        holds sits inside an element of ``rules``. A seam that reached only the top level would
+        holds sits inside an element of ``cases``. A seam that reached only the top level would
         report one expression out of seventeen for the real ladder.
         """
         template = CaseWhen().config_template()
 
-        assert set(template) == {"rules", "otherwise", "output", "replace"}
-        assert template["rules"].type == "array"
-        assert template["rules"].required is True
+        assert set(template) == {"cases", "otherwise", "output", "replace"}
+        assert template["cases"].type == "array"
+        assert template["cases"].required is True
         assert template["output"].required is True
         assert template["output"].type == "string", "a column name, not an expression"
         assert template["otherwise"].type == "expression"
         assert template["otherwise"].required is False, "a ladder may leave unmatched rows null"
 
-        rule = template["rules"].items
+        rule = template["cases"].items
         assert rule is not None, "an untyped array would leave every rule unchecked"
         assert rule.type == "object"
         assert set(rule.fields or {}) == {"when", "then"}
         assert all((rule.fields or {})[member].type == "expression" for member in ("when", "then"))
         assert all((rule.fields or {})[member].required is True for member in ("when", "then"))
 
-        assert expression_fields(template) == ("rules[].when", "rules[].then", "otherwise")
+        assert expression_fields(template) == ("cases[].when", "cases[].then", "otherwise")
         assert expression_values(template, _LADDER)[:3] == (
-            ("rules[0].when", "[status] in ('superseded', 'replaced')"),
-            ("rules[0].then", "'superseded'"),
-            ("rules[1].when", "[amount] = 0"),
+            ("cases[0].when", "[status] in ('superseded', 'replaced')"),
+            ("cases[0].then", "'superseded'"),
+            ("cases[1].when", "[amount] = 0"),
         )
         assert len(expression_values(template, _LADDER)) == 17, "eight rules, two expressions each, and the fallback"
         assert expression_values(template, _LADDER)[-1] == ("otherwise", "'counted'")
@@ -1040,7 +1040,7 @@ class TestCaseWhenTemplateAndCatalog:
         assert replace.default is False, "left out, the flag means no, and a filled configuration says so"
         assert replace.enum is None, "a flag has two values and the type already says which"
         assert apply_defaults(template, dict(_LADDER))["replace"] is False
-        assert expression_fields(template) == ("rules[].when", "rules[].then", "otherwise"), (
+        assert expression_fields(template) == ("cases[].when", "cases[].then", "otherwise"), (
             "a flag is not an expression and must not appear on the seam a loader pre-flights"
         )
 
@@ -1061,7 +1061,7 @@ class TestCaseWhenTemplateAndCatalog:
 
         examples = tool.help().examples
         assert len(examples) >= 2
-        assert any(len(example.configuration["rules"]) >= 3 for example in examples), (
+        assert any(len(example.configuration["cases"]) >= 3 for example in examples), (
             "a two-branch example would not exercise first-match-wins, which is the whole ordering"
         )
         assert any("otherwise" in example.configuration for example in examples), (
@@ -1163,7 +1163,7 @@ class TestCaseWhenTemplateAndCatalog:
 def _blank_output_ladder(name: str, *, replace: bool | None = None) -> dict[str, Any]:
     """The smallest legitimate ladder, writing to ``name``."""
     config: dict[str, Any] = {
-        "rules": [{"when": "[amount] > 0", "then": "'positive'"}],
+        "cases": [{"when": "[amount] > 0", "then": "'positive'"}],
         "otherwise": "'other'",
         "output": name,
     }

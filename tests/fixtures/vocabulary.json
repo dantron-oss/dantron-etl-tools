@@ -142,34 +142,7 @@
     "case_when": {
       "category": "transform",
       "config": {
-        "otherwise": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "expression"
-        },
-        "output": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": true,
-          "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        },
-        "rules": {
+        "cases": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -204,6 +177,33 @@
           "non_empty": false,
           "required": true,
           "type": "array"
+        },
+        "otherwise": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "expression"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "replace": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
         }
       },
       "input_ports": [

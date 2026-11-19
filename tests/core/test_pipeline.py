@@ -975,13 +975,13 @@ class TestAnExpressionFieldKeepsTheQuotingItAlreadyHas:
     """
 
     def test_a_ladders_conditions_and_results_keep_the_languages_quoting(self) -> None:
-        """``rules[].when`` and ``rules[].then`` are expressions two levels down, and stay so."""
+        """``cases[].when`` and ``cases[].then`` are expressions two levels down, and stay so."""
         config = _load_step(
             {
                 "id": "banding",
                 "tool": "case_when",
                 "config": {
-                    "rules": [
+                    "cases": [
                         {
                             "when": "[code] = '${rules.kept_code}'",
                             "then": "concat('band ', '${rules.band}')",
@@ -995,10 +995,10 @@ class TestAnExpressionFieldKeepsTheQuotingItAlreadyHas:
             {"kept_code": "O'Brian", "band": "O'Neill"},
         )
 
-        assert config["rules"][0]["when"] == "[code] = 'O''Brian'"
-        assert config["rules"][0]["then"] == "concat('band ', 'O''Neill')"
+        assert config["cases"][0]["when"] == "[code] = 'O''Brian'"
+        assert config["cases"][0]["then"] == "concat('band ', 'O''Neill')"
         rows = pl.DataFrame({"code": ["O'Brian", "OBrian"]})
-        assert rows.filter(compile_expr(config["rules"][0]["when"]))["code"].to_list() == ["O'Brian"]
+        assert rows.filter(compile_expr(config["cases"][0]["when"]))["code"].to_list() == ["O'Brian"]
 
     def test_an_aggregations_value_keeps_the_languages_quoting(self) -> None:
         """``aggregations[].value`` is an expression beside two plain strings in the same object."""
