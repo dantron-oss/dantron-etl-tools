@@ -114,8 +114,8 @@ class CaseWhen:
                 "Every 'then' and 'otherwise' must give the same kind of value: text, a number, a date, "
                 "or true/false. A mix is refused before any row runs, naming the case.",
                 "A value of null fits with any kind, so it is never the mismatch that gets refused.",
-                "With 'replace', the whole column is rewritten. A row no case reached gets "
-                "'otherwise', or null if there is none; it does not keep its old value.",
+                "With 'replace', the whole column is rewritten, so a row no case reached gets "
+                "'otherwise', or null if there is none, instead of keeping its old value.",
                 "With 'replace', the cases read the column's values as they were before this step, so "
                 "a case can read the column it writes.",
                 "A name already on the input is refused unless 'replace' is true, and 'replace' on a "
