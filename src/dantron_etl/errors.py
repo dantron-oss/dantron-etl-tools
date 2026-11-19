@@ -49,7 +49,7 @@ class RegistryError(ToolError):
 
 
 class ConformanceError(ToolError):
-    """A tool does not satisfy the catalog's rules -- undocumented, undeclared, or drifted."""
+    """A tool breaks a catalog rule: something undocumented, undeclared, or no longer true."""
 
 
 class ExecutionError(ToolError):
