@@ -872,3 +872,50 @@ itself, when reading the rules fails (logged, since it would otherwise show only
 it finds nothing wrong with a load the server just refused. The replay attempts every row inside a
 discarded transaction, each in the loader's own undo, because on one driver a failed statement poisons
 the rest of the transaction.
+
+## publish_tables
+
+**All the tables, or none.** write_table is one transaction per step. Tables that only make sense
+together (rows, a series, an audit, a change log, a dimension) written one step each are that many
+transactions, so a build that fails half way leaves three tables from tonight and two from last night,
+published, disagreeing, and with no record of which is which. Nothing passes a transaction between
+steps, so it has to live inside one step. Every ruling below follows from that.
+
+**Input ports come from `tables`,** as in write_excel (`input_ports_for`, owner's approval for tools
+that declare their own ports).
+
+**One instant, read once.** The stamp belongs to the publish, not to any table or frame. Read per table,
+tables of one build would carry times milliseconds apart and could no longer be selected as one build;
+taken from a constant or a frame, every build would look the same. UTC without a zone, because both
+engines store a plain timestamp and a set of figures read a year later elsewhere must still say when it
+was built. Renamed `stamp_column` in stage 4.
+
+**A merge states what a null does** (owner's ruling 2026-11-18, finding D-02). `when_incoming_is_null`
+has no default. `keep_published` writes `coalesce(excluded.c, target.c)`: one unreadable upstream source
+cannot blank a column across every row. `overwrite` writes `excluded.c`, as SQL's MERGE ... UPDATE SET
+does. The client's existing entry was migrated to `keep_published`, so nothing it publishes changed.
+
+**A merge stages first.** One driver's bulk path is COPY, which has no conflict handling, so rows are
+bulk-loaded into a temporary `_etl_merge_staging` table and upserted in one statement. One fixed name,
+created and dropped inside the publish; a permanent table of that name is hidden while a merge runs.
+A merge needs one row per key: a null key would add a row on every run, and a repeated key would blend
+two rows into one.
+
+**Append never truncates, and `mode` has no default.** A change log is the one table a rebuild cannot
+recreate. The three modes differ in whether running twice is safe.
+
+**It never creates a table,** for the same reasons as write_table. Values that cannot go into a
+column's declared type are refused before anything is emptied (SQLite stores 'heavy' in an integer
+column and reports success). The checks are shared with write_table in `_table_load.py`.
+
+**Columns are compared both ways.** A column the table has and the frame lacks is refused, as is the
+reverse. A column added to a table by hand and not to the flow once stopped every publish for twelve
+days; the refusal was correct, and nothing reported it. A consumer needs its own freshness alert.
+
+**Every refusal comes before `execute`.** A refusal after four tables have been emptied is not a
+refusal; it is a failed publish with a helpful message. Repeated ports and tables are refused because
+both fail silently: one port publishes the same rows twice, and two loads into one table in one
+transaction leave only the second.
+
+**The receipt is one row,** the time and a row count per table. One pass-through port per table would be
+ports nobody wires; a count per table is what someone comparing tonight with last night reads.
