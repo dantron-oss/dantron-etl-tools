@@ -500,6 +500,12 @@ Every one of these was measured, most of them the hard way.
   is not the same as keeping them — the column is written in full, so a row no rung reached takes
   `otherwise`, or null when there is none. A ladder that repairs three rows and has no `otherwise`
   nulls every other row of the column.
+- **Every entry in one `formula` step reads the input as it arrived.** An entry cannot read a
+  column an entry above it adds (that is refused: the column is not on the input), and an entry
+  reading a column an entry above it *replaces* gets the old value. Replace `amount` with
+  `[amount] * 2` and compute `total` as `[amount] + 1` in the same step, and 10 gives 20 and 11.
+  This is SQL's `SELECT`, not Alteryx's Formula tool, which works top to bottom. `case_when` with
+  `replace` reads the old values the same way. To read a value a step computes, use a second step.
 - **A tool must not mutate its input.** The boundary checks each input frame's schema before and
   after a step and refuses a change, because the walkthrough shows every intermediate and an
   in-place edit makes an earlier step display columns it never produced.
