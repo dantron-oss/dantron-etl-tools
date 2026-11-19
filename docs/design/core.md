@@ -667,3 +667,13 @@ The directory is removed in `finally`. Whether it still existed is recorded firs
 was raised, so a drifted example is still reported as drifted.
 
 `check_registry` reports every failing tool at once, so a catalog can be fixed in one pass.
+
+## The catalog lists every field property
+
+**Decided.** `catalog()` builds each configuration field's entry by walking the `ConfigField`
+dataclass, not by naming its properties one by one. It skips only a property that is `None`.
+
+**Why.** A property added to `ConfigField` then reaches the catalog because it exists, not because
+someone remembered a line in `catalog.py`. The hand-written version had three branches whose other
+arm was "say nothing", which is a silent omission by construction. Skipping any false value would
+have dropped a meaningful `default: false`.
