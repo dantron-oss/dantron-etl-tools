@@ -84,3 +84,41 @@ class TestAColumnCheckIsAStepFailure:
 
     def test_a_step_failure_is_not_a_column_check(self) -> None:
         assert not isinstance(_failure(), ColumnCheckError)
+
+
+class _JobLog:
+    """A logger shaped like an orchestrator's: info, warning and error methods, not a logging.Logger."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str]] = []
+
+    def info(self, msg: str) -> None:
+        self.lines.append(("info", msg))
+
+    def warning(self, msg: str) -> None:
+        self.lines.append(("warning", msg))
+
+    def error(self, msg: str) -> None:
+        self.lines.append(("error", msg))
+
+
+class TestLoggingSinkTakesAnyLoggerShapedObject:
+    def test_a_warning_reaches_warning_and_an_error_reaches_error(self) -> None:
+        from dantron_etl.runner import logging_sink
+
+        log = _JobLog()
+        spec = load_pipeline(
+            {
+                "name": "log",
+                "steps": [
+                    {"id": "rows", "tool": "read_csv", "config": {"path": "unused.csv"}},
+                    {"id": "kept", "tool": "filter", "config": {"predicate": "[n] > 5"}, "inputs": {"rows": "rows.rows"}},
+                    {"id": "checked", "tool": "assert_rows", "config": {"predicate": "[n] > 0"}, "inputs": {"rows": "kept.true"}},
+                    {"id": "low", "tool": "assert_rows", "config": {"predicate": "[n] > 1"}, "inputs": {"rows": "kept.false"}},
+                ],
+            }
+        )
+        with pytest.raises(StepFailedError):
+            run_pipeline(spec, sources={"rows.rows": pl.DataFrame({"n": [1, 2]})}, sink=logging_sink(log))
+        assert [level for level, _ in log.lines] == ["info", "warning", "error"]
+        assert log.lines[1][1].startswith("step 'kept'") and log.lines[2][1].startswith("step 'checked'")

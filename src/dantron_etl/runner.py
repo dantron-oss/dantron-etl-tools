@@ -52,7 +52,7 @@ import time
 from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, Protocol
 
 import polars as pl
 
@@ -67,7 +67,7 @@ from .spec import Pipeline, PortRef
 from .trace import CachedFrame, ColumnCheckError, FrameShape, Level, PipelineTrace, StepEvent, StepFailedError
 from .walk import release_schedule, resolve_cached, resolve_keep, resolve_sources, walk_around_cache, walk_for
 
-__all__ = ["logging_sink", "run_pipeline"]
+__all__ = ["LogTarget", "logging_sink", "run_pipeline"]
 
 
 #: Where one step's output frames came from. Not a pair of booleans on the walk, because "ran" and
@@ -88,18 +88,36 @@ _ORIGIN_VERBS: Mapping[_Origin, str] = {
 _RETAIN_MODES: tuple[str, ...] = ("all", "live")
 
 
-def logging_sink(logger: logging.Logger | None = None) -> Callable[[StepEvent], None]:
-    """A sink that writes each event's own message, verbatim, at the log level its own level names.
+class LogTarget(Protocol):
+    """Anything a run can log to: an object with ``info``, ``warning`` and ``error`` methods.
+
+    A ``logging.Logger`` is one. So is the logger an orchestrator hands a job, which is often not a
+    ``logging.Logger`` itself.
+    """
+
+    def info(self, msg: str, /) -> object: ...
+
+    def warning(self, msg: str, /) -> object: ...
+
+    def error(self, msg: str, /) -> object: ...
+
+
+def logging_sink(logger: LogTarget | None = None) -> Callable[[StepEvent], None]:
+    """A sink that writes each event's own message, verbatim, at the level the event names.
+
+    ``logger`` is anything with ``info``, ``warning`` and ``error`` methods (see :class:`LogTarget`),
+    such as a ``logging.Logger`` or an orchestrator's job logger. Left out, it is this module's own
+    logger. An event at level ``"warning"`` goes to ``warning``, so a note such as an empty frame on
+    a port a later step reads is not lost among the info lines.
 
     Verbatim on purpose: a sink that reworded an event would give a reader a second account of the
-    same run to square against the first, and the log line, the trace and a raised exception must
-    stay one wording wherever any of them is read.
+    same run to square against the first.
     """
-    target = logger if logger is not None else logging.getLogger(__name__)
-    levels: Mapping[Level, int] = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+    target: LogTarget = logger if logger is not None else logging.getLogger(__name__)
+    methods: Mapping[Level, str] = {"info": "info", "warning": "warning", "error": "error"}
 
     def sink(event: StepEvent) -> None:
-        target.log(levels[event.level], event.message)
+        getattr(target, methods[event.level])(event.message)
 
     return sink
 
