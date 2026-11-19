@@ -983,10 +983,10 @@ class TestAMergeThatFailedDoesNotSpoilTheNextOne:
                 with loader.transaction(connection):
                     # A row of the wrong width: the one thing neither driver quietly accepts, and it
                     # lands after the scratch exists and before anything drops it.
-                    loader.merge_rows(connection, target.schema, "paired", columns, ["key"], [(1, "a")])
+                    loader.merge_rows(connection, target.schema, "paired", columns, ["key"], [(1, "a")], keep_published=True)
 
             with loader.transaction(connection):
-                loader.merge_rows(connection, target.schema, "paired", columns, ["key"], [(1, "a", 1.0)])
+                loader.merge_rows(connection, target.schema, "paired", columns, ["key"], [(1, "a", 1.0)], keep_published=True)
 
         assert target.read("paired") == _normalised([(1, "a", 1.0)]), (
             f"{target.driver}: the merge after a failed one did not land -- the scratch the first "

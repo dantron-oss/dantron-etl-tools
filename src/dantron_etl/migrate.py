@@ -22,6 +22,7 @@ from typing import Any
 
 from .renames import (
     FUNCTION_RENAMES,
+    as_written,
     MIGRATE_COMMAND,
     PYTHON_RENAMES,
     Found,
@@ -325,7 +326,7 @@ class _Editor:
         if not isinstance(mapping, yaml.MappingNode):
             self._by_hand(mapping, f"{found.sentence}; the config is not a mapping, so write it by hand")
             return
-        entry = f"{found.new}: {found.old}"
+        entry = f"{found.new}: {as_written(found.old)}"
         if mapping.flow_style:
             if mapping.value:
                 at = mapping.value[-1][1].end_mark.index

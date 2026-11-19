@@ -255,7 +255,13 @@ def _entries() -> list[dict[str, Any]]:
         {"port": "series", "table": "entry_series", "mode": "replace"},
         {"port": "audit", "table": "entry_audit", "mode": "replace"},
         {"port": "changes", "table": "entry_changes", "mode": "append"},
-        {"port": "parties", "table": "entry_parties", "mode": "merge", "keys": ["party"]},
+        {
+            "port": "parties",
+            "table": "entry_parties",
+            "mode": "merge",
+            "keys": ["party"],
+            "when_incoming_is_null": "keep_published",
+        },
     ]
 
 
@@ -690,6 +696,67 @@ class TestAnEmptyFrameStopsThePublish:
         assert len(target.read("entry_rows")) == 2, "the rest of the publish did not go ahead"
 
 
+class TestAMergeSaysWhatANullDoes:
+    """A merge entry states what a null in tonight's row does to the published value. No default.
+
+    'keep_published' leaves the published value standing (the test above). 'overwrite' writes the
+    null, the way SQL's MERGE ... UPDATE SET c = source.c does. A merge that does not say is refused
+    before anything is written, and the setting on a replace or an append is refused too, because
+    nothing there reads it.
+    """
+
+    def _with_parties_entry(self, target: _Target, **changes: Any) -> dict[str, Any]:
+        config = _publish(target)
+        parties = dict(config["tables"][-1])
+        parties.update(changes)
+        for key in [key for key, value in changes.items() if value is None]:
+            del parties[key]
+        config["tables"] = [*config["tables"][:-1], parties]
+        return config
+
+    def test_overwrite_writes_the_null_over_the_published_value(self, target: _Target) -> None:
+        result = run_tool(PublishTables(), _frames(), self._with_parties_entry(target, when_incoming_is_null="overwrite"))
+
+        stamp = _stamp_of(result["receipt"])
+        assert target.read("entry_parties") == _normalised(
+            [("a", None, 11.0, stamp), ("b", "Beta", 20.0, _EARLIER), ("c", "Gamma", 30.0, stamp)]
+        )
+
+    def test_a_merge_that_does_not_say_is_refused_by_name_and_nothing_is_written(self, target: _Target) -> None:
+        before = _as_it_was()
+
+        with pytest.raises(ConfigError) as caught:
+            run_tool(PublishTables(), _frames(), self._with_parties_entry(target, when_incoming_is_null=None))
+
+        message = str(caught.value)
+        for word in ("entry_parties", "when_incoming_is_null", "keep_published", "overwrite"):
+            assert word in message, message
+        assert target.everything() == before, "a merge that did not say what a null does published anyway"
+
+    @pytest.mark.parametrize("mode", ["replace", "append"])
+    def test_the_setting_beside_a_replace_or_an_append_is_refused(self, target: _Target, mode: str) -> None:
+        config = _publish(target)
+        config["tables"] = [
+            {**entry, "when_incoming_is_null": "overwrite"} if entry["port"] == "series" else entry
+            for entry in config["tables"]
+        ]
+        if mode == "append":
+            config["tables"] = [
+                {**entry, "mode": "append"} if entry["port"] == "series" else entry for entry in config["tables"]
+            ]
+
+        with pytest.raises(ConfigError) as caught:
+            run_tool(PublishTables(), _frames(), config)
+
+        assert "when_incoming_is_null" in str(caught.value) and "entry_series" in str(caught.value)
+
+    def test_a_value_that_is_neither_choice_is_refused(self, target: _Target) -> None:
+        with pytest.raises(ConfigError) as caught:
+            run_tool(PublishTables(), _frames(), self._with_parties_entry(target, when_incoming_is_null="keep"))
+
+        assert "keep_published" in str(caught.value)
+
+
 class TestAMergeNeedsOneRowPerKey:
     """A merge matches each incoming row to one published row, so the key has to pick out one row.
 
@@ -731,7 +798,8 @@ class TestAMergeNeedsOneRowPerKey:
             connection.execute("create table pairs (a text, b integer, v real, primary key (a, b))")
             connection.commit()
         monkeypatch.setenv(_VARIABLE, f"sqlite:///{database}")
-        config = {"connection": _VARIABLE, "tables": [{"port": "p", "table": "pairs", "mode": "merge", "keys": ["a", "b"]}]}
+        entry = {"port": "p", "table": "pairs", "mode": "merge", "keys": ["a", "b"], "when_incoming_is_null": "overwrite"}
+        config = {"connection": _VARIABLE, "tables": [entry]}
 
         run_tool(PublishTables(), Ports({"p": pl.DataFrame({"a": ["x", "x"], "b": [1, 2], "v": [1.0, 2.0]})}), config)
 

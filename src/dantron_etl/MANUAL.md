@@ -640,6 +640,10 @@ Two more rulings you will meet:
 - **`join_text` of the same group is the empty string** — deliberately the opposite. Joining no
   strings together produces the empty string in any language that has both; adding no numbers
   together produces a total nobody measured.
+- **A `publish_tables` merge says what a null in tonight's row does.** `when_incoming_is_null:
+  keep_published` leaves the published value standing, so one unreadable source cannot blank a
+  column. `overwrite` writes the null, as SQL's `MERGE` does. There is no default: the two publish
+  different figures.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
 - **Not-a-number is not a null.** `0.0 / 0.0` gives not-a-number, and it compares as larger than

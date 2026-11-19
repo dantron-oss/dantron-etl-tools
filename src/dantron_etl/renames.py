@@ -19,6 +19,8 @@ from typing import Any
 
 __all__ = [
     "MIGRATE_COMMAND",
+    "STATED_NOW",
+    "as_written",
     "Found",
     "call_pattern",
     "find_renames",
@@ -71,6 +73,14 @@ OLD_DEFAULTS: dict[str, dict[str, str]] = {
     "date_diff": {"counting": "inclusive"},
     "connected_components": {"record_column": "node", "group_column": "component"},
 }
+
+# Settings a step must now state, where the file alone says which value keeps what the step did
+# before. The migration writes that value in. Each entry: the tool, the path of the mapping the
+# setting goes in (written in the new names, "" for the step's config itself), the values that
+# mapping must hold for the setting to apply, the setting, and the value that keeps the old behaviour.
+STATED_NOW: tuple[tuple[str, str, Mapping[str, Any], str, Any], ...] = (
+    ("publish_tables", "tables[]", {"mode": "merge"}, "when_incoming_is_null", "keep_published"),
+)
 
 # New tool name -> old port -> new port.
 OUTPUT_PORT_RENAMES: dict[str, dict[str, str]] = {"join": {"matched": "joined"}}
@@ -130,7 +140,7 @@ class Found:
 
     kind: str
     path: tuple[Any, ...]
-    old: str
+    old: Any
     new: str
     label: str
     sentence: str
@@ -488,6 +498,28 @@ def _config_renames(
                 _key((*where, old), old, new, f"{tool}.{old_path} -> {new}", f"{here}: config field {field!r} is now {new!r}", step_id)
             )
 
+    for owner, path, condition, setting, value in STATED_NOW:
+        if owner != tool:
+            continue
+        for mapping, where, shown in _reach(config, _split(path), tool, at, ""):
+            if not isinstance(mapping, Mapping) or setting in mapping:
+                continue
+            if any(mapping.get(key) != wanted for key, wanted in condition.items()):
+                continue
+            field = f"{shown}.{setting}" if shown else setting
+            found.append(
+                Found(
+                    "insert",
+                    where,
+                    value,
+                    setting,
+                    f"{tool}.{path + '.' if path else ''}{setting}: {as_written(value)} written (keeps today's behaviour)",
+                    f"{here}: config field {field!r} is written as {as_written(value)!r}, which keeps what it did before",
+                    step_id,
+                    retired=False,
+                )
+            )
+
     for new, value in OLD_DEFAULTS.get(written, {}).items():
         olds = _old_names(tool, "", new)
         if new not in config and not any(old in config for old in olds):
@@ -504,6 +536,13 @@ def _config_renames(
                 )
             )
     return found
+
+
+def as_written(value: Any) -> str:
+    """A scalar as it is written in a pipeline file: true and false in lower case, text as it is."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def _split(path: str) -> list[str]:

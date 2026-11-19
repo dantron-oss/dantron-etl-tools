@@ -364,6 +364,8 @@ def _renamed_step(step: dict[str, Any], tool_by_id: dict[str, str]) -> dict[str,
         for table in config["tables"]:
             if "key" in table:
                 table["keys"] = table.pop("key")
+            if table.get("mode") == "merge":
+                table.setdefault("when_incoming_is_null", "keep_published")
     if tool == "group_by":
         for aggregation in config["aggregations"]:
             if aggregation["function"] == "count_values":
@@ -856,6 +858,68 @@ OLD_SINGLE_SHEET = _flow("""\
       replace: true
     inputs: {rows: src.rows}
 """)
+
+
+class TestSettingsNowStatedAreWrittenIn:
+    """A setting that is now required, where the file alone says which value keeps a step's behaviour."""
+
+    def test_a_block_merge_entry_gets_keep_published_at_its_own_indentation(self) -> None:
+        old = _flow("""\
+          - id: publish
+            tool: publish_tables
+            config:
+              connection: TARGET_DB
+              tables:
+                - port: parties
+                  table: parties
+                  mode: merge
+                  keys: [party]
+                - port: totals
+                  table: totals
+                  mode: replace
+            inputs: {parties: src.rows, totals: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        tables = _step_config(migration.text, "publish")["tables"]
+        assert tables[0]["when_incoming_is_null"] == "keep_published"
+        assert "when_incoming_is_null" not in tables[1], "a replace entry was given a merge setting"
+        assert "\n          when_incoming_is_null: keep_published\n" in migration.text
+        assert any("keep_published" in label and "today" in label for label in migration.counts), migration.counts
+
+    def test_a_flow_style_merge_entry_gets_it_inside_its_braces(self) -> None:
+        old = _flow("""\
+          - id: publish
+            tool: publish_tables
+            config:
+              connection: TARGET_DB
+              tables:
+                - {port: parties, table: parties, mode: merge, keys: [party]}
+            inputs: {parties: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert "{port: parties, table: parties, mode: merge, keys: [party], when_incoming_is_null: keep_published}" in (
+            migration.text
+        )
+
+    def test_a_merge_entry_that_already_says_keeps_its_choice(self) -> None:
+        old = _flow("""\
+          - id: publish
+            tool: publish_tables
+            config:
+              connection: TARGET_DB
+              tables:
+                - {port: parties, table: parties, mode: merge, keys: [party], when_incoming_is_null: overwrite}
+            inputs: {parties: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert migration.text == old
+        assert migration.changes == []
 
 
 class TestReportedNotMigrated:

@@ -1037,6 +1037,18 @@
                 "non_empty": true,
                 "required": true,
                 "type": "string"
+              },
+              "when_incoming_is_null": {
+                "default": null,
+                "enum": [
+                  "keep_published",
+                  "overwrite"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
               }
             },
             "items": null,
