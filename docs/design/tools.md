@@ -376,3 +376,28 @@ behaviour (finding E-11), so it is kept and documented.
 infinity, or not-a-number for 0/0, which a later filter reads as larger than every number. The step
 names the field, the expression, the divisor and some of the rows. A null divisor is not zero: the
 division gives null. A flow that expects zeros guards with case_when first.
+
+## case_when
+
+**Order decides.** A single condition is formula's job. case_when exists for several cases that can
+overlap, such as "superseded" checked before "amount is missing" though a superseded row may also lack
+an amount. Cases are read in the order written and the first one a row meets wins. Nothing rewrites
+that into an order-free form: an overlapping list has exactly one correct reading, the author's.
+
+**A null condition falls through.** A comparison with a missing value is null, not false, as in SQL.
+Such a row is not a match for that case and moves on, ending at `otherwise` or null.
+
+**Every value must be the same kind.** polars would turn a number or a true/false into text the moment
+it sits beside text, silently, giving a column of plausible strings. So text, number, date and
+true/false must agree, checked before any row runs and naming the branch. Null fits every kind. Whole
+and decimal numbers count as one kind because polars mixes them correctly.
+
+**`replace` follows formula.** Without it, a name already on the frame is refused: overwriting a
+column a later step reads is a wrong answer with no failure. With it and no such column, it is refused
+too: the flag claims a column to repair, and a misspelling would write a new one. A replaced column
+stays in place, and the cases read its old values, which is what blank-to-null and status-collapsing
+steps need. Every row is rewritten, so a row no case reached gets `otherwise` or null.
+
+**Division by zero is checked where it is used** (owner's ruling C-02, applied as SQL's CASE). A case's
+condition is checked on rows no earlier case took, its value on the rows it takes, `otherwise` on rows
+no case took. So a case that catches the zero rows first guards a later division.
