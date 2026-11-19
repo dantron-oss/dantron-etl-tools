@@ -259,29 +259,21 @@ inside the text alone.
 
 `format_number(value, decimals, thousands_separator, decimal_separator)` writes a number as text:
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`
-gives `123.456,789`. All four arguments are required, because nothing in this language has a
-default, and you state both separators rather than having one chosen for you. The last three are
-quoted decisions written in the file, never columns. It writes what `round` gives (section 5),
-and it works a row at a time, as `uuid5` does — put it at the end of a flow, on the rows somebody
-reads, not in the middle of one.
+gives `123.456,789`. All four arguments are required; the last three are written in the file, never
+taken from columns. It gives the digits `round` gives (section 5). It works a row at a time, so use
+it at the end of a flow, on the rows somebody reads.
 
-`uuid5(namespace, value)` derives a stable id: one 36-character column where the natural key is
-three or four columns of text, which is a poor thing to join on and a worse thing to quote in a
-ticket. It is RFC 4122 version 5 — SHA-1 over a namespace and a name — so the id a flow writes is
-the id anything else computing it the same way writes, and that reproducibility is the entire
-point: a run that re-derived yesterday's id differently would not update a row, it would insert a
-second one. Build the key with `concat` and a separator you can see, as in
-`uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))` — without the
-separator, `('ab', 'c')` and `('a', 'bc')` are two different keys under one id, which is a silent
-merge of two rows. The namespace is quoted text written in the file, never a column: it is what
-keeps one flow's ids from colliding with another's, and a namespace out of the data could not be
-checked until the row that is malformed, by which time the ids before it have been written.
-Generate one per flow once (`python -c "import uuid; print(uuid.uuid4())"`) and leave it alone —
-changing it changes every id. The value must be text; a number is refused rather than quietly
-stringified, because `1` and `1.0` are one value and two ids. Like `format_number` it works a row
-at a time, at roughly five microseconds a row, because there is no SHA-1 in the engine to
-vectorise against: derive the id once, where the key is built, instead of recomputing it in each
-step that joins on it.
+`uuid5(namespace, value)` makes a stable 36-character id from text (RFC 4122 version 5), the same
+on every run and every computer. Use it where the natural key is several columns.
+
+- Build the value with `concat` and a visible separator:
+  `uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))`. Without the
+  separator, `('ab', 'c')` and `('a', 'bc')` get one id.
+- The namespace is a UUID typed into the file, never a column. Make one per flow, once
+  (`python -c "import uuid; print(uuid.uuid4())"`), and never change it: that changes every id.
+- The value must be text. A number is refused, because `1` and `1.0` would be one value and two ids.
+- It works a row at a time (about five microseconds a row). Derive the id once, where the key is
+  built, not in every step that joins on it.
 
 Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`,
 `is null`, `is not null`.
@@ -491,12 +483,9 @@ Each of these has caught a real pipeline.
 - **A reference that is the whole field takes the rule's value and its type, in any field.** A list
   stays a list, a number stays a number, and a string arrives exactly as written — including a
   string that is itself an expression, which is how a whole predicate can be stated as a rule.
-- **`regex_replace`'s replacement is literal text, not a template.** `$1` is not the first capture
-  group; it is the characters `$1`. That is deliberate: the engine underneath reads `$name` as a
-  group and deletes it when no such group exists, so a replacement of `$5.00` would land as `.00` —
-  which in a library for amounts is unacceptable. The consequence is that a pattern cannot
-  rearrange what it matched. `regex_extract` does return capture groups, so pull the pieces out and
-  put them back together with `concat`.
+- **`regex_replace`'s replacement is literal text, not a template.** `$1` is the two characters
+  `$1`, not the first group, so a replacement of `$5.00` stays `$5.00`. To rearrange what a pattern
+  matched, pull the pieces out with `regex_extract` and join them with `concat`.
 - **`round` rounds a half away from zero, as a spreadsheet's ROUND does, on the number as you read
   it.** `round(2.5, 0)` is `3`, `round(-2.5, 0)` is `-3` and `round(0.125, 2)` is `0.13`. A double
   cannot hold `1.005` (it holds `1.00499999999999989...`), yet `round(1.005, 2)` is `1.01`: a
@@ -791,10 +780,6 @@ else. So a cache survives a change to what the sources hold, and survives it sil
 Nothing catches this, and nothing can: the reads did not happen, so there is no new frame for
 anything to compare against. **A cache is only valid for the data that was there when it was
 taken.** Throw one away whenever the sources are reloaded, and take a fresh one.
-
-This is not an oversight in the hash. Reading the sources to find out whether the cache is stale is
-running the steps the cache exists to skip, so a fingerprint that covered the data would cost exactly
-what it saves. The honest answer is a rule a person follows, which is why it is written here.
 
 The fingerprint does not cover the library either: a cache taken before you upgrade the library, or
 edit it in place, still matches afterwards even when a tool now computes something different. Take
