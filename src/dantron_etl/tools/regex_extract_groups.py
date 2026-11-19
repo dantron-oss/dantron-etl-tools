@@ -4,10 +4,10 @@ Extracting a single group out of a piece of text is already ``regex_extract()`` 
 language, and a tool that only did that would be a worse spelling of a function that already
 exists. What earns this tool its place is a property an expression cannot have: a pattern with
 several named groups produces several columns from one pass over the text, and therefore makes one
-decision per row rather than one decision per group. A row that matches the whole pattern fills
-every group; a row that does not is null in every group, never in some -- a partial match is exactly
-the case this tool exists to refuse, because it would otherwise flow onward as a null count with no
-way to tell "did not parse" apart from "genuinely absent".
+decision per row rather than one decision per group. A row that does not match the whole pattern is
+null in every group, never in some: a pattern that half-matched does not leave half its groups
+filled. On a match, a group the pattern itself makes optional (with `?`, or as one side of an
+alternative) can still be null, because the match did not need it.
 
 The output columns are never configured separately from the pattern: they are the pattern's own
 named groups, read off the engine that will actually run it, in the order the pattern declares them.
@@ -90,9 +90,10 @@ class RegexExtractGroups:
         return ToolHelp(
             detailed_description=(
                 "Every named group of `pattern` becomes a text column, appended after the input "
-                "columns in the order the pattern declares them. A row that matches the whole pattern "
-                "fills every group; a row that does not is null in every group, because this tool "
-                "exists precisely to keep a partial match from surfacing as a silent partial answer. "
+                "columns in the order the pattern declares them. A row that does not match the "
+                "whole pattern is null in every group, never in some. On a match, a group the "
+                "pattern makes optional (with '?', or as one side of an alternative) can still be "
+                "null, because the match did not need it. "
                 "With `all_matches`, every match in the text becomes its own row."
             ),
             examples=(_period_example(), _code_example(), _every_match_example()),

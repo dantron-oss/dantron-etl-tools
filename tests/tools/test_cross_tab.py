@@ -1168,3 +1168,36 @@ class TestFirstWhenTheFirstValueIsNull:
             result,
             pl.DataFrame({"code": ["a", "b"], "p1": [None, 3.0]}, schema={"code": pl.String, "p1": pl.Float64}),
         )
+
+
+class TestACellTooLargeForItsTypeStopsTheRun:
+    """A cell summing 32-bit whole numbers keeps its type, and a total that does not fit stops the run."""
+
+    def test_a_cell_past_the_types_limit_is_refused_by_name(self) -> None:
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b"], "period": ["p1", "p1", "p1"], "v": pl.Series([2_000_000_000] * 2 + [1], dtype=pl.Int32)}
+        )
+        config = {"by": ["code"], "names_from": "period", "values_from": "v", "function": "sum"}
+
+        with pytest.raises(DataError) as caught:
+            run_tool(CrossTab(), Ports({"rows": rows}), config)
+
+        message = str(caught.value)
+        for word in ("'p1'", "'v'", "Int32", "cast_columns", "Int64", "1 of 2"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    @pytest.mark.parametrize("dtype", [pl.Int32, pl.UInt32])
+    def test_a_cell_that_fits_keeps_the_columns_type_and_value(self, dtype: pl.DataType) -> None:
+        """The mirror: a cell just inside the limit, an absent cell and an empty frame keep the type."""
+        limit = 2_147_483_647 if dtype == pl.Int32 else 4_294_967_295
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b"], "period": ["p1", "p1", "p2"], "v": pl.Series([limit - 1, 1, 7], dtype=dtype)}
+        )
+        config = {"by": ["code"], "names_from": "period", "values_from": "v", "function": "sum"}
+
+        result = run_tool(CrossTab(), Ports({"rows": rows}), config)["rows"]
+        empty = run_tool(CrossTab(), Ports({"rows": rows.head(0)}), config)["rows"]
+
+        assert result.schema == pl.Schema({"code": pl.String, "p1": dtype, "p2": dtype})
+        assert result.rows() == [("a", limit, None), ("b", None, 7)]
+        assert empty.schema == pl.Schema({"code": pl.String})

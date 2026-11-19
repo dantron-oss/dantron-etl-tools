@@ -84,6 +84,8 @@ class RemoveDuplicates:
             notes=(
                 "A null key is equal to another null key, never an empty string; building a text key "
                 "by filling nulls first would merge a genuinely blank value into the null group.",
+                "'keep' reads the order the rows arrived in. After a read_table, which hands rows "
+                "over in no fixed order, put a Sort in front so the row kept is the one you chose.",
             ),
             field_help={
                 "by": "Absent or empty means every column; a column named more than once is counted only once.",

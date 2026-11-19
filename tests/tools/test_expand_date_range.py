@@ -43,7 +43,7 @@ library carries no caller's nouns; this is the shape of a real schedule-building
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import polars as pl
@@ -430,3 +430,62 @@ class TestExpandDateRangeInTheCatalog:
         """Registered under its machine name. The whole catalog is checked once, in tests/core/test_registry.py."""
         assert "expand_date_range" in REGISTRY
         assert isinstance(REGISTRY.get("expand_date_range"), ExpandDateRange)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_period_column_name_is_refused_when_the_pipeline_loads(blank: str) -> None:
+    """A column with no name cannot be referred to by any later step, so it is never written."""
+    config = {"start": "[s]", "end": "[e]", "period_column": blank}
+    rows = pl.DataFrame({"s": [date(2026, 1, 1)], "e": [date(2026, 2, 1)]})
+
+    with pytest.raises(ConfigError, match="'period_column' must not be blank"):
+        ExpandDateRange().validate_config(config)
+    with pytest.raises(ConfigError, match="'period_column' must not be blank"):
+        run_tool(ExpandDateRange(), Ports({"rows": rows}), config)
+
+
+class TestTheEndsAreReadAsDates:
+    """Both ends are compared as calendar dates, as date_diff reads them.
+
+    Two timestamps on the same day the wrong way round (15:00 then 09:00) used to be called a
+    backwards range and set aside, while date_diff counted the same row as one day. A timestamp
+    is read as its calendar date in both tools now.
+    """
+
+    @staticmethod
+    def _expand(start: Any, end: Any) -> Ports:
+        rows = pl.DataFrame({"key": [1], "s": [start], "e": [end]})
+        return run_tool(ExpandDateRange(), Ports({"rows": rows}), {"start": "[s]", "end": "[e]"})
+
+    def test_two_times_on_one_day_the_wrong_way_round_are_one_period(self) -> None:
+        result = self._expand(datetime(2026, 1, 31, 15, 0), datetime(2026, 1, 31, 9, 0))
+
+        assert result["rows"]["period_start"].to_list() == [date(2026, 1, 1)]
+        assert result["unexpanded"].height == 0
+
+    def test_date_diff_counts_the_same_row_forwards(self) -> None:
+        from dantron_etl.tools.date_diff import DateDiff
+
+        rows = pl.DataFrame({"s": [datetime(2026, 1, 31, 15, 0)], "e": [datetime(2026, 1, 31, 9, 0)]})
+        config = {"start": "[s]", "end": "[e]", "unit": "day", "counting": "inclusive", "output": "n"}
+
+        assert run_tool(DateDiff(), Ports({"rows": rows}), config)["rows"]["n"].to_list() == [1]
+
+    def test_a_timestamp_on_the_day_before_its_start_is_still_backwards(self) -> None:
+        """The mirror: one calendar day the wrong way round still leaves on 'unexpanded'."""
+        result = self._expand(datetime(2026, 1, 31, 0, 30), datetime(2026, 1, 30, 23, 30))
+
+        assert result["rows"].height == 0
+        assert result["unexpanded"]["key"].to_list() == [1]
+
+    @pytest.mark.parametrize("value", [time(9, 0), timedelta(days=1)], ids=["time", "duration"])
+    @pytest.mark.parametrize("height", [1, 0])
+    def test_a_time_of_day_or_a_duration_is_refused_before_any_row_moves(self, value: Any, height: int) -> None:
+        rows = pl.DataFrame({"key": [1], "s": [date(2026, 1, 1)], "e": [value]}).head(height)
+
+        with pytest.raises(ConfigError) as caught:
+            run_tool(ExpandDateRange(), Ports({"rows": rows}), {"start": "[s]", "end": "[e]"})
+
+        message = str(caught.value)
+        for word in ("'end'", "'e'", "not a date"):
+            assert word in message, f"refusal should name {word!r}: {message}"

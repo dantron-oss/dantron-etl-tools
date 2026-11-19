@@ -38,6 +38,8 @@ from ..authoring import (
     compiled_dtype,
     date_or_null,
     require_not_blank,
+    row_status,
+    value_caption,
 )
 from ..authoring import days_in_month as month_length
 
@@ -103,6 +105,9 @@ class AssembleDate:
                 "A null part gives a null date under every policy, including 'error': a part nobody "
                 "supplied is a different question from a part that names an impossible date, and "
                 "conflating them would fail a whole run over rows nobody filled in.",
+                "Under 'set_null', a row whose parts make no date gets an empty date, and the step "
+                "says so: a note counts those rows, and each one is marked with the parts it held. "
+                "A row with a missing part is not marked; it was never a date to begin with.",
             ),
             field_help={
                 "on_invalid": "Spelled 'set_null', never 'null': an unquoted null in a definition file "
@@ -219,7 +224,33 @@ class AssembleDate:
         date_expr = pl.when(pl.col("__buildable")).then(date_or_null(year_col, month_col, pl.col("__resolved_day")))
 
         result = staged.with_columns(date_expr.alias(config["output"])).select([*frame.columns, config["output"]])
+        if policy == "set_null" and staged["__offending"].any():
+            reasons, note = _emptied_report(staged, config["output"])
+            return Ports(
+                {"rows": result}, notes=[note], status={"rows": row_status([(config["output"], reasons)], frame.height)}
+            )
         return Ports({"rows": result})
+
+
+def _emptied_report(staged: pl.DataFrame, output: str) -> tuple[pl.Series, str]:
+    """One reason per row whose parts made no date under 'set_null', and the note counting them."""
+    parts = pl.format(
+        "year {}, month {}, day {}",
+        value_caption("__year_raw"),
+        value_caption("__month_raw"),
+        value_caption("__day_raw"),
+    )
+    described = staged.select(
+        pl.when(pl.col("__offending")).then(pl.format("{} do not make a date, so it is empty", parts)).alias("reason"),
+        parts.alias("parts"),
+    )
+    emptied = int(staged["__offending"].sum())
+    example = described.filter(staged["__offending"])["parts"][0]
+    note = (
+        f"{emptied:,} of {staged.height:,} rows got an empty {output!r} because their parts do not "
+        f"make a date (for example {example})"
+    )
+    return described["reason"], note
 
 
 def _read_part(series: pl.Series) -> tuple[pl.Expr, pl.Expr]:

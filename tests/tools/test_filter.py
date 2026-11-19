@@ -343,3 +343,20 @@ class TestFilterRefusesANonPredicateThroughTheContract:
         assert str(compiled_dtype(frame, predicate, "predicate")[1]) in message, (
             f"the refusal must say what the expression produced instead: {message}"
         )
+
+
+def test_not_a_number_compares_as_larger_than_every_number() -> None:
+    """0/0 gives not-a-number, and polars compares it as larger than every number and equal to itself.
+
+    So a test like '[ratio] > 0.5' sends those rows to 'true'. This is what the help and the
+    manual say; this test fails if it stops being true.
+    """
+    rows = pl.DataFrame({"x": [float("nan"), 1.0, -1.0, None]})
+
+    above = run_tool(Filter(), Ports({"rows": rows}), {"predicate": "[x] > 0"})
+    equal = run_tool(Filter(), Ports({"rows": rows}), {"predicate": "[x] = [x]"})
+
+    assert [str(value) for value in above["true"]["x"].to_list()] == ["nan", "1.0"]
+    assert above["false"]["x"].to_list() == [-1.0, None]
+    assert equal["false"]["x"].to_list() == [None], "not-a-number equals itself; only the null fails"
+    assert any("not-a-number" in note for note in Filter().help().notes)

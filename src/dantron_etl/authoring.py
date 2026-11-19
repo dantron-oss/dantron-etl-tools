@@ -23,6 +23,7 @@ from .errors import (
 )
 from .expr.dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
+from .expr import references
 from .frame_checks import (
     REPLACE_FIELD,
     check_output_column,
@@ -60,6 +61,7 @@ __all__ = [
     "compile_for",
     "compile_predicate_for",
     "compiled_dtype",
+    "references",
     "require_columns",
     "require_not_blank",
     # counting between dates and building them, shared with the expression functions

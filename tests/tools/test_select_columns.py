@@ -270,3 +270,52 @@ class TestSelectColumnsInTheCatalog:
         """Registered under its machine name. The whole catalog is checked once, in tests/core/test_registry.py."""
         assert "select_columns" in REGISTRY
         assert isinstance(REGISTRY.get("select_columns"), SelectColumns)
+
+
+class TestOnlyTheStarIsAWildcard:
+    """A name copied from a spreadsheet header is read as written; only `*` stands for other text.
+
+    Brackets and `?` used to be wildcard syntax as well, so `Total [CAD]` selected a column called
+    `Total C` instead of itself, and the run reported success.
+    """
+
+    @staticmethod
+    def _select(frame: pl.DataFrame, columns: list[str], action: str = "keep") -> list[str]:
+        result = run_tool(SelectColumns(), Ports({"rows": frame}), {"columns": columns, "action": action})
+        return result["rows"].columns
+
+    @pytest.mark.parametrize(
+        ("name", "lookalike"),
+        [("Total [CAD]", "Total C"), ("code?", "codes"), ("[ab]", "a"), ("a[!b]", "ac")],
+    )
+    def test_a_name_holding_brackets_or_a_question_mark_selects_only_itself(self, name: str, lookalike: str) -> None:
+        frame = pl.DataFrame({name: [1], lookalike: [2], "other": [3]})
+
+        assert self._select(frame, [name]) == [name]
+        assert self._select(frame, [name], "drop") == [lookalike, "other"]
+
+    def test_a_name_with_brackets_that_is_not_there_is_refused_rather_than_matching_another(self) -> None:
+        frame = pl.DataFrame({"Total C": [1], "codes": [2]})
+
+        for name in ("Total [CAD]", "code?"):
+            with pytest.raises(ConfigError, match="matches no column"):
+                self._select(frame, [name])
+
+    def test_brackets_inside_a_star_pattern_are_read_literally(self) -> None:
+        frame = pl.DataFrame({"Total [CAD] 2025": [1], "Total [CAD] 2026": [2], "Total C 2026": [3], "x": [4]})
+
+        assert self._select(frame, ["Total [CAD]*"]) == ["Total [CAD] 2025", "Total [CAD] 2026"]
+        assert self._select(frame, ["*[CAD]*"], "drop") == ["Total C 2026", "x"]
+
+    def test_the_star_still_matches_any_run_of_characters_including_none(self) -> None:
+        frame = pl.DataFrame({"code": [1], "code_suffix": [2], "barcode": [3], "x": [4]})
+
+        assert self._select(frame, ["code*"]) == ["code", "code_suffix"]
+        assert self._select(frame, ["*code"]) == ["code", "barcode"]
+        assert self._select(frame, ["*"]) == ["code", "code_suffix", "barcode", "x"]
+
+    def test_a_name_holding_a_star_that_is_a_column_selects_only_that_column(self) -> None:
+        """An entry that is exactly a column's name is that column, even when it holds a `*`."""
+        frame = pl.DataFrame({"a*": [1], "ab": [2]})
+
+        assert self._select(frame, ["a*"]) == ["a*"]
