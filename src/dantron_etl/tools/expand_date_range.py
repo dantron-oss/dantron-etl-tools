@@ -87,7 +87,9 @@ class ExpandDateRange:
             notes=(
                 "A backwards range is judged on the dates, not on the periods they fall in: two "
                 "ends inside the same period the wrong way round still leave on 'unexpanded', which "
-                "is what makes this agree with DateDiff's negative count on the same row.",
+                "is what makes this agree with DateDiff's negative count on the same row. A "
+                "timestamp is read as its calendar date first, in both tools, so two times on the "
+                "same day are one day whichever comes first.",
                 "'unexpanded' carries no period column and no reason column; the reason is one "
                 "predicate away downstream, and adding one would stop the port being "
                 "union-compatible with the rows that arrived.",
@@ -120,7 +122,7 @@ class ExpandDateRange:
 
         for field in ("start", "end"):
             column, dtype = compiled_dtype(frame, config[field], field)
-            if not dtype.is_temporal():
+            if dtype.base_type() not in (pl.Date, pl.Datetime):
                 raise ConfigError(
                     f"config field {field!r} produces column {column!r}, which holds {dtype}, not "
                     f"a date, in expression: `{config[field]}`"
@@ -128,14 +130,16 @@ class ExpandDateRange:
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
-        start = compile_for(frame, config["start"], "start")
-        end = compile_for(frame, config["end"], "end")
+        # A timestamp is read as its calendar date before anything else, as date_diff reads it.
+        # So 15:00 and 09:00 on one day are the same day, not a backwards range.
+        start = compile_for(frame, config["start"], "start").cast(pl.Date)
+        end = compile_for(frame, config["end"], "end").cast(pl.Date)
 
         valid = start.is_not_null() & end.is_not_null() & (end >= start)
 
         period_start = pl.date_ranges(
-            start.cast(pl.Date).dt.month_start(),
-            end.cast(pl.Date).dt.month_start(),
+            start.dt.month_start(),
+            end.dt.month_start(),
             interval="1mo",
             eager=False,
         ).alias(config["period_column"])
