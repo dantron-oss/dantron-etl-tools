@@ -20,6 +20,37 @@ trace = run_pipeline(spec)
 trace.frame(PortRef("receivable_lines", "true"))
 ```
 
+## Quick start
+
+Install the library into a virtual environment. This gives you the command `dantron-etl`.
+
+```bash
+uv venv
+uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools
+```
+
+Make a project with a working example in it, and open the viewer:
+
+```bash
+dantron-etl new demo
+cd demo
+dantron-etl view
+```
+
+Your browser opens on a list of the project's pipelines. There is one, `example`. It has not run
+yet, so the list says so and offers to run it. Press **Run preview**. Every step runs except the
+one that writes a file, so nothing outside the project's run folder changes. Then open the pipeline:
+you see the flow as a drawing, each step's settings, and the rows at every port. Type a customer's
+name in the search box at the top to follow that customer through every step.
+
+When the preview looks right, **Real run…** lists the file the pipeline will write and asks you to
+type the pipeline's name before it writes. The terminal shows the viewer's address. Press ctrl-c
+there to stop the viewer.
+
+If you would rather click than type, the new project has a launcher: double-click
+`Open ETL viewer.cmd` on Windows or `Open ETL viewer.command` on macOS. In VS Code, run the task
+**Open ETL viewer**.
+
 ## Why it exists
 
 A transformation written as a script is answerable only by reading the script. When somebody asks
@@ -83,49 +114,67 @@ which is worse than failing. Callers say where they are:
 
 ```python
 from dantron_etl.paths import project_root
-ROOT = project_root(__file__)          # $ETL_PROJECT_ROOT, else the nearest pyproject.toml or .git
+ROOT = project_root(__file__)  # $ETL_PROJECT_ROOT, else the nearest pyproject.toml, .git or etl-project.yaml
 ```
 
-## Looking at a run
+## The command
 
-**These live in `scripts/`, which is not part of the installed package** — a `pip install` gives you
-the tools, the runner and the manual, not the page builders. Clone the repository to use them:
+`dantron-etl` works from anywhere inside a project. A project is a folder with an `etl-project.yaml`,
+a `pyproject.toml` or a `.git` in it. `dantron-etl <command> --help` explains each command.
 
-```bash
-make run p=fixture     # run pipelines/fixture.yaml, save the run, and open its page
-make view              # the viewer for every saved run, on http://localhost:8899/
-make catalog           # every tool, its settings and its worked examples
-make                   # list every command
-```
-
-The walkthrough draws the flow as wired, follows one entity through it, and shows each step's rows
-beside its configuration. Selecting a step lights its whole upstream and downstream chain.
-
-### A project
-
-`make run p=<name>` runs a project. A project is three things with one name:
-
-| | |
+| command | what it does |
 |---|---|
-| `pipelines/<name>.yaml` | the flow |
-| `pipelines/<name>/` | its input files |
-| `pipelines/<name>/settings.yaml` | the values the flow reads as `${rules.<name>}`, and the column that identifies one entity, so the page can follow it |
+| `dantron-etl view` | Starts the viewer on this computer only, opens your browser, and prints the address. Runs until ctrl-c. A second `view` for the same project opens the one already running. |
+| `dantron-etl run <pipeline>` | Runs a preview: every step except the writers and the steps after them. Prints each step as it runs and saves the run for the viewer. |
+| `dantron-etl run <pipeline> --write` | A real run. Lists every file and table it will write and asks you to type the pipeline's name first. `--yes` skips the question, for scheduled jobs. |
+| `dantron-etl check <file>` | Loads a pipeline without running it and prints every problem it finds, or `ok, N steps`. |
+| `dantron-etl tools` | Every tool, grouped by what it does. |
+| `dantron-etl help <tool>` | One tool in full: what it does, its ports, a table of its settings, its notes, and a worked example you can paste. |
+| `dantron-etl functions` | The functions an expression may use, with an example each. |
+| `dantron-etl catalog` | Writes the tool catalog as a page (`tool_catalog.html`) and as JSON. The viewer shows the same page from its **Tool catalog** link. |
+| `dantron-etl migrate <files>` | Rewrites pipeline files written before a rename. Add `--write` to change them. |
+| `dantron-etl new <folder>` | Makes a new project with a working example. |
 
-The sample project, `fixture`, is the one to copy. Its settings file:
+`python -m dantron_etl` is the same command.
+
+### The project settings file
+
+`etl-project.yaml` is optional. Without it, pipelines are the `*.yaml` files in `pipelines/` and runs
+are saved in `output_files/runs/`. With it, you can change both and say, per pipeline, where its
+`${rules.*}` values come from and which column the viewer follows:
 
 ```yaml
-rules:
-  revenue_type: REVENUE
-focus: party
+pipeline_folders: [pipelines]
+runs_folder: output_files/runs
+pipelines:
+  sales:
+    rules: {status: PAID}                 # the values, written here
+    focus: customer
+  month_end:
+    rules_file: config/month_end.yaml     # or read from a file: name: value, or name: {value:, why:}
+    focus: [account, customer]            # the first of these each step has
+  ledger:
+    rules_loader: my_project.rules:load   # or returned by a function in your project
 ```
 
-The run is saved in `output_files/runs/<name>/`, replacing the last one. The page reads its rows
-from the viewer, so `make run` starts the viewer if it is not already running and opens the page in
-your browser. Ctrl-C stops the viewer. If a step fails, the run is still saved up to that step, so
-you can open the failing step and look at the rows that went into it.
+A `rules_loader` runs your project's own Python code. It runs only when the pipeline is checked or
+run, never when the viewer lists the project. A pipeline that uses `${rules.*}` with no rules set is
+shown with the lines to add. The older `pipelines/<name>/settings.yaml` (with `rules` and `focus`)
+still works.
 
-On Windows, without `make`, run the same thing as
-`uv run python scripts/pipeline_walkthrough_page.py <name>`.
+### What a run leaves
+
+Each run is saved in `output_files/runs/<pipeline>/`: the rows of every port, one panel per step,
+and a page you can open on its own. A run is moved into place only when it finished. If a run
+fails, it is saved beside the last good one as `<pipeline>.failed/`, and the viewer shows the step
+that failed and its error at the top. The last good run is still there.
+
+### Safety
+
+The viewer listens on `127.0.0.1`, so only your computer can reach it. It refuses a request whose
+address is not this computer, and a run can only be started from a page the viewer itself served.
+`--host 0.0.0.0` opens it to your network: anyone who can reach it can read every row. Inside a dev
+container, leave the host alone; VS Code forwards the port for you.
 
 ## For agents
 
@@ -140,7 +189,7 @@ the count correct.
 ```bash
 uv sync --extra dev --extra postgres
 .venv/bin/pytest tests/ -q           # about 4,000 tests, laid out by area: core, expr, tools, viewer, package, flows
-.venv/bin/ruff check src tests scripts
+.venv/bin/ruff check src tests
 ```
 
 On Windows the same commands work with `.venv\Scripts\` in place of `.venv/bin/`.
