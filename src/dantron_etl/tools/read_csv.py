@@ -53,20 +53,6 @@ from ..authoring import (
 )
 from ._files import require_file_to_read, validate_delimiter
 
-# The seven dtype names a declared column may use, spelled the way the query engine already spells
-# them in every dtype this catalog prints -- a second vocabulary for the same seven things would be
-# the two-dialect mistake this library refuses elsewhere.
-
-# The declared-type vocabulary lives in one place, because more than one tool lets a flow name a
-# column's type and two spellings of the same words drift. Bound to module names here so the rest of
-# this file reads as it always did; DECLARED_TYPES stays part of this tool's published surface.
-_TEMPORAL_TYPES: Final[frozenset[str]] = TEMPORAL_TYPES
-_DECLARED_DTYPE: Final[dict[str, pl.DataType]] = DECLARED_DTYPE
-
-_DATE_DEFAULT_FORMAT: Final[str] = DATE_DEFAULT_FORMAT
-_DATETIME_DEFAULT_FORMAT: Final[str] = DATETIME_DEFAULT_FORMAT
-_TIME_DEFAULT_FORMAT: Final[str] = TIME_DEFAULT_FORMAT
-
 _INT_LITERAL: Final[re.Pattern[str]] = re.compile(r"[-+]?\d+")
 _FLOAT_LITERAL: Final[re.Pattern[str]] = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 _FRACTION: Final[re.Pattern[str]] = re.compile(r"\.\d+$")
@@ -298,10 +284,10 @@ def _validate_column_types(column_types: Sequence[Mapping[str, Any]]) -> None:
         if column in seen:
             raise ConfigError(f"read_csv declares column_types for column {column!r} more than once")
         seen.add(column)
-        if fmt is not None and declared_type not in _TEMPORAL_TYPES:
+        if fmt is not None and declared_type not in TEMPORAL_TYPES:
             raise ConfigError(
                 f"read_csv refuses a format on column {column!r}: format only constrains "
-                f"{', '.join(sorted(_TEMPORAL_TYPES))}, not {declared_type!r}"
+                f"{', '.join(sorted(TEMPORAL_TYPES))}, not {declared_type!r}"
             )
 
 
@@ -462,7 +448,7 @@ def _declared_series(name: str, values: list[str | None], entry: Mapping[str, An
             total=len(values),
         )
 
-    return pl.Series(name, converted, dtype=_DECLARED_DTYPE[declared_type])
+    return pl.Series(name, converted, dtype=DECLARED_DTYPE[declared_type])
 
 
 def _converter(declared_type: str, fmt: str | None) -> Callable[[str], Any]:
@@ -475,13 +461,13 @@ def _converter(declared_type: str, fmt: str | None) -> Callable[[str], Any]:
     if declared_type == "Boolean":
         return _parse_boolean
     if declared_type == "Date":
-        resolved = fmt or _DATE_DEFAULT_FORMAT
+        resolved = fmt or DATE_DEFAULT_FORMAT
         return lambda text: dt.datetime.strptime(text, resolved).date()
     if declared_type == "Datetime":
-        resolved = fmt or _DATETIME_DEFAULT_FORMAT
+        resolved = fmt or DATETIME_DEFAULT_FORMAT
         return lambda text: dt.datetime.strptime(_truncate_fraction(text, resolved), resolved)
     if declared_type == "Time":
-        resolved = fmt or _TIME_DEFAULT_FORMAT
+        resolved = fmt or TIME_DEFAULT_FORMAT
         return lambda text: dt.datetime.strptime(_truncate_fraction(text, resolved), resolved).time()
     raise AssertionError(f"unreachable declared type {declared_type!r}")  # pragma: no cover
 
