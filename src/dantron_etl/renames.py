@@ -52,7 +52,7 @@ FIELD_RENAMES: dict[str, dict[str, str]] = {
     "remove_duplicates": {"columns": "by"},
     "publish_tables": {"stamp": "stamp_column", "tables[].key": "keys"},
     "write_csv": {"replace": "overwrite"},
-    "write_excel": {"replace": "overwrite_sheets"},
+    "write_excel": {"replace": "overwrite", "overwrite_sheets": "overwrite"},
     "match_one_to_one": {"left": "left_key", "right": "right_key"},
     "normalize_text": {"strip_suffixes": "suffixes"},
     "make_groups": {"node_column": "record_column", "component_column": "group_column"},

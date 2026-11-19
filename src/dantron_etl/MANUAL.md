@@ -627,8 +627,9 @@ Every one of these was measured, most of them the hard way.
   a tab with its headings.
 - **A file writer is checked against the disk when the pipeline loads.** The folder of its `path`
   must already exist. A file already at `path` is refused unless the step says it may be replaced,
-  so a flow that runs every night needs `overwrite: true` on `write_csv` (and `overwrite_sheets:
-  true` on `write_excel`) from its first night, or its second run will not load.
+  so a flow that runs every night needs `overwrite: true` on `write_csv` and `write_excel` from its
+  first night, or its second run will not load. On `write_excel` the same word also lets a sheet
+  entry replace a tab of the template.
 - **Config names an environment variable, never a secret.** `connection: DATABASE_URL` is the name
   of the variable; the value is read from the environment. No credential may enter a pipeline file,
   so that a definition is safe to commit and safe to hand to someone else as a template.

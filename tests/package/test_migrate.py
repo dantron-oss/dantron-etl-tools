@@ -308,7 +308,7 @@ _FIELD_RENAMES: dict[str, dict[str, str]] = {
     "remove_duplicates": {"columns": "by"},
     "publish_tables": {"stamp": "stamp_column"},
     "write_csv": {"replace": "overwrite"},
-    "write_excel": {"replace": "overwrite_sheets"},
+    "write_excel": {"replace": "overwrite", "overwrite_sheets": "overwrite"},
     "match_one_to_one": {"left": "left_key", "right": "right_key"},
     "normalize_text": {"strip_suffixes": "suffixes"},
     "make_groups": {"node_column": "record_column", "component_column": "group_column"},
@@ -1326,6 +1326,27 @@ class TestRenamedValuesByWhereTheySit:
         expected = old.replace("      on_invalid: empty", "      on_invalid: set_null")
 
         assert migrate_text(old).text == expected
+
+    def test_write_excel_overwrite_sheets_and_the_older_replace_both_become_overwrite(self) -> None:
+        old = _flow("""\
+          - id: pack
+            tool: write_excel
+            config:
+              path: pack.xlsx
+              overwrite_sheets: true
+              sheets: [{port: one, sheet: Figures, allow_empty: true}]
+            inputs: {one: src.rows}
+          - id: older
+            tool: write_workbook
+            config: {path: older.xlsx, replace: true, sheets: [{port: one, sheet: F, allow_empty: true}]}
+            inputs: {one: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert _step_config(migration.text, "pack")["overwrite"] is True
+        assert _step_config(migration.text, "older")["overwrite"] is True
+        assert "overwrite_sheets" not in migration.text and "replace" not in migration.text
 
     def test_n_unique_becomes_count_distinct_and_the_report_says_nulls_are_now_skipped(self) -> None:
         old = _flow("""\

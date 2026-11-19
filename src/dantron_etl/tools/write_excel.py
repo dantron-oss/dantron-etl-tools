@@ -26,7 +26,7 @@ overwritten by its own first run is gone, and the run after it has nothing to st
 
 The file already at ``path`` is never read. Each run builds the workbook from the template, or from
 nothing, so a run writes the same file whatever an earlier run left there, and a tab the flow stops
-writing does not linger. ``overwrite_sheets`` is the one permission for replacing something that is
+writing does not linger. ``overwrite`` is the one permission for replacing something that is
 already there: the file at ``path`` (refused when the flow loads), and a tab of the template that a
 sheet entry names (refused when the template is opened).
 
@@ -302,7 +302,7 @@ class WriteExcel:
                 required=False,
                 file_path=True,
             ),
-            "overwrite_sheets": ConfigField(
+            "overwrite": ConfigField(
                 type="boolean",
                 description="Whether something already there may be replaced: a file at 'path', or "
                 "a tab of the template that a sheet entry names. Leave it out and either is refused.",
@@ -330,7 +330,7 @@ class WriteExcel:
                 "refused. The file already at 'path' is never read: each run builds the workbook "
                 "from the template, or from nothing, so a tab the flow stops writing does not "
                 "linger. A file already at 'path', or a template tab a sheet entry names, is "
-                "refused until 'overwrite_sheets' says in writing that replacing it is intended. A "
+                "refused until 'overwrite' says in writing that replacing it is intended. A "
                 "replaced template tab keeps its place among the others. Nothing leaves on an "
                 "output port: a flow ends here."
             ),
@@ -416,7 +416,7 @@ class WriteExcel:
                 "keeps the cell's own font.",
             ),
             field_help={
-                "overwrite_sheets": "Defaults to false. A file already at 'path' is refused when the flow "
+                "overwrite": "Defaults to false. A file already at 'path' is refused when the flow "
                 "loads, and a template tab a sheet entry names is refused when the template is "
                 "opened, until an author says in writing that replacing it is intended. A flow that "
                 "runs every night needs it from its first night.",
@@ -468,7 +468,7 @@ class WriteExcel:
         require_output_folder("write_excel", path)
         template = config["template"]
         if template is None:
-            refuse_to_overwrite("write_excel", path, "overwrite_sheets", config["overwrite_sheets"])
+            refuse_to_overwrite("write_excel", path, "overwrite", config["overwrite"])
             return
         if names_the_same_file(template, path):
             raise ConfigError(
@@ -484,7 +484,7 @@ class WriteExcel:
                 f"there is not a template. Check the path, or leave 'template' out to start from "
                 f"nothing."
             )
-        refuse_to_overwrite("write_excel", path, "overwrite_sheets", config["overwrite_sheets"])
+        refuse_to_overwrite("write_excel", path, "overwrite", config["overwrite"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse any frame a tab cannot hold, before the workbook is opened.
@@ -597,7 +597,7 @@ class WriteExcel:
         with opened_once(path, config["template"]) as book:
             refuse_names_in_use(book, config["sheets"])
             for entry in config["sheets"]:
-                worksheet = empty_tab(book, entry["sheet"], replace=config["overwrite_sheets"])
+                worksheet = empty_tab(book, entry["sheet"], replace=config["overwrite"])
                 frame = inputs[entry["port"]]
                 # Two passes, in this order. The first writes every value and number format. The
                 # second only changes how the tab looks, and must never set a value or a format.

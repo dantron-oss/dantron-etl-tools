@@ -740,7 +740,7 @@ class TestLayoutInATemplate:
 
         _write(
             {"one": _laid_out_rows()},
-            {"path": str(target), "template": str(template), "overwrite_sheets": True, "sheets": [entry]},
+            {"path": str(target), "template": str(template), "overwrite": True, "sheets": [entry]},
         )
 
         assert [t["name"] for t in _tables(target, "Figures")] == expected

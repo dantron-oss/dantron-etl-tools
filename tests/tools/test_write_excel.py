@@ -36,7 +36,7 @@ first run is gone, and the next run has nothing to start from. So the template i
 written, and ``path`` equal to ``template`` is refused outright rather than left to be discovered
 once.
 
-**``overwrite_sheets`` governs the tab, not the file.** A tab already in the workbook is refused until an
+**``overwrite`` governs the tab, not the file.** A tab already in the workbook is refused until an
 author says in writing that overwriting it is intended, and a tab nobody named is never at risk
 either way.
 
@@ -809,11 +809,11 @@ class TestWritingIntoATemplate:
 
 
 # ---------------------------------------------------------------------------
-# overwrite_sheets, which is about a tab
+# overwrite, which is about a tab
 # ---------------------------------------------------------------------------
 
 
-class TestWhatOverwriteSheetsGoverns:
+class TestWhatOverwriteGoverns:
     """One permission for anything already there: a file at ``path``, or a template tab a sheet names."""
 
     @pytest.mark.parametrize(
@@ -846,7 +846,7 @@ class TestWhatOverwriteSheetsGoverns:
             "sheets": [{"port": "one", "sheet": "Summary"}, {"port": "two", "sheet": "Figures"}],
         }
         if overwrite is not None:
-            config["overwrite_sheets"] = overwrite
+            config["overwrite"] = overwrite
 
         if outcome == "refused":
             with pytest.raises(ConfigError) as caught:
@@ -854,7 +854,7 @@ class TestWhatOverwriteSheetsGoverns:
 
             message = str(caught.value)
             assert "Summary" in message, f"the refusal does not name the tab it declined to destroy: {message}"
-            assert "overwrite_sheets" in message, f"the refusal does not name the keystroke that authorises it: {message}"
+            assert "overwrite" in message, f"the refusal does not name the keystroke that authorises it: {message}"
             assert not target.exists(), "a refused write left a pack behind"
             return
 
@@ -877,7 +877,7 @@ class TestWhatOverwriteSheetsGoverns:
 
         _write(
             {"one": _rows("a")},
-            {"path": str(target), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]},
+            {"path": str(target), "overwrite": True, "sheets": [{"port": "one", "sheet": "Figures"}]},
         )
 
         assert _tab_names(target) == ["Figures"]
@@ -895,7 +895,7 @@ class TestWhatOverwriteSheetsGoverns:
         config: dict[str, Any] = {
             "path": str(target),
             "template": str(_template(tmp_path / "template.xlsx")) if with_template else None,
-            "overwrite_sheets": False,
+            "overwrite": False,
             "sheets": [{"port": "one", "sheet": "Figures"}],
         }
 
@@ -903,7 +903,7 @@ class TestWhatOverwriteSheetsGoverns:
             WriteExcel().validate_config(config)
 
         message = str(caught.value)
-        assert str(target) in message and "add 'overwrite_sheets: true'" in message, message
+        assert str(target) in message and "add 'overwrite: true'" in message, message
         assert target.read_bytes() == b"last month's pack"
 
     def test_a_second_run_writes_the_same_file_as_the_first(self, tmp_path: Path) -> None:
@@ -911,7 +911,7 @@ class TestWhatOverwriteSheetsGoverns:
         target = tmp_path / "pack.xlsx"
         config = {
             "path": str(target),
-            "overwrite_sheets": True,
+            "overwrite": True,
             "sheets": [
                 {"port": "one", "sheet": "Figures", "formats": [{"type": "Float64", "format": "#,##0.00"}]},
                 {"port": "two", "sheet": "Checks", "allow_empty": True},
@@ -931,7 +931,7 @@ class TestWhatOverwriteSheetsGoverns:
 
         with pytest.raises(ConfigError) as caught:
             WriteExcel().validate_config(
-                {"path": str(target), "template": None, "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "F"}]}
+                {"path": str(target), "template": None, "overwrite": True, "sheets": [{"port": "one", "sheet": "F"}]}
             )
 
         assert str(target.parent) in str(caught.value)
@@ -958,7 +958,7 @@ class TestWhatOverwriteSheetsGoverns:
             {
                 "path": str(target),
                 "template": str(template),
-                "overwrite_sheets": True,
+                "overwrite": True,
                 "sheets": [{"port": "one", "sheet": "Summary"}, {"port": "two", "sheet": "Figures"}],
             },
         )
@@ -1350,7 +1350,7 @@ class TestRefusalsAboutTheFrames:
                 {
                     "path": str(target),
                     "template": str(template),
-                    "overwrite_sheets": True,
+                    "overwrite": True,
                     "sheets": [{"port": "one", "sheet": "Summary"}, {"port": "two", "sheet": "Detail"}],
                 },
             )
@@ -1467,7 +1467,7 @@ class TestOneLoadAndOneSave:
 
         loads.clear()
         saves.clear()
-        again = {"path": str(plain), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]}
+        again = {"path": str(plain), "overwrite": True, "sheets": [{"port": "one", "sheet": "Figures"}]}
         _write({"one": _rows("a")}, again)
         over_a_pack = (list(loads), list(saves))
 
@@ -1508,15 +1508,15 @@ class TestWriteExcelInTheCatalog:
         """
         template = WriteExcel().config_template()
 
-        assert set(template) == {"path", "sheets", "template", "overwrite_sheets"}
+        assert set(template) == {"path", "sheets", "template", "overwrite"}
         assert template["path"].type == "string"
         assert template["path"].required is True
         assert template["path"].non_empty is True, "an empty path is a value, and not one to act on"
         assert template["sheets"].type == "array"
         assert template["template"].type == "string"
         assert template["template"].required is False, "most packs start from nothing"
-        assert template["overwrite_sheets"].type == "boolean"
-        assert template["overwrite_sheets"].default is False, "a tab that is already there survives until an author says so"
+        assert template["overwrite"].type == "boolean"
+        assert template["overwrite"].default is False, "a tab that is already there survives until an author says so"
 
         entry = template["sheets"].items
         assert entry is not None and entry.type == "object", "a sheet entry has a declared shape"
@@ -1567,7 +1567,7 @@ class TestWriteExcelInTheCatalog:
 
         documented = " ".join((help_.detailed_description, *help_.notes)).lower()
         assert "template" in documented
-        assert "overwrite_sheets" in documented, "the destructive case has to be documented"
+        assert "overwrite" in documented, "the destructive case has to be documented"
         assert "exact" in documented or "precision" in documented, "so does what a cell cannot keep"
 
     def test_write_excel_is_in_the_shipped_catalog(self) -> None:

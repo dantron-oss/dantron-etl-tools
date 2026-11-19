@@ -1743,7 +1743,7 @@
     "write_excel": {
       "category": "output",
       "config": {
-        "overwrite_sheets": {
+        "overwrite": {
           "default": false,
           "enum": null,
           "fields": null,
