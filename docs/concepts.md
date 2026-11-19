@@ -156,6 +156,8 @@ trace = run_pipeline(spec)
 print(trace.frame("with_customer.left_only"))
 ```
 
+`run_pipeline` is a real run: it runs the writers too.
+
 ## Refusals come early
 
 The library would rather stop than give a plausible wrong answer. Most mistakes are refused when
