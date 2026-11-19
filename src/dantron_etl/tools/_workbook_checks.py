@@ -1,9 +1,9 @@
-"""write_workbook: the refusals answerable before the workbook is opened.
+"""write_excel: the refusals answerable before the workbook is opened.
 
 Each function here reads the configuration, or a frame's schema, and refuses what cannot be written:
 a tab name a workbook cannot carry, a format, width or wrap rule that cannot mean one thing, a table
 name a spreadsheet would reject, and a template that is the output file itself. Part of
-``write_workbook``; the leading underscore keeps it out of the tool catalog.
+``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 import re
@@ -48,13 +48,13 @@ def validate_tab_name(sheet: str) -> None:
     """
     if len(sheet) > MAX_SHEET_NAME_LENGTH:
         raise ConfigError(
-            f"write_workbook refuses the tab name {sheet!r}: a workbook tab name may be at most "
+            f"write_excel refuses the tab name {sheet!r}: a workbook tab name may be at most "
             f"{MAX_SHEET_NAME_LENGTH} characters. Shorten it."
         )
     for character in FORBIDDEN_SHEET_CHARACTERS:
         if character in sheet:
             raise ConfigError(
-                f"write_workbook refuses the tab name {sheet!r}: a workbook tab name may not "
+                f"write_excel refuses the tab name {sheet!r}: a workbook tab name may not "
                 f"contain the character {character}. Take it out of the name."
             )
 
@@ -77,13 +77,13 @@ def validate_format_rules(entry: Mapping[str, Any]) -> None:
         stated = tuple(field for field in ("type", "column") if rule.get(field) is not None)
         if len(stated) == 2:
             raise ConfigError(
-                f"write_workbook was given a format rule on tab {sheet!r} carrying both 'type' "
+                f"write_excel was given a format rule on tab {sheet!r} carrying both 'type' "
                 f"{rule['type']!r} and 'column' {rule['column']!r}; a rule applies to one or the "
                 f"other, never both. Write two rules, or drop the one you did not mean."
             )
         if not stated:
             raise ConfigError(
-                f"write_workbook was given a format rule on tab {sheet!r} carrying neither 'type' "
+                f"write_excel was given a format rule on tab {sheet!r} carrying neither 'type' "
                 f"nor 'column', so the format {rule['format']!r} has nothing to apply to. Give "
                 f"exactly one of them."
             )
@@ -91,7 +91,7 @@ def validate_format_rules(entry: Mapping[str, Any]) -> None:
         key = (field, rule[field])
         if key in seen:
             raise ConfigError(
-                f"write_workbook was told twice how to show {field} {rule[field]!r} on tab "
+                f"write_excel was told twice how to show {field} {rule[field]!r} on tab "
                 f"{sheet!r}, as {seen[key]!r} and as {rule['format']!r}; one of the two would be "
                 f"delivered and which one is not a reading of this list to be relied on. Keep the "
                 f"rule you meant and take the other out."
@@ -110,7 +110,7 @@ def validate_formatted_columns(entry: Mapping[str, Any], frame: pl.DataFrame) ->
         column = rule.get("column")
         if column is not None and column not in frame.columns:
             raise ConfigError(
-                f"write_workbook was told to format the column {column!r} on tab "
+                f"write_excel was told to format the column {column!r} on tab "
                 f"{entry['sheet']!r}, which port {entry['port']!r} does not carry; it carries: "
                 f"{', '.join(frame.columns)}"
             )
@@ -131,7 +131,7 @@ def validate_layout(entry: Mapping[str, Any]) -> None:
         width = rule["width"]
         if not 0 < width <= _MAX_WIDTH:
             raise ConfigError(
-                f"write_workbook was given a column width of {width!r} in 'widths' on tab "
+                f"write_excel was given a column width of {width!r} in 'widths' on tab "
                 f"{sheet!r}; a width must be more than 0 and at most {_MAX_WIDTH:g} characters."
             )
 
@@ -139,13 +139,13 @@ def validate_layout(entry: Mapping[str, Any]) -> None:
     if header is not None:
         if header.get("bold") is None and header.get("size") is None:
             raise ConfigError(
-                f"write_workbook was given a 'header' on tab {sheet!r} that states nothing; give "
+                f"write_excel was given a 'header' on tab {sheet!r} that states nothing; give "
                 f"'bold', 'size' or both, or leave 'header' out."
             )
         size = header.get("size")
         if size is not None and not 1 <= size <= _MAX_FONT_SIZE:
             raise ConfigError(
-                f"write_workbook was given a heading 'size' of {size!r} on tab {sheet!r}; a font "
+                f"write_excel was given a heading 'size' of {size!r} on tab {sheet!r}; a font "
                 f"size must be at least 1 and at most {_MAX_FONT_SIZE:g} points."
             )
 
@@ -155,14 +155,14 @@ def validate_layout(entry: Mapping[str, Any]) -> None:
     style = table.get("style")
     if style is not None and style not in _TABLE_STYLES:
         raise ConfigError(
-            f"write_workbook was given the table 'style' {style!r} on tab {sheet!r}, which is not "
+            f"write_excel was given the table 'style' {style!r} on tab {sheet!r}, which is not "
             f"one of the spreadsheet's built-in table styles. Name one such as 'TableStyleLight1' "
             f"or 'TableStyleMedium2', or leave 'style' out for a plain table."
         )
     name = table.get("name")
     if name is not None and not _is_table_name(name):
         raise ConfigError(
-            f"write_workbook cannot use the table 'name' {name!r} on tab {sheet!r}. A table name "
+            f"write_excel cannot use the table 'name' {name!r} on tab {sheet!r}. A table name "
             f"starts with a letter or an underscore, holds only letters, digits, underscores and "
             f"full stops, is at most {_MAX_TABLE_NAME_LENGTH} characters, and must not read as a "
             f"cell address such as 'A1' or 'R1C1'."
@@ -177,14 +177,14 @@ def _validate_layout_rules(sheet: str, field: str, rules: Sequence[Mapping[str, 
         if len(stated) != 1:
             which = "both" if stated else "neither"
             raise ConfigError(
-                f"write_workbook was given a rule in '{field}' on tab {sheet!r} carrying {which} "
+                f"write_excel was given a rule in '{field}' on tab {sheet!r} carrying {which} "
                 f"'type' and 'column'; a rule applies to exactly one of them."
             )
         kind = stated[0]
         key = (kind, rule[kind])
         if key in seen:
             raise ConfigError(
-                f"write_workbook was given two rules in '{field}' on tab {sheet!r} about {kind} "
+                f"write_excel was given two rules in '{field}' on tab {sheet!r} about {kind} "
                 f"{rule[kind]!r}; keep the one you meant and take the other out."
             )
         seen.add(key)
@@ -225,7 +225,7 @@ def validate_table_names(entries: Sequence[Mapping[str, Any]]) -> None:
         earlier = seen.get(name.lower())
         if earlier is not None:
             raise ConfigError(
-                f"write_workbook would make two tables of one name: {earlier[0]!r} on tab "
+                f"write_excel would make two tables of one name: {earlier[0]!r} on tab "
                 f"{earlier[1]!r} and {name!r} on tab {entry['sheet']!r}. A spreadsheet compares "
                 f"table names ignoring case. Give one of them its own 'name'."
             )
@@ -240,7 +240,7 @@ def validate_layout_columns(entry: Mapping[str, Any], frame: pl.DataFrame) -> No
             column = rule.get("column")
             if column is not None and column not in frame.columns:
                 raise ConfigError(
-                    f"write_workbook was given a rule in '{field}' about the column {column!r} on "
+                    f"write_excel was given a rule in '{field}' about the column {column!r} on "
                     f"tab {entry['sheet']!r}, which port {entry['port']!r} does not carry; it "
                     f"carries: {', '.join(frame.columns)}"
                 )
@@ -252,7 +252,7 @@ def validate_layout_columns(entry: Mapping[str, Any], frame: pl.DataFrame) -> No
         earlier = seen.get(column.lower())
         if earlier is not None:
             raise ConfigError(
-                f"write_workbook cannot make a table on tab {entry['sheet']!r} over the headings "
+                f"write_excel cannot make a table on tab {entry['sheet']!r} over the headings "
                 f"{earlier!r} and {column!r}: a table's headings must differ ignoring case. Rename "
                 f"one of them upstream, or leave 'table' out."
             )

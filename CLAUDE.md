@@ -111,7 +111,7 @@ than the one you are editing. If anything looks impossible, run
 | `db.py` | An environment variable name in, an open connection out. Drivers picked by URI scheme and imported lazily. The table helpers the table tools share. |
 | `paths.py` | `project_root(__file__)`. Where the caller's project is, or a refusal. |
 | `column_types.py` | The type names a flow may write (`String`, `Float64`, `Date` ...). |
-| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. A module whose name starts with `_` is a helper, not a tool, and is skipped: `_spreadsheet.py` holds what a cell and a tab can hold, and `_workbook_*.py` hold the parts of `write_workbook`. |
+| `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. A module whose name starts with `_` is a helper, not a tool, and is skipped: `_spreadsheet.py` holds what a cell and a tab can hold, and `_workbook_*.py` hold the parts of `write_excel`. |
 | `scripts/` | The page builders and the run server. **Not shipped in the wheel.** They render; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
@@ -275,7 +275,7 @@ everything it needs from `authoring.py`. Checklist:
 6. Add it to the table in `MANUAL.md` §3.1 **and update the count** there and in `README.md`.
 7. Regenerate the catalog and look at the tool's page.
 
-A tool whose input ports depend on its configuration (like `write_workbook`, one port per sheet)
+A tool whose input ports depend on its configuration (like `write_excel`, one port per sheet)
 implements `input_ports_for` and leaves `input_ports` empty. Never both. See `DerivesInputPorts`.
 
 ### Changing an existing tool
@@ -302,7 +302,7 @@ Lessons from that consumer that belong to the library:
   nothing reported it because the refusal was correct. A consumer needs its own freshness alert.
 - **A cache fingerprint covers the file, never the data.** A cached port taken before the sources
   were reloaded resumes over yesterday's figures with a clean-looking run. Manual §7b.
-- **`write_workbook`'s `replace` governs a tab, not the file.** A tab the step stops writing stays in
+- **`write_excel`'s `overwrite_sheets` governs a tab, not the file.** A tab the step stops writing stays in
   the existing workbook until the file itself is deleted.
 - **A dead-end step is refused at load**, so removing an output orphans its whole upstream chain one
   refusal at a time. Dropping six report tabs from that flow took 74 steps with them. Work out the

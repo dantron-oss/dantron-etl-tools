@@ -81,7 +81,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-31 tools, by category:
+30 tools, by category:
 
 | category | tools |
 |---|---|
@@ -91,7 +91,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
-| `output` | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+| `output` | `publish_tables`, `write_csv`, `write_excel`, `write_table` |
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
 
@@ -491,7 +491,7 @@ Every one of these was measured, most of them the hard way.
 - **The integer literal in an expression is 32-bit.** `0` and `1` in a `formula` give a narrower
   column than a database's `BIGINT`. It is the right width for a rank or a small count; use
   `cast_columns` when the width itself matters.
-- **A spreadsheet cell cannot record a time zone**, so `write_excel` and `write_workbook` refuse a
+- **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
   zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
   writer drop the zone quietly.
 - **A text file states no types at all.** `read_csv` infers, reading the *whole* column before it
@@ -501,7 +501,7 @@ Every one of these was measured, most of them the hard way.
 
 ### How a figure is shown
 
-- **Nothing is formatted unless the tab says so.** `write_workbook` writes the figures and leaves
+- **Nothing is formatted unless the tab says so.** `write_excel` writes the figures and leaves
   them under the workbook's own `General`, so `661617.4665392789` opens reading exactly that. State
   `formats` on the sheet entry to get `661,617.47`. The only format written without being asked for
   is on a date column, and that one is not decoration: without it the cell reads as a count of days

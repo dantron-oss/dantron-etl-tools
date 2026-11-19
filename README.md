@@ -28,7 +28,7 @@ the rows coming out, and let them look. That is what this is for: every step is 
 instance of a general tool, every step's output is inspectable, and the definition of a run is one
 file a non-developer can read.
 
-## The 31 tools
+## The 30 tools
 
 | category | tools |
 |---|---|
@@ -38,7 +38,7 @@ file a non-developer can read.
 | **combine** | `join`, `union` |
 | **text** | `normalize_text`, `regex_extract_groups` |
 | **assert** | `assert_rows` |
-| **output** | `publish_tables`, `write_csv`, `write_excel`, `write_table`, `write_workbook` |
+| **output** | `publish_tables`, `write_csv`, `write_excel`, `write_table` |
 
 Every tool carries executable worked examples, and a conformance test runs each example on its
 stated input and compares it to its stated output. The catalog is generated from the registry, so a

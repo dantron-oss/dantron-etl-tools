@@ -483,7 +483,7 @@ class TestReadExcelInTheCatalog:
             }
         )
 
-        run_tool(WriteExcel(), Ports({"rows": frame}), {"path": str(target), "sheet": "Figures"})
+        run_tool(WriteExcel(), Ports({"rows": frame}), {"path": str(target), "sheets": [{"port": "rows", "sheet": "Figures"}]})
         back = _read({"path": str(target), "sheet": "Figures"})
 
         assert_frame_equal(back, frame, check_row_order=True)

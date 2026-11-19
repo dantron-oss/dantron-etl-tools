@@ -1,7 +1,6 @@
 """WriteCsv: one frame becomes one delimited text file, and the same rows pass through.
 
-The catalog's second file sink, and the sibling of ``write_excel`` rather than a format switch on
-it: a text file has no row limit, no cell holding a double, and no tab-naming rules, so none of the
+A file sink, and the sibling of ``write_excel`` rather than a format switch on it: a text file has no row limit, no cell holding a double, and no tab-naming rules, so none of the
 workbook sink's refusals apply here -- and this format has hazards of its own that a cell does not,
 which is the other half of why the two are separate tools.
 

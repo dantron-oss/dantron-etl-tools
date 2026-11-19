@@ -17,7 +17,6 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-import openpyxl
 import polars as pl
 import pytest
 
@@ -28,7 +27,6 @@ from dantron_etl.tools.read_csv import ReadCsv
 from dantron_etl.tools.read_excel import ReadExcel
 from dantron_etl.tools.write_csv import WriteCsv
 from dantron_etl.tools.write_excel import WriteExcel
-from dantron_etl.tools.write_workbook import WriteWorkbook
 
 # On Linux this is one folder with a backslash in its name. On Windows it is two folders. Either way,
 # the path as written holds a backslash.
@@ -64,17 +62,10 @@ def _write_csv_existing(folder: Path) -> Path:
     return target
 
 
-def _write_excel_existing(folder: Path) -> Path:
-    target = folder / "out.xlsx"
-    openpyxl.Workbook().save(target)
-    run_tool(WriteExcel(), Ports({"rows": _rows()}), {"path": str(target), "sheet": "Figures"})
-    return target
-
-
-def _write_workbook_absent_template(folder: Path) -> Path:
+def _write_excel_absent_template(folder: Path) -> Path:
     template = folder / "template.xlsx"
     run_tool(
-        WriteWorkbook(),
+        WriteExcel(),
         Ports({"one": _rows()}),
         {"path": str(folder / "pack.xlsx"), "template": str(template), "sheets": [{"port": "one", "sheet": "Figures"}]},
     )
@@ -94,8 +85,7 @@ def _sqlite_absent(folder: Path) -> Path:
         _read_csv_absent,
         _read_excel_absent,
         _write_csv_existing,
-        _write_excel_existing,
-        _write_workbook_absent_template,
+        _write_excel_absent_template,
         _sqlite_absent,
     ],
     ids=lambda case: case.__name__.lstrip("_"),

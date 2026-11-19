@@ -904,13 +904,16 @@ class TestARuleValueIsSpelledForTheFieldItLandsIn:
             {
                 "id": "workbook",
                 "tool": "write_excel",
-                "config": {"path": "{scratch}/figures.xlsx", "sheet": "Figures ${rules.period}"},
+                "config": {
+                    "path": "{scratch}/figures.xlsx",
+                    "sheets": [{"port": "rows", "sheet": "Figures ${rules.period}"}],
+                },
                 "inputs": {"rows": "paired.joined"},
             },
             {"period": "2026-09"},
         )
 
-        assert config["sheet"] == "Figures 2026-09"
+        assert config["sheets"][0]["sheet"] == "Figures 2026-09"
 
     def test_a_column_name_nested_in_an_array_of_objects_receives_the_value(self) -> None:
         """The seam has to reach nesting: the name sits at ``columns[0].name``, beside an expression.

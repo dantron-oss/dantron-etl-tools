@@ -1,6 +1,6 @@
-"""write_workbook: writing one frame's values and number formats into one tab.
+"""write_excel: writing one frame's values and number formats into one tab.
 
-Part of ``write_workbook``; the leading underscore keeps it out of the tool catalog.
+Part of ``write_excel``; the leading underscore keeps it out of the tool catalog.
 """
 
 from collections.abc import Mapping, Sequence

@@ -3173,7 +3173,7 @@ class TestFormatNumberWritesANumberAsText:
         which is below the half, giving ``-15.21``.
 
         Worth stating side by side because ``Decimal`` is the dtype a database read produces for a
-        money column -- ``write_excel`` and ``write_workbook`` both carry explicit refusals for it,
+        money column -- ``write_excel`` carries an explicit refusal for it,
         which is evidence such columns really arrive -- and an author who reads the rounding ruling
         above and then formats one would otherwise expect the other answer.
         """

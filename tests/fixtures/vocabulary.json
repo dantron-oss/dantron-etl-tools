@@ -1690,6 +1690,15 @@
     "write_excel": {
       "category": "output",
       "config": {
+        "overwrite_sheets": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
         "path": {
           "default": null,
           "enum": null,
@@ -1698,112 +1707,6 @@
           "non_empty": true,
           "required": true,
           "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        },
-        "sheet": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        }
-      },
-      "input_ports": [
-        "rows"
-      ],
-      "output_ports": [
-        "rows"
-      ]
-    },
-    "write_table": {
-      "category": "output",
-      "config": {
-        "allow_empty": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        },
-        "connection": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "mode": {
-          "default": null,
-          "enum": [
-            "replace",
-            "append"
-          ],
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": true,
-          "type": "string"
-        },
-        "schema": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "string"
-        },
-        "table": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        }
-      },
-      "input_ports": [
-        "rows"
-      ],
-      "output_ports": [
-        "rows"
-      ]
-    },
-    "write_workbook": {
-      "category": "output",
-      "config": {
-        "path": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": true,
-          "required": true,
-          "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
         },
         "sheets": {
           "default": null,
@@ -2068,6 +1971,65 @@
       },
       "input_ports": "from config",
       "output_ports": []
+    },
+    "write_table": {
+      "category": "output",
+      "config": {
+        "allow_empty": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "connection": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "mode": {
+          "default": null,
+          "enum": [
+            "replace",
+            "append"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "string"
+        },
+        "schema": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
+        "table": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
     }
   }
 }

@@ -50,7 +50,7 @@ which is the loudest silence a nightly build leaves behind, so an empty frame st
 the *whole* publish, since it is one unit -- unless that entry says in writing that it may be empty.
 
 **The ports come from the configuration.** A publish of five tables reads five frames and a publish
-of one reads one, which no static attribute can say; the derivation follows ``write_workbook``'s,
+of one reads one, which no static attribute can say; the derivation follows ``write_excel``'s,
 down to passing over a malformed configuration rather than refusing it there.
 
 The SQLite half runs anywhere. The Postgres half skips loudly when there is no server. The schema it
@@ -693,7 +693,7 @@ class TestThePortsComeFromTheTablesNamed:
     """A publish of five tables reads five frames, and a publish of one reads one."""
 
     def test_the_ports_are_the_entries_in_order_and_a_malformed_configuration_is_passed_over(self) -> None:
-        """Derived from ``tables``, in the order written, following ``write_workbook``'s rule exactly.
+        """Derived from ``tables``, in the order written, following ``write_excel``'s rule exactly.
 
         No static attribute can say this: two steps of this tool publish different numbers of tables
         and therefore read different numbers of frames. The malformed cases are passed over rather
