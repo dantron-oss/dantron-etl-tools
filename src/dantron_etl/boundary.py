@@ -14,6 +14,7 @@ be read from?" had nowhere to live but the first lines of every tool's own ``exe
 rule that holds while every author remembers it, and therefore not a rule.
 """
 
+import copy
 from collections.abc import Mapping
 from typing import Any
 
@@ -87,6 +88,9 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
             f"it declares: {', '.join(declared_inputs)}"
         )
 
+    # A deep copy, so a tool that appends to a list in its configuration cannot change the step it
+    # was given -- or that step's fingerprint.
+    config = copy.deepcopy(dict(config))
     template = call_tool_code(tool, "config_template", tool.config_template)
     validate_against_template(template, config)
     filled_config = apply_defaults(template, config)
@@ -130,17 +134,17 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
             )
 
     for name, original in inputs.items():
-        copy = given[name]
-        if copy.schema != original.schema:
+        handed = given[name]
+        if handed.schema != original.schema:
             raise PortError(
                 f"{tool.name!r} changed the columns of its input port {name!r} in place; a tool must "
                 f"treat its inputs as read-only (columns before: {', '.join(original.schema)}; "
-                f"after: {', '.join(copy.schema)})"
+                f"after: {', '.join(handed.schema)})"
             )
-        if copy.height != original.height:
+        if handed.height != original.height:
             raise PortError(
                 f"{tool.name!r} changed the number of rows of its input port {name!r} in place, from "
-                f"{original.height:,} to {copy.height:,}; a tool must treat its inputs as read-only"
+                f"{original.height:,} to {handed.height:,}; a tool must treat its inputs as read-only"
             )
 
     _check_status(tool, result, declared_outputs)
