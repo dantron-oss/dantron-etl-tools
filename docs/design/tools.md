@@ -322,3 +322,23 @@ has no type to disagree with: null belongs to every type, and an empty branch is
 
 **Rows keep their order and nothing is de-duplicated.** All of `top`, then all of `bottom`. Stacking
 is not judging; remove_duplicates reports what it removes.
+
+## remove_duplicates
+
+**Two output ports.** A step that only kept survivors would make the removed rows stop being data,
+a count someone rebuilds later if they remember. So every row goes to `unique` or `duplicate`, and
+`unique.height + duplicate.height == rows.height` always, the same rule filter follows.
+
+**Sameness follows DISTINCT, not `=`.** Rows whose key is null are one group, matching polars and what
+a later group_by would do. Reporting each null-keyed row as unique would leave exactly the rows this
+tool exists to clean. join decides the other way because it follows `=`. A null is still not the empty
+string: a text key made by filling nulls first would merge real blanks into the null group.
+
+**No `by` means the whole row.** An empty list means the same. There is no `["all"]` placeholder; one
+carried over from an older tool is refused as a missing column, by name.
+
+**`keep` is `first` or `last`,** never a word YAML would turn into a boolean.
+
+**Order is kept within each port.** polars' `unique` does not promise order, so the tool uses a per-row
+mask (`is_first_distinct` / `is_last_distinct`) filtered in place, which keeps order and gives both
+ports from one pass.
