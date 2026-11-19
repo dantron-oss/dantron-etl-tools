@@ -157,6 +157,12 @@ class WriteExcel:
                             required=True,
                             non_empty=True,
                         ),
+                        "allow_empty": ConfigField(
+                            type="boolean",
+                            description="Whether a port with no rows is written, as a tab with its "
+                            "headings and nothing under them, instead of stopping the run. Left out, "
+                            "it is false.",
+                        ),
                         "formats": ConfigField(
                             type="array",
                             description="How this tab's figures are shown: one rule per entry, "
@@ -334,9 +340,11 @@ class WriteExcel:
                 "spreadsheet recalculates the file when it opens it, so a person sees the right "
                 "figures. A program that reads the file before then, read_excel among them, sees "
                 "blanks where the formulas are.",
-                "A port with no rows still gets its tab, with the header and nothing under it: a "
-                "missing tab reads as a broken report, where an empty one reads as 'nothing this "
-                "month'.",
+                "A port with no rows stops the run unless its sheet entry says allow_empty: true, "
+                "as on the table sinks: a tab that is empty because something upstream failed looks "
+                "exactly like a quiet month. Allowed, it gets its tab, with the header and nothing "
+                "under it: a missing tab reads as a broken report, where an empty one reads as "
+                "'nothing this month'.",
                 "A whole number past 2**53 - 1 in either direction is refused rather than rounded "
                 "or silently written as text. A cell holds a double, so exactness past that point "
                 "is a promise this tool cannot keep, and the fix is one explicit cast upstream "
@@ -493,6 +501,17 @@ class WriteExcel:
         for entry in config["sheets"]:
             validate_formatted_columns(entry, inputs[entry["port"]])
             validate_layout_columns(entry, inputs[entry["port"]])
+
+        for entry in config["sheets"]:
+            frame = inputs[entry["port"]]
+            if frame.height == 0 and not entry.get("allow_empty", False):
+                raise DataError(
+                    f"write_excel refuses port {entry['port']!r}, bound for tab {entry['sheet']!r}: it has "
+                    f"no rows, and an empty tab looks like a quiet month even when something upstream "
+                    f"failed; set allow_empty: true on that sheet entry if the tab may be empty",
+                    offending=frame,
+                    total=0,
+                )
 
         for port, sheet in _entries(config):
             frame = inputs[port]

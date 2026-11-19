@@ -375,14 +375,12 @@ class TestSeveralFramesBecomeSeveralTabs:
         self,
         tmp_path: Path,
     ) -> None:
-        """An empty tab, never an absent one -- and the tabs beside it are unaffected.
+        """An empty tab, never an absent one, once the sheet entry says it may be empty.
 
-        Three things could happen to an empty frame and only one of them is defensible. Leaving the
-        tab out delivers a pack whose contents page does not match its tabs, and a reader cannot
-        tell a month with nothing in it from a run that half failed. Refusing stops a flow that is
-        otherwise correct, and AssertRows already exists for a flow that wants emptiness to stop the
-        run, said in writing. So the tab is written with its header and no rows, which reads as
-        "nothing this month" to the person who opens it.
+        Leaving the tab out would deliver a pack whose contents page does not match its tabs. So an
+        allowed empty port is written with its header and no rows, which reads as "nothing this
+        month" to the person who opens it. Without 'allow_empty' it stops the run (see
+        TestAnEmptyPortMustBeAllowed).
         """
         target = tmp_path / "pack.xlsx"
 
@@ -390,7 +388,10 @@ class TestSeveralFramesBecomeSeveralTabs:
             {"full": _rows("a"), "empty": _rows("b").head(0)},
             {
                 "path": str(target),
-                "sheets": [{"port": "full", "sheet": "Figures"}, {"port": "empty", "sheet": "Adjustments"}],
+                "sheets": [
+                    {"port": "full", "sheet": "Figures"},
+                    {"port": "empty", "sheet": "Adjustments", "allow_empty": True},
+                ],
             },
         )
 
@@ -913,7 +914,7 @@ class TestWhatOverwriteSheetsGoverns:
             "overwrite_sheets": True,
             "sheets": [
                 {"port": "one", "sheet": "Figures", "formats": [{"type": "Float64", "format": "#,##0.00"}]},
-                {"port": "two", "sheet": "Checks"},
+                {"port": "two", "sheet": "Checks", "allow_empty": True},
             ],
         }
         frames = {"one": _rows("a"), "two": _rows("b").head(0)}
@@ -1521,9 +1522,10 @@ class TestWriteExcelInTheCatalog:
         assert entry is not None and entry.type == "object", "a sheet entry has a declared shape"
         assert entry.fields is not None
         # 'formats' is the third member, and its own shape is pinned where it is argued, below.
-        assert set(entry.fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
+        assert set(entry.fields) == {"port", "sheet", "allow_empty", "formats", "widths", "fit_widths", "wrap", "table", "header"}
         assert entry.fields["port"].required is True and entry.fields["port"].non_empty is True
         assert entry.fields["sheet"].required is True and entry.fields["sheet"].non_empty is True
+        assert entry.fields["allow_empty"].type == "boolean" and entry.fields["allow_empty"].required is False
         assert expression_fields(template) == (), "nothing here is a column reference"
 
     def test_write_excel_is_terminal_and_conforms_twice_over_leaving_nothing_behind(self) -> None:
@@ -2482,7 +2484,7 @@ class TestHowNumbersAreShownIsDeclaredAndDocumented:
         entry = template["sheets"].items
 
         assert entry is not None and entry.fields is not None
-        assert set(entry.fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
+        assert set(entry.fields) == {"port", "sheet", "allow_empty", "formats", "widths", "fit_widths", "wrap", "table", "header"}
 
         formats = entry.fields["formats"]
         assert formats.type == "array"
@@ -2670,3 +2672,38 @@ class TestAFigureThatIsNotANumber:
         frame = pl.DataFrame({"ratio": pl.Series([float("nan")], dtype=pl.Float32)})
         with pytest.raises(DataError):
             _write({"one": frame}, {"path": str(tmp_path / "pack.xlsx"), "sheets": [{"port": "one", "sheet": "R"}]})
+
+
+class TestAnEmptyPortMustBeAllowed:
+    """A port with no rows stops the run unless its sheet entry says allow_empty: true.
+
+    The table sinks' rule, for the same reason: a tab that is empty because something upstream
+    failed looks exactly like a quiet month. The refusal names the tab and the port, and comes
+    before the workbook is opened, so no pack is left half written.
+    """
+
+    def test_an_empty_port_without_the_setting_stops_the_run_and_writes_nothing(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        config = {
+            "path": str(target),
+            "sheets": [{"port": "full", "sheet": "Figures"}, {"port": "empty", "sheet": "Adjustments"}],
+        }
+
+        with pytest.raises(DataError) as caught:
+            _write({"full": _rows("a"), "empty": _rows("b").head(0)}, config)
+
+        message = str(caught.value)
+        for word in ("Adjustments", "'empty'", "allow_empty"):
+            assert word in message, message
+        assert not target.exists(), "a refused pack left a file behind"
+
+    def test_the_setting_belongs_to_one_sheet_and_not_to_its_neighbour(self, tmp_path: Path) -> None:
+        config = {
+            "path": str(tmp_path / "pack.xlsx"),
+            "sheets": [
+                {"port": "full", "sheet": "Figures", "allow_empty": True},
+                {"port": "empty", "sheet": "Adjustments"},
+            ],
+        }
+        with pytest.raises(DataError):
+            _write({"full": _rows("a"), "empty": _rows("b").head(0)}, config)

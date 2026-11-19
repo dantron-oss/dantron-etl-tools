@@ -366,6 +366,11 @@ def _renamed_step(step: dict[str, Any], tool_by_id: dict[str, str]) -> dict[str,
                 table["keys"] = table.pop("key")
             if table.get("mode") == "merge":
                 table.setdefault("when_incoming_is_null", "keep_published")
+    if tool == "write_csv":
+        config.setdefault("allow_empty", True)
+    if tool == "write_excel":
+        for sheet in config.get("sheets") or []:
+            sheet.setdefault("allow_empty", True)
     if tool == "group_by":
         for aggregation in config["aggregations"]:
             if aggregation["function"] == "count_values":
@@ -680,7 +685,7 @@ class TestRenamedByWhereItSits:
             inputs: {rows: pair_up.matched}
           - id: out
             tool: write_csv
-            config: {path: out.csv}
+            config: {path: out.csv, allow_empty: true}
             inputs: {rows: checked.matched}
         """)
         expected = old.replace("{rows: pair_up.matched}", "{rows: pair_up.joined}")
@@ -722,7 +727,7 @@ class TestRenamedByWhereItSits:
         old = _flow("""\
           - id: out
             tool: write_csv
-            config: {path: 'out.csv', replace: true, delimiter: ";"}
+            config: {path: 'out.csv', replace: true, delimiter: ";", allow_empty: true}
             inputs: {rows: src.rows}
         """)
         expected = old.replace("replace: true", "overwrite: true")
@@ -907,6 +912,40 @@ class TestSettingsNowStatedAreWrittenIn:
             migration.text
         )
 
+    def test_every_file_writer_that_does_not_say_gets_allow_empty_true_which_is_what_it_did(self) -> None:
+        old = _flow("""\
+          - id: extract
+            tool: write_csv
+            config:
+              path: out.csv
+              overwrite: true
+            inputs: {rows: src.rows}
+          - id: strict
+            tool: write_csv
+            config: {path: strict.csv, allow_empty: false}
+            inputs: {rows: src.rows}
+          - id: pack
+            tool: write_excel
+            config:
+              path: pack.xlsx
+              sheets:
+                - {port: one, sheet: Figures}
+                - port: two
+                  sheet: Checks
+                  allow_empty: false
+            inputs: {one: src.rows, two: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert _step_config(migration.text, "extract")["allow_empty"] is True
+        assert _step_config(migration.text, "strict")["allow_empty"] is False, "a stated choice is kept"
+        sheets = _step_config(migration.text, "pack")["sheets"]
+        assert [sheet["allow_empty"] for sheet in sheets] == [True, False]
+        assert "      allow_empty: true\n" in migration.text
+        assert "{port: one, sheet: Figures, allow_empty: true}" in migration.text
+        assert sum(migration.counts.values()) == 2
+
     def test_a_merge_entry_that_already_says_keeps_its_choice(self) -> None:
         old = _flow("""\
           - id: publish
@@ -938,10 +977,10 @@ class TestReportedNotMigrated:
         old = OLD_SINGLE_SHEET + _steps("""\
           - id: out
             tool: write_csv
-            config: {path: out.csv, replace: true}
+            config: {path: out.csv, replace: true, allow_empty: true}
             inputs: {rows: tab_out.rows}
         """)
-        expected = old.replace("{path: out.csv, replace: true}", "{path: out.csv, overwrite: true}")
+        expected = old.replace("{path: out.csv, replace: true, allow_empty: true}", "{path: out.csv, overwrite: true, allow_empty: true}")
 
         migration = migrate_text(old)
 
@@ -1007,7 +1046,7 @@ RULES_FLOW = textwrap.dedent("""\
         inputs: {rows: split_up.rows}
       - id: out
         tool: write_csv
-        config: {path: out.csv}
+        config: {path: out.csv, allow_empty: true}
         inputs: {rows: both_check.true}
 """)
 
@@ -1109,7 +1148,7 @@ steps:
     inputs: {left: orders.rows, right: parties.rows}
   - id: out
     tool: write_csv
-    config: {path: out.csv, replace: true}
+    config: {path: out.csv, replace: true, allow_empty: true}
     inputs: {rows: pair_up.matched}
 """
 
@@ -1322,10 +1361,10 @@ class TestRenamedValuesByWhereTheySit:
             inputs: {rows: src.rows}
           - id: out
             tool: write_csv
-            config: {path: out.csv, replace: true}
+            config: {path: out.csv, replace: true, allow_empty: true}
             inputs: {rows: figured.rows}
         """)
-        expected = old.replace("{path: out.csv, replace: true}", "{path: out.csv, overwrite: true}")
+        expected = old.replace("{path: out.csv, replace: true, allow_empty: true}", "{path: out.csv, overwrite: true, allow_empty: true}")
 
         assert migrate_text(old).text == expected
 
@@ -1345,11 +1384,11 @@ class TestSharedAnchoredConfig:
             inputs: {left: src.rows, right: src.rows}
           - id: out_first
             tool: write_csv
-            config: {path: first.csv, overwrite: true}
+            config: {path: first.csv, overwrite: true, allow_empty: true}
             inputs: {rows: first.joined}
           - id: out_second
             tool: write_csv
-            config: {path: second.csv, overwrite: true}
+            config: {path: second.csv, overwrite: true, allow_empty: true}
             inputs: {rows: second.joined}
         """)
         expected = old.replace("&j {left_on: [a], right_on: [b]}", "&j {left_keys: [a], right_keys: [b]}")
@@ -1539,7 +1578,7 @@ class TestInsertedLineLayout:
           # next step
           - id: out
             tool: write_csv
-            config: {path: out.csv, overwrite: true}
+            config: {path: out.csv, overwrite: true, allow_empty: true}
             inputs: {rows: span.rows}
         """)
         expected = _flow("""\
@@ -1556,7 +1595,7 @@ class TestInsertedLineLayout:
           # next step
           - id: out
             tool: write_csv
-            config: {path: out.csv, overwrite: true}
+            config: {path: out.csv, overwrite: true, allow_empty: true}
             inputs: {rows: span.rows}
         """)
 

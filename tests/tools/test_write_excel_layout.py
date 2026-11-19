@@ -612,8 +612,8 @@ class TestLayoutNeverTouchesAFigure:
         plain = tmp_path / "plain.xlsx"
         laid_out = tmp_path / "laid_out.xlsx"
 
-        _one_tab(plain, _laid_out_rows(height))
-        _one_tab(laid_out, _laid_out_rows(height), **options)
+        _one_tab(plain, _laid_out_rows(height), allow_empty=True)
+        _one_tab(laid_out, _laid_out_rows(height), **options, allow_empty=True)
 
         assert _stored(laid_out, "Figures") == _stored(plain, "Figures"), "a layout option changed a stored value"
         assert _cells(laid_out, "Figures") == _cells(plain, "Figures"), "a layout option changed a value or format"
@@ -679,7 +679,7 @@ class TestAnEmptyPortWithLayout:
         """
         target = tmp_path / "pack.xlsx"
 
-        _one_tab(target, _laid_out_rows(0), **_ALL_OPTIONS)
+        _one_tab(target, _laid_out_rows(0), **_ALL_OPTIONS, allow_empty=True)
 
         back = _read_back(target, "Figures")
         assert back.columns == ["key", "amount", "balance", "count", "as_at", "note"]
@@ -947,7 +947,7 @@ class TestLayoutIsDeclaredAndDocumented:
         assert entry is not None and entry.fields is not None
         fields = entry.fields
 
-        assert set(fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
+        assert set(fields) == {"port", "sheet", "allow_empty", "formats", "widths", "fit_widths", "wrap", "table", "header"}
         for name in ("widths", "fit_widths", "wrap", "table", "header"):
             assert fields[name].required is False, f"{name} is optional: a tab that states nothing is written as before"
 

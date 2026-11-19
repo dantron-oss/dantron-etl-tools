@@ -620,6 +620,11 @@ Every one of these was measured, most of them the hard way.
   not against the pipeline file. Run from a consistent place, use absolute paths, or pass
   `run_pipeline(spec, base_dir=project_folder)`: then a relative path is read from that folder,
   whatever the working directory is.
+- **A writer stops on an empty frame unless the step allows it.** `write_table`, `publish_tables`
+  (per table), `write_csv` and `write_excel` (per sheet) all refuse a frame with no rows until
+  `allow_empty: true` says the branch may be empty, because a table or file that is empty for a
+  reason upstream looks exactly like a quiet month. Allowed, a file is written with its header and
+  a tab with its headings.
 - **A file writer is checked against the disk when the pipeline loads.** The folder of its `path`
   must already exist. A file already at `path` is refused unless the step says it may be replaced,
   so a flow that runs every night needs `overwrite: true` on `write_csv` (and `overwrite_sheets:

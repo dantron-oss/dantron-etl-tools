@@ -91,6 +91,9 @@ OLD_DEFAULTS: dict[str, dict[str, str]] = {
 # mapping must hold for the setting to apply, the setting, and the value that keeps the old behaviour.
 STATED_NOW: tuple[tuple[str, str, Mapping[str, Any], str, Any], ...] = (
     ("publish_tables", "tables[]", {"mode": "merge"}, "when_incoming_is_null", "keep_published"),
+    # A file writer always wrote an empty frame; it now stops on one unless the step allows it.
+    ("write_csv", "", {}, "allow_empty", True),
+    ("write_excel", "sheets[]", {}, "allow_empty", True),
 )
 
 # New tool name -> old port -> new port.
