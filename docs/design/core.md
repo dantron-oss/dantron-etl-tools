@@ -116,7 +116,7 @@ string as escapes and every Windows path is full of them.
 The directory is held in a `ContextVar`, not a module global, so a `setup` sees exactly the
 directory its own check opened and never one left over from an earlier check.
 
-### `{scratch}` and `${scratch}`
+### Why `${scratch}` is left alone
 
 `{scratch}` is one token with one meaning, not the start of a substitution language. A label such
 as `{total}` reaches a tool exactly as written.

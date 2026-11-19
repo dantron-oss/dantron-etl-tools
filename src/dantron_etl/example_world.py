@@ -91,7 +91,7 @@ def _refuse_disturbance(refusal: str, before: tuple[dict[str, str], str]) -> Non
 
 SCRATCH_TOKEN: Final[str] = "{scratch}"
 
-# Why: docs/design/core.md#scratch-and-dollar-scratch
+# Why: docs/design/core.md#why-scratch-is-left-alone
 _SCRATCH_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<!\$)\{scratch\}")
 
 # The directory the current check opened, if any. A ContextVar so a setup sees only its own check's.
