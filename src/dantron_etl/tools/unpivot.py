@@ -51,7 +51,7 @@ the feature.
 
 **A value that will not convert stops the run, unless the flow says otherwise**, in the words
 ``cast_columns`` settled. ``on_invalid: error`` is what happens when the field is absent, and it
-names the column, the offending values and the type asked for; ``on_invalid: empty`` leaves them
+names the column, the offending values and the type asked for; ``on_invalid: set_null`` leaves them
 null and reports how many, out of how many, and what share, which raises the step to a warning. The
 count is taken *before* the values are replaced, because afterwards a null that failed to convert
 and a null that was always there are the same null. One note per melted column that actually lost
@@ -86,7 +86,7 @@ short.
 ``EXCLUDE NULLS``. Only a null is left out. An empty string, text that is only spaces, a zero and
 not-a-number are all values, and all come through. A null in a 'by' column drops nothing; only
 melted cells are judged. With ``values_type``, a cell is judged as it arrived, before it is
-converted. So text that fails to convert under ``on_invalid: empty`` still comes through as a row
+converted. So text that fails to convert under ``on_invalid: set_null`` still comes through as a row
 holding nothing, with its warning mark. The survivors keep the order the full melt gives them.
 
 The option exists to save memory. A sparse sheet melted whole can be mostly blank rows. So the
@@ -123,9 +123,9 @@ from ..authoring import (
 )
 
 # The words `cast_columns` publishes for the same question, in the same spelling and the same order.
-# 'empty' rather than 'null': `null` unquoted in a definition file IS the null value, so an author
+# 'set_null' rather than 'null': `null` unquoted in a definition file IS the null value, so an author
 # reaching for the obvious word would hand over None and the boundary would read it as unset.
-_ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "empty")
+_ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "set_null")
 
 
 class Unpivot:
@@ -181,7 +181,7 @@ class Unpivot:
             "on_invalid": ConfigField(
                 type="string",
                 description="What a value that will not convert to 'values_type' does: 'error' "
-                "stops the run (what happens when this is left out), 'empty' leaves it null and "
+                "stops the run (what happens when this is left out), 'set_null' leaves it null and "
                 "reports how many, out of how many. Refused without 'values_type' beside it.",
                 enum=_ON_INVALID_ENUM,
             ),
@@ -240,7 +240,7 @@ class Unpivot:
                 "'by'. Reading it as the type it is keeps a figure a figure; reading the lot as "
                 "text loses a digit to whatever shortens it later.",
                 "'on_invalid' says what a value that will not convert to 'values_type' does: "
-                "'error' stops the run, 'empty' leaves it null and reports how many out of how "
+                "'error' stops the run, 'set_null' leaves it null and reports how many out of how "
                 "many, raising the step to a warning. It is refused without 'values_type', because "
                 "there is nothing for it to govern. Reading a column as the type it already holds "
                 "is ordinary here and says nothing, unlike 'cast_columns': the melt set is "
@@ -347,7 +347,7 @@ class Unpivot:
             blocks: list[pl.DataFrame] | None = None
         else:
             values, notes, blocks = _stated_values(
-                frame, melted, config["values_type"], config["on_invalid"] == "empty"
+                frame, melted, config["values_type"], config["on_invalid"] == "set_null"
             )
 
         # One frame per melted column, stacked in the frame's own column order. That is the
@@ -622,11 +622,11 @@ def _a_stated_type_melts_a_mixed_block() -> WorkedExample:
             "names_to": "period",
             "values_to": "amount",
             "values_type": "Float64",
-            "on_invalid": "empty",
+            "on_invalid": "set_null",
         },
         explanation="'comment' is text and cannot be named in 'by', because the number of "
         "columns in front of it changes from one load to the next and nothing written down can say "
-        "where it will be. Stating 'values_type' melts the lot as figures; 'on_invalid: empty' "
+        "where it will be. Stating 'values_type' melts the lot as figures; 'on_invalid: set_null' "
         "leaves the text holding nothing and reports how many values that was, out of how many, so "
         "the run carries on and the size of it carries on with it. A later step drops the rows "
         "whose name is not a period.",

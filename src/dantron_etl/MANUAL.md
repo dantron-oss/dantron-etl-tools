@@ -560,7 +560,7 @@ Two more rulings you will meet:
 - **`join_text` of the same group is the empty string** — deliberately the opposite. Joining no
   strings together produces the empty string in any language that has both; adding no numbers
   together produces a total nobody measured.
-- **`count` counts rows. `count_values` counts the values that are there.** Other libraries spell
+- **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
 
 ---

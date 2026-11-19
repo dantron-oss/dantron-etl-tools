@@ -289,7 +289,7 @@ def _aggregate(measure: pl.Expr, aggregate: str) -> pl.Expr:
         return measure.len().cast(pl.Int64)
     if aggregate == "sum":
         return measure.sum()
-    if aggregate == "count_values":
+    if aggregate == "count_non_null":
         return measure.count().cast(pl.Int64)
     if aggregate == "n_unique":
         return measure.n_unique().cast(pl.Int64)

@@ -535,7 +535,7 @@ TYPED: dict[str, Any] = {
     "names_to": "period",
     "values_to": "amount",
     "values_type": "Float64",
-    "on_invalid": "empty",
+    "on_invalid": "set_null",
 }
 
 
@@ -867,7 +867,7 @@ def _typed_melt_refusal_cases() -> list[Any]:
     """(config, the words its refusal must carry) for each way a stated melt can be written wrong."""
     return [
         pytest.param(
-            {**BASE, "on_invalid": "empty"},
+            {**BASE, "on_invalid": "set_null"},
             ("on_invalid", "values_type"),
             id="an_on_invalid_with_no_values_type_beside_it",
         ),
@@ -888,7 +888,7 @@ def _typed_melt_refusal_cases() -> list[Any]:
         ),
         pytest.param(
             {**BASE, "values_type": "Float64", "on_invalid": "ignore"},
-            ("on_invalid", "error", "empty"),
+            ("on_invalid", "error", "set_null"),
             id="an_on_invalid_that_is_neither_of_the_two_answers",
         ),
         pytest.param(
@@ -990,7 +990,7 @@ class TestTheStatedMeltIsDeclaredAndDocumented:
         assert on_invalid.type == "string"
         assert on_invalid.required is False
         assert on_invalid.default is None, "a filled 'error' would stop the cross-field refusal ever firing"
-        assert set(on_invalid.enum or ()) == {"error", "empty"}, "'empty' rather than 'null', as everywhere else"
+        assert set(on_invalid.enum or ()) == {"error", "set_null"}, "'set_null' rather than 'null', as everywhere else"
 
         answers = set(values_type.enum or ()) | set(on_invalid.enum or ())
         assert not answers & YAML_UNSAFE_VALUES, "an answer a definition file rewrites can never arrive"
@@ -1504,7 +1504,7 @@ class TestExcludeNullsWithAStatedType:
     """With ``values_type`` given, a cell is judged as it arrived, before it is converted.
 
     A cell that held nothing is left out. A cell that held text which did not read as the stated
-    type is kept, because it held something. Under ``on_invalid: empty`` it comes through as a row
+    type is kept, because it held something. Under ``on_invalid: set_null`` it comes through as a row
     holding nothing, with its warning mark beside it, as it does today. If the option dropped it,
     the note would count values a reader can no longer find, and the per-row status would point at
     rows that are not there.
@@ -1539,7 +1539,7 @@ class TestExcludeNullsWithAStatedType:
     def test_a_value_that_will_not_convert_still_stops_the_run(self) -> None:
         """The option leaves out what was empty. It does not hide what was wrong.
 
-        Without ``on_invalid: empty``, text that does not read as a figure stops the run, naming
+        Without ``on_invalid: set_null``, text that does not read as a figure stops the run, naming
         the column, exactly as it does with the option off.
         """
         strict = {key: value for key, value in TYPED.items() if key != "on_invalid"}

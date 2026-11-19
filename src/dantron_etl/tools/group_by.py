@@ -35,9 +35,9 @@ and a flow that needs the answer to be repeatable puts a Sort in front of this s
 everywhere else here. A group whose supposedly-constant column is not constant is worth counting with
 ``n_unique`` beside it, which is how that assumption gets checked instead of assumed.
 
-**``count`` counts rows; ``count_values`` counts the values that are there.** The two differ and get
+**``count`` counts rows; ``count_non_null`` counts the values that are there.** The two differ and get
 two names rather than one name and a flag: ``count`` takes no ``value`` at all, because a row count
-cannot depend on a column, and ``count_values`` requires one and ignores its nulls. The legacy
+cannot depend on a column, and ``count_non_null`` requires one and ignores its nulls. The legacy
 dataframe library spells the non-null count ``count``, so an author porting a step from it would
 otherwise get the other number without being told.
 
@@ -88,7 +88,7 @@ from ..authoring import (
 # ``mean`` is absent on purpose -- no step wants it, and its denominator silently depends on how
 # nulls are treated, which is exactly the kind of question this tool refuses to answer quietly.
 AGGREGATE_FUNCTIONS: Final[frozenset[str]] = frozenset(
-    {"sum", "count", "count_values", "n_unique", "min", "max", "first", "join_text"}
+    {"sum", "count", "count_non_null", "n_unique", "min", "max", "first", "join_text"}
 )
 
 # The one aggregate that reads no column at all: a row count is a property of the group, not of any
@@ -180,7 +180,7 @@ class GroupBy:
                 "answer differently for the same data. Use it for a column that is the same on every "
                 "row of a group -- and count the distinct values beside it if that is an assumption "
                 "rather than a certainty.",
-                "'count' counts every row of a group and reads no column; 'count_values' reads one "
+                "'count' counts every row of a group and reads no column; 'count_non_null' reads one "
                 "and ignores its nulls. Porting a step from a library that spells the non-null count "
                 "'count' would otherwise silently swap the two numbers.",
                 "'join_text' joins a group's text in the order the rows arrived, separated by "
@@ -232,7 +232,7 @@ class GroupBy:
                 if value is not None:
                     raise ConfigError(
                         f"aggregation {name!r} uses 'count', which counts rows and takes no 'value'; "
-                        f"use 'count_values' to count the values of a column instead"
+                        f"use 'count_non_null' to count the values of a column instead"
                     )
             elif value is None:
                 raise ConfigError(f"aggregation {name!r} declares function {function!r} but no 'value' to aggregate")
@@ -300,7 +300,7 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
 
     if function == "sum":
         return pl.when(expression.is_not_null().any()).then(expression.sum()).otherwise(None).alias(name)
-    if function == "count_values":
+    if function == "count_non_null":
         return expression.count().cast(pl.Int64).alias(name)
     if function == "n_unique":
         return expression.n_unique().cast(pl.Int64).alias(name)

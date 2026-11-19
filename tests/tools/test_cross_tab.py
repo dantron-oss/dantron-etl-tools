@@ -241,7 +241,7 @@ def _wide_cases() -> list[Any]:
             id="counting_rows_gives_whole_numbers_and_still_leaves_an_absent_cell_null",
         ),
         pytest.param(
-            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "count_values"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "count_non_null"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
@@ -547,7 +547,7 @@ class TestAMissingValueBesideARealOne:
         [
             ("sum", 13.0),
             ("count", 3),
-            ("count_values", 2),
+            ("count_non_null", 2),
             ("n_unique", 3),
             ("min", 3.0),
             ("max", 10.0),
@@ -557,7 +557,7 @@ class TestAMissingValueBesideARealOne:
     def test_each_aggregate_reads_the_same_cell_its_own_way(self, aggregate: str, expected: object) -> None:
         """Seven aggregates, one cell, and the blank row means something different to each.
 
-        ``count`` counts rows, so it says 3. ``count_values`` counts the values that are there, so it
+        ``count`` counts rows, so it says 3. ``count_non_null`` counts the values that are there, so it
         says 2. That the two differ is the whole reason they have two names, and only a cell with
         more than one row and a blank among them can show it.
 
@@ -623,7 +623,7 @@ def _cell_answers() -> dict[str, Any]:
     return {
         "sum": 29.0,
         "count": 6,
-        "count_values": 5,
+        "count_non_null": 5,
         "n_unique": 4,
         "min": 1.0,
         "max": 9.0,

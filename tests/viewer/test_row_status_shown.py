@@ -147,14 +147,14 @@ def _flow() -> PipelineSpec:
                     "id": "settled",
                     "tool": "cast_columns",
                     "lane": "shaping",
-                    "config": {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "empty"},
+                    "config": {"columns": [{"column": "amount", "type": "Float64"}], "on_invalid": "set_null"},
                     "inputs": {"rows": "entries.rows"},
                 },
                 {
                     "id": "graded",
                     "tool": "cast_columns",
                     "lane": "shaping",
-                    "config": {"columns": [{"column": "code", "type": "Int64"}], "on_invalid": "empty"},
+                    "config": {"columns": [{"column": "code", "type": "Int64"}], "on_invalid": "set_null"},
                     "inputs": {"rows": "settled.rows"},
                 },
                 {

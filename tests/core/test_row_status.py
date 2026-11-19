@@ -434,7 +434,7 @@ def _cast(frame: pl.DataFrame, *pairs: tuple[str, str], on_invalid: str | None =
 
 
 class TestCastColumnsMarksTheRowsItEmptied:
-    """``on_invalid: empty`` already says how many. This is which."""
+    """``on_invalid: set_null`` already says how many. This is which."""
 
     def test_the_rows_that_would_not_read_are_the_rows_that_are_marked(self) -> None:
         """Position for position: a mark on row one is a claim about row one.
@@ -445,7 +445,7 @@ class TestCastColumnsMarksTheRowsItEmptied:
         """
         frame = pl.DataFrame({"record_id": [1, 2, 3, 4], "amount": ["10.5", "not money", "3", "nor this"]})
 
-        outputs = _cast(frame, ("amount", "Float64"), on_invalid="empty")
+        outputs = _cast(frame, ("amount", "Float64"), on_invalid="set_null")
         status = outputs.status["rows"]
 
         assert status.height == outputs["rows"].height == 4
@@ -464,7 +464,7 @@ class TestCastColumnsMarksTheRowsItEmptied:
         """
         frame = pl.DataFrame({"record_id": list(range(692)), "column_95": _column_95()})
 
-        outputs = _cast(frame, ("column_95", "Float64"), on_invalid="empty")
+        outputs = _cast(frame, ("column_95", "Float64"), on_invalid="set_null")
         status = outputs.status["rows"]
 
         assert outputs["rows"]["column_95"].null_count() == 692, "the data alone cannot tell them apart"
@@ -491,7 +491,7 @@ class TestCastColumnsMarksTheRowsItEmptied:
             }
         )
 
-        outputs = _cast(frame, ("amount", "Float64"), ("count", "Int64"), on_invalid="empty")
+        outputs = _cast(frame, ("amount", "Float64"), ("count", "Int64"), on_invalid="set_null")
         status = outputs.status["rows"]
 
         assert _levels(status) == ["ok", "warning", "ok"]
@@ -517,7 +517,7 @@ class TestCastColumnsMarksTheRowsItEmptied:
         """
         frame = pl.DataFrame({"record_id": [1, 2, 3, 4], "amount": ["10.5", "not money", "3", "nor this"]})
 
-        outputs = _cast(frame, ("amount", "Float64"), on_invalid="empty")
+        outputs = _cast(frame, ("amount", "Float64"), on_invalid="set_null")
         status = outputs.status["rows"]
 
         assert _quoted(_reasons(status, 1)[0]["detail"]) == "not money"
@@ -549,8 +549,8 @@ class TestCastColumnsMarksTheRowsItEmptied:
         exact = "N" * STATUS_VALUE_CHARS
         over = "N" * (STATUS_VALUE_CHARS + 1)
 
-        fits = _cast(pl.DataFrame({"amount": [exact]}), ("amount", "Float64"), on_invalid="empty")
-        cut = _cast(pl.DataFrame({"amount": [over]}), ("amount", "Float64"), on_invalid="empty")
+        fits = _cast(pl.DataFrame({"amount": [exact]}), ("amount", "Float64"), on_invalid="set_null")
+        cut = _cast(pl.DataFrame({"amount": [over]}), ("amount", "Float64"), on_invalid="set_null")
 
         quoted_whole, quoted_cut = _quoted(_first_detail(fits)), _quoted(_first_detail(cut))
 
@@ -572,8 +572,8 @@ class TestCastColumnsMarksTheRowsItEmptied:
         shorter = ("Canadian Business Growth Fund " * 7)[:200]
         longer = shorter + shorter
 
-        first = _first_detail(_cast(pl.DataFrame({"amount": [shorter]}), ("amount", "Float64"), on_invalid="empty"))
-        second = _first_detail(_cast(pl.DataFrame({"amount": [longer]}), ("amount", "Float64"), on_invalid="empty"))
+        first = _first_detail(_cast(pl.DataFrame({"amount": [shorter]}), ("amount", "Float64"), on_invalid="set_null"))
+        second = _first_detail(_cast(pl.DataFrame({"amount": [longer]}), ("amount", "Float64"), on_invalid="set_null"))
 
         assert len(longer) == 2 * len(shorter)
         assert len(first) == len(second), "the reason is the same size whatever the cell held"
@@ -616,7 +616,7 @@ class TestCastColumnsMarksTheRowsItEmptied:
         """
         frame = pl.DataFrame({"record_id": [1, 2, 3], "amount": ["10.5", "-3", "0"]})
 
-        lenient = _cast(frame, ("amount", "Float64"), on_invalid="empty")
+        lenient = _cast(frame, ("amount", "Float64"), on_invalid="set_null")
         strict = _cast(frame, ("amount", "Float64"))
 
         assert tuple(lenient.status) == ()
@@ -648,7 +648,7 @@ class TestUnpivotMarksTheStackedRowsItEmptied:
         """
         frame = pl.DataFrame({"record_id": list(range(692)), "column_95": _column_95()})
 
-        outputs = _unpivot(frame, values_type="Float64", on_invalid="empty")
+        outputs = _unpivot(frame, values_type="Float64", on_invalid="set_null")
         status = outputs.status["rows"]
 
         assert outputs["rows"].height == 692, "one melted column, so one output row per input row"
@@ -677,7 +677,7 @@ class TestUnpivotMarksTheStackedRowsItEmptied:
             }
         )
 
-        outputs = _unpivot(frame, values_type="Float64", on_invalid="empty")
+        outputs = _unpivot(frame, values_type="Float64", on_invalid="set_null")
         rows, status = outputs["rows"], outputs.status["rows"]
 
         assert rows["period"].to_list() == ["q2", "q2", "q2", "q1", "q1", "q1"]
@@ -711,7 +711,7 @@ class TestUnpivotMarksTheStackedRowsItEmptied:
             }
         )
 
-        outputs = _unpivot(frame, values_type="Float64", on_invalid="empty")
+        outputs = _unpivot(frame, values_type="Float64", on_invalid="set_null")
         rows, status = outputs["rows"], outputs.status["rows"]
 
         assert rows["period"].to_list() == ["q2", "q2", "q2", "q1", "q1", "q1"]
@@ -769,7 +769,7 @@ def _flow() -> PipelineSpec:
                     "tool": "cast_columns",
                     "config": {
                         "columns": [{"column": "amount", "type": "Float64"}],
-                        "on_invalid": "empty",
+                        "on_invalid": "set_null",
                     },
                     "inputs": {"rows": "entries.rows"},
                 },
@@ -804,7 +804,7 @@ def _flow_that_fails() -> PipelineSpec:
                     "tool": "cast_columns",
                     "config": {
                         "columns": [{"column": "amount", "type": "Float64"}],
-                        "on_invalid": "empty",
+                        "on_invalid": "set_null",
                     },
                     "inputs": {"rows": "entries.rows"},
                 },

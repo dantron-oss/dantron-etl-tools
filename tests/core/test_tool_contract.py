@@ -2570,7 +2570,7 @@ def _enum_value_cases() -> list[Any]:
     single_letters = ("y", "Y", "n", "N")
     nulls = ("null", "Null", "NULL", "~", "")
     numbers = ("1", "0", "1.5", "-2")
-    safe = ("exclude", "include", "first", "last", "clamp", "empty", "error", "no_action", "offset", "year")
+    safe = ("exclude", "include", "first", "last", "clamp", "set_null", "error", "no_action", "offset", "year")
     return [
         *[pytest.param(value, True, id=f"yaml_boolean_{value or 'blank'}") for value in booleans],
         *[pytest.param(value, True, id=f"yaml_boolean_letter_{value}") for value in single_letters],
