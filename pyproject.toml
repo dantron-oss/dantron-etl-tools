@@ -47,6 +47,9 @@ dev = [
     "orjson>=3.10.0",
 ]
 
+[project.scripts]
+dantron-etl = "dantron_etl.cli:main"
+
 [project.urls]
 Source = "https://github.com/DanTron-Inc/dantron-etl-tools"
 Issues = "https://github.com/DanTron-Inc/dantron-etl-tools/issues"

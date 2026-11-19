@@ -1,0 +1,13 @@
+order_id,customer,order_date,status,quantity,unit_price
+1001,Ashby Garden Supplies,2026-01-05,paid,3,12.50
+1002,Brook Street Bakery,2026-01-07,paid,10,4.20
+1003,Cobalt Cycles,2026-01-09,unpaid,1,349.00
+1004,Ashby Garden Supplies,2026-01-12,paid,6,12.50
+1005,Dune Coffee Roasters,2026-01-14,paid,2,18.75
+1006,Elm Lane Books,2026-01-15,unpaid,4,9.99
+1007,Brook Street Bakery,2026-01-19,unpaid,8,4.20
+1008,Cobalt Cycles,2026-01-21,paid,2,89.00
+1009,Dune Coffee Roasters,2026-01-23,paid,5,18.75
+1010,Elm Lane Books,2026-01-26,unpaid,2,24.00
+1011,Ashby Garden Supplies,2026-01-28,refunded,1,12.50
+1012,Fern Hill Florist,2026-01-30,paid,12,3.10

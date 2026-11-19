@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Open ETL viewer",
+      "detail": "Starts the viewer for this project and opens it in your browser.",
+      "type": "shell",
+      "command": "@@command@@",
+      "args": ["view"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

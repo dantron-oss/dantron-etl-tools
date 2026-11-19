@@ -1,0 +1,21 @@
+# Settings for this project. Every key is optional: delete one and its default is used.
+# The @@command@@ command finds this file by looking upward from the folder it is started in.
+
+# The folders that hold pipeline files. Each *.yaml file directly inside one is a pipeline,
+# named after the file: pipelines/example.yaml is the pipeline called "example".
+pipeline_folders: [pipelines]
+
+# Where the viewer saves each run, so it can show you every step's rows afterwards.
+# Nothing in here is precious: delete the folder and the runs are simply gone.
+runs_folder: output_files/runs
+
+# Settings for each pipeline, under its name.
+pipelines:
+  example:
+    # The values a pipeline reads as ${rules.NAME}. Change one here, not in the pipeline file.
+    # Instead of writing them here, you can name a YAML file of rules:  rules_file: config/rules.yaml
+    rules:
+      status: paid
+    # The column that names one thing you may want to follow through every step, such as a
+    # customer. The viewer then lets you pick one customer and shows only their rows.
+    focus: customer
