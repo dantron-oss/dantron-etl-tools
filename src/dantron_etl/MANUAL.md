@@ -562,6 +562,9 @@ Every one of these was measured, most of them the hard way.
   `expand_date_range` refuse such a timestamp unless `in_zone` says which zone's calendar to use:
   `in_zone: UTC` reads the UTC date, which is what they read before the rule. There is no default,
   and `in_zone` where no timestamp carries a zone is refused too.
+- **A spreadsheet tab refuses not-a-number and infinity.** `write_excel` would show them as blank
+  cells, which read as "no figure". It stops instead, naming the tab, the column and the rows. A
+  null is written as an empty cell, as before.
 - **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
   zone-aware timestamp. `cast_columns` it to `Date` first, with `in_zone`, deliberately, rather
   than letting a writer drop the zone quietly.

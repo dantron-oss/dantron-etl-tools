@@ -2633,3 +2633,40 @@ class TestTextThatLooksLikeAFormulaIsWrittenAsText:
         cells = self._write_text(target, template, pl.DataFrame({name: ["x"]}))
 
         assert cells["A1"] == ("s", name)
+
+
+class TestAFigureThatIsNotANumber:
+    """Not-a-number or infinity in a decimal column is refused by name, never written as a blank.
+
+    The owner's ruling. A blank cell reads as "no figure", where not-a-number or infinity means a
+    figure went wrong upstream. The refusal names the tab, the port, the column and the rows, and
+    comes before the workbook is opened, so nothing is left on disk.
+    """
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "infinity", "minus_infinity"])
+    def test_it_stops_the_run_naming_the_tab_and_the_column_and_writes_nothing(self, tmp_path: Path, bad: float) -> None:
+        target = tmp_path / "pack.xlsx"
+        frames = {"one": _rows("a"), "two": pl.DataFrame({"key": ["r1", "r2", "r3"], "ratio": [0.5, bad, None]})}
+        config = {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures"}, {"port": "two", "sheet": "Ratios"}]}
+
+        with pytest.raises(DataError) as caught:
+            _write(frames, config)
+
+        message = str(caught.value)
+        for word in ("Ratios", "ratio", "'two'", "r2"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1
+        assert not target.exists(), "a refused pack left a file behind"
+
+    def test_a_null_is_written_as_the_empty_cell_it_is(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"key": ["r1", "r2"], "ratio": [0.5, None]})
+
+        _write({"one": frame}, {"path": str(target), "sheets": [{"port": "one", "sheet": "Ratios"}]})
+
+        assert _read_back(target, "Ratios")["ratio"].to_list() == [0.5, None]
+
+    def test_a_32_bit_decimal_column_is_held_to_the_same_rule(self, tmp_path: Path) -> None:
+        frame = pl.DataFrame({"ratio": pl.Series([float("nan")], dtype=pl.Float32)})
+        with pytest.raises(DataError):
+            _write({"one": frame}, {"path": str(tmp_path / "pack.xlsx"), "sheets": [{"port": "one", "sheet": "R"}]})

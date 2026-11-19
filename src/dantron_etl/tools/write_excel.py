@@ -346,6 +346,9 @@ class WriteExcel:
                 "is the value it started as.",
                 "Text longer than 32,767 characters, the most a cell holds, is refused naming the "
                 "column, rather than cut short.",
+                "Not-a-number or infinity in a decimal column is refused, naming the tab, the column "
+                "and the rows, rather than written as a blank: a blank reads as no figure, where "
+                "these mean a figure went wrong upstream. A null is written as the empty cell it is.",
                 "A frame taller than a tab -- more than 1,048,575 rows of data -- is refused rather "
                 "than truncated, because a truncated total is the worst outcome a delivered figure "
                 "can have.",
@@ -526,6 +529,21 @@ class WriteExcel:
                             pl.col(name).str.slice(0, 40),
                             pl.col(name).str.len_chars().alias(f"{name} length"),
                         ),
+                        total=frame.height,
+                    )
+
+            for name, dtype in frame.schema.items():
+                if not dtype.is_float():
+                    continue
+                not_a_figure = frame.filter(pl.col(name).is_not_null() & ~pl.col(name).is_finite())
+                if not_a_figure.height:
+                    raise DataError(
+                        f"write_excel refuses column {name!r} on port {port!r}, bound for tab "
+                        f"{sheet!r}: it holds not-a-number or infinity, which a cell would show as a "
+                        f"blank, as if no figure were there. A figure went wrong upstream; fix it "
+                        f"there, or turn those rows into null with case_when if a blank is what the "
+                        f"tab should show",
+                        offending=not_a_figure,
                         total=frame.height,
                     )
 
