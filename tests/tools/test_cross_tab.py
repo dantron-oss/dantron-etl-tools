@@ -272,11 +272,11 @@ def _wide_cases() -> list[Any]:
             id="the_same_cell_answers_differently_for_min_and_for_max",
         ),
         pytest.param(
-            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "n_unique"},
+            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "count_distinct"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
-                    "p1": [1, 3, None],
+                    "p1": [1, 2, None],
                     "p2": [1, 1, None],
                     "p3": [None, None, 1],
                 },
@@ -540,7 +540,7 @@ class TestAMissingValueBesideARealOne:
             ("sum", 13.0),
             ("count", 3),
             ("count_non_null", 2),
-            ("n_unique", 3),
+            ("count_distinct", 2),
             ("min", 3.0),
             ("max", 10.0),
             ("first", 10.0),
@@ -553,9 +553,8 @@ class TestAMissingValueBesideARealOne:
         says 2. That the two differ is the whole reason they have two names, and only a cell with
         more than one row and a blank among them can show it.
 
-        ``n_unique`` says 3, counting the blank as one distinct value. That is GroupBy's published
-        ruling, not an accident: a distinct count that ignored blanks would report 1 for a group
-        holding one value and one blank, and a check written to catch exactly that would pass.
+        ``count_distinct`` says 2: it skips the blank, as SQL's ``COUNT(DISTINCT)`` does, so it
+        agrees with ``count_non_null`` here, where the two real figures differ.
 
         ``sum``, ``min`` and ``max`` skip the blank and answer from the real figures.
         """
@@ -616,7 +615,7 @@ def _cell_answers() -> dict[str, Any]:
         "sum": 29.0,
         "count": 6,
         "count_non_null": 5,
-        "n_unique": 4,
+        "count_distinct": 3,
         "min": 1.0,
         "max": 9.0,
         "first": 5.0,

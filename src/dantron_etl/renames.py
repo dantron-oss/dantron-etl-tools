@@ -19,6 +19,7 @@ from typing import Any
 
 __all__ = [
     "MIGRATE_COMMAND",
+    "RENAME_NOTES",
     "STATED_NOW",
     "as_written",
     "Found",
@@ -63,8 +64,17 @@ VALUE_RENAMES: dict[tuple[str, str], dict[str, str]] = {
     ("assemble_date", "on_invalid"): {"empty": "set_null"},
     ("cast_columns", "on_invalid"): {"empty": "set_null"},
     ("unpivot", "on_invalid"): {"empty": "set_null"},
-    ("group_by", "aggregations[].function"): {"count_values": "count_non_null"},
-    ("cross_tab", "function"): {"count_values": "count_non_null"},
+    ("group_by", "aggregations[].function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
+    ("cross_tab", "function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
+}
+
+# A renamed value whose meaning moved with its name, and what moved. The migration's report and the
+# loader's refusal both say it, so nobody takes the new name for the old answer.
+RENAME_NOTES: dict[tuple[str, str], str] = {
+    ("n_unique", "count_distinct"): (
+        "count_distinct skips nulls, as SQL's COUNT(DISTINCT) does, where n_unique counted a null as "
+        "one more value: a group holding a null counts one fewer"
+    ),
 }
 
 # Old defaults that differ from the new ones. Keyed by the tool name as the file writes it, then by
@@ -206,7 +216,8 @@ def _kind_of(item: Found) -> tuple[str, str]:
     tool, _, rest = label.partition(".")
     if item.kind == "value":
         field = rest.partition(":")[0]
-        return "steps", f"{tool}'s config field {field!r}: the value {old} is now {new}"
+        moved = RENAME_NOTES.get((item.old, item.new))
+        return "steps", f"{tool}'s config field {field!r}: the value {old} is now {new}" + (f"; {moved}" if moved else "")
     return "steps", f"{tool}'s config field {old} is now {new}"
 
 
@@ -442,14 +453,16 @@ def _config_renames(
                 continue
             if value in values:
                 new = values[value]
+                moved = RENAME_NOTES.get((value, new))
                 found.append(
                     Found(
                         "value",
                         where,
                         value,
                         new,
-                        f"{tool}.{path}: {value} -> {new}",
-                        f"{here}: config field {shown!r} has the value {value!r}, which is now {new!r}",
+                        f"{tool}.{path}: {value} -> {new}" + (f" ({moved})" if moved else ""),
+                        f"{here}: config field {shown!r} has the value {value!r}, which is now {new!r}"
+                        + (f"; {moved}" if moved else ""),
                         step_id,
                     )
                 )

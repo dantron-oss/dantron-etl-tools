@@ -33,7 +33,11 @@ When it is *not* true, ``first`` answers with whichever row happens to be first,
 about the order and not about the data. So a flow using it on a column that might vary should say so,
 and a flow that needs the answer to be repeatable puts a Sort in front of this step -- exactly as
 everywhere else here. A group whose supposedly-constant column is not constant is worth counting with
-``n_unique`` beside it, which is how that assumption gets checked instead of assumed.
+``count_distinct`` beside it, which is how that assumption gets checked instead of assumed.
+
+**``count_distinct`` follows SQL's ``COUNT(DISTINCT v)``**: a missing value is not a value, so
+``["a", "a", null, "b"]`` counts 2 and a group whose values are all missing counts 0. To count a
+blank as a value too, write ``count_distinct`` of ``coalesce([v], '(blank)')``.
 
 **``count`` counts rows; ``count_non_null`` counts the values that are there.** The two differ and get
 two names rather than one name and a flag: ``count`` takes no ``value`` at all, because a row count
@@ -92,7 +96,7 @@ from ..authoring import (
 # ``mean`` is absent on purpose -- no step wants it, and its denominator silently depends on how
 # nulls are treated, which is exactly the kind of question this tool refuses to answer quietly.
 AGGREGATE_FUNCTIONS: Final[frozenset[str]] = frozenset(
-    {"sum", "count", "count_non_null", "n_unique", "min", "max", "first", "join_text"}
+    {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "join_text"}
 )
 
 # The one aggregate that reads no column at all: a row count is a property of the group, not of any
@@ -209,6 +213,9 @@ class GroupBy:
                 "'count' counts every row of a group and reads no column; 'count_non_null' reads one "
                 "and ignores its nulls. Porting a step from a library that spells the non-null count "
                 "'count' would otherwise silently swap the two numbers.",
+                "'count_distinct' counts the different values in a group and skips nulls, as SQL's "
+                "COUNT(DISTINCT) does: a, a, null, b counts 2, and a group of nulls counts 0. To "
+                "count a blank as a value, count coalesce([v], '(blank)') instead.",
                 "'join_text' joins a group's text in the order the rows arrived, separated by "
                 "'separator' or by a comma and a space where none is given, and skips the values "
                 "that are missing. A group whose values are all missing joins to the empty string, "
@@ -375,8 +382,8 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
         return pl.when(expression.is_not_null().any()).then(total).otherwise(None).alias(name)
     if function == "count_non_null":
         return expression.count().cast(pl.Int64).alias(name)
-    if function == "n_unique":
-        return expression.n_unique().cast(pl.Int64).alias(name)
+    if function == "count_distinct":
+        return expression.drop_nulls().n_unique().cast(pl.Int64).alias(name)
     if function == "min":
         return expression.min().alias(name)
     if function == "first":

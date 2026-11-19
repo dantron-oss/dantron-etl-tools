@@ -200,11 +200,11 @@ def _grouping_cases() -> list[Any]:
             {
                 "by": ["code"],
                 "aggregations": [
-                    _aggregation("terms", "n_unique", "[term]"),
+                    _aggregation("terms", "count_distinct", "[term]"),
                     _aggregation("figures", "count_non_null", "[amount]"),
                 ],
             },
-            pl.DataFrame({"code": ["A", "B", "C"], "terms": [1, 2, 1], "figures": [2, 2, 0]}),
+            pl.DataFrame({"code": ["A", "B", "C"], "terms": [1, 2, 0], "figures": [2, 2, 0]}),
             id="a_distinct_count_finds_the_group_with_two_different_terms",
         ),
         pytest.param(
@@ -359,24 +359,23 @@ class TestGroupByAggregates:
         for name in ("rows_in_group", "figures_present"):
             assert result[name].dtype == pl.Int64, "a count is signed, so subtracting two cannot underflow"
 
-    def test_n_unique_counts_a_missing_value_as_one_distinct_value(self) -> None:
-        """A group whose values are missing has one distinct value, not zero.
+    def test_count_distinct_skips_a_missing_value_like_sql(self) -> None:
+        """``count_distinct`` follows SQL's ``COUNT(DISTINCT v)``: a missing value is not a value.
 
-        The real consumer counts distinct parsed terms to decide whether a group covers a single
-        coherent period. A missing term is not a coherent period, so it has to count -- a distinct
-        count that ignored nulls would report 1 for a group holding one term and one blank, and the
-        group would pass a check it should fail.
+        The owner's ruling. A group whose values are all missing counts 0, a group holding one value
+        and one blank counts 1, and a group with no blank is untouched. (It was ``n_unique``, which
+        counted a blank as one more value: 1, 2 and 1 here.)
         """
         frame = pl.DataFrame(
             {
-                "code": ["A", "A", "B", "B", "C", "C"],
-                "term": [None, None, None, "12", "12", "12"],
+                "code": ["A", "A", "B", "B", "C", "C", "D", "D"],
+                "term": [None, None, None, "12", "12", "12", "12", "6"],
             }
         )
 
-        result = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("terms", "n_unique", "[term]")]})
+        result = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("terms", "count_distinct", "[term]")]})
 
-        assert result["terms"].to_list() == [1, 2, 1], "all missing is one; one value and a missing one is two"
+        assert result["terms"].to_list() == [0, 1, 1, 2], "all missing is none; a blank beside a value is not a second"
         assert result["terms"].dtype == pl.Int64
 
 
@@ -576,7 +575,7 @@ def _group_answers() -> dict[str, Any]:
         "sum": 42.0,
         "count": 7,
         "count_non_null": 6,
-        "n_unique": 5,
+        "count_distinct": 4,
         "min": 2.0,
         "max": 13.0,
         "first": 8.0,
@@ -846,7 +845,7 @@ class TestGroupByTemplate:
         """A whitelist a template author can read, and one that cannot fail open.
 
         The set is pinned exactly, in both directions. ``sum`` is a per-group total; ``count`` and
-        ``count_non_null`` are the two counts; ``n_unique`` decides whether a group covers a single
+        ``count_non_null`` are the two counts; ``count_distinct`` decides whether a group covers a single
         coherent period; ``min``, ``max`` and ``first`` are the ways to carry forward a column that
         is constant within a group, since every other column disappears. ``mean`` is absent because
         no step wants it, and an aggregate with no consumer is an arm nobody has ever run.
@@ -867,7 +866,7 @@ class TestGroupByTemplate:
         """
         assert isinstance(AGGREGATE_FUNCTIONS, frozenset)
         assert AGGREGATE_FUNCTIONS == frozenset(
-            {"sum", "count", "count_non_null", "n_unique", "min", "max", "first", "join_text"}
+            {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "join_text"}
         )
 
         function_field = GroupBy().config_template()["aggregations"].items.fields["function"]
@@ -1065,7 +1064,7 @@ class TestAnAggregateOfAFixedValueIsRefused:
             ("sum", "1"),
             ("sum", "2 * 3"),
             ("count_non_null", "1"),
-            ("n_unique", "1"),
+            ("count_distinct", "1"),
             ("min", "1"),
             ("max", "1"),
             ("first", "1"),

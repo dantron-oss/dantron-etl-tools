@@ -321,8 +321,8 @@ def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> 
         return sum_without_wrapping(measure, measure_dtype)
     if aggregate == "count_non_null":
         return measure.count().cast(pl.Int64)
-    if aggregate == "n_unique":
-        return measure.n_unique().cast(pl.Int64)
+    if aggregate == "count_distinct":
+        return measure.drop_nulls().n_unique().cast(pl.Int64)
     if aggregate == "min":
         return measure.min()
     if aggregate == "first":

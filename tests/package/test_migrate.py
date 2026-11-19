@@ -321,7 +321,7 @@ _VALUE_RENAMES: dict[tuple[str, str], dict[str, str]] = {
     ("assemble_date", "on_invalid"): {"empty": "set_null"},
     ("cast_columns", "on_invalid"): {"empty": "set_null"},
     ("unpivot", "on_invalid"): {"empty": "set_null"},
-    ("cross_tab", "function"): {"count_values": "count_non_null"},
+    ("cross_tab", "function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
 }
 
 # The expression fields this document puts a strip( call in, by (new) tool.
@@ -370,6 +370,8 @@ def _renamed_step(step: dict[str, Any], tool_by_id: dict[str, str]) -> dict[str,
         for aggregation in config["aggregations"]:
             if aggregation["function"] == "count_values":
                 aggregation["function"] = "count_non_null"
+            if aggregation["function"] == "n_unique":
+                aggregation["function"] = "count_distinct"
     for path in _EXPRESSION_FIELDS.get(tool, ()):
         _rename_strip_at(config, path)
     if "config" in step:
@@ -1285,6 +1287,30 @@ class TestRenamedValuesByWhereTheySit:
         expected = old.replace("      on_invalid: empty", "      on_invalid: set_null")
 
         assert migrate_text(old).text == expected
+
+    def test_n_unique_becomes_count_distinct_and_the_report_says_nulls_are_now_skipped(self) -> None:
+        old = _flow("""\
+          - id: spread
+            tool: group_by
+            config:
+              by: [n_unique]
+              aggregations:
+                - {name: n_unique, function: n_unique, value: "[term]"}
+            inputs: {rows: src.rows}
+          - id: wide
+            tool: cross_tab
+            config: {by: [code], names_from: period, values_from: label, function: n_unique}
+            inputs: {rows: src.rows}
+        """)
+        expected = old.replace("function: n_unique, value", "function: count_distinct, value").replace(
+            "label, function: n_unique}", "label, function: count_distinct}"
+        )
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        assert len(migration.changes) == 2
+        assert all("skips nulls" in label for label in migration.counts), migration.counts
 
     def test_a_formula_columns_replace_flag_stays_while_write_csv_replace_becomes_overwrite(self) -> None:
         old = _flow("""\

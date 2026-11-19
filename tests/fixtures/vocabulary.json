@@ -307,12 +307,12 @@
           "default": null,
           "enum": [
             "count",
+            "count_distinct",
             "count_non_null",
             "first",
             "join_text",
             "max",
             "min",
-            "n_unique",
             "sum"
           ],
           "fields": null,
@@ -563,12 +563,12 @@
                 "default": null,
                 "enum": [
                   "count",
+                  "count_distinct",
                   "count_non_null",
                   "first",
                   "join_text",
                   "max",
                   "min",
-                  "n_unique",
                   "sum"
                 ],
                 "fields": null,

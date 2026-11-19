@@ -643,6 +643,9 @@ Two more rulings you will meet:
   different figures.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
+- **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a
+  group of nulls counts 0. To count a blank as a value too, count `coalesce([v], '(blank)')`. It
+  was called `n_unique` and counted a null as one more value; the migration renames it.
 - **A division by zero stops the step.** It has no answer, and the infinity or not-a-number the
   engine would give reads as larger than every number in a later `filter` or `sort`. So a `/`
   whose divisor is zero (`0`, `0.0` or `-0.0`) on any row the step uses stops the run, naming the
