@@ -37,6 +37,7 @@ from ..authoring import (
     compile_for,
     compiled_dtype,
     date_or_null,
+    refuse_division_by_zero,
     require_not_blank,
     row_status,
     value_caption,
@@ -144,6 +145,8 @@ class AssembleDate:
         frame = inputs["rows"]
         policy = config["on_invalid"]
 
+        for part in ("year", "month", "day"):
+            refuse_division_by_zero(frame, config[part], part)
         year_expr = compile_for(frame, config["year"], "year")
         month_expr = compile_for(frame, config["month"], "month")
         day_expr = compile_for(frame, config["day"], "day")

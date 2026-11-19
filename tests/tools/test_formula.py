@@ -51,7 +51,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, ToolError, check_tool, run_tool
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, ToolError, check_tool, run_tool
 from dantron_etl.config import expression_fields, expression_values, validate_against_template
 from dantron_etl.tools.formula import Formula
 
@@ -194,9 +194,9 @@ class TestFormulaWrites:
             pytest.param(1200.0, 2.0, 12, 50.0, id="the_ordinary_case_divides_by_the_rate"),
             pytest.param(1200.0, None, 12, None, id="no_rate_gives_null_not_zero"),
             pytest.param(1200.0, 2.0, None, None, id="no_month_count_gives_null_not_zero"),
-            pytest.param(1200.0, 0.0, 12, math.inf, id="a_zero_rate_gives_the_engines_infinity"),
-            pytest.param(1200.0, 2.0, 0, math.inf, id="zero_months_gives_the_engines_infinity"),
-            pytest.param(0.0, 0.0, 12, math.nan, id="nothing_over_nothing_is_not_a_number"),
+            pytest.param(1200.0, 0.0, 12, DataError, id="a_zero_rate_stops_the_step"),
+            pytest.param(1200.0, 2.0, 0, DataError, id="zero_months_stops_the_step"),
+            pytest.param(0.0, 0.0, 12, DataError, id="nothing_over_nothing_stops_the_step"),
         ],
     )
     def test_the_per_month_figure_divides_by_the_rate_and_the_count_of_months(
@@ -204,16 +204,16 @@ class TestFormulaWrites:
         amount: float,
         rate: float | None,
         months: int | None,
-        expected: float | None,
+        expected: float | type[DataError] | None,
     ) -> None:
-        """The money line, and what it does at the edges -- both of which are answers, not failures.
+        """The money line, and what it does at the edges.
 
         The rate divides because it is quoted the other way round; a multiplication here would be a
         wrong figure on every row rather than a failing run. A null divisor gives null, which is the
-        three-valued answer the rest of the language gives. A zero divisor gives infinity, which is
-        the engine's answer and is pinned so it cannot silently become a zero, a null or a raised
-        error later: an infinity that must not reach a money column is refused by a rule the author
-        writes -- a CaseWhen guard on the rate, or an Assert step -- not by a decision made in here.
+        three-valued answer the rest of the language gives. A zero divisor stops the step, by the
+        owner's ruling: a division by zero has no answer, and the infinity the engine would give
+        reads as larger than every number downstream. A flow that expects zeros guards them with a
+        CaseWhen rung of their own.
         """
         frame = pl.DataFrame(
             {
@@ -225,6 +225,10 @@ class TestFormulaWrites:
         )
         config = {"columns": [{"name": "monthly", "value": "([line_amount] / [currency_rate]) / [months_in_period]"}]}
 
+        if expected is DataError:
+            with pytest.raises(DataError):
+                run_tool(Formula(), Ports({"rows": frame}), config)
+            return
         result = run_tool(Formula(), Ports({"rows": frame}), config)
 
         monthly = result["rows"]["monthly"]

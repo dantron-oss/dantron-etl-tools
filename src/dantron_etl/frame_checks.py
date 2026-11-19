@@ -17,8 +17,8 @@ from typing import Final
 import polars as pl
 
 from .config import ConfigField
-from .errors import ConfigError
-from .expr import ExpressionError, compile_expr
+from .errors import ConfigError, DataError
+from .expr import ExpressionError, compile_expr, divisions
 
 __all__ = [
     "REPLACE_FIELD",
@@ -26,6 +26,7 @@ __all__ = [
     "compile_for",
     "compile_predicate_for",
     "compiled_dtype",
+    "refuse_division_by_zero",
     "require_columns",
 ]
 
@@ -54,6 +55,43 @@ def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
         return compile_expr(text, frame.schema)
     except ExpressionError as error:
         raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+
+
+def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
+    """Stop when a '/' in ``text`` divides by zero on a row of ``frame`` the step uses.
+
+    A division by zero has no answer. Left to the engine it gives infinity, or not-a-number for
+    0 / 0, and a later filter reads not-a-number as larger than every number. So the step stops and
+    names the field, the expression, the divisor and up to five of the rows.
+
+    Zero means 0, 0.0 or -0.0. A null divisor is not zero: the division gives null, as everything
+    does with a null. Not-a-number is not zero either: dividing by it gives not-a-number, as before.
+
+    ``among`` limits the check to the rows the step uses the expression on. ``case_when`` passes
+    the rows that reach a rung, so a rung that sends the zero rows elsewhere first guards the rung
+    that divides. Every other tool uses an expression on every row and passes nothing.
+
+    One pass per '/', each a whole-column comparison: no row-by-row work.
+    """
+    try:
+        found = divisions(text, frame.schema)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+    if not found or frame.height == 0:
+        return
+    used = pl.lit(True) if among is None else among.fill_null(False)
+    for division in found:
+        zero = (division.expr == 0).fill_null(False) & used
+        if not frame.select(zero.any()).item():
+            continue
+        raise DataError(
+            f"config field {field!r} divides by zero: the divisor `{division.divisor}` is zero, in "
+            f"expression: `{text}`. A division by zero has no answer, so the step stops rather than "
+            f"write infinity or not-a-number; give the rows whose divisor is zero a case_when rung "
+            f"of their own, before the one that divides",
+            offending=frame.filter(zero),
+            total=frame.height,
+        )
 
 
 def compiled_dtype(frame: pl.DataFrame, text: str, field: str) -> tuple[str, pl.DataType]:

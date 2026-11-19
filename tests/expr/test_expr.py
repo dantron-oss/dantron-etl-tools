@@ -3236,10 +3236,9 @@ class TestFormatNumberWritesANumberAsText:
 class TestAFigureThatIsNotANumberHasNoWrittenForm:
     """``inf``, ``-inf`` and ``nan`` are written as null -- never as a word, and never as a raise.
 
-    These three are ordinary values here, not exotic ones. ``/`` is true division on doubles in
-    this language, so ``[total] / [count]`` is ``inf`` on the row where the count is zero and
-    ``0.0 / 0.0`` is ``nan``; and formatting a ratio at the end of a flow is the stated use case
-    for this function. So the last step before a report is exactly where they arrive.
+    These three still arrive in data -- a source file can hold them -- even though a division by
+    zero inside a step now stops the step rather than producing one. Formatting a ratio at the end
+    of a flow is the stated use case for this function, so it has to say what it does with them.
 
     The ruling is the one this library takes everywhere else: a figure that cannot be stated is
     stated as absent, never as a plausible-looking wrong one. That is the same answer a null
@@ -3271,21 +3270,16 @@ class TestAFigureThatIsNotANumberHasNoWrittenForm:
             "2.00",
         ]
 
-    def test_a_division_that_leaves_the_numbers_behind_is_written_as_null(self) -> None:
-        """The route an author actually reaches this by: a division, written in the line itself.
+    def test_a_division_by_zero_is_refused_rather_than_formatted(self) -> None:
+        """Written in the line, a division by zero no longer reaches this function at all.
 
-        The first assertion of each pair is the route rather than the ruling -- it states what this
-        language's ``/`` gives, so that the pins below are read as being about a real value a flow
-        produces and not about a literal nobody can type.
+        Before the owner's ruling, ``1.0 / 0.0`` gave infinity and was formatted as null here. Now
+        a divisor written as zero is refused when the expression compiles, and a column whose
+        divisor is zero on some row stops the step that divides (see test_division_by_zero.py).
+        Infinity and not-a-number still arrive from data, and are still written as null (above).
         """
-        assert scalar("1.0 / 0.0") == math.inf
-        assert scalar("format_number(1.0 / 0.0, 2, ',', '.')") is None
-
-        assert scalar("-1.0 / 0.0") == -math.inf
-        assert scalar("format_number(-1.0 / 0.0, 2, ',', '.')") is None
-
-        assert math.isnan(scalar("0.0 / 0.0"))
-        assert scalar("format_number(0.0 / 0.0, 2, ',', '.')") is None
+        for text in ("format_number(1.0 / 0.0, 2, ',', '.')", "format_number(0.0 / 0.0, 2, ',', '.')"):
+            assert "zero" in message(text)
 
 
 # ---------------------------------------------------------------------------

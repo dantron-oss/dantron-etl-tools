@@ -33,6 +33,7 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
+    refuse_division_by_zero,
 )
 
 # The sequence every selected operation runs in, regardless of the order ``operations`` names them.
@@ -170,6 +171,7 @@ class NormalizeText:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         source_expr = compile_for(frame, config["source"], "source")
+        refuse_division_by_zero(frame, config["source"], "source")
         output = config["output"]
         selected = set(config["operations"])
 

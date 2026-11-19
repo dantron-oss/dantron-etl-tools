@@ -32,6 +32,7 @@ from ..authoring import (
     compile_for,
     compiled_dtype,
     count_between,
+    refuse_division_by_zero,
     require_not_blank,
 )
 
@@ -123,6 +124,8 @@ class DateDiff:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
 
+        for side in ("start", "end"):
+            refuse_division_by_zero(frame, config[side], side)
         start_expr = compile_for(frame, config["start"], "start").cast(pl.Date)
         end_expr = compile_for(frame, config["end"], "end").cast(pl.Date)
 

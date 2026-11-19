@@ -79,6 +79,7 @@ from ..authoring import (
     compile_for,
     compiled_dtype,
     references,
+    refuse_division_by_zero,
     require_columns,
     require_not_blank,
 )
@@ -317,6 +318,9 @@ class GroupBy:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         by_columns = _by_columns(config)
+        for index, aggregation in enumerate(config["aggregations"]):
+            if aggregation.get("value") is not None:
+                refuse_division_by_zero(frame, aggregation["value"], f"aggregations[{index}].value")
         aggregates = [
             _compile_aggregation(frame, index, aggregation) for index, aggregation in enumerate(config["aggregations"])
         ]

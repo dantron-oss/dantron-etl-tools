@@ -30,6 +30,7 @@ from .frame_checks import (
     compile_for,
     compile_predicate_for,
     compiled_dtype,
+    refuse_division_by_zero,
     require_columns,
 )
 from .ports import Ports
@@ -61,6 +62,7 @@ __all__ = [
     "compile_for",
     "compile_predicate_for",
     "compiled_dtype",
+    "refuse_division_by_zero",
     "references",
     "require_columns",
     "require_not_blank",

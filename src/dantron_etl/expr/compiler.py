@@ -8,7 +8,7 @@ refusal names the part of the expression at fault.
 import ast
 import operator
 from collections.abc import Callable, Collection, Mapping, Sequence
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 import polars as pl
 
@@ -59,11 +59,26 @@ _WHOLE_NUMBER_MIN: Final[int] = -(2**63)
 _WHOLE_NUMBER_MAX: Final[int] = 2**63 - 1
 
 
+class Division(NamedTuple):
+    """One '/' in an expression: its divisor as the author wrote it, and the divisor's column."""
+
+    divisor: str
+    expr: pl.Expr
+
+
 def build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[pl.Expr, frozenset[str]]:
     """The front door, then the column expression for what survived it."""
     tree, scanned, schema = front_door(text, columns)
     expression = _Compiler(text, scanned, schema).compile(tree.body)
     return expression, frozenset(scanned.columns)
+
+
+def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[Division, ...]:
+    """Every '/' in ``text``, in the order written, each with its divisor's own column expression."""
+    tree, scanned, schema = front_door(text, columns)
+    compiler = _Compiler(text, scanned, schema)
+    compiler.compile(tree.body)
+    return tuple(compiler.divisions)
 
 
 class _Compiler:
@@ -77,7 +92,7 @@ class _Compiler:
     is only ever constructed on a tree :func:`front_door` has already returned.
     """
 
-    __slots__ = ("_schema", "_spelling", "_text")
+    __slots__ = ("_schema", "_spelling", "_text", "divisions")
 
     def __init__(
         self,
@@ -88,6 +103,8 @@ class _Compiler:
         self._text = text
         self._spelling = Spelling(text, scanned)
         self._schema = schema
+        #: Every '/' compiled, in the order written, so a tool can stop on a divisor of zero.
+        self.divisions: list[Division] = []
 
     def compile(self, node: ast.expr) -> Any:
         """What one node builds to, with its type discarded once it has been checked."""
@@ -188,6 +205,8 @@ class _Compiler:
                     f"exactly; cast the column to Float64 first, with the cast_columns tool",
                 )
         left, right = _signed(left), _signed(right)
+        if operation is ast.Div:
+            self._record_division(node.right, right)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
         dtype = arithmetic_dtype(operation, left.dtype, right.dtype)
         return Typed(built, Family.NUMBER, node, "gives a number", dtype)
@@ -576,6 +595,17 @@ class _Compiler:
         return f"{self._spelling.render(typed.node)} {typed.holds}"
 
     # -- helpers -----------------------------------------------------------
+
+    def _record_division(self, node: ast.expr, divisor: Typed) -> None:
+        """Note a divisor for the tool to check row by row, or refuse one written as zero.
+
+        A division by zero has no answer, so a tool stops on a row whose divisor is zero. A divisor
+        written in the file as zero would stop every row, so it is refused here, before any row.
+        """
+        written = self._spelling.literal(node)
+        if isinstance(written, (int, float)) and not isinstance(written, bool) and written == 0:
+            raise error(self._text, f"'/' divides by {self._spelling.render(node)}, which is zero, so it has no answer")
+        self.divisions.append(Division(self._spelling.render(node), divisor.expr))
 
     def _check_whole_number(self, value: int | float) -> None:
         """Refuse a whole number no column could hold, measured on the value as written."""

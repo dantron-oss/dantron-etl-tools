@@ -496,14 +496,11 @@ Every one of these was measured, most of them the hard way.
   there. A null id matches nothing and shows up as a null in a count, which is a question somebody
   asks. If a missing part should still produce an id, write the substitution where a reviewer sees
   it: `uuid5('...', concat(coalesce([code], 'none'), '|', [period]))`.
-- **`format_number` writes a figure that is not a number as blank, not as a number.** `/` is true
-  division, so `[total] / [count]` is infinity on the row where the count is zero and `0.0 / 0.0`
-  is not-a-number. Formatting either gives null — an empty cell — because a figure that cannot be
-  stated is stated as absent rather than as a plausible-looking wrong one, which is the same answer
-  a null already gets. So a blank in a formatted ratio column means the division had nothing to
-  divide by. Use `coalesce(format_number([ratio], 2, ',', '.'), 'n/a')` if the report needs a word
-  there instead, and guard the division itself with `case_when` if the blank is hiding a fault
-  upstream rather than a genuinely empty row.
+- **`format_number` writes a figure that is not a number as blank, not as a number.** Infinity and
+  not-a-number can still arrive from a source, even though a division by zero inside a step now
+  stops it (section 6). Formatting either gives null — an empty cell — because a figure that cannot
+  be stated is stated as absent, the same answer a null gets. Use
+  `coalesce(format_number([ratio], 2, ',', '.'), 'n/a')` if the report needs a word there instead.
 
 ### Columns
 
@@ -646,10 +643,20 @@ Two more rulings you will meet:
   different figures.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
-- **Not-a-number is not a null.** `0.0 / 0.0` gives not-a-number, and it compares as larger than
-  every number and equal to itself. So `[ratio] > 0.5` is true for it in `filter`, `case_when` and
-  `assert_rows`, and `sort` puts it after every number ascending and before them descending, while
-  `nulls` moves only the nulls. Guard the division with `case_when` if that matters.
+- **A division by zero stops the step.** It has no answer, and the infinity or not-a-number the
+  engine would give reads as larger than every number in a later `filter` or `sort`. So a `/`
+  whose divisor is zero (`0`, `0.0` or `-0.0`) on any row the step uses stops the run, naming the
+  step, the field, the expression and up to five of the rows; a divisor written as zero is refused
+  when the file loads. A null divisor is not zero: the answer is null. Not-a-number is not zero
+  either: dividing by it gives not-a-number, as before. A flow that expects zeros guards them in
+  `case_when`, with a rung of their own before the rung that divides: `case_when` checks each
+  division only on the rows that reach it, as SQL's `CASE` does. A guard inside one expression,
+  `[b] != 0 and [a] / [b] > 1`, does not count, because every part of an expression is worked out
+  on every row.
+- **Not-a-number from a source is not a null.** It compares as larger than every number and equal
+  to itself. So `[ratio] > 0.5` is true for it in `filter`, `case_when` and `assert_rows`, and
+  `sort` puts it after every number ascending and before them descending, while `nulls` moves only
+  the nulls.
 
 ---
 

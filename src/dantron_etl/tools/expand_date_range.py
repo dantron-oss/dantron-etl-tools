@@ -39,6 +39,7 @@ from ..authoring import (
     WorkedExample,
     compile_for,
     compiled_dtype,
+    refuse_division_by_zero,
     require_not_blank,
 )
 
@@ -132,6 +133,8 @@ class ExpandDateRange:
         frame = inputs["rows"]
         # A timestamp is read as its calendar date before anything else, as date_diff reads it.
         # So 15:00 and 09:00 on one day are the same day, not a backwards range.
+        for side in ("start", "end"):
+            refuse_division_by_zero(frame, config[side], side)
         start = compile_for(frame, config["start"], "start").cast(pl.Date)
         end = compile_for(frame, config["end"], "end").cast(pl.Date)
 
