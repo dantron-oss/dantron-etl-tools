@@ -607,3 +607,27 @@ of rounds grows with the longest chain of second choices, not with the row count
 **A polars trap.** Taking one window over another inside a single expression gave wrong answers, so the
 first window ("near") is written to a column before the second ("reach") reads it. A regression test
 pins that case.
+
+## make_groups
+
+**Why a tool.** Two records are in one group when any chain of pairs joins them. A fixed number of
+joins cannot follow that: two joins follow a chain two links deep and lose the third. (Renamed from
+`connected_components` in stage 4.)
+
+**Named after the smallest record.** That name does not depend on the order of the pairs or on which
+side of a pair a record sits, so the same pairs always give the same frame. Records compare by value
+in their own type: 9 before 10, but text 'R-100' before 'R-20'.
+
+**A null endpoint links nothing,** as join follows SQL's `=`. The other end of the row is still a
+record. A pair of a record with itself is how a record with no links is listed.
+
+**Types must match.** The number 2 and the text '2' are not the same record, so the tool refuses rather
+than guess.
+
+**How it runs on whole columns.** Each distinct record gets a number: its position when sorted, so a
+smaller number is a smaller record. In each round, every group touching a smaller group points at the
+smallest such neighbour; then every record follows its pointers to the end by repeated doubling; then
+the links are rewritten between the groups that remain. It always ends: a record only points at a
+smaller number, so pointers never loop, and each round the larger end of every remaining link stops
+being a group. On a single chain at least half the groups go each round, so 200,000 records in a chain
+take at most 18 rounds.

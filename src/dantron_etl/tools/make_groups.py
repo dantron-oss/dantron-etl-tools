@@ -1,26 +1,9 @@
-"""MakeGroups: put every record linked by a chain of pairs into one group.
+"""MakeGroups: put every record linked by a chain of pairs, however long, into one group.
 
-Each row of ``pairs`` links two records. Two records are in the same group when a chain of pairs
-joins them, however long the chain is. A fixed number of joins cannot do this: two joins follow a
-chain two links deep, and the third link is lost.
+Each row of `pairs` links two records. The group is named after its smallest record, so the same
+pairs always give the same result. A null endpoint links nothing, as a null key does in join.
 
-The group is named after its smallest record. That name does not depend on the order the pairs
-arrive in, or on which side of a pair a record sits, so the same pairs always give the same frame.
-
-A null endpoint links nothing, the way a null key pairs with nothing in ``join``. The other
-endpoint of that row is still a record, alone unless another pair links it.
-
-The work is done on whole columns, in rounds. Each record is first given a number: its position
-when the distinct records are sorted, so a smaller number is a smaller record. In each round, every
-group that touches a group with a smaller number points itself at the smallest such neighbour. Then
-every record follows its pointers to the end, by repeated doubling. The round ends by rewriting the
-edges between the groups that are left.
-
-The loop always ends. A record only ever points at a smaller number, so following pointers cannot
-go round in a circle. Every edge still left has a larger end, and that end stops being a group in
-the round, so each round leaves fewer groups on edges than the one before. When no edge joins two
-different groups, the work is done. On a single chain at least half the groups go each round, so a
-chain of 200,000 records needs at most 18 rounds, not 200,000.
+Why: docs/design/tools.md#make_groups
 """
 
 from collections.abc import Mapping
@@ -42,10 +25,10 @@ _OUTPUT_FIELDS = ("record_column", "group_column")
 
 
 class MakeGroups:
-    """Group every record linked to another by a chain of pairs, naming each group by its smallest record."""
+    """Group every record linked by a chain of pairs, naming each group after its smallest record."""
 
     name = "make_groups"
-    description = "Group records linked by a chain of pairs, however long, naming each group by its smallest record."
+    description = "Put records that are linked, directly or through others, into the same group."
     category = "transform"
     input_ports = ("pairs",)
     output_ports = ("rows",)
@@ -81,10 +64,11 @@ class MakeGroups:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Each input row is a pair of linked records. The output has one row per distinct "
-                "record, with the group it belongs to. Two records share a group when a chain of pairs "
-                "links them, at any length. Only the two output columns are written; other input "
-                "columns are not carried, because an output row is a record, not a pair."
+                "Use make_groups when records are linked in pairs, such as an account merged into "
+                "another, and you want every record that is connected, however indirectly, in one "
+                "group. Each input row on `pairs` links two records. `rows` has one row per distinct "
+                "record with its group, named after the group's smallest record. Only those two "
+                "columns are written."
             ),
             examples=(_chain_example(), _null_example()),
             notes=(
@@ -103,8 +87,9 @@ class MakeGroups:
                 "the same record, so the tool refuses rather than guess.",
             ),
             field_help={
-                "left": "One record of each pair. Which column is 'left' and which is 'right' makes no difference.",
-                "right": "The other record of each pair, in the same type as 'left'.",
+                "left": "For example 'account_id'. Which column is 'left' and which is 'right' makes "
+                "no difference.",
+                "right": "For example 'merged_into_id', in the same type as 'left'.",
                 "record_column": "The output column for the record. It may reuse an input column's name, "
                 "since the output is a new frame.",
                 "group_column": "The output column for the group. Its value is the smallest record "
