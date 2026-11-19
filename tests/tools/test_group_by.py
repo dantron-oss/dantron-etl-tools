@@ -71,7 +71,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.config import expression_fields
 from dantron_etl.tools.cross_tab import CrossTab
 from dantron_etl.tools.group_by import AGGREGATE_FUNCTIONS, GroupBy
@@ -1100,3 +1100,48 @@ class TestAnAggregateOfAFixedValueIsRefused:
         result = _grouped(_rows(), config)
 
         assert result["ones"].to_list() == result["lines"].to_list() == [2, 2, 1]
+
+
+class TestATotalTooLargeForItsTypeStopsTheRun:
+    """A sum of 32-bit whole numbers keeps its type, and a total that does not fit stops the run.
+
+    polars adds up an Int32 column into an Int32 and wraps a total past about 2.1 billion round to a
+    negative number. The type is kept, so a pipeline that runs today produces the same columns; a
+    total that would have wrapped is refused instead, naming the aggregation.
+    """
+
+    @pytest.mark.parametrize(
+        ("dtype", "values"),
+        [
+            (pl.Int32, [2_000_000_000, 2_000_000_000]),
+            (pl.Int32, [-2_000_000_000, -2_000_000_000]),
+            (pl.UInt32, [4_000_000_000, 4_000_000_000]),
+        ],
+        ids=["int32_above", "int32_below", "uint32_above"],
+    )
+    def test_a_total_past_the_types_limit_is_refused_by_name(self, dtype: pl.DataType, values: list[int]) -> None:
+        rows = pl.DataFrame({"g": [1, 1, 2], "v": pl.Series([*values, 5], dtype=dtype)})
+        config = {"by": ["g"], "aggregations": [_aggregation("total", "sum", "[v]")]}
+
+        with pytest.raises(DataError) as caught:
+            run_tool(GroupBy(), Ports({"rows": rows}), config)
+
+        message = str(caught.value)
+        for word in ("'total'", "aggregations[0]", str(dtype), "cast_columns", "Int64", "1 of 2"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    @pytest.mark.parametrize("dtype", [pl.Int32, pl.UInt32])
+    def test_a_total_that_fits_keeps_the_columns_type_and_value(self, dtype: pl.DataType) -> None:
+        """The mirror: a total just inside the limit, a null group and an empty frame keep the type."""
+        limit = 2_147_483_647 if dtype == pl.Int32 else 4_294_967_295
+        rows = pl.DataFrame(
+            {"g": [1, 1, 2, 3], "v": pl.Series([limit - 1, 1, 7, None], dtype=dtype)},
+        )
+        config = {"by": ["g"], "aggregations": [_aggregation("total", "sum", "[v]")]}
+
+        result = _grouped(rows, config)
+        empty = _grouped(rows.head(0), config)
+
+        assert result["total"].dtype == dtype
+        assert result["total"].to_list() == [limit, 7, None]
+        assert empty.schema["total"] == dtype

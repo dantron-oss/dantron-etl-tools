@@ -70,7 +70,13 @@ from ..authoring import (
     WorkedExample,
     require_columns,
 )
-from .group_by import AGGREGATE_FUNCTIONS, DEFAULT_SEPARATOR
+from .group_by import (
+    AGGREGATE_FUNCTIONS,
+    DEFAULT_SEPARATOR,
+    NARROW_SUM_LIMITS,
+    sum_without_wrapping,
+    totals_that_do_not_fit,
+)
 
 
 class CrossTab:
@@ -147,6 +153,9 @@ class CrossTab:
                 "given a column without inventing a name the data could also carry, and dropping it would "
                 "take its figures out of the tab in silence. A blank is refused with the null "
                 "because they are the same fact written two ways.",
+                "A 'sum' cell keeps the type of 'values_from'. A total of Int32 or UInt32 values "
+                "that does not fit in that type stops the run rather than wrapping round to a wrong "
+                "number. Cast the column to Int64 first if totals can be that large.",
             ),
             field_help={
                 "by": "What stays as rows. Repeating a column counts it once.",
@@ -219,8 +228,12 @@ class CrossTab:
         names = sorted(frame.get_column(key).unique().to_list())
         _refuse_collisions(names, key, by_columns)
 
-        cells = [_cell(config, name) for name in names]
-        return Ports({"rows": frame.group_by(by_columns, maintain_order=True).agg(cells)})
+        measure_dtype = frame.schema[config["values_from"]]
+        cells = [_cell(config, name, measure_dtype) for name in names]
+        wide = frame.group_by(by_columns, maintain_order=True).agg(cells)
+        if config["function"] == "sum" and measure_dtype in NARROW_SUM_LIMITS:
+            wide = _narrow_cells_back(wide, names, config["values_from"], measure_dtype)
+        return Ports({"rows": wide})
 
 
 def _by_columns(config: Mapping[str, Any]) -> list[str]:
@@ -261,7 +274,24 @@ def _refuse_collisions(names: Sequence[str], key: str, by_columns: Sequence[str]
             )
 
 
-def _cell(config: Mapping[str, Any], name: str) -> pl.Expr:
+def _narrow_cells_back(wide: pl.DataFrame, names: Sequence[str], measure: str, dtype: pl.DataType) -> pl.DataFrame:
+    """Give each summed cell column the measure's 32-bit type back, or stop if a total does not fit."""
+    low, high = NARROW_SUM_LIMITS[dtype]
+    for name in names:
+        offending = totals_that_do_not_fit(wide, name, dtype)
+        if offending.height:
+            raise DataError(
+                f"cell column {name!r} adds up column {measure!r}, which holds {dtype}, and some "
+                f"totals do not fit in {dtype}, which holds {low:,} to {high:,}; they would have "
+                f"wrapped round to a wrong number. Cast {measure!r} to Int64 with cast_columns before "
+                f"this step. The totals shown are the true ones",
+                offending=offending,
+                total=wide.height,
+            )
+    return wide.with_columns(pl.col(name).cast(dtype) for name in names)
+
+
+def _cell(config: Mapping[str, Any], name: str, measure_dtype: pl.DataType) -> pl.Expr:
     """One value column: the aggregate of `values_from` over this cell's rows, or null if it has none."""
     here = pl.col(config["names_from"]) == name
     measure = pl.col(config["values_from"]).filter(here)
@@ -277,10 +307,10 @@ def _cell(config: Mapping[str, Any], name: str) -> pl.Expr:
     # A cell holding rows whose values are all missing sums to 0 too, and that is the same lie.
     # GroupBy already rules this way on the same question, and the two tools have to agree.
     measured = measure.is_not_null().any() if aggregate == "sum" else here.any()
-    return pl.when(measured).then(_aggregate(measure, aggregate)).otherwise(None).alias(name)
+    return pl.when(measured).then(_aggregate(measure, aggregate, measure_dtype)).otherwise(None).alias(name)
 
 
-def _aggregate(measure: pl.Expr, aggregate: str) -> pl.Expr:
+def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> pl.Expr:
     """The chosen aggregate over one cell's values, before :func:`_cell` guards it.
 
     `measure` is already filtered to the rows of this cell, so a row count is its length.
@@ -288,7 +318,7 @@ def _aggregate(measure: pl.Expr, aggregate: str) -> pl.Expr:
     if aggregate == "count":
         return measure.len().cast(pl.Int64)
     if aggregate == "sum":
-        return measure.sum()
+        return sum_without_wrapping(measure, measure_dtype)
     if aggregate == "count_non_null":
         return measure.count().cast(pl.Int64)
     if aggregate == "n_unique":

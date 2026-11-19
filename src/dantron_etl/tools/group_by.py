@@ -72,6 +72,7 @@ from ..authoring import (
     REGISTRY,
     ConfigError,
     ConfigField,
+    DataError,
     Ports,
     ToolHelp,
     WorkedExample,
@@ -106,6 +107,28 @@ _JOINING_FUNCTION: Final[str] = "join_text"
 # too, for the same reason it reads the whitelist above rather than keeping a second copy: a reader
 # who learned what a joined cell looks like from one tool gets the same thing from the other.
 DEFAULT_SEPARATOR: Final[str] = ", "
+
+# The whole-number types polars adds up into themselves, and the totals each can hold. polars
+# lets a total past these limits wrap round to a wrong number without a word. So a sum of one of
+# these is worked out as Int64, checked against the limits, and handed back in its own type: the
+# column keeps the type it always had, and a total that does not fit stops the run. The smaller
+# whole-number types are not here because polars already adds those up into Int64. CrossTab reads
+# this too.
+NARROW_SUM_LIMITS: Final[dict[pl.DataType, tuple[int, int]]] = {
+    pl.Int32: (-(2**31), 2**31 - 1),
+    pl.UInt32: (0, 2**32 - 1),
+}
+
+
+def sum_without_wrapping(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """The sum of ``expression``, worked out as Int64 when its type would wrap past its limit."""
+    return expression.cast(pl.Int64).sum() if dtype in NARROW_SUM_LIMITS else expression.sum()
+
+
+def totals_that_do_not_fit(frame: pl.DataFrame, column: str, dtype: pl.DataType) -> pl.DataFrame:
+    """The rows of ``frame`` whose ``column`` lies outside what ``dtype`` can hold."""
+    low, high = NARROW_SUM_LIMITS[dtype]
+    return frame.filter(pl.col(column).is_not_null() & ~pl.col(column).is_between(low, high))
 
 
 class GroupBy:
@@ -194,6 +217,10 @@ class GroupBy:
                 "A 'value' that reads no column, such as '1', is refused. A fixed value is worked "
                 "out once per group, not once per row, so 'sum' of 1 would not count the rows. Use "
                 "'count' for that.",
+                "A 'sum' keeps the type of what it adds up. A total of Int32 or UInt32 values that "
+                "does not fit in that type stops the run, naming the aggregation, rather than "
+                "wrapping round to a wrong number. Cast the column to Int64 first if totals can be "
+                "that large.",
             ),
             field_help={
                 "by": "The group key; repeating a column counts it once and does not duplicate it on the output.",
@@ -292,12 +319,37 @@ class GroupBy:
             _compile_aggregation(frame, index, aggregation) for index, aggregation in enumerate(config["aggregations"])
         ]
         grouped = frame.group_by(by_columns, maintain_order=True).agg(aggregates)
-        return Ports({"rows": grouped})
+        return Ports({"rows": _narrow_totals_back(frame, grouped, config)})
 
 
 def _by_columns(config: Mapping[str, Any]) -> list[str]:
     """The group key, a column named twice counted once, in the order it was first written."""
     return list(dict.fromkeys(config["by"]))
+
+
+def _narrow_totals_back(frame: pl.DataFrame, grouped: pl.DataFrame, config: Mapping[str, Any]) -> pl.DataFrame:
+    """Give each sum of a 32-bit column its own type back, or stop if a total does not fit in it."""
+    for index, aggregation in enumerate(config["aggregations"]):
+        if aggregation["function"] != "sum":
+            continue
+        field = f"aggregations[{index}].value"
+        _, dtype = compiled_dtype(frame, aggregation["value"], field)
+        if dtype not in NARROW_SUM_LIMITS:
+            continue
+        name = aggregation["name"]
+        low, high = NARROW_SUM_LIMITS[dtype]
+        offending = totals_that_do_not_fit(grouped, name, dtype)
+        if offending.height:
+            raise DataError(
+                f"aggregation {name!r} ({field}) adds up {dtype} values, and the total of some "
+                f"groups does not fit in {dtype}, which holds {low:,} to {high:,}; it would have "
+                f"wrapped round to a wrong number. Cast the column to Int64 with cast_columns before "
+                f"this step. The totals shown are the true ones",
+                offending=offending,
+                total=grouped.height,
+            )
+        grouped = grouped.with_columns(pl.col(name).cast(dtype))
+    return grouped
 
 
 def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[str, Any]) -> pl.Expr:
@@ -312,7 +364,9 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
     expression = compile_for(frame, value, f"aggregations[{index}].value")
 
     if function == "sum":
-        return pl.when(expression.is_not_null().any()).then(expression.sum()).otherwise(None).alias(name)
+        _, dtype = compiled_dtype(frame, value, f"aggregations[{index}].value")
+        total = sum_without_wrapping(expression, dtype)
+        return pl.when(expression.is_not_null().any()).then(total).otherwise(None).alias(name)
     if function == "count_non_null":
         return expression.count().cast(pl.Int64).alias(name)
     if function == "n_unique":
