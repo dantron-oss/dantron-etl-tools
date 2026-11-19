@@ -1,9 +1,9 @@
 """Where the project is, answered from the caller's location or refused by name.
 
-Every script that ships beside this library writes a file somewhere and reads a file from somewhere,
-and all of those places hang off one directory: the root of whichever project the caller belongs to.
+Every caller that writes or reads a project's files -- the viewer, the command, a client's own
+code -- hangs those places off one directory: the root of whichever project the caller belongs to.
 This module is the only place that question is answered, because it has exactly one dangerous wrong
-answer and answering it in four scripts means writing that wrong answer four times.
+answer, and answering it in several places means writing that wrong answer several times.
 
 **The wrong answer, measured.** A library that resolves the root by walking up from its own file::
 

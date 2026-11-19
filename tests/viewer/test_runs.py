@@ -236,6 +236,21 @@ class TestExecutePreview:
         assert not any(key.startswith("save.") for key in ports)
         assert (saved / PAGE_NAME).is_file()
 
+    def test_a_new_run_replaces_the_old_one_and_leaves_other_pipelines_alone(self, project_root: Path) -> None:
+        run(project_root)
+        folder = runs_folder(project_root)
+        stale = folder / NAME / "a_step_since_removed__rows.parquet"
+        stale.write_bytes(b"old")
+        neighbour = folder / "another" / MANIFEST
+        neighbour.parent.mkdir()
+        neighbour.write_text("{}", encoding="utf8")
+
+        run(project_root)
+
+        assert not stale.exists(), "a file from the previous run would offer rows this run never produced"
+        assert (folder / NAME / MANIFEST).is_file()
+        assert neighbour.read_text(encoding="utf8") == "{}"
+
     def test_entities_lists_every_value_as_text_with_no_cap(self, project_root: Path) -> None:
         run(project_root)
         entities = json.loads((runs_folder(project_root) / NAME / "entities.json").read_text(encoding="utf8"))

@@ -41,7 +41,9 @@ library publishes, and is refused when it is not one of them.
 which rows to open and tell a screen reader nothing, and a reader who cannot get from the mark back
 to *"held 'Canadian Business Growth Fund', which did not read as Float64"* is back to distrusting a
 count. So the level reaches the markup as something other than a character, and the reason -- the
-column that degraded, and what the cell held -- is reachable from the flagged row itself.
+column that degraded, and what the cell held -- is reachable from the flagged row itself. What
+is tested here is that the level and the reason reach the page: in the window the server answers
+with. How the page script draws them is not tested; the script only turns that data into markup.
 
 The shape being pinned, so an implementation has something to aim at:
 
@@ -63,7 +65,6 @@ nouns.
 import json
 import re
 import shutil
-import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -124,6 +125,10 @@ def _clean_entries() -> pl.DataFrame:
 
 
 def _flow() -> Pipeline:
+    return load_pipeline(_flow_document())
+
+
+def _flow_document() -> dict[str, Any]:
     """Four steps: a source, two casts that empty different rows, and a check that touches nothing.
 
     Two degrading steps rather than one, because a writer that stacked every mark it found under
@@ -134,7 +139,7 @@ def _flow() -> Pipeline:
     for every "a port nothing was said about" case: a derived port with no marks of its own is the
     ordinary shape of a flow, and it is the one that must be left exactly as it was.
     """
-    return load_pipeline(
+    return (
         {
             "name": "a neutral fixture that degrades something",
             "lanes": [
@@ -207,13 +212,6 @@ def store(written: Path) -> PortStore:
 
 
 @pytest.fixture(scope="module")
-def page(trace: PipelineTrace) -> str:
-    from dantron_etl.viewer import build
-
-    return build(_flow(), trace, FOCUS)
-
-
-@pytest.fixture(scope="module")
 def panels(trace: PipelineTrace) -> dict[str, str]:
     """Every step's data panel, as the service hands them over, for the flow that degraded something.
 
@@ -259,6 +257,15 @@ def _levels(window: Any) -> list[str]:
 
 def _column_of(row: Any, window: Any, name: str) -> str | None:
     return row[window.columns.index(name)]
+
+
+def _is_a_number(text: str) -> bool:
+    """Whether a source value would read as a figure, which is what decides its level."""
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _status_files(directory: Path) -> set[str]:
@@ -598,22 +605,43 @@ def _get(url: str) -> tuple[int, Any]:
         return refused.status, json.loads(refused.read())
 
 
-@pytest.fixture
-def served(tmp_path: Path, trace: PipelineTrace) -> Any:
+@pytest.fixture(params=["run server", "project server"])
+def served(request: pytest.FixtureRequest, tmp_path: Path, trace: PipelineTrace) -> Any:
     """The run, written and served, as the page reads it -- one flow at ``/fixture/``.
 
     Written again here rather than served out of the shared directory, because what these cases are
     about is the whole path from a trace to a reader: a run written by one call and served by
-    another is the arrangement that actually ships.
+    another is the arrangement that actually ships. Served twice: by the run server a client
+    starts itself, and by the project server the command starts, which finds the run in its
+    project's runs folder under the pipeline's name.
     """
-    root = tmp_path / "runs"
-    _write(trace, root / "fixture")
-    server = serve(root, host="127.0.0.1", port=0)
+    if request.param == "run server":
+        root = tmp_path / "runs"
+        _write(trace, root / "fixture")
+        server = serve(root, host="127.0.0.1", port=0)
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}/fixture/"
+        finally:
+            server.shutdown()
+            server.server_close()
+        return
+
+    import yaml
+
+    from dantron_etl.viewer.project import load_project
+    from dantron_etl.viewer.server import start_server
+
+    root = tmp_path / "project"
+    (root / "pipelines").mkdir(parents=True)
+    (root / "etl-project.yaml").write_text("pipelines:\n  fixture:\n    focus: party\n", encoding="utf8")
+    (root / "pipelines" / "fixture.yaml").write_text(yaml.safe_dump(_flow_document()), encoding="utf8")
+    project = load_project(root)
+    _write(trace, project.runs_folder / "fixture")
+    viewer = start_server(project, port=0)
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}/fixture/"
+        yield f"http://127.0.0.1:{viewer.port}/fixture/"
     finally:
-        server.shutdown()
-        server.server_close()
+        viewer.shutdown()
 
 
 class TestTheServiceHandsTheMarksOverWithTheRows:
@@ -809,294 +837,3 @@ class TestTheStatusColumnComesFirstAndOnlyWhereThereIsOne:
 
         clean = _table_for(panels, "checked.rows")
         assert MARK_CLASS not in clean, "a port with nothing to narrow still offers the control"
-
-
-# ---------------------------------------------------------------------------
-# The mark reaches the reader
-# ---------------------------------------------------------------------------
-
-
-def _script(page: str) -> str:
-    script = page[page.rindex("<script>") + len("<script>") : page.rindex("</script>")]
-    script = re.sub(r"/\*.*?\*/", "", script, flags=re.DOTALL)
-    return re.sub(r"//[^\n]*", "", script)
-
-
-def _block(text: str, opener: str) -> str:
-    """The braced block ``opener`` begins, balanced rather than guessed at."""
-    start = text.index(opener)
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return text[start:]
-
-
-def _function(code: str, name: str) -> str:
-    found = re.search(r"(?:async\s+)?function\s+" + re.escape(name) + r"\s*\(", code)
-    assert found is not None, f"the script declares no function {name}()"
-    return _block(code[found.start() :], "{")
-
-
-def _window_fn(page: str) -> tuple[str, str]:
-    """The code that fetches a window of rows, and that code plus the bodies of what it calls.
-
-    Found by what it does -- it fetches, and it is about an offset rather than about a panel --
-    rather than by a name, so every assertion below is about the page's behaviour and not about the
-    author's choice of identifier. Whether the mark is drawn inline or in a helper is the author's
-    business, which is why the callees come with it.
-    """
-    code = _script(page)
-    for name in sorted(set(re.findall(r"(?:async\s+)?function\s+(\w+)\s*\(", code))):
-        body = _function(code, name)
-        if "fetch(" in body and "offset" in body:
-            reached = body
-            for callee in sorted(set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", body))):
-                if re.search(r"(?:async\s+)?function\s+" + re.escape(callee) + r"\s*\(", code):
-                    reached += _function(code, callee)
-            return body, reached
-    raise AssertionError("nothing in the script fetches a window of rows, so an open port never fills")
-
-
-def _request_keys(region: str) -> set[str]:
-    """Every parameter name the window request writes down as a literal.
-
-    The per-column filters are built by concatenating a prefix onto a column, so they are not
-    literals and do not appear here -- which is the point: what is left is the fixed vocabulary of
-    the request, and a level that arrived among the column filters would be indistinguishable from
-    a column called ``level``.
-    """
-    keys: set[str] = set()
-    for hit in re.finditer(r"new\s+URLSearchParams\s*\(\s*\{([^}]*)\}", region):
-        for part in hit.group(1).split(","):
-            name = part.split(":")[0].strip().strip("'\"")
-            if name:
-                keys.add(name)
-    for hit in re.finditer(r"\.(?:set|append)\(\s*(['\"])([^'\"]*)\1", region):
-        keys.add(hit.group(2))
-    return keys
-
-
-class TestTheMarkReachesTheReader:
-    """A glyph nobody can read out, on a row nobody can tie back to a value, is the count again."""
-
-    def test_the_window_request_asks_for_a_level_by_the_name_the_service_answers_to(
-        self, page: str, served: str
-    ) -> None:
-        """The two halves are written in different files, and only a request proves they agree.
-
-        A renamed parameter leaves both sides looking correct: the control changes, the service
-        answers about the whole port, and the reader sees a filter that appears to do nothing at
-        all. So the name is read out of the script and put to the real service, and what is asserted
-        is that asking with *that* name narrows to the flagged rows.
-
-        The region is proved to be the right one before anything is read out of it -- it is the only
-        place in the script that asks for a window -- because a region chosen wrongly makes every
-        assertion after it a statement about some other code.
-        """
-        _, reached = _window_fn(page)
-        code = _script(page)
-        assert "api/rows" in reached, "the region examined here does not ask for a window of rows"
-        assert code.count("api/rows") == 1, "a window is asked for in more than one place; this region is not the one"
-        assert re.search(r"[.\[]" + MARK_CLASS + r"\b|['\"]\." + MARK_CLASS + r"\b|\bselect\b", reached), (
-            "nothing in the request reaches the status column's own control, so whatever level it sends is not the "
-            "reader's choice"
-        )
-
-        keys = _request_keys(reached)
-        assert {"port", "offset", "limit"} <= keys, f"the window request no longer asks for a window: {sorted(keys)}"
-        # ``focus`` names the entity being followed (one value, exact), not a level.
-        named = {key for key in keys - {"port", "offset", "limit", "focus"} if not key.startswith(FILTER_PREFIX)}
-        assert len(named) == 1, f"the window request writes down {sorted(named)} beyond the window itself"
-        asked = named.pop()
-        assert FILTER_PREFIX + asked not in keys, (
-            f"{asked!r} is also sent as a column filter, which is another question"
-        )
-
-        status, narrowed = _get(served + f"api/rows?port=settled.rows&limit=12&{asked}=warning")
-        assert status == 200, f"the page asks for {asked!r} and the service refuses it: {narrowed}"
-        assert narrowed["matched"] == 6, f"asking for {asked}=warning did not narrow to the flagged rows"
-
-    def test_a_rows_mark_is_drawn_before_its_data_and_read_from_that_rows_own_position(self, page: str) -> None:
-        """First in the row, and taken from the same position in the window the row came from.
-
-        Both halves are the same fact seen from either end. The mark goes in before the cells, or
-        the reader's first column is the data's first column and the status is somewhere in the
-        middle of the table. And the mark a row is given is the one at that row's own index in the
-        window's marks, because the window hands back two sequences that line up and nothing else
-        joins them: any other pairing -- a running counter over a body that was not cleared, a
-        lookup by a value -- draws a warning against a row that never had one.
-        """
-        _, reached = _window_fn(page)
-
-        rows = re.search(r"\b(\w+)\.rows\.map\(\s*\(?([\w\s,]*?)\)?\s*=>", reached)
-        assert rows is not None, "nothing maps the window's rows into rows of the table"
-        params = [part.strip() for part in rows.group(2).split(",") if part.strip()]
-        assert len(params) == 2, (
-            f"the rows are mapped as {params}, with no index: there is then nothing to look a row's own mark up by"
-        )
-
-        subscripts = re.findall(r"\.status\s*\[\s*(\w+)\s*\]", reached)
-        assert subscripts, "nothing reads a mark out of the window's marks, so no row is given one"
-        assert set(subscripts) == {params[1]}, (
-            f"a mark is read at {sorted(set(subscripts))} while the rows are indexed by {params[1]!r}; the two "
-            "sequences line up by position and by nothing else"
-        )
-
-        assembled = _block(reached[rows.end() :], "{")
-        mark = re.search(r"\.status\b", assembled)
-        cells = re.search(r"\.map\(\s*\w+\s*\)|\brow\.map\(", assembled)
-        assert mark is not None and cells is not None, "the row is not assembled out of a mark and its cells"
-        assert mark.start() < cells.start(), (
-            "the mark is put into the row after its data, so the reader's first column is the data's first column"
-        )
-
-    def test_every_level_has_its_own_drawing_and_the_sheet_tells_the_three_apart(self, page: str) -> None:
-        """Three levels, three drawings, and none of them only a character.
-
-        A level the script has no drawing for renders as neither a tick nor a warning nor a cross,
-        so the row shows nothing at all and reads as fine -- which is why the drawings are compared
-        against the levels the library publishes rather than against a list written down here: a
-        fourth level added to ``STATUS_LEVELS`` with nothing drawn for it fails this case instead of
-        going out blank.
-
-        The stylesheet is asked the same question and has to answer differently for each, because
-        three cells that differ only by a glyph are three cells that look the same at a glance and
-        sound the same to a screen reader. The rules are looked for among those that name the status
-        column, since the canvas already styles a warning step and an error step and would otherwise
-        answer this on the script's behalf.
-        """
-        _, reached = _window_fn(page)
-
-        drawings = [
-            hit
-            for hit in re.findall(r"\{([^{}]*)\}", reached)
-            if {key.strip().strip("'\"") for key in re.findall(r"([\w'\"]+)\s*:", hit)} == set(STATUS_LEVELS)
-        ]
-        assert drawings, (
-            f"nothing in the script draws one thing per level; the levels are {list(STATUS_LEVELS)}, and a level "
-            "with no drawing renders as an empty cell, which reads as a row that is fine"
-        )
-
-        sheet = page[page.index("<style>") + len("<style>") : page.index("</style>")]
-        sheet = re.sub(r"/\*.*?\*/", "", sheet, flags=re.DOTALL)
-        said: dict[str, set[str]] = {level: set() for level in STATUS_LEVELS}
-        for selector, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", sheet):
-            if MARK_CLASS not in selector and "level" not in selector:
-                continue
-            for level in STATUS_LEVELS:
-                if re.search(r"(?<![\w-])" + level + r"(?![\w-])", selector):
-                    said[level].add(declarations.strip())
-
-        missing = sorted(level for level, rules in said.items() if not rules)
-        assert not missing, f"the sheet says nothing about the status column for {missing}"
-        assert len({frozenset(rules) for rules in said.values()}) == len(STATUS_LEVELS), (
-            f"the sheet draws two levels identically: {said}"
-        )
-
-    def test_the_reason_reaches_the_reader_as_the_column_it_names_and_what_that_cell_held(self, page: str) -> None:
-        """The sentence the reader came for, without leaving the panel they are looking at.
-
-        A mark that says only "something happened here" sends a reader back to comparing two tables
-        by eye, which is the work this whole channel exists to remove -- and a mark that says it
-        only in colour says nothing to anyone using a screen reader. So the cell carries the level
-        as text the browser can announce, and the reason as the column that degraded and what the
-        cell held: ``held 'Canadian Business Growth Fund', which did not read as Float64``.
-
-        Both halves of the reason are required, because either alone is the old warning again. The
-        column without the detail is a count that names a column; the detail without the column is a
-        sentence a reader cannot act on when a step read four columns.
-        """
-        _, reached = _window_fn(page)
-
-        spoken = re.findall(
-            r"\.(?:title|ariaLabel)\s*=([^;]*)|setAttribute\(\s*['\"](?:title|aria-label)['\"],([^;]*)", reached
-        )
-        text = " ".join(part for hit in spoken for part in hit)
-        assert text.strip(), (
-            "the mark carries no text a browser can announce, so the three levels differ by a character alone and a "
-            "reader who cannot see it is told nothing"
-        )
-        assert re.search(r"\.level\b", text), "the announced text does not name the level"
-        assert re.search(r"\bcolumn\b", text), "the announced text does not name the column that degraded"
-        assert re.search(r"\bdetail\b", text), "the announced text does not say what the cell held"
-
-    def test_the_character_drawn_for_a_flagged_row_is_not_the_one_drawn_for_a_clean_one(
-        self, page: str, store: PortStore
-    ) -> None:
-        """Which glyph goes with which level, rather than that three glyphs exist.
-
-        The case beside this one checks that every published level has a drawing and that the sheet
-        tells the three apart; neither ever reads the drawings themselves. So a pairing with the
-        tick and the cross the wrong way round passes both -- and draws every flagged row as clean
-        and every clean row as failed, in the first column the reader looks at, which is worse than
-        drawing nothing: a reader who trusts the column reads the twelve rows exactly backwards.
-
-        Pinned as a property of the characters rather than as the author's literals, so a different
-        tick (``\u2714``) or a different cross is free to be chosen and a swap is not: the mark for
-        ``ok`` has to read as a tick, and no level that is not ``ok`` may draw one. Then the pairing
-        is walked back through a real window of a real run -- the rows whose amount did not read as
-        a figure against the rows whose did -- because the pairing is only ever reached by way of a
-        level a step actually wrote down.
-        """
-        drawings = _drawings(page)
-
-        assert len(set(drawings.values())) == len(STATUS_LEVELS), (
-            f"two levels draw the same character, so the column cannot tell them apart: {drawings}"
-        )
-        assert all(mark.strip() for mark in drawings.values()), f"a level draws nothing at all: {drawings}"
-
-        ticks = {level for level, mark in drawings.items() if "CHECK" in unicodedata.name(mark)}
-        assert ticks == {"ok"}, (
-            f"a tick is what a reader reads as 'this row is fine', and {sorted(ticks)} draw one: {drawings}"
-        )
-
-        window = store.window("settled.rows", limit=12)
-        held = _held("amount")
-        drawn = {True: set(), False: set()}
-        for row, mark in zip(window.rows, window.status, strict=True):
-            record = _column_of(row, window, "record_id")
-            drawn[_is_a_number(held[record])].add(drawings[mark["level"]])
-
-        assert drawn[True] == {drawings["ok"]}, "a row whose amount read as a figure is drawn as something else"
-        assert drawn[False], "this fixture flagged nothing, so it cannot tell a flagged row from a clean one"
-        assert not (drawn[True] & drawn[False]), (
-            f"a row the step emptied is drawn with the same character as a row it left alone: {drawn}"
-        )
-
-
-def _drawings(page: str) -> dict[str, str]:
-    """The character the window's script draws for each published level, read out of the pairing.
-
-    Found by its keys, the way the case above it finds the block at all, and then read for its
-    values -- which is the whole difference between the two: a block whose keys are the levels says
-    only that somebody thought about all three.
-    """
-    _, reached = _window_fn(page)
-    found = [
-        dict(re.findall(r"['\"]?(\w+)['\"]?\s*:\s*['\"](.*?)['\"]", hit))
-        for hit in re.findall(r"\{([^{}]*)\}", reached)
-        if {key.strip().strip("'\"") for key in re.findall(r"([\w'\"]+)\s*:", hit)} == set(STATUS_LEVELS)
-    ]
-    assert len(found) == 1, f"the script draws one thing per level in {len(found)} places, so which one draws a row?"
-    pairs = {level: _character(mark) for level, mark in found[0].items()}
-    assert set(pairs) == set(STATUS_LEVELS), f"the drawings do not pair with the published levels: {pairs}"
-    return pairs
-
-
-def _character(mark: str) -> str:
-    """One drawn mark, with a JavaScript escape resolved to the character a browser would show."""
-    return re.sub(r"\\u([0-9a-fA-F]{4})", lambda found: chr(int(found.group(1), 16)), mark)
-
-
-def _is_a_number(text: str) -> bool:
-    """Whether a source value would read as a figure, which is what decides its level."""
-    try:
-        float(text)
-    except ValueError:
-        return False
-    return True

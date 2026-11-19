@@ -274,6 +274,16 @@ class TestRun:
         assert sorted(path.name for path in (project / "output").iterdir()) in ([], [".gitkeep"])
         assert all(step_id in output for step_id in writer_ids(project)), "the held-back writer is not named"
 
+    def test_run_of_a_pipeline_the_project_does_not_have_is_one_plain_refusal_and_saves_nothing(
+        self, project: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runs = load_project(project).runs_folder
+        assert call(["run", "nosuch"]) == 1
+        output = printed(capsys)
+        assert "nosuch" in output and "example" in output, "the refusal names neither what was asked nor what exists"
+        assert "Traceback" not in output
+        assert not runs.exists() or not any(runs.iterdir())
+
     def test_run_write_with_yes_writes_the_output(self, project: Path) -> None:
         targets = writer_targets(project)
         assert call(["run", "example", "--write", "--yes"]) == 0
