@@ -37,14 +37,9 @@ def _frame_table(frame_data: dict[str, Any]) -> str:
 
 
 def _control(name: str, spec: dict[str, Any]) -> str:
-    """One configuration field drawn as the control it will be when this panel is editable.
+    """One setting drawn as the control it would be in an editable panel, disabled for now.
 
-    A typed template is what makes a form generatable without a line of per-tool layout code, so
-    the catalogue draws the form rather than describing it: a reader sees the shape of the thing
-    they will fill in, and a field whose allowed values are three words is visibly a choice of
-    three rather than a sentence about three. The controls are disabled here because nothing on
-    this page belongs to a pipeline yet -- a pipeline is a file, and editing arrives with the
-    loader that reads one.
+    A reader sees the shape of what they will fill in; three allowed values show as a choice of three.
     """
     kind = spec["type"]
     shown = "" if spec.get("default") is None else json.dumps(spec["default"], default=str).strip('"')

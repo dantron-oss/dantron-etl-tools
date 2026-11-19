@@ -6,16 +6,15 @@
 <div class="wrap">
   <header class="top">
     <h1>Transformation Tool Catalog</h1>
-    <p><span class="n">@@count@@</span> generic tools. Every field, default and worked example on this page is
-    read from the tools themselves &mdash; and the suite executes each example against its tool, so an
-    example here cannot have drifted from what the tool actually does.</p>
+    <p><span class="n">@@count@@</span> tools. Everything on this page is read from the tools themselves,
+    and every worked example is run by the test suite, so the examples show what the tools really do.</p>
   </header>
   <nav>
     <input id="q" type="search" placeholder="Filter tools&hellip;" aria-label="Filter tools">
     @@rail@@
   </nav>
   <main>@@cards@@</main>
-  <footer>Outlined chips are input ports; filled chips are outputs. A tool with two outputs keeps what it
-  set aside rather than discarding it &mdash; that is why nothing a flow drops has to be reconstructed later.</footer>
+  <footer>Outlined chips are the ports a tool reads; filled chips are the ports it writes. A tool with two
+  outputs keeps the rows it sets aside on the second one, so nothing is silently thrown away.</footer>
 </div>
 <script>@@script@@</script>
