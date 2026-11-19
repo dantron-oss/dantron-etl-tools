@@ -1849,42 +1849,6 @@ class TestThePanelOpensOnTheEntityTheReaderChose:
             "rendered hidden, so the reader opens the step and finds no tables at all"
         )
 
-    def test_the_pickers_buttons_and_a_panels_views_name_the_same_entities(
-        self, page: str, fixture_flow_sandbox: Path
-    ) -> None:
-        """The two halves are built by separate passes over the trace, and nothing else compares them.
-
-        The picker is rendered with the page and the views are rendered into the panels, so a pass
-        that offered entities the panels were not keyed on would put the reader one click away from
-        a pane with every view hidden -- and the page, the panel and the picker would each look
-        perfectly correct on their own.
-
-        Built here rather than taken from the shared fixture because two builds of one run is the
-        case: the page is written once and the panels are written beside it, and it is the second
-        pass drifting from the first that does this.
-        """
-        from dantron_etl.viewer import build_panels
-
-        spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
-        with chdir(fixture_flow_sandbox):
-            trace = run_pipeline(spec)
-        fetched = build_panels(spec, trace, FocusSpec(label="party", identity=("party",)))
-        offered = re.findall(r'<button data-pick="([^"]*)"', page)
-
-        assert offered, "the picker offers nothing, so there is no entity a panel could be opened on"
-        assert len(set(offered)) == len(offered), f"the picker offers {offered}, which names one entity twice"
-        seen = 0
-        for step, panel in fetched.items():
-            keys = re.findall(r'<div class="view" data-for="([^"]*)"', panel)
-            if not keys:
-                continue
-            seen += 1
-            assert set(keys) == set(offered), (
-                f"{step}'s panel carries views for {sorted(set(keys))} while the picker offers "
-                f"{sorted(set(offered))}; the difference is a button that hides every table in the panel, or a "
-                "table no button can reach"
-            )
-        assert seen, "no panel carries a view at all, so this would pass by having nothing to compare"
 
 
 class TestTheNoticeStandsWhereThePanelWouldHaveBeen:

@@ -6,12 +6,13 @@ and ``static/``. Python only builds the fragments that carry data and puts them 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
 import polars as pl
 
-from ..focus import FocusSpec, PortSlice, available_entities, slice_trace
+from ..focus import FocusSpec
 from ..spec import Pipeline
 from ..status import STATUS_LEVELS
 from ..trace import PipelineTrace
@@ -26,11 +27,8 @@ MAX_ROWS = 25
 # it arrives only for the port actually being looked at.
 WINDOW = 100
 
-# How many entities the picker may offer. Every one of them embeds a slice of every port, so this
-# multiplies the page; pagination and search are the real answer and are not built yet.
-MAX_ENTITIES = 3
-
-
+# The only view a panel carries. One entity's rows are asked of the service instead.
+EVERYONE = {"all": None}
 
 def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -> str:
     """One port's rows, with a box under each column heading that narrows to matching rows.
@@ -165,15 +163,6 @@ def _config(config: Mapping[str, Any]) -> str:
     )
 
 
-def _slice_body(slice_: PortSlice, frame: pl.DataFrame | None) -> str:
-    """One port, for one reader's chosen entity -- or the reason there is nothing to draw."""
-    if slice_.status in {"no_grain", "not_retained"}:
-        return f'<p class="more">{_e(slice_.reason)}</p>'
-    if frame is None or frame.height == 0:
-        return '<p class="more">no rows here for this one &mdash; the port does carry the entity</p>'
-    return _table(frame)
-
-
 def _event_if_ran(trace: PipelineTrace, step_id: str) -> Any:
     """The step's event, or None when the run stopped before reaching it.
 
@@ -272,7 +261,7 @@ def _step_data(
                     # An input whose step never ran: the run stopped before it.
                     body = '<p class="more">not produced &mdash; the step that makes it did not run</p>'
                     count = "&mdash;"
-                elif view is None:
+                else:
                     frame = trace.frames.get(ref)
                     body = (
                         # Keyed off the port rather than off the step being read, so a marked port
@@ -283,11 +272,6 @@ def _step_data(
                         else '<p class="more">released &mdash; not retained</p>'
                     )
                     count = "&mdash;" if rows is None else f"{rows:,} rows"
-                else:
-                    sliced = view.slice(ref)
-                    body = _slice_body(sliced, sliced.frame)
-                    shown = "&mdash;" if sliced.rows_focused is None else f"{sliced.rows_focused:,}"
-                    count = f"{shown} of {rows:,} rows" if rows is not None else shown
                 # Shut by default, and `details` rather than a script: a closed one is not laid out,
                 # so a page of wide tables costs the browser almost nothing until a port is opened,
                 # and what a reader came to see -- which port carries how many rows -- stays readable
@@ -311,39 +295,7 @@ def _step_data(
     return f'<section class="stepdata" data-step="{_e(step_id)}" hidden>{flip}{"".join(sides)}</section>'
 
 
-def _views(trace: PipelineTrace, focus: FocusSpec) -> tuple[dict[str, Any], int, int]:
-    """The picker's entries -- everybody, then one per offered entity -- with how many of each there are.
-
-    Every entity carries a full slice of every port, so the page grows with the number of entities
-    multiplied by the number of ports. Three of them is nothing; 1,557 is a page no browser will
-    open. So the picker takes the first ``MAX_ENTITIES`` and says how many there were.
-
-    First, deliberately, rather than largest or busiest. Any ranking would need a port to rank at --
-    an entity's count means nothing except against one named port, since the same entity is one row
-    at a parent grain and several at a child -- and choosing that port is a judgement about one
-    flow's shape, which is not something a renderer shared by every flow should be making. Paging
-    and search are the real answer; this is the honest placeholder until they exist.
-
-    Derived here rather than inside the page, because the panels are now built separately and a
-    panel whose views were keyed differently from the picker's buttons would arrive with every one
-    of them hidden: the reader clicks a step and the pane fills with nothing.
-
-    Which means both :func:`build` and :func:`build_panels` run this, so writing one page slices the
-    trace twice. Left as it is, with no memo: at ``MAX_ENTITIES`` of three the work is three passes
-    over the ports a run retained, done once when the run is written, beside writing every one of
-    those ports to Parquet -- and a memo keyed on a trace, which is mutable and unhashable, is a
-    stale page waiting to happen. The day paging replaces the cap, this stops being small, and the
-    answer then is a caller that slices once and hands the views to both.
-    """
-    options = available_entities(trace, focus)
-    shown = options[:MAX_ENTITIES]
-    views: dict[str, Any] = {"all": None}
-    for option in shown:
-        views[str(option.value)] = slice_trace(trace, focus, option.value)
-    return views, len(shown), len(options)
-
-
-def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> dict[str, str]:
+def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec | None) -> dict[str, str]:
     """Every step's data panel, keyed by the step, ready to be written down and fetched one at a time.
 
     The markup is exactly what the page used to carry: same tables, same headers, same per-column
@@ -354,12 +306,42 @@ def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> dict
     Keyed off ``spec.order()`` rather than off the trace's events, so every step a reader can pick
     -- a node on the canvas, a line in the step list -- has a panel behind it. A step the flow can
     select and the service cannot answer for is a dead end found by clicking.
+
+    Only the everyone view is drawn. One entity's rows are fetched from the service when asked for.
     """
-    views, _, _ = _views(trace, focus)
-    return {step_id: _step_data(spec, trace, step_id, views) for step_id in spec.order()}
+    return {step_id: _step_data(spec, trace, step_id, EVERYONE) for step_id in spec.order()}
 
 
-def build(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> str:
+def _page_data(spec: Pipeline, focus: FocusSpec | None, run: Mapping[str, Any] | None) -> str:
+    """The page's facts as JSON for its script, safe inside a script element."""
+    data = {"pipeline": spec.name, "focus": focus.label if focus is not None else None, **(run or {})}
+    text = json.dumps(data, default=str).replace("</", "<\\/")
+    return f'<script type="application/json" id="page-data">{text}</script>'
+
+
+def _banner(run: Mapping[str, Any] | None) -> str:
+    """What a reader must know about this run before reading it: a preview, or where it stopped."""
+    if not run:
+        return ""
+    lines = []
+    if run.get("kind") == "preview":
+        held = list(run.get("held_back") or ())
+        text = "This was a preview. Nothing was written."
+        if held:
+            text += f" Held back: {', '.join(held)}"
+        lines.append(f'<p class="banner preview">{_e(text)}</p>')
+    if run.get("outcome") == "failed":
+        text = f"The run stopped at step {run.get('failed_step')}: {run.get('message')}"
+        lines.append(f'<p class="banner failed">{_e(text)}</p>')
+    return "".join(lines)
+
+
+def build(
+    spec: Pipeline,
+    trace: PipelineTrace,
+    focus: FocusSpec | None,
+    run: Mapping[str, Any] | None = None,
+) -> str:
     """The run as a page: the flow, every step's configuration, and the data of the step being read.
 
     The panels are no longer in here -- they are written beside the run's ports and fetched as they
@@ -371,9 +353,9 @@ def build(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> str:
     What stays is everything a reader has without a service answering: the canvas, the step list and
     each step's configuration as it was authored. Opened as a plain file the page still says what
     every step does; it is the rows, and now the tables around them, that need something serving.
-    """
-    views, shown, offered = _views(trace, focus)
 
+    ``run`` is the saved run's record. It goes into the page data and decides the banner.
+    """
     total_in = sum(s.rows for r, s in trace.shapes.items() if not spec.step(r.step).inputs)
     published = [r for r in trace.shapes if not spec.consumers(r)]
     order = spec.order()
@@ -382,20 +364,26 @@ def build(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec) -> str:
     # the same step: named without shipping, the page opens on an empty pane until a fetch answers,
     # and shipped without naming, it carries a panel nothing ever shows.
     opening = order[0] if order else ""
-    panel = _step_data(spec, trace, opening, views) if opening else ""
+    panel = _step_data(spec, trace, opening, EVERYONE) if opening else ""
     summary = (
         f"<b>{len(trace.events)}</b> steps &middot; <b>{len(trace.shapes)}</b> ports &middot; "
         f"<b>{total_in}</b> rows in &middot; <b>{len(published)}</b> ports nothing reads further"
     )
-    buttons = "".join(f'<button data-pick="{_e(k)}">{_e("everyone" if k == "all" else k)}</button>' for k in views)
-    capped = "" if shown == offered else f'<span class="pmore">showing the first {shown} of {offered:,}</span>'
-    picker = f'<div class="picker"><span class="plabel">{_e(focus.label)}</span>{buttons}{capped}</div>'
+    picker = (
+        f'<div class="picker"><label><span class="plabel">{_e(focus.label)}</span>'
+        f'<input type="search" class="pick" placeholder="find a {_e(focus.label)}" '
+        f'aria-label="follow one {_e(focus.label)}"></label></div>'
+        if focus is not None
+        else ""
+    )
     return page(
         "walkthrough",
         name=_e(spec.name),
         summary=summary,
         canvas=canvas(spec, trace),
         picker=picker,
+        banner=_banner(run),
+        pagedata=_page_data(spec, focus, run),
         details=details,
         panel=panel,
         first=_e(opening),
