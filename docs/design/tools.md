@@ -452,3 +452,24 @@ in the open.
 **A zone-aware timestamp needs `in_zone` to become a Date** (owner's ruling 2026-11-18, finding E-02).
 The day depends on the zone, so there is no default; the migration wrote `UTC` into the client steps
 that needed it.
+
+## date_diff
+
+**The count is usually a divisor.** An amount billed for a period is divided by the number of units
+in it. A count one too many understates every unit and one too few overstates it, and neither shows:
+the result still looks like a figure. So nothing about the count is left to a default.
+
+**`counting` is required** (stage 4 rename, finding A-05/A-23). `inclusive` counts the unit each end
+falls in and is never zero; `elapsed` counts completed units only and is one less in size in both
+directions, like SQL's DATEDIFF and Excel's subtraction. A default would choose every divisor silently.
+
+**A month counts when the end's day reaches the start's.** 31 January to 28 February is one month;
+1 January to 31 December, inclusive, is twelve.
+
+**A backwards range counts negative.** Which end was mistyped is a judgement for a repair step, not for
+this tool. A missing date gives null, never zero, for every unit and counting.
+
+**A zone-aware timestamp needs `in_zone`** (owner's ruling E-02). The day depends on the zone.
+
+**One counting function.** date_diff and the expression functions `months_between` and `days_between`
+call the same `count_between`, so a tool and a formula cannot disagree.
