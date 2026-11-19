@@ -197,8 +197,15 @@ def _step_renames(index: int, step: Mapping[str, Any], tool_by_id: Mapping[str, 
         )
         return [Found("manual", (*at, "tool"), written, written, "", sentence, step_id)]
 
-    found: list[Found] = []
     tool = TOOL_RENAMES.get(written, written)
+    if isinstance(config, Mapping):
+        # A field written in both its old and its new name: which one was meant cannot be known.
+        # Nothing in the step changes; a person decides.
+        collisions = _collisions(tool, config, (*at, "config"), here, step_id)
+        if collisions:
+            return collisions
+
+    found: list[Found] = []
     if tool != written:
         found.append(
             Found("value", (*at, "tool"), written, tool, f"tool {written} -> {tool}", f"{here}: tool {written!r} is now {tool!r}", step_id)
@@ -210,10 +217,54 @@ def _step_renames(index: int, step: Mapping[str, Any], tool_by_id: Mapping[str, 
 
     if isinstance(config, Mapping):
         found.extend(_config_renames(tool, written, config, (*at, "config"), here, step_id, registry))
+        found.extend(_unknown_defaults(tool, written, config, (*at, "config"), here, step_id))
 
     inputs = step.get("inputs")
     if isinstance(inputs, Mapping):
         found.extend(_input_renames(tool, inputs, (*at, "inputs"), here, step_id, tool_by_id))
+    return found
+
+
+def _collisions(tool: str, config: Mapping[str, Any], at: tuple[Any, ...], here: str, step_id: str | None) -> list[Found]:
+    """A note for each config field written in both its old and its new name."""
+    found: list[Found] = []
+    for old_path, new in FIELD_RENAMES.get(tool, {}).items():
+        parent, _, old = old_path.rpartition(".")
+        for mapping, where, shown in _reach(config, _split(parent), tool, at, ""):
+            if isinstance(mapping, Mapping) and old in mapping and new in mapping:
+                field = f"{shown}.{old}" if shown else old
+                sentence = (
+                    f"{here}: config field {field!r} is now {new!r}, and {new!r} is written too. "
+                    "Keep one by hand; nothing in this step was changed"
+                )
+                found.append(Found("manual", (*where, old), old, new, "", sentence, step_id))
+    return found
+
+
+def _unknown_defaults(
+    tool: str, written: str, config: Mapping[str, Any], at: tuple[Any, ...], here: str, step_id: str | None
+) -> list[Found]:
+    """A note for each old default a half-migrated step may still rely on.
+
+    The step names the new tool but still uses an old field name. So it may have been written for
+    the old tool, whose defaults differ. Whether it meant the old default or the new one cannot be
+    known, so nothing is written in.
+    """
+    old_tools = [old for old, new in TOOL_RENAMES.items() if new == written]
+    if not old_tools:
+        return []
+    old_fields = [old_path for old_path in FIELD_RENAMES.get(tool, {}) if "." not in old_path and old_path in config]
+    if not old_fields:
+        return []
+    found: list[Found] = []
+    for new, value in OLD_DEFAULTS.get(old_tools[0], {}).items():
+        if new in config or any(old in config for old in _old_names(tool, "", new)):
+            continue
+        sentence = (
+            f"{here}: config field {new!r} is not written. The step names {written!r} but still uses the "
+            f"old field {old_fields[0]!r}, so it may rely on the old default {value!r}. Write {new!r} by hand"
+        )
+        found.append(Found("manual", at, value, new, "", sentence, step_id, retired=False))
     return found
 
 
@@ -332,10 +383,6 @@ def _config_renames(
             if not isinstance(mapping, Mapping) or old not in mapping:
                 continue
             field = f"{shown}.{old}" if shown else old
-            if new in mapping:
-                sentence = f"{here}: config field {field!r} is now {new!r}, and {new!r} is written too. Keep one by hand"
-                found.append(Found("manual", (*where, old), old, new, "", sentence, step_id))
-                continue
             found.append(
                 _key((*where, old), old, new, f"{tool}.{old_path} -> {new}", f"{here}: config field {field!r} is now {new!r}", step_id)
             )

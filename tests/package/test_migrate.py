@@ -24,6 +24,7 @@ import polars as pl
 import pytest
 import yaml
 
+import dantron_etl.migrate as migrate_module
 from dantron_etl import PipelineError, load_pipeline, read_pipeline
 from dantron_etl.authoring import REGISTRY, Ports, run_tool
 from dantron_etl.migrate import MigrationError, main, migrate_text
@@ -1087,3 +1088,371 @@ class TestCommandLine:
         assert result.returncode == 1, result.stderr
         assert "join.left_on -> left_keys" in result.stdout
         assert path.read_text(encoding="utf8") == PAIRS
+
+
+# ---------------------------------------------------------------------------
+# Cycle 2: cases found by review
+# ---------------------------------------------------------------------------
+
+
+class TestRenamedValuesByWhereTheySit:
+    """A renamed value changes only in the field whose values were renamed."""
+
+    def test_date_diff_unit_and_endpoints_change_and_an_output_column_named_months_stays(self) -> None:
+        old = _flow("""\
+          - id: span
+            tool: date_diff
+            config:
+              start: "[opened]"
+              end: "[closed]"
+              unit: months
+              endpoints: both
+              output: months
+            inputs: {rows: src.rows}
+        """)
+        expected = _flow("""\
+          - id: span
+            tool: date_diff
+            config:
+              start: "[opened]"
+              end: "[closed]"
+              unit: month
+              counting: inclusive
+              output: months
+            inputs: {rows: src.rows}
+        """)
+
+        assert migrate_text(old).text == expected
+
+    def test_cast_columns_on_invalid_changes_and_a_column_named_empty_stays(self) -> None:
+        old = _flow("""\
+          - id: typed
+            tool: cast_columns
+            config:
+              columns:
+                - {column: empty, type: String}
+              on_invalid: empty
+            inputs: {rows: src.rows}
+        """)
+        expected = old.replace("      on_invalid: empty", "      on_invalid: set_null")
+
+        assert migrate_text(old).text == expected
+
+    def test_a_formula_columns_replace_flag_stays_while_write_csv_replace_becomes_overwrite(self) -> None:
+        old = _flow("""\
+          - id: figured
+            tool: formula
+            config:
+              columns:
+                - {name: amount, value: "[amount] * 2", replace: true}
+            inputs: {rows: src.rows}
+          - id: out
+            tool: write_csv
+            config: {path: out.csv, replace: true}
+            inputs: {rows: figured.rows}
+        """)
+        expected = old.replace("{path: out.csv, replace: true}", "{path: out.csv, overwrite: true}")
+
+        assert migrate_text(old).text == expected
+
+
+class TestSharedAnchoredConfig:
+    """A config written once under an anchor and reused by an alias is edited once, at the anchor."""
+
+    def test_two_joins_sharing_an_anchored_flow_config_are_edited_once_at_the_anchor(self) -> None:
+        old = _flow("""\
+          - id: first
+            tool: join
+            config: &j {left_on: [a], right_on: [b]}
+            inputs: {left: src.rows, right: src.rows}
+          - id: second
+            tool: join
+            config: *j
+            inputs: {left: src.rows, right: src.rows}
+          - id: out_first
+            tool: write_csv
+            config: {path: first.csv, overwrite: true}
+            inputs: {rows: first.joined}
+          - id: out_second
+            tool: write_csv
+            config: {path: second.csv, overwrite: true}
+            inputs: {rows: second.joined}
+        """)
+        expected = old.replace("&j {left_on: [a], right_on: [b]}", "&j {left_keys: [a], right_keys: [b]}")
+
+        migration = migrate_text(old)
+        pipeline = load_pipeline(yaml.safe_load(migration.text))
+
+        assert migration.text == expected
+        assert "    config: *j\n" in migration.text
+        for step_id in ("first", "second"):
+            assert dict(pipeline.step(step_id).config) == {"left_keys": ["a"], "right_keys": ["b"]}
+
+    def test_two_date_diffs_sharing_an_anchored_block_config_rename_endpoints_once(self) -> None:
+        old = _flow("""\
+          - id: span
+            tool: date_diff
+            config: &d
+              start: "[opened]"
+              end: "[closed]"
+              unit: day
+              endpoints: both
+              output: n
+            inputs: {rows: src.rows}
+          - id: again
+            tool: date_diff
+            config: *d
+            inputs: {rows: span.rows}
+        """)
+        expected = old.replace("      endpoints: both\n", "      counting: inclusive\n")
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        assert _step_config(migration.text, "again")["counting"] == "inclusive"
+
+    def test_an_anchored_date_diff_config_with_no_endpoints_gets_counting_written_once_at_the_anchor(self) -> None:
+        old = _flow("""\
+          - id: span
+            tool: date_diff
+            config: &d
+              start: "[opened]"
+              end: "[closed]"
+              unit: day
+              output: n
+            inputs: {rows: src.rows}
+          - id: again
+            tool: date_diff
+            config: *d
+            inputs: {rows: span.rows}
+        """)
+        expected = old.replace("      output: n\n", "      output: n\n      counting: inclusive\n")
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        assert migration.text.count("counting: inclusive") == 1
+        assert _step_config(migration.text, "span")["counting"] == "inclusive"
+        assert _step_config(migration.text, "again")["counting"] == "inclusive"
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            # A join wants left_on renamed; a filter reusing the same text wants it left alone.
+            (
+                "tool: join\n    config: &c {left_on: [a], right_on: [b]}\n    inputs: {left: src.rows, right: src.rows}",
+                "tool: filter\n    config: *c\n    inputs: {rows: src.rows}",
+            ),
+            # The old grouping step wants its old default names written in; the new one does not.
+            (
+                "tool: connected_components\n    config: &c {left: a, right: b}\n    inputs: {edges: src.rows}",
+                "tool: make_groups\n    config: *c\n    inputs: {pairs: src.rows}",
+            ),
+        ],
+        ids=["join_and_filter", "old_and_new_grouping_step"],
+    )
+    def test_an_anchor_shared_by_steps_needing_different_edits_is_refused(self, first: str, second: str) -> None:
+        """The chosen behaviour: MigrationError, so the CLI names the file and leaves it as it was."""
+        old = _flow("") + f"  - id: one\n    {first}\n  - id: two\n    {second}\n"
+
+        with pytest.raises(MigrationError):
+            migrate_text(old)
+
+
+class TestRereadGuard:
+    """When the edited text does not mean what the renames say, the file is refused and not written."""
+
+    @pytest.fixture
+    def misspelled_edit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make the text edits spell one new key wrongly, as a bug in the editing would."""
+        real_result = migrate_module._Editor.result
+
+        def misspelled(editor: Any) -> str:
+            return real_result(editor).replace("left_keys", "left_kyes", 1)
+
+        monkeypatch.setattr(migrate_module._Editor, "result", misspelled)
+
+    @pytest.mark.usefixtures("misspelled_edit")
+    def test_a_wrong_edit_raises_migration_error(self) -> None:
+        with pytest.raises(MigrationError):
+            migrate_text(PAIRS)
+
+    @pytest.mark.usefixtures("misspelled_edit")
+    def test_a_wrong_edit_makes_write_return_two_and_leaves_the_file_unchanged(self, tmp_path: Path) -> None:
+        path = tmp_path / "pairs.yaml"
+        path.write_bytes(PAIRS.encode("utf8"))
+
+        code = main([str(path), "--write"])
+
+        assert code == 2
+        assert path.read_bytes() == PAIRS.encode("utf8")
+
+
+class TestGroupingStepColumnNames:
+    """The old grouping step's default column names are written in only when the old tool is named."""
+
+    def test_a_flow_style_grouping_config_gets_both_old_default_names_appended(self) -> None:
+        old = _flow("""\
+          - id: linked
+            tool: connected_components
+            config: {left: left, right: right}
+            inputs: {edges: src.rows}
+        """)
+        expected = _flow("""\
+          - id: linked
+            tool: make_groups
+            config: {left: left, right: right, record_column: node, group_column: component}
+            inputs: {pairs: src.rows}
+        """)
+
+        migration = migrate_text(old)
+        config = _step_config(migration.text, "linked")
+        output = run_tool(
+            REGISTRY.get("make_groups"), Ports({"pairs": pl.DataFrame({"left": [1, 2], "right": [2, 3]})}), config
+        )["rows"]
+
+        assert migration.text == expected
+        assert output.columns == ["node", "component"]
+
+    def test_a_half_migrated_make_groups_step_has_node_column_renamed_and_no_group_column_invented(self) -> None:
+        old = _flow("""\
+          - id: linked
+            tool: make_groups
+            config: {left: a, right: b, node_column: x}
+            inputs: {pairs: src.rows}
+        """)
+        expected = old.replace("node_column: x", "record_column: x")
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        reported = [entry for entry in migration.manual if "linked" in entry]
+        assert reported
+        assert "group_column" in reported[0]
+
+    def test_an_old_grouping_step_naming_only_node_column_gets_group_column_component_written(self) -> None:
+        old = _flow("""\
+          - id: linked
+            tool: connected_components
+            config: {left: a, right: b, node_column: x}
+            inputs: {edges: src.rows}
+        """)
+        expected = _flow("""\
+          - id: linked
+            tool: make_groups
+            config: {left: a, right: b, record_column: x, group_column: component}
+            inputs: {pairs: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        assert migration.manual == []
+
+
+class TestInsertedLineLayout:
+    def test_counting_goes_right_after_the_last_config_line_and_comments_and_blank_lines_stay_put(self) -> None:
+        old = _flow("""\
+          - id: span
+            tool: date_diff
+            inputs: {rows: src.rows}
+            config:
+              start: "[opened]"
+              end: "[closed]"
+              unit: day
+              output: n   # the count
+
+          # next step
+          - id: out
+            tool: write_csv
+            config: {path: out.csv, overwrite: true}
+            inputs: {rows: span.rows}
+        """)
+        expected = _flow("""\
+          - id: span
+            tool: date_diff
+            inputs: {rows: src.rows}
+            config:
+              start: "[opened]"
+              end: "[closed]"
+              unit: day
+              output: n   # the count
+              counting: inclusive
+
+          # next step
+          - id: out
+            tool: write_csv
+            config: {path: out.csv, overwrite: true}
+            inputs: {rows: span.rows}
+        """)
+
+        assert migrate_text(old).text == expected
+
+
+class TestStripCallShapes:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            '"regex_match(strip([tab]), ${rules.tabs})"',
+            # Backslash escapes in a double-quoted value, before the call.
+            "\"concat(regex_replace([a], '\\\\s+', ' '), strip([b]))\"",
+        ],
+        ids=["placeholder_argument", "escapes_before_the_call"],
+    )
+    def test_only_the_call_name_changes_and_every_other_byte_stays(self, value: str) -> None:
+        old = _flow("""\
+          - id: figured
+            tool: formula
+            config:
+              columns:
+                - name: result
+                  value: VALUE
+            inputs: {rows: src.rows}
+        """).replace("VALUE", value)
+        expected = old.replace("strip(", "trim(")
+        old_value = _step_config(old, "figured")["columns"][0]["value"]
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        assert _step_config(migration.text, "figured")["columns"][0]["value"] == old_value.replace("strip(", "trim(")
+        assert migration.counts["strip() -> trim()"] == 1
+
+
+class TestOldAndNewNameTogether:
+    def test_a_config_with_both_endpoints_and_counting_is_left_alone_and_reported(self) -> None:
+        old = _flow("""\
+          - id: span
+            tool: date_diff
+            config:
+              start: "[opened]"
+              end: "[closed]"
+              unit: day
+              endpoints: both
+              counting: elapsed
+              output: n
+            inputs: {rows: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert migration.text == old
+        assert any("span" in entry for entry in migration.manual)
+
+
+class TestCommandLineWithManualItems:
+    """A file that still needs a person's attention is not reported as done."""
+
+    @pytest.mark.parametrize("arguments", [[], ["--write"]], ids=["dry_run", "write"])
+    def test_a_file_whose_only_issue_is_an_old_single_sheet_step_prints_it_and_returns_one(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], arguments: list[str]
+    ) -> None:
+        path = tmp_path / "tab.yaml"
+        path.write_bytes(OLD_SINGLE_SHEET.encode("utf8"))
+
+        code = main([str(path), *arguments])
+        printed = capsys.readouterr().out
+
+        assert code == 1
+        assert "tab_out" in printed
+        assert path.read_bytes() == OLD_SINGLE_SHEET.encode("utf8")

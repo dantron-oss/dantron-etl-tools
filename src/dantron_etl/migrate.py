@@ -12,6 +12,7 @@ applied. If the two differ, the file is refused rather than written wrong.
 """
 
 import copy
+import re
 import sys
 from collections import Counter
 from collections.abc import Mapping
@@ -72,6 +73,7 @@ def migrate_text(text: str) -> Migration:
     editor = _Editor(text, root)
     for item in found:
         editor.apply(item)
+    editor.check_shared(document)
 
     new_text = editor.result()
     expected = _renamed(document, editor.data_edits)
@@ -120,6 +122,9 @@ class _Editor:
         self.data_edits: list[tuple[str, tuple[Any, ...], Any, Any]] = []
         self.changes: list[Change] = []
         self.manual: list[str] = []
+        # Node id -> (node, step index -> the edits that step makes to that node). A node written
+        # once under an anchor and reused by an alias is one node, reached from every step using it.
+        self.by_node: dict[int, tuple[Any, dict[int | None, set[tuple[int, int, str]]]]] = {}
 
     def result(self) -> str:
         text = self.text
@@ -129,6 +134,67 @@ class _Editor:
         for _, (start, end, replacement) in ordered:
             text = text[:start] + replacement + text[end:]
         return text
+
+    def check_shared(self, document: Mapping[str, Any]) -> None:
+        """Refuse a node shared by steps that would edit it differently.
+
+        Steps sharing one node through an alias and making the same edits to it are edited once.
+        When one step would change the shared text and another would change it differently, or not
+        at all, no single text serves both, so the file is refused.
+        """
+        import yaml
+
+        steps = _value_of(self.root, "steps")
+        if not isinstance(steps, yaml.SequenceNode):
+            return
+        owners: dict[int, list[int]] = {}
+        anchors: dict[int, str] = {}
+        for index, step in enumerate(steps.value):
+            for node_id in self._reachable(step, None, anchors):
+                owners.setdefault(node_id, []).append(index)
+        for node_id, (node, made) in self.by_node.items():
+            sharing = owners.get(node_id, [])
+            if len(sharing) < 2 or len({frozenset(made.get(index, ())) for index in sharing}) == 1:
+                continue
+            ids = [_step_name(document, index) for index in sharing]
+            anchor = anchors.get(node_id)
+            written = f"the text under the anchor &{anchor}" if anchor else "the same text"
+            raise MigrationError(
+                f"steps {', '.join(ids)} share {written} (line {self._line(node)}) and need different "
+                "edits to it. Write each step's config out in full by hand, then migrate again"
+            )
+
+    def _reachable(self, node: Any, anchor: str | None, anchors: dict[int, str], seen: set[int] | None = None) -> set[int]:
+        """The ids of every node inside ``node``, noting the innermost anchor each sits under."""
+        import yaml
+
+        seen = set() if seen is None else seen
+        if id(node) in seen:
+            return seen
+        seen.add(id(node))
+        match = _ANCHOR.match(self.text, node.start_mark.index)
+        anchor = match.group(1) if match else anchor
+        if anchor is not None:
+            anchors.setdefault(id(node), anchor)
+        if isinstance(node, yaml.MappingNode):
+            children = [part for pair in node.value for part in pair]
+        elif isinstance(node, yaml.SequenceNode):
+            children = node.value
+        else:
+            children = []
+        for child in children:
+            self._reachable(child, anchor, anchors, seen)
+        return seen
+
+    def _edit(self, found: Found, node: Any, edit: tuple[int, int, str]) -> bool:
+        """Record ``edit`` to ``node`` for the step of ``found``. False when it was already made."""
+        path = found.path
+        step = path[1] if len(path) > 1 and path[0] == "steps" and isinstance(path[1], int) else None
+        self.by_node.setdefault(id(node), (node, {}))[1].setdefault(step, set()).add(edit)
+        if edit in self.edits:
+            return False
+        self.edits.append(edit)
+        return True
 
     def apply(self, found: Found) -> None:
         key_node, node = self._locate(found.path)
@@ -180,8 +246,8 @@ class _Editor:
         if self.text[start:end] != found.old:
             self._by_hand(node, f"{found.sentence}; it is written in a way this tool does not edit")
             return False
-        self.edits.append((start, end, found.new))
-        self._change(found, self._line(node))
+        if self._edit(found, node, (start, end, found.new)):
+            self._change(found, self._line(node))
         return True
 
     def _insert(self, found: Found, mapping: Any) -> None:
@@ -195,22 +261,23 @@ class _Editor:
         if mapping.flow_style:
             if mapping.value:
                 at = mapping.value[-1][1].end_mark.index
-                self.edits.append((at, at, f", {entry}"))
+                edit = (at, at, f", {entry}")
             else:
                 at = mapping.end_mark.index - 1
-                self.edits.append((at, at, entry))
+                edit = (at, at, entry)
         else:
             indent = " " * mapping.value[0][0].start_mark.column
             newline = "\r\n" if "\r\n" in self.text else "\n"
             last = _last_written(mapping).end_mark
             if last.column == 0:
-                self.edits.append((last.index, last.index, f"{indent}{entry}{newline}"))
+                edit = (last.index, last.index, f"{indent}{entry}{newline}")
             else:
                 at = self.text.find(newline, last.index)
                 at = len(self.text) if at == -1 else at
-                self.edits.append((at, at, f"{newline}{indent}{entry}"))
+                edit = (at, at, f"{newline}{indent}{entry}")
         self.data_edits.append(("insert", found.path, found.new, found.old))
-        self._change(found, self._line(mapping))
+        if self._edit(found, mapping, edit):
+            self._change(found, self._line(mapping))
 
     def _calls(self, found: Found, node: Any) -> None:
         """Rename each real call in an expression scalar, or say why a person should look."""
@@ -231,13 +298,29 @@ class _Editor:
             return
         size = len(found.old)
         for written, read in zip(raw, parsed, strict=True):
-            if read in offsets:
-                self.edits.append((written, written + size, found.new))
+            if read in offsets and self._edit(found, node, (written, written + size, found.new)):
                 self._change(found, self.text.count("\n", 0, written) + 1)
         new_value = value
         for read in sorted(offsets, reverse=True):
             new_value = new_value[:read] + found.new + new_value[read + size :]
         self.data_edits.append(("set", found.path, None, new_value))
+
+
+_ANCHOR = re.compile(r"&([^\s,\[\]{}]+)")
+
+
+def _value_of(mapping: Any, key: str) -> Any:
+    """The value node under ``key`` in a mapping node, or None."""
+    for key_node, value in getattr(mapping, "value", []):
+        if getattr(key_node, "value", None) == key:
+            return value
+    return None
+
+
+def _step_name(document: Mapping[str, Any], index: int) -> str:
+    step = document["steps"][index]
+    step_id = step.get("id") if isinstance(step, Mapping) else None
+    return repr(step_id) if isinstance(step_id, str) else f"number {index + 1}"
 
 
 def _last_written(node: Any) -> Any:
@@ -287,8 +370,9 @@ def _renamed(document: Any, edits: list[tuple[str, tuple[Any, ...], Any, Any]]) 
 def main(argv: list[str] | None = None) -> int:
     """Report, or with ``--write`` make, the renames in each file. Returns 0, 1 or 2.
 
-    0: nothing to change, or the changes were written. 1: a dry run found changes to make.
-    2: a file could not be read or rewritten safely. It is named and left as it was.
+    0: nothing to change, or the changes were written. 1: a dry run found changes to make, or a
+    file still has something to do by hand. 2: a file could not be read or rewritten safely. It is
+    named and left as it was.
     """
     import argparse
     import json
@@ -302,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port-map", metavar="PATH", help="also write the renamed output ports to PATH as JSON")
     arguments = parser.parse_args(argv)
 
-    refused = changed = False
+    refused = changed = by_hand = False
     for path in _files(arguments.paths):
         try:
             text = path.read_bytes().decode("utf8")
@@ -312,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
             refused = True
             continue
         _report(path, migration, arguments.write)
+        by_hand = by_hand or bool(migration.manual)
         if migration.text != text:
             changed = True
             if arguments.write:
@@ -326,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if refused:
         return 2
-    return 1 if changed and not arguments.write else 0
+    return 1 if by_hand or (changed and not arguments.write) else 0
 
 
 def _files(paths: list[str]) -> list[Path]:
