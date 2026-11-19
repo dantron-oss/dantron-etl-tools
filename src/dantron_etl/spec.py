@@ -16,12 +16,13 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
+from types import MappingProxyType
 from typing import Any
 
-from .errors import PipelineError
+from .errors import PipelineError, name_choices
 from .expr import references
 from .config import expression_values
-from .registry import ToolRegistry
+from .registry import REGISTRY, ToolRegistry
 
 __all__ = ["Container", "Lane", "Pipeline", "PortRef", "Step"]
 
@@ -102,21 +103,38 @@ class Pipeline:
     lanes: tuple[Lane, ...] = ()
     containers: tuple[Container, ...] = ()
     registry: ToolRegistry | None = field(default=None, compare=False, repr=False)
+    # Two lookups built once, so finding a step or the readers of a port does not scan every step.
+    _by_id: Mapping[str, Step] = field(init=False, compare=False, repr=False)
+    _readers: Mapping[PortRef, tuple[PortRef, ...]] = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.registry is None:
+            # Built in code without a registry: use the shipped catalog, as the loader does.
+            object.__setattr__(self, "registry", REGISTRY)
+        by_id: dict[str, Step] = {}
+        for step in self.steps:
+            by_id.setdefault(step.id, step)
+        readers: dict[PortRef, list[PortRef]] = {}
+        for step in self.steps:
+            for port_name, edge in step.inputs.items():
+                readers.setdefault(edge, []).append(PortRef(step.id, port_name))
+        object.__setattr__(self, "_by_id", MappingProxyType(by_id))
+        object.__setattr__(self, "_readers", MappingProxyType({ref: tuple(found) for ref, found in readers.items()}))
 
     def step(self, step_id: str) -> Step:
-        """The step named ``step_id``, or a refusal naming the ids there actually are."""
-        for candidate in self.steps:
-            if candidate.id == step_id:
-                return candidate
-        raise PipelineError(f"no step {step_id!r}; steps are: {', '.join(step.id for step in self.steps)}")
+        """The step named ``step_id``, or a refusal naming the closest ids there are."""
+        found = self._by_id.get(step_id)
+        if found is not None:
+            return found
+        raise PipelineError(f"no step {step_id!r}; {name_choices(step_id, self._by_id)}")
 
     def container(self, container_id: str) -> Container:
         """The container named ``container_id``, or a refusal naming the ones there actually are."""
         for candidate in self.containers:
             if candidate.id == container_id:
                 return candidate
-        declared = ", ".join(container.id for container in self.containers) or "none"
-        raise PipelineError(f"no container {container_id!r}; containers are: {declared}")
+        declared = [container.id for container in self.containers]
+        raise PipelineError(f"no container {container_id!r}; {name_choices(container_id, declared, 'containers')}")
 
     def container_members(self, container_id: str) -> tuple[str, ...]:
         """The steps in ``container_id``, in the order they were declared.
@@ -155,13 +173,13 @@ class Pipeline:
         a reader can check a closed container against and a bigger number that answers to
         nothing.
         """
-        assert self.registry is not None
+        registry = self.registry if self.registry is not None else REGISTRY
         members = set(self.container_members(container_id))
         left: list[PortRef] = []
         for step in self.steps:
             if step.id not in members:
                 continue
-            for port in self.registry.get(step.tool).output_ports:
+            for port in registry.get(step.tool).output_ports:
                 read_by = self.consumers(PortRef(step.id, port))
                 if not read_by or any(ref.step not in members for ref in read_by):
                     left.append(PortRef(step.id, port))
@@ -240,12 +258,7 @@ class Pipeline:
 
     def consumers(self, source: "PortRef") -> tuple["PortRef", ...]:
         """Every input that is wired to ``source``, in the order the consuming steps were declared."""
-        found: list[PortRef] = []
-        for step in self.steps:
-            for port_name, edge in step.inputs.items():
-                if edge == source:
-                    found.append(PortRef(step.id, port_name))
-        return tuple(found)
+        return self._readers.get(source, ())
 
     def stages(self) -> tuple[str, ...]:
         """Distinct stages, in the order each is first seen among the steps as declared."""
@@ -262,10 +275,10 @@ class Pipeline:
         more: a step whose template has no expression field, or whose expression fields carry no
         value, is simply absent -- there is nothing here to publish about it.
         """
-        assert self.registry is not None
+        registry = self.registry if self.registry is not None else REGISTRY
         result: dict[str, dict[str, frozenset[str]]] = {}
         for step in self.steps:
-            tool = self.registry.get(step.tool)
+            tool = registry.get(step.tool)
             values = expression_values(tool.config_template(), step.config)
             if values:
                 result[step.id] = {path: references(text) for path, text in values}

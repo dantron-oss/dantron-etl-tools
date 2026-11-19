@@ -19,7 +19,7 @@ from typing import Any
 
 from .config import apply_defaults, validate_against_template
 from .contract import TERMINAL_CATEGORIES, input_ports_for
-from .errors import ConfigError, PipelineError, RegistryError, ToolError
+from .errors import ConfigError, PipelineError, RegistryError, ToolError, name_choices
 from .expr import ExpressionError
 from .registry import REGISTRY, ToolRegistry
 from .renames import MIGRATE_COMMAND, find_renames, rename_document, summarise
@@ -131,7 +131,7 @@ def _load_pipeline(
     _refuse_bad_containers(resolved_steps, containers)
 
     step_ids = tuple(raw["id"] for raw in resolved_steps)
-    inputs_by_step = {raw["id"]: _resolve_edges(raw, tools_by_step, step_ids) for raw in resolved_steps}
+    inputs_by_step = {raw["id"]: _resolve_edges(raw, tools_by_step) for raw in resolved_steps}
 
     toposort(step_ids, inputs_by_step)  # raises PipelineError by naming the cycle, if there is one
 
@@ -163,24 +163,26 @@ def read_pipeline(
     rules: Mapping[str, Any] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Pipeline:
-    """:func:`load_pipeline`, for a document parsed from a YAML file rather than assembled in memory.
+    """:func:`load_pipeline`, for a document read from a YAML file.
 
-    The core loader takes a mapping because this library ships into repositories that did not
-    choose its dependencies, and a file format is not one of the things a pipeline *is*. PyYAML is
-    imported here, inside the call, exactly the way ``db.py`` reaches for a postgres driver only
-    when a postgres connection is actually asked for -- and refused by naming what to install, not
-    with the bare ``ImportError`` a caller has never heard of.
+    PyYAML is imported here, inside the call, so that importing the library does not import it. Its
+    C parser is used when PyYAML was built with it, which reads a large file about eight times
+    faster; otherwise the pure-Python parser reads the same document.
     """
-    try:
-        import yaml
-    except ImportError as error:
-        raise PipelineError(
-            "reading a pipeline file needs PyYAML, which this library does not depend on; install "
-            "'pyyaml', or call load_pipeline directly with an already-parsed mapping"
-        ) from error
+    import yaml
 
-    document = yaml.safe_load(Path(path).read_text(encoding="utf8"))
+    document = yaml.load(Path(path).read_text(encoding="utf8"), Loader=yaml_loader())
     return _load_explained(document, rules, registry, source=str(path))
+
+
+def yaml_loader() -> Any:
+    """PyYAML's C safe loader when it is there, and its Python safe loader when it is not.
+
+    Both read the same document; the C one is much faster on a file of a thousand steps.
+    """
+    import yaml
+
+    return getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
 # ---------------------------------------------------------------------------
@@ -391,11 +393,7 @@ def _refuse_bad_containers(resolved_steps: list[Mapping[str, Any]], containers: 
 # ---------------------------------------------------------------------------
 
 
-def _resolve_edges(
-    raw: Mapping[str, Any],
-    tools_by_step: Mapping[str, Any],
-    step_ids: tuple[str, ...],
-) -> dict[str, PortRef]:
+def _resolve_edges(raw: Mapping[str, Any], tools_by_step: Mapping[str, Any]) -> dict[str, PortRef]:
     step_id = raw["id"]
     tool = tools_by_step[step_id]
     raw_inputs: Mapping[str, str] = raw.get("inputs", {}) or {}
@@ -435,7 +433,6 @@ def _resolve_edges(
             f"{tool.name} declares input ports: {', '.join(declared_inputs)}"
         )
 
-    step_ids_set = set(step_ids)
     edges: dict[str, PortRef] = {}
     for port_name, source in raw_inputs.items():
         if "." not in source:
@@ -444,10 +441,10 @@ def _resolve_edges(
                 f"reference: an edge names a step and one of its output ports, never a step alone"
             )
         source_step, source_port = source.split(".", 1)
-        if source_step not in step_ids_set:
+        if source_step not in tools_by_step:
             raise PipelineError(
                 f"step {step_id!r} input {port_name!r} refers to step {source_step!r}, which does "
-                f"not exist; steps are: {', '.join(step_ids)}"
+                f"not exist; {name_choices(source_step, tools_by_step)}"
             )
         source_tool = tools_by_step[source_step]
         if source_port not in source_tool.output_ports:

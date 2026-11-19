@@ -12,7 +12,7 @@ from typing import Literal
 import polars as pl
 
 from .contract import Tool, input_ports_for
-from .errors import RunError
+from .errors import RunError, name_choices
 from .spec import Pipeline, PortRef
 from .trace import CachedFrame
 
@@ -42,17 +42,19 @@ def walk_for(spec: Pipeline, until: str | Collection[str] | None) -> tuple[tuple
         return (), order
 
     named = (until,) if isinstance(until, str) else tuple(until)
-    known = ", ".join(step.id for step in spec.steps) or "none"
+    known_ids = [step.id for step in spec.steps]
     if not named:
         raise RunError(
             "until was given an empty collection, so this run would have had nothing to do; pass "
-            f"None to run the whole pipeline, or name at least one of: {known}"
+            "None to run the whole pipeline, or name at least one step"
         )
 
-    known_ids = {step.id for step in spec.steps}
+    known = set(known_ids)
     for step_id in named:
-        if step_id not in known_ids:
-            raise RunError(f"until names step {step_id!r}, which this pipeline does not have; steps are: {known}")
+        if step_id not in known:
+            raise RunError(
+                f"until names step {step_id!r}, which this pipeline does not have; {name_choices(step_id, known_ids)}"
+            )
 
     closure = spec.ancestor_closure(named)
 
@@ -91,8 +93,10 @@ def _named_port(
 
     tool = tools_by_step.get(ref.step)
     if tool is None:
-        steps = ", ".join(step.id for step in spec.steps) or "none"
-        raise RunError(f"{argument} names step {ref.step!r}, which this pipeline does not have; steps are: {steps}")
+        raise RunError(
+            f"{argument} names step {ref.step!r}, which this pipeline does not have; "
+            f"{name_choices(ref.step, tools_by_step)}"
+        )
     if ref.port not in tool.output_ports:
         ports = ", ".join(tool.output_ports) if tool.output_ports else "none"
         raise RunError(
