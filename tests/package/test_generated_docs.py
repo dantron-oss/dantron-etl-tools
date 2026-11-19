@@ -76,3 +76,13 @@ def test_every_key_the_loader_accepts_is_described(pages: dict[Path, str], gener
     keys = {*loader._DOCUMENT_KEYS, *loader._STEP_KEYS, *loader._LANE_KEYS, *loader._CONTAINER_KEYS}
     missing = sorted(key for key in keys if f"| `{key}` |" not in text)
     assert not missing, f"docs/pipeline-file.md describes no key {missing}"
+
+
+def test_the_readme_states_the_real_tool_count() -> None:
+    from dantron_etl import REGISTRY
+
+    count = len(list(REGISTRY.tools()))
+    readme = (ROOT / "README.md").read_text(encoding="utf8")
+    assert f"## The {count} tools" in readme, f"README.md should say 'The {count} tools'"
+    missing = sorted(tool.name for tool in REGISTRY.tools() if f"`{tool.name}`" not in readme)
+    assert not missing, f"README.md's tool table leaves out {missing}"

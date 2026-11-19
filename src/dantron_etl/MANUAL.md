@@ -1,7 +1,9 @@
 # Manual: building a data pipeline with this library
 
-Written for an LLM agent. If you are a person, it works for you too, but the ordering and the
-bluntness are aimed at an agent deciding what to do next.
+Written for an LLM agent deciding what to do next. People will find the same material, written
+for them, in the repository's `docs/` folder: a first-pipeline walk-through, concepts, a reference
+for the pipeline file and the expression language, a page per tool, and a cookbook. This manual
+ships inside the package, so an agent has it wherever the library is installed.
 
 This library gives you a fixed set of **tools**. You build a data pipeline by writing a YAML file
 that names tools and configures them. You do not write transformation code, and you do not add a
@@ -144,10 +146,22 @@ steps:
     config:
       predicate: "[placed_on] >= date'2025-01-01'"
     inputs: {rows: orders.rows}
+
+  - id: save
+    tool: write_csv
+    lane: figures
+    stage: output
+    why: The orders in the window, as a file for the team.
+    config:
+      path: output/recent_orders.csv
+      overwrite: true
+    inputs: {rows: recent_orders.true}
 ```
 
-Every step has `id`, `tool`, `config`, and `inputs` (except a source, which reads no port). `lane`,
-`stage` and `why` drive the rendered walkthrough.
+A file needs `name` and `steps`. Every step has `id` and `tool`, and usually `config` and `inputs`
+(a source reads no port). `lane`, `stage` and `why` drive the drawn page. Every step's output must
+be read by something, or the file is refused: a step nothing reads is a dead end. A writer
+(`write_csv` and the other `output` tools) and `assert_rows` count as reading.
 
 The loader refuses any key it does not know, at every level: the top of the file (`name`, `steps`,
 `lanes`, `containers`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `container`,
@@ -160,9 +174,11 @@ meant. `stage` is free text, so a misspelt stage is not caught: it draws as a st
 name is now called, and names the command that rewrites the file:
 
 ```bash
-python -m dantron_etl.migrate pipelines/          # a dry run: what would change, file by file
-python -m dantron_etl.migrate --write pipelines/  # apply it
+dantron-etl migrate pipelines/          # a dry run: what would change, file by file
+dantron-etl migrate --write pipelines/  # apply it
 ```
+
+`python -m dantron_etl.migrate` is the same command.
 
 It edits the file's text, so comments, layout and `why` text are kept exactly. Pass the rules files
 too: an expression in one is migrated the same way. Python code is not rewritten; the command
@@ -176,7 +192,7 @@ the step decides and why that is the right decision, not what the configuration 
 A step's inputs and outputs are **named frames**, not a single value. `inputs` wires one upstream
 port to one of this tool's input ports:
 
-```yaml
+```yaml fragment
 inputs:
   left: orders.rows
   right: customers.rows
@@ -323,7 +339,7 @@ no field that only applies when another field holds a particular value.
 A flow of any size is unreadable as a list of steps. `containers` names boxes and each step says which
 box it is in:
 
-```yaml
+```yaml fragment
 containers:
   - {id: read_accounts, title: "Fetch the account list and put its header row back"}
 
@@ -426,7 +442,7 @@ data they were written against.
 
 ## 5. Rules that bite
 
-Every one of these was measured, most of them the hard way.
+Each of these has caught a real pipeline.
 
 ### YAML will rewrite your words
 
@@ -618,10 +634,10 @@ Every one of these was measured, most of them the hard way.
 
 ### Paths
 
-- **A relative `path:` resolves against the working directory of the process running the pipeline**,
-  not against the pipeline file. Run from a consistent place, use absolute paths, or pass
-  `run_pipeline(spec, base_dir=project_folder)`: then a relative path is read from that folder,
-  whatever the working directory is.
+- **A relative `path:` is read from the project folder when the `dantron-etl` command runs the
+  pipeline**, wherever the command was started. From Python it is read from the working directory
+  of the process, not from the pipeline file's folder; pass
+  `run_pipeline(spec, base_dir=project_folder)` to read it from a folder you name.
 - **A writer stops on an empty frame unless the step allows it.** `write_table`, `publish_tables`
   (per table), `write_csv` and `write_excel` (per sheet) all refuse a frame with no rows until
   `allow_empty: true` says the branch may be empty, because a table or file that is empty for a
@@ -711,7 +727,7 @@ where you stopped.
 
 **`until`** runs a step and everything behind it, and nothing else:
 
-```python
+```python fragment
 trace = run_pipeline(spec, until="clients_joined")
 ```
 
@@ -722,8 +738,9 @@ is refused before anything runs.
 **`cached`** hands a port back to a later run so the steps behind it do not run at all:
 
 ```python
-from dantron_etl import CachedFrame
+from dantron_etl import CachedFrame, PortRef, read_pipeline, run_pipeline
 
+spec = read_pipeline("pipelines/sales.yaml")
 first = run_pipeline(spec, until="clients_joined")
 port = PortRef("clients_joined", "rows")
 
@@ -842,20 +859,18 @@ And the standards a reviewer will hold it to:
 
 ### 8.3 Where
 
-Open the issue or pull request against the repository this package is distributed from — see the
-`Source` URL in the distribution's metadata (`project.urls` in its `pyproject.toml`). It is not
-hardcoded here on purpose: this package is designed to be lifted into its own repository with no
-renames, and a manual naming the repository it currently happens to live in would be wrong the day
-after that move.
+Open the issue or pull request against the repository this package is distributed from: the
+`Source` URL in the distribution's metadata (`project.urls` in its `pyproject.toml`). Its
+`CONTRIBUTING.md` lists how to set up, the tests to run and the standards a change is held to.
 
 ---
 
 ## 9. A worked shape, end to end
 
 A common pattern: reduce a group to one row, keep the detail that would otherwise be lost, and check
-the result.
+the result. These steps continue the file in section 4.
 
-```yaml
+```yaml fragment
   - id: ordered_rows
     tool: sort
     lane: figures
