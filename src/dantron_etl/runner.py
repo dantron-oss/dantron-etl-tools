@@ -23,7 +23,9 @@ refusal after several steps have already written somewhere is not a refusal. A c
 expression names is checked against a step's own input frames the moment they exist -- not for
 the whole flow at once, because no tool declares the columns it produces, so an up-front pass
 could only ever reach the steps fed by frames supplied before the run began. That check, and a
-source supplied on only some of its ports, can therefore refuse after earlier steps have written.
+type error in an expression, can therefore refuse after earlier steps have written; every
+refusal about the run's own arguments (``until``, ``sources``, ``cached``, ``keep``, ``base_dir``)
+comes before the first step.
 
 A source step is handed its frame rather than made to read one, because every zero-input tool in
 the catalog opens a file or a database, and a run driven from tests, from a notebook, or from an

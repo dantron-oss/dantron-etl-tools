@@ -710,6 +710,10 @@ This is not an oversight in the hash. Reading the sources to find out whether th
 running the steps the cache exists to skip, so a fingerprint that covered the data would cost exactly
 what it saves. The honest answer is a rule a person follows, which is why it is written here.
 
+The fingerprint does not cover the library either: a cache taken before you upgrade the library, or
+edit it in place, still matches afterwards even when a tool now computes something different. Take
+a fresh cache after changing the library.
+
 ---
 
 ## 8. When a tool really is missing

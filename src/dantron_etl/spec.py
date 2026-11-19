@@ -91,8 +91,9 @@ class Step:
 @dataclass(frozen=True, slots=True)
 class Pipeline:
     """A whole flow: its steps in the order they were authored, its lanes, and the registry it was
-    checked against -- needed by :meth:`column_references` and :meth:`container_outputs`, which have to
-    ask a tool for its template and its ports.
+    checked against -- needed by :meth:`column_references`, :meth:`container_outputs` and
+    :meth:`fingerprint`, which have to ask a tool for its template and its ports. A pipeline built in
+    code without a registry is given the shipped one.
 
     ``registry`` does not participate in equality: two specs loaded from the same document against
     the same catalog are the same pipeline, whatever registry object happened to answer for it.
