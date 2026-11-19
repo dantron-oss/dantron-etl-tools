@@ -481,9 +481,11 @@ Every one of these was measured, most of them the hard way.
 
 - **A blank name for an output column is refused by every tool that takes one.** Empty, or nothing
   but whitespace -- a non-breaking space pasted from a spreadsheet counts, and is the one you
-  cannot see -- in `formula`'s `columns[].name`, in the `output` of `assemble_date`,
-  `case_when`, `date_diff`, `normalize_text` and `record_id`, or in `regex_extract_groups`'
-  `position_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
+  cannot see -- in `formula`'s `columns[].name`, `group_by`'s `aggregations[].name`, the `output`
+  of `assemble_date`, `case_when`, `date_diff`, `normalize_text` and `record_id`, `unpivot`'s
+  `names_to` and `values_to`, `expand_date_range`'s `period_column`, `rename_columns`' `to`,
+  `make_groups`' `record_column` and `group_column`, and `regex_extract_groups`' `position_column`
+  and `match_number_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
   you can write — and it reads as an unnamed column in every rendering, so the step that wrote it
   reports success and the step after it cannot see what it produced. The rule is about a name that
   is *nothing*, not one that is unusual: `" total "` keeps its spaces and is written as spelled.

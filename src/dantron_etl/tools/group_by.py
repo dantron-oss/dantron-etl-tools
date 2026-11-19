@@ -80,6 +80,7 @@ from ..authoring import (
     compiled_dtype,
     references,
     require_columns,
+    require_not_blank,
 )
 
 # The published aggregate whitelist, mirroring how ``expr.ALLOWED_FUNCTIONS`` is published: a
@@ -243,6 +244,7 @@ class GroupBy:
             function = aggregation["function"]
             value = aggregation.get("value")
 
+            require_not_blank(name, f"aggregations[{index}].name")
             if name in by_columns:
                 raise ConfigError(
                     f"aggregation output name {name!r} collides with group-by column {name!r}; "

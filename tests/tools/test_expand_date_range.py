@@ -430,3 +430,15 @@ class TestExpandDateRangeInTheCatalog:
         """Registered under its machine name. The whole catalog is checked once, in tests/core/test_registry.py."""
         assert "expand_date_range" in REGISTRY
         assert isinstance(REGISTRY.get("expand_date_range"), ExpandDateRange)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_period_column_name_is_refused_when_the_pipeline_loads(blank: str) -> None:
+    """A column with no name cannot be referred to by any later step, so it is never written."""
+    config = {"start": "[s]", "end": "[e]", "period_column": blank}
+    rows = pl.DataFrame({"s": [date(2026, 1, 1)], "e": [date(2026, 2, 1)]})
+
+    with pytest.raises(ConfigError, match="'period_column' must not be blank"):
+        ExpandDateRange().validate_config(config)
+    with pytest.raises(ConfigError, match="'period_column' must not be blank"):
+        run_tool(ExpandDateRange(), Ports({"rows": rows}), config)

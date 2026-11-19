@@ -1145,3 +1145,14 @@ class TestATotalTooLargeForItsTypeStopsTheRun:
         assert result["total"].dtype == dtype
         assert result["total"].to_list() == [limit, 7, None]
         assert empty.schema["total"] == dtype
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_aggregation_name_is_refused_when_the_pipeline_loads(blank: str) -> None:
+    """A column with no name cannot be referred to by any later step, so it is never written."""
+    config = {"by": ["code"], "aggregations": [_aggregation("total", "sum", "[amount]"), _aggregation(blank, "count")]}
+
+    with pytest.raises(ConfigError, match=r"'aggregations\[1\]\.name' must not be blank"):
+        GroupBy().validate_config(config)
+    with pytest.raises(ConfigError, match=r"'aggregations\[1\]\.name' must not be blank"):
+        run_tool(GroupBy(), Ports({"rows": _rows()}), config)

@@ -39,6 +39,7 @@ from ..authoring import (
     WorkedExample,
     compile_for,
     compiled_dtype,
+    require_not_blank,
 )
 
 # One member, on purpose: every other unit brings its own boundary question -- what a partial
@@ -99,7 +100,7 @@ class ExpandDateRange:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        return None
+        require_not_blank(config["period_column"], "period_column")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """The two questions the schema alone can answer: are the ends dates, and is the name free.

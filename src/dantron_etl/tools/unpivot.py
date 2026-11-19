@@ -118,6 +118,7 @@ from ..authoring import (
     ToolHelp,
     WorkedExample,
     require_columns,
+    require_not_blank,
     row_status,
     unreadable_report,
 )
@@ -272,6 +273,7 @@ class Unpivot:
         by_columns = set(_by_columns(config))
         for field in ("names_to", "values_to"):
             column = config[field]
+            require_not_blank(column, field)
             if column in by_columns:
                 raise ConfigError(
                     f"config field {field!r} names new column {column!r}, which is also in "
