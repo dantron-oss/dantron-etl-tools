@@ -8,6 +8,7 @@ written into it, spelled for the kind of field it sits in.
 
 import re
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 from .config import ConfigField
@@ -96,53 +97,126 @@ def _resolve_text(text: str, spec: ConfigField | None, rules: Mapping[str, Any],
 
     def written(match: re.Match[str]) -> str:
         value = _rule_value(match.group(1), rules, step_id)
+        rule = match.group(1).removeprefix("rules.")
         if not is_expression:
-            return value if isinstance(value, str) else str(value)
-        return _as_expression(
-            value,
-            inside_literal=text[: match.start()].count("'") % 2 == 1,
-            rule=match.group(1).removeprefix("rules."),
-            step_id=step_id,
-        )
+            return _as_text(value, rule=rule, step_id=step_id, where="into this field's text")
+        return _as_expression(value, inside_literal=_inside_quotes(text, match.start()), rule=rule, step_id=step_id)
 
     return _PLACEHOLDER.sub(written, text)
+
+
+def _inside_quotes(text: str, offset: int) -> bool:
+    """Whether ``offset`` sits inside quotes the author wrote, reading ``text`` as the language does.
+
+    A quote inside a column name in square brackets, like ``[client's name]``, is part of the name
+    and opens no text. A doubled quote inside text is one quote, and toggles twice.
+    """
+    inside_text = False
+    inside_brackets = False
+    for char in text[:offset]:
+        if inside_brackets:
+            inside_brackets = char != "]"
+        elif char == "'":
+            inside_text = not inside_text
+        elif char == "[" and not inside_text:
+            inside_brackets = True
+    return inside_text
+
+
+def _kind(value: Any) -> str:
+    """What a rule value is, in the words a refusal uses."""
+    if value is None:
+        return "a null"
+    if isinstance(value, bool):
+        return "a truth value"
+    if isinstance(value, (list, tuple)):
+        return "a list"
+    if isinstance(value, Mapping):
+        return "a mapping"
+    if isinstance(value, float):
+        return "a decimal"
+    if isinstance(value, datetime):
+        return "a timestamp"
+    return f"a {type(value).__name__}"
+
+
+def _as_text(value: Any, *, rule: str, step_id: str, where: str) -> str:
+    """A rule value written into text: text as it is, a whole number in digits, a date as YYYY-MM-DD.
+
+    Anything else has more than one text form, or none, so it is refused rather than written the way
+    Python prints it. ``no`` would otherwise become ``False`` and a list ``['a', 'b']``.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    raise PipelineError(
+        f"step {step_id!r} writes rule {rule!r} {where}, but the rule's value is {_kind(value)} "
+        f"({value!r}), which has no single text form. Quote the value in the rules file to state the "
+        f"text you mean. YAML reads bare words like yes, no and null as other types, and a number with "
+        f"a decimal point as a decimal."
+    )
 
 
 def _as_expression(value: Any, *, inside_literal: bool, rule: str, step_id: str) -> str:
     """One rule value, written into an expression field in the expression language's own spelling.
 
-    Each element of a list is spelled by its own type: text is quoted and escaped, a number is not,
-    because a number in quotes is text and text against a number column is refused.
-
     ``inside_literal`` says whether the reference sits inside quotes the author wrote themselves.
     ``[code] = '${rules.kept_code}'`` and ``[month] >= date'${rules.start_month}'`` are both written
-    that way in real pipeline files, and both have to keep working. Inside, the value needs the
-    escaping only; outside, it needs the quotes as well. The parity of ``'`` before the reference
-    answers that, and stays right under doubling because every literal is balanced.
+    that way in real pipeline files, and both have to keep working. Inside quotes the author asked
+    for text, so the value is written as text (see :func:`_as_text`) and escaped. A list there is
+    refused with a pointer to ``in``, which is almost always what was meant.
 
-    A truth value and a null have a spelling in this language and get it -- but only outside a
-    literal. Inside one, the author asked for text and the rules file holds none, so that is refused
-    rather than written as ``'False'``, which compiles, matches nothing and reports success.
+    Outside quotes each value takes the language's own spelling: text quoted and escaped, a number
+    as written, a truth value and a null as ``true``, ``false`` and ``null``, a date as
+    ``date'YYYY-MM-DD'``, and a list in parentheses with each element spelled by its own type. An
+    empty list is refused, because ``in ()`` matches nothing. A mapping has no spelling here.
     """
-    if value is None or isinstance(value, bool):
-        if inside_literal:
+    if inside_literal:
+        if isinstance(value, (list, tuple)):
+            raise PipelineError(
+                f"step {step_id!r} writes rule {rule!r} inside quotes, where this language reads text, but "
+                f"the rule's value is a list. To match any value in the list, write it without quotes "
+                f"after 'in', as in [code] in ${{rules.{rule}}}"
+            )
+        if value is None or isinstance(value, bool):
             raise PipelineError(
                 f"step {step_id!r} writes rule {rule!r} inside quotes, where this language reads "
                 f"text, but the rule's value is {value!r} -- a truth value or a null, which this "
                 f"language spells without quotes. YAML reads bare words like yes/no/on/off/null "
                 f"that way too: quote the value in the rules file to state the text you meant."
             )
-        if value is None:
-            return "null"
+        return escape_text(_as_text(value, rule=rule, step_id=step_id, where="inside quotes in an expression"))
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
         return "true" if value else "false"
-    if inside_literal:
-        return escape_text(str(value))
     if isinstance(value, (list, tuple)):
+        if not value:
+            raise PipelineError(
+                f"step {step_id!r} writes rule {rule!r}, which is an empty list, so 'in' would match "
+                f"nothing and 'not in' everything. Give the rule at least one value"
+            )
+        if any(isinstance(item, (list, tuple, Mapping)) for item in value):
+            raise PipelineError(
+                f"step {step_id!r} writes rule {rule!r}, a list holding another list or a mapping; a list "
+                f"of values to match holds text, numbers or dates only"
+            )
         elements = (_as_expression(item, inside_literal=False, rule=rule, step_id=step_id) for item in value)
         return "(" + ", ".join(elements) + ")"
     if isinstance(value, str):
         return quote_text(value)
-    return str(value)
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return f"date'{value.isoformat()}'"
+    if isinstance(value, (int, float)):
+        return str(value)
+    raise PipelineError(
+        f"step {step_id!r} writes rule {rule!r} into an expression, but the rule's value is {_kind(value)} "
+        f"({value!r}), which this language has no way to write. A rule written into an expression holds "
+        f"text, a number, a date, true, false, null, or a list of those"
+    )
 
 
 def _rule_value(reference: str, rules: Mapping[str, Any], step_id: str) -> Any:
