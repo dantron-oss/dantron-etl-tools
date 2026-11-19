@@ -747,3 +747,39 @@ order mark is dropped; invalid bytes are refused, never read lossily.
 
 **Parsing.** A file with no quote character is split directly; otherwise Python's csv reader handles
 quoted fields that contain the delimiter or a line break.
+
+## read_excel
+
+**A sheet is named, never an index.** "The first tab" is a guess dressed as a default: a delivered pack
+often has a cover sheet in front of the figures, for exactly the readers who never configure a flow. A
+name that is not there is refused with the names that are, in the words used for a missing column. A
+near miss (other case, trailing space) is not a match. This mirrors read_table, which accepts a table
+name and never a query.
+
+**What comes back is what the sheet holds.** Whole numbers stored as floats come back whole. fastexcel
+decides a column's type from its first 100 rows, so text in those rows makes the column text. Text
+further down a column of figures, or a word fastexcel treats as missing (`n/a`, `#N/A`), would read as
+null; the read stops instead and points to `as_text`. The check reads the sheet a second time as text
+and compares cell by cell.
+
+**The header is the schema.** A repeated, blank, date or true/false heading is refused, not repaired,
+and two headings that read the same (2026 and "2026") count as repeated. Repaired, fastexcel's own
+names (`key_1`, `__UNNAMED__1`) would leak into column names the moment a later step names one.
+
+**No cell range.** `skip_rows` reaches a header below a title block; narrowing columns or rows is
+select_columns or filter after this step.
+
+**`sheets_matching` stacks by name.** Not one read step per tab, which has to be edited each time the
+workbook gains a tab. Each sheet is read as if named alone. Stacking lines columns up by name; whole and
+decimal become decimal; an empty column takes the others' type; any other difference is refused.
+`sheet_column` is required, since rows from different sheets must be told apart.
+
+**`as_text` reads four times.** fastexcel reads a whole column as one type. To give each cell the text
+of what it stores, the sheet is read as text, figures, true/false and dates, and each cell takes the
+reading that suits it. The text reading alone is faster but rounds figures (99999999999.99 comes back
+99999999999.990005493). Excel stores dates and times as one number, so midnight reads as a date and a
+time-only cell reads as that time on 1899-12-31. A test pins each case.
+
+**Lazy import.** fastexcel and xlsxwriter (for the examples) are imported inside the functions that use
+them, so importing the package does not load them (findings G-17 / B-21). A missing fastexcel is refused
+with the name of the package to install. A test imports the package in a fresh interpreter and checks.
