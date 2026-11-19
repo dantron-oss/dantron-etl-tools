@@ -401,3 +401,20 @@ steps need. Every row is rewritten, so a row no case reached gets `otherwise` or
 **Division by zero is checked where it is used** (owner's ruling C-02, applied as SQL's CASE). A case's
 condition is checked on rows no earlier case took, its value on the rows it takes, `otherwise` on rows
 no case took. So a case that catches the zero rows first guards a later division.
+
+## assert_rows
+
+**One output port.** A second port for the failing rows could never be read: when the check fails the
+run stops, and when it passes the port is empty. So the failing rows go in the message. A flow that
+wants them as data uses filter.
+
+**A failed check is a `DataError`.** The reader's next move is to look at the data, not the flow file
+or the run.
+
+**An empty frame fails by default.** Every row of an empty frame meets every condition, which is the
+silence a filter that matched nothing leaves behind, the most common failure these checks exist to
+catch. `allow_empty` says in writing that a branch may be empty.
+
+**A null result always fails.** filter has a `nulls` setting because both choices are valid when
+selecting rows. For a rule that must hold, "could not tell" is never a pass, and a setting to allow it
+would exist only to silence the check.
