@@ -31,7 +31,12 @@ from .renames import (
     port_map,
 )
 
-__all__ = ["Change", "Migration", "MigrationError", "main", "migrate_text"]
+__all__ = ["Change", "Migration", "MigrationError", "main", "migrate_text", "rule_uses"]
+
+#: How a pipeline uses a rule: as the whole of an expression field, where its value is read as an
+#: expression, or anywhere else, where its value is text (a pattern, a name, or a quoted literal).
+EXPRESSION_USE = "expression"
+OTHER_USE = "other"
 
 
 class MigrationError(Exception):
@@ -57,8 +62,12 @@ class Migration:
     manual: list[str] = field(default_factory=list)
 
 
-def migrate_text(text: str) -> Migration:
-    """``text`` rewritten in the new names. Refuses text that is not a YAML mapping."""
+def migrate_text(text: str, *, rule_uses: Mapping[str, set[str]] | None = None) -> Migration:
+    """``text`` rewritten in the new names. Refuses text that is not a YAML mapping.
+
+    For a rules file, ``rule_uses`` says how the pipelines being migrated with it use each rule (see
+    :func:`rule_uses`). A rule's value is rewritten only when every use is as a whole expression.
+    """
     import yaml
 
     try:
@@ -69,7 +78,7 @@ def migrate_text(text: str) -> Migration:
     if not isinstance(document, dict) or not isinstance(root, yaml.MappingNode):
         raise MigrationError("it does not hold a mapping of keys, so it is neither a pipeline file nor a rules file")
 
-    found = find_renames(document) if "steps" in document else _settings_calls(document)
+    found = find_renames(document) if "steps" in document else _settings_calls(document, rule_uses or {})
     editor = _Editor(text, root)
     for item in found:
         editor.apply(item)
@@ -88,8 +97,14 @@ def migrate_text(text: str) -> Migration:
     return Migration(new_text, changes, dict(Counter(change.rename for change in changes)), editor.manual)
 
 
-def _settings_calls(document: Mapping[str, Any]) -> list[Found]:
-    """In a rules or settings file, every string value that is an expression calling an old function."""
+def _settings_calls(document: Mapping[str, Any], uses: Mapping[str, set[str]]) -> list[Found]:
+    """In a rules file, the old function calls in each rule's value: rewritten, or noted for a person.
+
+    A rule's value is code only where a pipeline uses the rule as the whole of an expression field.
+    Anywhere else it is text: a pattern, a name, or a value quoted into an expression. So a call is
+    rewritten only in a rule every use of which, among the pipelines given, is a whole expression.
+    Any other rule holding what looks like a call is left alone and noted.
+    """
     found: list[Found] = []
 
     def walk(value: Any, path: tuple[Any, ...]) -> None:
@@ -102,14 +117,67 @@ def _settings_calls(document: Mapping[str, Any]) -> list[Found]:
         elif isinstance(value, str):
             for old, new in FUNCTION_RENAMES.items():
                 offsets, count = function_calls(value, old)
-                if count is not None and (offsets or count):
-                    shown = ".".join(str(part) for part in path)
-                    found.append(
-                        Found("call", path, old, new, f"{old}() -> {new}()", f"{shown!r} calls {old!r}, now {new!r}")
-                    )
+                if count is None or not (offsets or count):
+                    continue
+                rule = str(path[0])
+                if uses.get(rule) == {EXPRESSION_USE}:
+                    found.append(Found("call", path, old, new, f"{old}() -> {new}()", f"rule {rule!r} calls {old!r}, now {new!r}"))
+                    continue
+                if not uses.get(rule):
+                    why = "no pipeline file given uses this rule"
+                else:
+                    why = "a pipeline file given uses this rule as text, not as a whole expression"
+                sentence = (
+                    f"not migrated automatically: rule {rule!r} = {value!r} looks like it may contain a "
+                    f"renamed function ({old}() is now {new}()); {why}, so check by hand"
+                )
+                found.append(Found("manual", path, old, new, "", sentence, retired=False))
 
     walk(document, ())
     return found
+
+
+def rule_uses(document: Any, registry: Any = None) -> dict[str, set[str]]:
+    """How a pipeline document uses each ``${rules.name}`` it references.
+
+    A reference that is the whole of an expression field is an expression use. A reference anywhere
+    else, including inside the text of an expression, where the value is quoted in as text, is an
+    other use. Fields are read from each tool's template, so the document should be in the new names.
+    """
+    from .errors import RegistryError
+    from .registry import REGISTRY
+
+    active = registry if registry is not None else REGISTRY
+    uses: dict[str, set[str]] = {}
+    whole = re.compile(r"\$\{rules\.([^}]*)\}")
+
+    def walk(value: Any, spec: Any) -> None:
+        if isinstance(value, str):
+            matched = whole.fullmatch(value)
+            if matched is not None and spec is not None and spec.type == "expression":
+                uses.setdefault(matched.group(1), set()).add(EXPRESSION_USE)
+                return
+            for reference in whole.finditer(value):
+                uses.setdefault(reference.group(1), set()).add(OTHER_USE)
+        elif isinstance(value, list):
+            element = spec.items if spec is not None and spec.type == "array" else None
+            for item in value:
+                walk(item, element)
+        elif isinstance(value, dict):
+            members = spec.fields if spec is not None and spec.type == "object" and spec.fields else {}
+            for key, item in value.items():
+                walk(item, members.get(key))
+
+    for step in document.get("steps") or () if isinstance(document, Mapping) else ():
+        if not isinstance(step, Mapping) or not isinstance(step.get("config"), Mapping):
+            continue
+        try:
+            template = active.get(step.get("tool")).config_template()
+        except (RegistryError, TypeError):
+            template = {}
+        for key, item in step["config"].items():
+            walk(item, template.get(key))
+    return uses
 
 
 class _Editor:
@@ -387,12 +455,39 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     refused = changed = by_hand = False
+    texts: dict[Path, str] = {}
     for path in _files(arguments.paths):
         try:
-            text = path.read_bytes().decode("utf8")
-            migration = migrate_text(text)
-        except (MigrationError, OSError, UnicodeDecodeError) as error:
+            texts[path] = path.read_bytes().decode("utf8")
+        except (OSError, UnicodeDecodeError) as error:
             print(f"{path}: not migrated, {error}")
+            refused = True
+
+    # Pipelines first: how they use each rule decides what may change in a rules file.
+    results: dict[Path, Migration | MigrationError] = {}
+    uses: dict[str, set[str]] = {}
+    for path, text in texts.items():
+        if not _is_pipeline(text):
+            continue
+        try:
+            results[path] = migrate_text(text)
+            for rule, kinds in rule_uses(_parsed(results[path].text)).items():
+                uses.setdefault(rule, set()).update(kinds)
+        except MigrationError as error:
+            results[path] = error
+            for rule in re.findall(r"\$\{rules\.([^}]*)\}", text):
+                uses.setdefault(rule, set()).add(OTHER_USE)  # unknown use: never rewrite the rule
+    for path, text in texts.items():
+        if path not in results:
+            try:
+                results[path] = migrate_text(text, rule_uses=uses)
+            except MigrationError as error:
+                results[path] = error
+
+    for path, text in texts.items():
+        migration = results[path]
+        if isinstance(migration, MigrationError):
+            print(f"{path}: not migrated, {migration}")
             refused = True
             continue
         _report(path, migration, arguments.write)
@@ -412,6 +507,23 @@ def main(argv: list[str] | None = None) -> int:
     if refused:
         return 2
     return 1 if by_hand or (changed and not arguments.write) else 0
+
+
+def _parsed(text: str) -> Any:
+    import yaml
+
+    return yaml.safe_load(text)
+
+
+def _is_pipeline(text: str) -> bool:
+    """Whether ``text`` reads as a pipeline file: a mapping with a list of steps."""
+    import yaml
+
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return "\nsteps:" in f"\n{text}"
+    return isinstance(document, dict) and "steps" in document
 
 
 def _files(paths: list[str]) -> list[Path]:

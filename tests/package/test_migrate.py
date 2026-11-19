@@ -909,23 +909,107 @@ class TestReportedNotMigrated:
 # ---------------------------------------------------------------------------
 
 
+RULES_FLOW = textwrap.dedent("""\
+    name: Rule uses
+    steps:
+      - id: orders
+        tool: read_csv
+        config: {path: orders.csv}
+      - id: cleaned
+        tool: formula
+        config:
+          columns:
+            - {name: code_key, value: "${rules.clean_code}"}
+            - {name: tidy, value: "${rules.tidy}"}
+            - {name: tagged, value: "concat('x', '${rules.quoted}')"}
+        inputs: {rows: orders.rows}
+      - id: kept
+        tool: filter
+        config: {predicate: "${rules.tidy}"}
+        inputs: {rows: cleaned.rows}
+      - id: parts
+        tool: regex_extract_groups
+        config: {source: "[code]", pattern: "${rules.code_pattern}"}
+        inputs: {rows: kept.true}
+      - id: split_up
+        tool: regex_extract_groups
+        config: {source: "[code]", pattern: "${rules.both_ways}"}
+        inputs: {rows: parts.rows}
+      - id: both_check
+        tool: filter
+        config: {predicate: "${rules.both_ways}"}
+        inputs: {rows: split_up.rows}
+      - id: out
+        tool: write_csv
+        config: {path: out.csv}
+        inputs: {rows: both_check.true}
+""")
+
+RULES_FILE = textwrap.dedent("""\
+    # Rules for the orders flow.
+    clean_code: "upper(strip([code]))"   # an expression, used whole in an expression field
+    tidy: "strip([note]) != ''"
+    quoted: "strip(x)"                   # written inside quotes in an expression: it is text there
+    code_pattern: "strip(ped|ping)"      # a pattern, never an expression
+    both_ways: "strip([code])"           # used whole in a predicate and as a pattern
+    unused: "strip([other])"             # no pipeline given uses it
+    threshold: 100
+""")
+
+
 class TestOtherKindsOfFile:
-    def test_a_rules_file_has_only_its_strip_calls_migrated(self) -> None:
-        old = textwrap.dedent("""\
-            # Settings for the orders flow.
-            rules:
-              threshold: 100
-              cleaned: "strip([code])"   # an expression
-              note: "use strip( to tidy"
-              index: values
-            focus: code
-        """)
-        expected = old.replace('"strip([code])"', '"trim([code])"')
+    """A rule's value is code only where a pipeline uses the rule as the whole of an expression field."""
 
-        migration = migrate_text(old)
+    def _run(self, tmp_path: Path, *flags: str) -> tuple[int, Path, Path]:
+        flow = tmp_path / "flow.yaml"
+        rules = tmp_path / "rules.yaml"
+        flow.write_text(RULES_FLOW, encoding="utf8")
+        rules.write_text(RULES_FILE, encoding="utf8")
+        return main([str(flow), str(rules), *flags]), flow, rules
 
-        assert migration.text == expected
-        assert migration.counts["strip() -> trim()"] == 1
+    def test_a_rule_used_only_as_a_whole_expression_is_rewritten(self, tmp_path: Path) -> None:
+        _, _, rules = self._run(tmp_path, "--write")
+
+        text = rules.read_text(encoding="utf8")
+        assert 'clean_code: "upper(trim([code]))"   # an expression, used whole in an expression field' in text
+        assert "tidy: \"trim([note]) != ''\"" in text
+
+    def test_a_rule_that_is_not_shown_to_be_an_expression_is_left_alone_and_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code, _, rules = self._run(tmp_path, "--write")
+        printed = capsys.readouterr().out
+
+        text = rules.read_text(encoding="utf8")
+        for line in (
+            'quoted: "strip(x)"',
+            'code_pattern: "strip(ped|ping)"',
+            'both_ways: "strip([code])"',
+            'unused: "strip([other])"',
+        ):
+            assert line in text, f"{line} was changed"
+        assert code == 1, "a file with something to check by hand is not done"
+        report = printed[printed.index("rules.yaml") :]
+        assert "not migrated automatically" in report
+        assert "check by hand" in report
+        for name, value in (
+            ("quoted", "strip(x)"),
+            ("code_pattern", "strip(ped|ping)"),
+            ("both_ways", "strip([code])"),
+            ("unused", "strip([other])"),
+        ):
+            assert re.search(rf"\b{name}\b.*{re.escape(value)}", report), f"{name} is not reported with its value"
+        for name in ("clean_code", "tidy"):
+            assert not re.search(rf"\b{name}\b.*check by hand", report), f"{name} was reported, not rewritten"
+
+    def test_a_rules_file_on_its_own_changes_nothing_and_reports_every_call(self) -> None:
+        migration = migrate_text(RULES_FILE)
+
+        assert migration.text == RULES_FILE
+        reported = " ".join(migration.manual)
+        for name in ("clean_code", "tidy", "quoted", "code_pattern", "both_ways", "unused"):
+            assert name in reported
+        assert "threshold" not in reported
 
     @pytest.mark.parametrize("text", ["steps: [unclosed\n", "- a\n- b\n", "just words\n"])
     def test_text_that_is_not_a_yaml_mapping_is_refused(self, text: str) -> None:
