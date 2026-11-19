@@ -136,7 +136,7 @@ class GroupBy:
                 "'first' and 'join_text' depend on the order the rows arrive in, so the same data "
                 "in another order can give another answer. Sort first if that matters.",
                 "Use 'first' for a column that is the same on every row of a group. If you are not "
-                "sure it is, add a 'count_distinct' of it beside to check.",
+                "sure it is, add a 'count_distinct' of the same column to check.",
                 "'first' takes the first row's value, even when it is null and a later row has a value.",
                 "'first_non_null' skips nulls and takes the first value there is. Only a group of "
                 "nulls gives null.",
