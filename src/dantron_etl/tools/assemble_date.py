@@ -1,20 +1,9 @@
-"""AssembleDate: separate year, month and day parts become one real date column.
+"""AssembleDate: build one date column from separate year, month and day parts.
 
-The source of a date is often not a date. It is text an earlier step has already pulled apart --
-a year here, a month there, and frequently no day at all, because a period that names only a month
-never stated one. This tool is the step that turns those parts into a `pl.Date` column, so that
-everything downstream that compares, sorts or counts between dates works from a date the parts
-actually named rather than a date near it.
+The day defaults to 1. `on_invalid` decides only what happens to a day the month is too short for; a
+bad month, year or non-digit text is always refused. A null part gives a null date.
 
-The day defaults to the first of the month -- the only day every month has, and so the one default
-that does not quietly depend on the month's length. The other end of a whole month is instead
-written down: `day: '31'` with `on_invalid: clamp`, which resolves per row to whatever day that
-row's month actually ends on. `on_invalid` governs a day the calendar is too short for, and nothing
-else about a part that names an impossible date: a month outside 1-12, a year no calendar date
-could hold, and a part written as anything other than digits are all refused the same way under
-`clamp` as under `error`, because none of them is a day the calendar was short of. A missing part is
-a different question again -- a null in any part gives a null date under every policy, `error`
-included, because absent data and impossible data deserve two different answers.
+Why: docs/design/tools.md#assemble_date
 """
 
 from collections.abc import Mapping
@@ -49,10 +38,10 @@ _DIGITS_ONLY: Final[str] = r"^[0-9]+$"
 
 
 class AssembleDate:
-    """Build a real date column from separate year, month and day parts."""
+    """Build a date column from separate year, month and day parts."""
 
     name = "assemble_date"
-    description = "Assemble year, month and day parts into one real date column, appended to the input."
+    description = "Build a date from separate year, month and day columns."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -61,29 +50,29 @@ class AssembleDate:
         return {
             "year": ConfigField(
                 type="expression",
-                description="The year part: a column, a fixed value or a computed expression.",
+                description="The year: a column such as '[year]', a fixed value, or an expression.",
                 required=True,
             ),
             "month": ConfigField(
                 type="expression",
-                description="The month part, numbered 1-12. A month name is not read here.",
+                description="The month as a number from 1 to 12. A month name is not read.",
                 required=True,
             ),
             "day": ConfigField(
                 type="expression",
-                description="The day-of-month part. Defaults to '1', the only day every month has.",
+                description="The day of the month. Left out, it is 1.",
                 default="1",
             ),
             "on_invalid": ConfigField(
                 type="string",
-                description="What to do with a day the calendar is too short for: 'clamp' it into "
-                "the month, carry 'set_null' (a null date), or 'error' (the default).",
+                description="What to do with a day the month is too short for, such as 31 June: "
+                "'clamp' to the month's last day, 'set_null', or 'error' (stop the run).",
                 default="error",
                 enum=_ON_INVALID_ENUM,
             ),
             "output": ConfigField(
                 type="string",
-                description="The name of the date column to add; it may not replace a column that is already there.",
+                description="The name of the new date column, such as 'period_start'.",
                 required=True,
                 non_empty=True,
             ),
@@ -92,27 +81,30 @@ class AssembleDate:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Turns separate year, month and day parts into one real `pl.Date` column, appended "
-                "after every input column. The day defaults to the first of the month; the last day "
-                "of a month is instead written down as `day: '31'` with `on_invalid: clamp`, which "
-                "resolves per row to whatever day that row's own month ends on -- the 28th, 29th, "
-                "30th or 31st."
+                "Use assemble_date to build a real date from separate year, month and day values, "
+                "for example a period given as year 2026 and month 3. The date goes in a new column "
+                "at the end of `rows`. The day is 1 unless you give one. For the last day of each "
+                "month, write day '31' with on_invalid 'clamp': each row gets its own month's last "
+                "day, the 28th, 29th, 30th or 31st."
             ),
             examples=(_plain_example(), _clamp_example()),
             notes=(
-                "A month is a number, never a name: the source's own spellings of a month name are "
-                "a policy decision for a rule list or lookup a reviewer can see and change, not "
-                "something this tool guesses at.",
-                "A null part gives a null date under every policy, including 'error': a part nobody "
-                "supplied is a different question from a part that names an impossible date, and "
-                "conflating them would fail a whole run over rows nobody filled in.",
-                "Under 'set_null', a row whose parts make no date gets an empty date, and the step "
-                "says so: a note counts those rows, and each one is marked with the parts it held. "
-                "A row with a missing part is not marked; it was never a date to begin with.",
+                "The month must be a number. Month names are spelled many ways, so turn them into "
+                "numbers first with a rule list or lookup someone can see and change.",
+                "Each part must be a whole number, or text of digits only. '+5' or '5.0' is refused.",
+                "'on_invalid' only covers a day the month is too short for. A month outside 1 to 12, "
+                "a year no date can hold, or text that is not digits is refused under every setting.",
+                "A null in any part gives a null date under every setting, including 'error'. A part "
+                "nobody filled in is not the same as an impossible date.",
+                "Under 'set_null', a row whose parts make no date gets a null date. A note counts "
+                "those rows, and each is marked with the parts it held. A row with a missing part is "
+                "not marked.",
+                "An output name already in use is refused.",
             ),
             field_help={
-                "on_invalid": "Spelled 'set_null', never 'null': an unquoted null in a definition file "
-                "is the null value itself, not a name for this policy.",
+                "day": "For example '[day]', or '31' with on_invalid 'clamp' for the end of the month.",
+                "on_invalid": "The value is 'set_null', not 'null': an unquoted null in YAML means "
+                "no value at all.",
             },
         )
 
@@ -130,7 +122,7 @@ class AssembleDate:
         require_not_blank(config["output"], "output")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a part that is not a whole number or digit text, off the schema alone."""
+        """Refuse a part that is not a whole number or text, and an output name in use."""
         frame = inputs["rows"]
         for part in ("year", "month", "day"):
             column, dtype = compiled_dtype(frame, config[part], part)
@@ -222,8 +214,7 @@ class AssembleDate:
                 total=frame.height,
             )
 
-        # The same build make_date() does, from the one shared function. Every row left is buildable
-        # or missing a part, and date_or_null gives null for the second.
+        # The same build make_date() uses. A row with a missing part gets null.
         date_expr = pl.when(pl.col("__buildable")).then(date_or_null(year_col, month_col, pl.col("__resolved_day")))
 
         result = staged.with_columns(date_expr.alias(config["output"])).select([*frame.columns, config["output"]])
@@ -257,10 +248,9 @@ def _emptied_report(staged: pl.DataFrame, output: str) -> tuple[pl.Series, str]:
 
 
 def _read_part(series: pl.Series) -> tuple[pl.Expr, pl.Expr]:
-    """(the part as a nullable whole number, whether it was non-null text that was not digits alone).
+    """The part as a whole number (or null), and whether it was text that was not digits alone.
 
-    A digits check rather than a cast, because the engine's own non-strict cast reads a signed
-    spelling like ``'+5'`` as 5, which is exactly the reading this tool must refuse.
+    A digits check, not a cast: polars' lenient cast reads '+5' as 5, which this tool must refuse.
     """
     column = pl.col(series.name)
     if series.dtype == pl.String:
@@ -287,9 +277,9 @@ def _plain_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a period stated only by month defaults to its first day",
+        scenario="build the first day of each month from a year and a month",
         configuration={"year": "[year]", "month": "[month]", "output": "period_start"},
-        explanation="No 'day' is configured, so each row takes the default '1' -- the only day every month has.",
+        explanation="No 'day' is given, so each row gets day 1.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -311,7 +301,7 @@ def _clamp_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="the last day of the month, written once and resolved per row",
+        scenario="build the last day of each month",
         configuration={
             "year": "[year]",
             "month": "[month]",
@@ -319,8 +309,8 @@ def _clamp_example() -> WorkedExample:
             "on_invalid": "clamp",
             "output": "period_end",
         },
-        explanation="'day: 31' names the last day of the month; 'on_invalid: clamp' resolves it to "
-        "the 28th in an ordinary February and the 29th in a leap one, from the same fixed value.",
+        explanation="'day: 31' with 'on_invalid: clamp' gives each row its own month's last day: the 28th in an "
+        "ordinary February, the 29th in a leap year.",
         inputs=inputs,
         outputs=outputs,
     )

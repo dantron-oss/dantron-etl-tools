@@ -473,3 +473,26 @@ this tool. A missing date gives null, never zero, for every unit and counting.
 
 **One counting function.** date_diff and the expression functions `months_between` and `days_between`
 call the same `count_between`, so a tool and a formula cannot disagree.
+
+## assemble_date
+
+**Why it exists.** A date often arrives as parts an earlier step pulled apart: a year, a month, and
+often no day, because a period that names a month never stated one. Everything that compares, sorts or
+counts dates downstream needs a real date built from the parts the source named.
+
+**The day defaults to 1**, the only day every month has, so the default never depends on the month's
+length. The month's end is written down instead: `day: '31'` with `on_invalid: clamp` resolves per row
+to that month's last day.
+
+**`on_invalid` covers only a day the month is too short for.** A month outside 1-12, a year no date can
+hold, and text that is not digits are refused under every setting, because none of them is a short
+month. A null part gives a null date under every setting, `error` included: missing data and
+impossible data deserve different answers, and failing a run over rows nobody filled in helps no one.
+
+**Months are numbers.** A source's spellings of month names are a policy for a rule list a reviewer can
+see, not something to guess.
+
+**Digits are checked, not cast.** polars' lenient cast reads `'+5'` as 5.
+
+**One build function.** assemble_date and the expression function `make_date` share `date_or_null`.
+assemble_date stays a tool beside `make_date` (finding E-19).
