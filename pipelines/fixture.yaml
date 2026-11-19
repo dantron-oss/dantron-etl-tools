@@ -35,7 +35,7 @@ steps:
     why: What the classification declined, kept so a reader can see it.
     config:
       path: output_files/fixture_set_aside.csv
-      replace: true
+      overwrite: true
     inputs: {rows: receivable.false}
 
   - id: monthly
@@ -69,5 +69,5 @@ steps:
     why: The figures as published.
     config:
       path: output_files/fixture_totals.csv
-      replace: true
+      overwrite: true
     inputs: {rows: totals.rows}

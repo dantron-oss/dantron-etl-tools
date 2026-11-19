@@ -121,7 +121,7 @@ def test_remove_duplicates_keeps_one_row_per_key_and_sets_the_rest_aside(keep: s
     for _ in range(CASES):
         rows = _frame(rng, rng.randint(0, 8))
         by = rng.choice([["k"], ["k", "x_amount"]])
-        result = run_tool(RemoveDuplicates(), Ports({"rows": rows}), {"columns": by, "keep": keep})
+        result = run_tool(RemoveDuplicates(), Ports({"rows": rows}), {"by": by, "keep": keep})
 
         kept: dict[tuple[Any, ...], int] = {}
         for row in rows.iter_rows(named=True):

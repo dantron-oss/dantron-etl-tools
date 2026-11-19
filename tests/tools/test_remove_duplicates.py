@@ -23,7 +23,7 @@ still satisfy row conservation and still look right on the port a reader checks 
 is a per-row mask (``is_first_distinct`` / ``is_last_distinct``) filtered in place -- which also
 happens to be the only shape that can produce both ports from one pass.
 
-**Absent or empty ``columns`` means every column.** The derived-from tool documented a
+**Absent or empty ``by`` means every column.** The derived-from tool documented a
 ``["all"]`` sentinel in its notes, its field help and its first example, and never implemented it:
 ``["all"]`` went straight to the engine, which looked for a column called ``all``. An absent field
 is the honest spelling, and a config carried over from the old tool has to be refused by name rather
@@ -91,19 +91,19 @@ def _grouping_cases() -> list[Any]:
     rows = _rows()
     return [
         pytest.param(rows, {}, (0, 1, 2, 3, 4), id="absent_columns_means_every_column"),
-        pytest.param(rows, {"columns": []}, (0, 1, 2, 3, 4), id="an_empty_column_list_means_every_column"),
+        pytest.param(rows, {"by": []}, (0, 1, 2, 3, 4), id="an_empty_column_list_means_every_column"),
         pytest.param(rows, {"keep": "last"}, (1, 2, 4, 5, 6), id="every_column_keeping_the_last_member"),
-        pytest.param(rows, {"columns": ["code", "region"]}, (0, 1, 3, 4), id="a_subset_of_columns_defines_sameness"),
+        pytest.param(rows, {"by": ["code", "region"]}, (0, 1, 3, 4), id="a_subset_of_columns_defines_sameness"),
         pytest.param(
             rows,
-            {"columns": ["code", "region"], "keep": "last"},
+            {"by": ["code", "region"], "keep": "last"},
             (1, 4, 5, 6),
             id="a_subset_keeping_the_last_member",
         ),
-        pytest.param(rows, {"columns": ["code"]}, (0, 1, 3, 4), id="a_single_key_column"),
+        pytest.param(rows, {"by": ["code"]}, (0, 1, 3, 4), id="a_single_key_column"),
         pytest.param(
             rows,
-            {"columns": ["code", "code"]},
+            {"by": ["code", "code"]},
             (0, 1, 3, 4),
             id="a_key_column_named_twice_is_the_same_as_naming_it_once",
         ),
@@ -152,8 +152,8 @@ class TestRemoveDuplicatesGrouping:
         frame = _rows()
         columns = ["code", "region"]
 
-        first = run_tool(RemoveDuplicates(), Ports({"rows": frame}), {"columns": columns})
-        last = run_tool(RemoveDuplicates(), Ports({"rows": frame}), {"columns": columns, "keep": "last"})
+        first = run_tool(RemoveDuplicates(), Ports({"rows": frame}), {"by": columns})
+        last = run_tool(RemoveDuplicates(), Ports({"rows": frame}), {"by": columns, "keep": "last"})
 
         assert first["unique"]["amount"].to_list() == [10.0, 20.0, 40.0, 50.0]
         assert first["duplicate"]["amount"].to_list() == [30.0, 40.0, 10.0]
@@ -173,14 +173,14 @@ class TestRemoveDuplicatesGrouping:
         """
         all_null = pl.DataFrame({"code": [None, None, None], "amount": [1.0, 2.0, 3.0]})
 
-        result = run_tool(RemoveDuplicates(), Ports({"rows": all_null}), {"columns": ["code"]})
+        result = run_tool(RemoveDuplicates(), Ports({"rows": all_null}), {"by": ["code"]})
 
         assert result["unique"]["amount"].to_list() == [1.0], "three missing keys are one group"
         assert result["duplicate"]["amount"].to_list() == [2.0, 3.0]
 
         blank_and_null = pl.DataFrame({"code": [None, ""], "amount": [1.0, 2.0]})
 
-        distinguished = run_tool(RemoveDuplicates(), Ports({"rows": blank_and_null}), {"columns": ["code"]})
+        distinguished = run_tool(RemoveDuplicates(), Ports({"rows": blank_and_null}), {"by": ["code"]})
 
         assert distinguished["unique"].height == 2, "a missing value is not an empty string"
         assert distinguished["duplicate"].height == 0
@@ -194,7 +194,7 @@ class TestRemoveDuplicatesGrouping:
         frame = _rows()
         before = frame.clone()
 
-        run_tool(RemoveDuplicates(), Ports({"rows": frame}), {"columns": ["code"], "keep": "last"})
+        run_tool(RemoveDuplicates(), Ports({"rows": frame}), {"by": ["code"], "keep": "last"})
 
         assert_frame_equal(frame, before)
 
@@ -202,10 +202,10 @@ class TestRemoveDuplicatesGrouping:
 def _refusal_cases() -> list[Any]:
     """(config, the text its refusal must quote) for each way a key specification can be wrong."""
     return [
-        pytest.param({"columns": ["code", "zone"]}, "zone", id="a_key_column_that_is_not_there"),
-        pytest.param({"columns": ["Code"]}, "Code", id="a_key_column_whose_case_is_wrong"),
-        pytest.param({"columns": ["all"]}, "all", id="the_sentinel_the_derived_from_tool_never_implemented"),
-        pytest.param({"columns": [7]}, "columns[0]", id="a_key_column_that_is_not_text"),
+        pytest.param({"by": ["code", "zone"]}, "zone", id="a_key_column_that_is_not_there"),
+        pytest.param({"by": ["Code"]}, "Code", id="a_key_column_whose_case_is_wrong"),
+        pytest.param({"by": ["all"]}, "all", id="the_sentinel_the_derived_from_tool_never_implemented"),
+        pytest.param({"by": [7]}, "by[0]", id="a_key_column_that_is_not_text"),
     ]
 
 
@@ -236,7 +236,7 @@ class TestRemoveDuplicatesRefusals:
         assert named in message, f"refusal should name {named!r}: {message}"
 
     def test_the_template_declares_an_optional_typed_key_list_and_a_yaml_safe_keep(self) -> None:
-        """``columns`` is optional because absent means every column, and both ``keep`` values survive YAML.
+        """``by`` is optional because absent means every column, and both ``keep`` values survive YAML.
 
         ``first``/``last`` rather than anything resembling a boolean: YAML coerces ``true``,
         ``false``, ``yes``, ``no``, ``on`` and ``off`` before this library sees them, so an enum
@@ -246,11 +246,11 @@ class TestRemoveDuplicatesRefusals:
         """
         template = RemoveDuplicates().config_template()
 
-        assert set(template) == {"columns", "keep"}
-        assert template["columns"].type == "array"
-        assert template["columns"].required is False, "absent means every column, which is a real answer"
-        assert template["columns"].items is not None, "an array with no declared element type checks nothing"
-        assert template["columns"].items.type == "string"
+        assert set(template) == {"by", "keep"}
+        assert template["by"].type == "array"
+        assert template["by"].required is False, "absent means every column, which is a real answer"
+        assert template["by"].items is not None, "an array with no declared element type checks nothing"
+        assert template["by"].items.type == "string"
         assert template["keep"].default == "first"
         assert set(template["keep"].enum or ()) == {"first", "last"}
         assert not (set(template["keep"].enum or ()) & _YAML_BOOLEANS)
@@ -279,7 +279,7 @@ class TestRemoveDuplicatesInTheCatalog:
 
         examples = tool.help().examples
         assert len(examples) >= 2, "one whole-row de-duplication, and one on named key columns"
-        assert any(example.configuration.get("columns") is None for example in examples), (
+        assert any(example.configuration.get("by") is None for example in examples), (
             "the whole-row case is the common one and needs no columns at all, so an example must show it"
         )
         assert any(example.configuration.get("keep") == "last" for example in examples), (

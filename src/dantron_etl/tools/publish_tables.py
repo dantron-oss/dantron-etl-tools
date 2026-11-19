@@ -156,7 +156,7 @@ class PublishTables:
                 required=False,
                 default=None,
             ),
-            "stamp": ConfigField(
+            "stamp_column": ConfigField(
                 type="string",
                 description="A column every one of these tables carries, written with this "
                 "publish's own instant -- one value, onto every table. Left out, nothing is "
@@ -189,12 +189,12 @@ class PublishTables:
                         "mode": ConfigField(
                             type="string",
                             description="'replace' empties the table before loading; 'append' adds "
-                            "without emptying it; 'merge' upserts on 'key', keeping any published "
+                            "without emptying it; 'merge' upserts on 'keys', keeping any published "
                             "value the incoming row carries a null for. Required, with no default.",
                             required=True,
                             enum=_MODE_ENUM,
                         ),
-                        "key": ConfigField(
+                        "keys": ConfigField(
                             type="array",
                             description="The columns a merge matches a published row on; required "
                             "by 'merge' and read by no other mode.",
@@ -220,10 +220,10 @@ class PublishTables:
             detailed_description=(
                 "Each entry in 'tables' reads one input port and writes one table: 'replace' "
                 "empties it first, 'append' adds to what it already holds, 'merge' upserts on "
-                "'key'. Every table is written inside one transaction, so a publish that fails on "
+                "'keys'. Every table is written inside one transaction, so a publish that fails on "
                 "any of them leaves all of them exactly as the last publish left them. The tables "
                 "must already exist -- this tool runs no DDL of its own -- and each frame's "
-                "columns must be exactly its table's, apart from the 'stamp' column, which the "
+                "columns must be exactly its table's, apart from the 'stamp_column' column, which the "
                 "frames never carry and this tool writes. The one output port is a receipt: the "
                 "instant this publish carried, and the number of rows written to each table."
             ),
@@ -244,7 +244,7 @@ class PublishTables:
             field_help={
                 "connection": "The name of an environment variable, so a definition file that is "
                 "committed and handed on never holds a credential.",
-                "stamp": "Optional; a column every table named here carries, one no frame may, and "
+                "stamp_column": "Optional; a column every table named here carries, one no frame may, and "
                 "one no table here may be named after -- the receipt gives it a column of its own "
                 "beside one per table.",
                 "tables": "Also what says which input ports this step reads: one port per entry, "
@@ -271,14 +271,14 @@ class PublishTables:
             validate_identifier(entry.table, "tables[].table")
             if entry.mode == "merge" and not entry.key:
                 raise ConfigError(
-                    f"the entry publishing table {entry.qualified!r} is a merge with no 'key'; a "
+                    f"the entry publishing table {entry.qualified!r} is a merge with no 'keys'; a "
                     f"merge matches a published row on the key, so there is nothing it could do "
                     f"without one"
                 )
 
         _refuse_repeats(entry.port for entry in entries)
         _refuse_repeats((entry.qualified for entry in entries), what="table")
-        _refuse_a_stamp_named_after_a_table(config["stamp"], entries)
+        _refuse_a_stamp_named_after_a_table(config["stamp_column"], entries)
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a table that is not there, columns that do not line up, a key nobody carries, a
@@ -296,7 +296,7 @@ class PublishTables:
         the strength of a configuration already known to be wrong.
         """
         entries = _entries(config)
-        stamp = config["stamp"]
+        stamp = config["stamp_column"]
         uri = resolve_connection_uri(config["connection"], "connection")
         with open_connection(uri) as connection:
             for entry in entries:
@@ -356,7 +356,7 @@ def _stamp_for(config: Mapping[str, Any]) -> _Stamp | None:
     there. UTC rather than local, because a set of figures read a year later in another place still
     has to say when it was built.
     """
-    column = config["stamp"]
+    column = config["stamp_column"]
     if not column:
         return None
     return _Stamp(column=column, at=datetime.now(UTC).replace(tzinfo=None))
@@ -365,7 +365,7 @@ def _stamp_for(config: Mapping[str, Any]) -> _Stamp | None:
 def _entries(config: Mapping[str, Any]) -> tuple[_Entry, ...]:
     """The configuration's table entries, read once into the shape the rest of this module asks.
 
-    ``key`` and ``allow_empty`` are read with ``.get`` because a default declared on a member of an
+    ``keys`` and ``allow_empty`` are read with ``.get`` because a default declared on a member of an
     element is never filled in: an element nobody wrote has nothing to fill, so the value they take
     when they are absent is stated here rather than in the template, where the next reader would
     trust it.
@@ -377,7 +377,7 @@ def _entries(config: Mapping[str, Any]) -> tuple[_Entry, ...]:
             table=entry["table"],
             qualified=qualified_name(schema, entry["table"]),
             mode=entry["mode"],
-            key=tuple(entry.get("key") or ()),
+            key=tuple(entry.get("keys") or ()),
             allow_empty=bool(entry.get("allow_empty", False)),
         )
         for entry in config["tables"]
@@ -604,7 +604,7 @@ def _merge_example() -> WorkedExample:
         scenario="a merge fills a gap, overwrites a value, and leaves what it is silent about standing",
         configuration={
             "connection": _EXAMPLE_CONNECTION,
-            "tables": [{"port": "parties", "table": "parties", "mode": "merge", "key": ["party"]}],
+            "tables": [{"port": "parties", "table": "parties", "mode": "merge", "keys": ["party"]}],
         },
         explanation="Party 'a' is already published as ('Alpha', 10.0). Tonight's row carries a new "
         "amount and no label, so afterwards it reads ('Alpha', 11.0): the amount moves and the "

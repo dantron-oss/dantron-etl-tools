@@ -793,7 +793,7 @@
     "match_one_to_one": {
       "category": "preparation",
       "config": {
-        "left": {
+        "left_key": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -841,7 +841,7 @@
           "required": true,
           "type": "array"
         },
-        "right": {
+        "right_key": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -915,7 +915,7 @@
           "required": true,
           "type": "expression"
         },
-        "strip_suffixes": {
+        "suffixes": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -961,7 +961,7 @@
           "required": false,
           "type": "string"
         },
-        "stamp": {
+        "stamp_column": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -987,7 +987,7 @@
                 "required": false,
                 "type": "boolean"
               },
-              "key": {
+              "keys": {
                 "default": null,
                 "enum": null,
                 "fields": null,
@@ -1367,7 +1367,7 @@
     "remove_duplicates": {
       "category": "preparation",
       "config": {
-        "columns": {
+        "by": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1661,6 +1661,15 @@
           "required": false,
           "type": "string"
         },
+        "overwrite": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
         "path": {
           "default": null,
           "enum": null,
@@ -1669,15 +1678,6 @@
           "non_empty": true,
           "required": true,
           "type": "string"
-        },
-        "replace": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
         }
       },
       "input_ports": [

@@ -254,7 +254,7 @@ def _entries() -> list[dict[str, Any]]:
         {"port": "series", "table": "entry_series", "mode": "replace"},
         {"port": "audit", "table": "entry_audit", "mode": "replace"},
         {"port": "changes", "table": "entry_changes", "mode": "append"},
-        {"port": "parties", "table": "entry_parties", "mode": "merge", "key": ["party"]},
+        {"port": "parties", "table": "entry_parties", "mode": "merge", "keys": ["party"]},
     ]
 
 
@@ -262,7 +262,7 @@ def _publish(target: _Target, **overrides: Any) -> dict[str, Any]:
     """One publish's configuration on ``target``, with whatever a case changes."""
     config: dict[str, Any] = {
         "connection": target.variable,
-        "stamp": _STAMP_COLUMN,
+        "stamp_column": _STAMP_COLUMN,
         "tables": _entries(),
         **overrides,
     }
@@ -504,12 +504,12 @@ def _an_unknown_mode(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, A
 
 
 def _a_merge_with_no_key(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:
-    del config["tables"][4]["key"]
+    del config["tables"][4]["keys"]
     return config, inputs
 
 
 def _a_key_the_frame_does_not_carry(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:
-    config["tables"][4]["key"] = ["counterparty"]
+    config["tables"][4]["keys"] = ["counterparty"]
     return config, inputs
 
 
@@ -561,7 +561,7 @@ def _a_stamp_named_after_a_table(config: dict[str, Any], inputs: Ports) -> tuple
     holding is that the publish does not proceed, and nothing quietly loses a column. Pinned here so
     that a later change to how the columns are compared cannot open the hole by accident.
     """
-    return {**config, "stamp": config["tables"][0]["table"]}, inputs
+    return {**config, "stamp_column": config["tables"][0]["table"]}, inputs
 
 
 def _columns_that_do_not_line_up(config: dict[str, Any], inputs: Ports) -> tuple[dict[str, Any], Ports]:

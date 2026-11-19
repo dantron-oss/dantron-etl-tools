@@ -69,13 +69,13 @@ class MatchOneToOne:
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
-            "left": ConfigField(
+            "left_key": ConfigField(
                 type="string",
                 description="The column holding the left key of each candidate pair.",
                 required=True,
                 non_empty=True,
             ),
-            "right": ConfigField(
+            "right_key": ConfigField(
                 type="string",
                 description="The column holding the right key of each candidate pair.",
                 required=True,
@@ -139,9 +139,9 @@ class MatchOneToOne:
                 "arrived. Nothing else tells them apart.",
             ),
             field_help={
-                "left": "The left key. Each left key is accepted at most once.",
-                "right": "The right key. Each right key is accepted at most once. Must be a "
-                "different column from 'left'.",
+                "left_key": "The left key. Each left key is accepted at most once.",
+                "right_key": "The right key. Each right key is accepted at most once. Must be a "
+                "different column from 'left_key'.",
                 "priority": "A list of ranking columns, each with an optional 'direction'. Later "
                 "columns only break ties left by earlier ones.",
                 "ties": "'first' (the default) or 'refuse'.",
@@ -154,9 +154,9 @@ class MatchOneToOne:
         Like sort, a priority entry with a blank column, a direction given with no value, or a
         column named twice is refused, by its path.
         """
-        if config["left"] == config["right"]:
+        if config["left_key"] == config["right_key"]:
             raise ConfigError(
-                f"config fields 'left' and 'right' both name {config['left']!r}; a pair needs a left "
+                f"config fields 'left_key' and 'right_key' both name {config['left_key']!r}; a pair needs a left "
                 f"key column and a different right key column"
             )
         seen: dict[str, int] = {}
@@ -180,14 +180,14 @@ class MatchOneToOne:
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Both key columns and every priority column have to be on the input."""
         frame = inputs["candidates"]
-        require_columns(frame, [config["left"]], "left", "candidates")
-        require_columns(frame, [config["right"]], "right", "candidates")
+        require_columns(frame, [config["left_key"]], "left_key", "candidates")
+        require_columns(frame, [config["right_key"]], "right_key", "candidates")
         require_columns(frame, [key["column"] for key in config["priority"]], "priority", "candidates")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         """Sort into walk order, decide the candidates in rounds, then split the rows by outcome."""
         frame = inputs["candidates"]
-        left, right = config["left"], config["right"]
+        left, right = config["left_key"], config["right_key"]
         columns = [key["column"] for key in config["priority"]]
         descending = [key.get("direction", _DEFAULT_DIRECTION) == "desc" for key in config["priority"]]
 
@@ -283,7 +283,7 @@ def _first_example() -> WorkedExample:
     )
     return WorkedExample(
         scenario="match each left key to a right key, smallest gap first",
-        configuration={"left": "left_key", "right": "right_key", "priority": [{"column": "gap"}]},
+        configuration={"left_key": "left_key", "right_key": "right_key", "priority": [{"column": "gap"}]},
         explanation="C has the smallest gap but no right key, so it pairs with nothing. A-X comes "
         "next and is taken. B-X is next, but X is used, so B falls to its second choice, Y.",
         inputs=inputs,
@@ -313,8 +313,8 @@ def _refuse_example() -> WorkedExample:
     return WorkedExample(
         scenario="leave a key unmatched when its two best candidates are equally good",
         configuration={
-            "left": "left_key",
-            "right": "right_key",
+            "left_key": "left_key",
+            "right_key": "right_key",
             "priority": [{"column": "gap", "direction": "asc"}],
             "ties": "refuse",
         },

@@ -20,7 +20,7 @@ column names on every sink page and of a sink that cannot sit mid-flow. The cata
 answer this the same way, in the same words, on purpose.
 
 **An existing file is never overwritten unless the author said so in writing**, spelled ``replace``
-and defaulting to ``false``. ``replace: true`` on a path that holds nothing is accepted, because a
+and defaulting to ``false``. ``overwrite: true`` on a path that holds nothing is accepted, because a
 nightly report writes a new file on its first run and overwrites one on every run after, and one
 configuration has to serve both runs.
 
@@ -372,7 +372,7 @@ class TestRefusalsAboutTheFile:
             target.write_bytes(b"last month's extract")
         config: dict[str, Any] = {"path": str(target)}
         if replace is not None:
-            config["replace"] = replace
+            config["overwrite"] = replace
 
         if outcome == "written":
             _written(_rows(), config)
@@ -383,7 +383,7 @@ class TestRefusalsAboutTheFile:
             _written(_rows(), config)
 
         message = str(caught.value)
-        assert "replace" in message, "the refusal has to name the keystroke that authorises it"
+        assert "overwrite" in message, "the refusal has to name the keystroke that authorises it"
         assert str(target) in message, "and the path it declined to destroy"
         assert target.read_bytes() == b"last month's extract", "a refused write must not have touched it"
 
@@ -521,7 +521,7 @@ class TestRefusalsAboutTheFile:
         frame = pl.DataFrame({"key": ["r1"], "took": [dt.timedelta(hours=2)]})
 
         with pytest.raises(ConfigError):
-            _written(frame, {"path": str(target), "replace": True})
+            _written(frame, {"path": str(target), "overwrite": True})
 
         assert target.read_bytes() == b"last month's extract"
         assert sorted(item.name for item in tmp_path.iterdir()) == ["extract.csv"], "no scratch file either"
@@ -550,14 +550,14 @@ class TestWriteCsvInTheCatalog:
         """
         template = WriteCsv().config_template()
 
-        assert set(template) == {"path", "delimiter", "replace"}
+        assert set(template) == {"path", "delimiter", "overwrite"}
         assert template["path"].type == "string"
         assert template["path"].required is True
         assert template["path"].non_empty is True, "an empty path is a value, and not one to act on"
         assert template["delimiter"].default == ","
         assert template["delimiter"].non_empty is True
-        assert template["replace"].type == "boolean"
-        assert template["replace"].default is False, "an existing file survives until an author says otherwise"
+        assert template["overwrite"].type == "boolean"
+        assert template["overwrite"].default is False, "an existing file survives until an author says otherwise"
         assert expression_fields(template) == (), "nothing here is a column reference"
 
     def test_write_csv_is_a_sink_that_still_hands_its_rows_on(self) -> None:
