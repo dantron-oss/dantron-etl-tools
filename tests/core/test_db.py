@@ -106,7 +106,9 @@ _ALLOWED_ATTEMPTS = 4
 
 
 _SQLITE_DDL: tuple[str, ...] = (
-    "create table target (key integer primary key, label text, amount real, seen text)",
+    # 'seen' is declared a date, as on Postgres, so a Date column fits it: the table writers refuse
+    # a column whose type does not fit the table's. SQLite still stores the date as ISO text.
+    "create table target (key integer primary key, label text, amount real, seen date)",
     "create table strict (key integer primary key, amount real not null)",
     "create table guarded (key integer primary key, amount real check (amount >= 0))",
     "create table paired (key integer primary key, code text unique, amount real)",

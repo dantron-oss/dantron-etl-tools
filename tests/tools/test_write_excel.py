@@ -65,6 +65,7 @@ from xml.etree import ElementTree
 import openpyxl
 import polars as pl
 import pytest
+import xlsxwriter
 from openpyxl.styles import Font
 from openpyxl.workbook.defined_name import DefinedName
 
@@ -109,6 +110,12 @@ def _read_back(path: Path, sheet: str) -> pl.DataFrame:
     below depend on that tool's own rulings as well.
     """
     return pl.read_excel(path, sheet_name=sheet, drop_empty_cols=False, raise_if_empty=False)
+
+
+def _parts(path: Path) -> dict[str, bytes]:
+    """Every part of a workbook file, by name, as bytes. The creation stamp is left out: it is the clock."""
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist() if name != "docProps/core.xml"}
 
 
 def _tab_names(path: Path) -> list[str]:
@@ -535,6 +542,33 @@ class TestWritingIntoATemplate:
         assert _read_back(target, "Figures")["code"].to_list() == ["a", "a", "a"]
         assert _read_back(target, "Detail")["code"].to_list() == ["b", "b", "b"]
 
+    def test_a_formula_on_an_untouched_tab_keeps_its_formula_but_not_its_stored_result(self, tmp_path: Path) -> None:
+        """The stored result of every formula is cleared on the way through, and the help says so.
+
+        A spreadsheet recalculates when it opens the file, so a person sees the right figure. A
+        program that reads the file without recalculating sees a blank. Pinned, so the help's
+        sentence about it fails if the engine ever starts keeping the result.
+        """
+        template = tmp_path / "template.xlsx"
+        with xlsxwriter.Workbook(str(template)) as book:
+            summary = book.add_worksheet("Summary")
+            summary.write_row(0, 0, ["label", "total"])
+            summary.write_string(1, 0, "sum")
+            summary.write_formula(1, 1, "=SUM(10,20)", None, 30)
+        target = tmp_path / "pack.xlsx"
+
+        _write({"one": _rows("a")}, {"path": str(target), "template": str(template), "sheets": [{"port": "one", "sheet": "Figures"}]})
+
+        assert _read_back(template, "Summary")["total"].to_list() == [30], "the template holds a stored result"
+        assert _read_back(target, "Summary")["total"].to_list() == [None], "the pack's stored result is cleared"
+        book = openpyxl.load_workbook(target)
+        try:
+            assert book["Summary"]["B2"].value == "=SUM(10,20)", "the formula itself comes through"
+        finally:
+            book.close()
+        notes = " ".join(WriteExcel().help().notes)
+        assert "stored result" in notes and "recalculates" in notes
+
     def test_the_template_is_copied_to_the_path_and_never_written_to_itself(self, tmp_path: Path) -> None:
         """A template overwritten by its own first run is gone, and the second run has nothing.
 
@@ -778,8 +812,8 @@ class TestWritingIntoATemplate:
 # ---------------------------------------------------------------------------
 
 
-class TestReplaceGovernsTheTabNotTheFile:
-    """The core difference from the single-sheet sink, where the same word governs the whole file."""
+class TestWhatOverwriteSheetsGoverns:
+    """One permission for anything already there: a file at ``path``, or a template tab a sheet names."""
 
     @pytest.mark.parametrize(
         ("overwrite", "outcome"),
@@ -829,33 +863,77 @@ class TestReplaceGovernsTheTabNotTheFile:
         assert _read_back(target, "Summary")["code"].to_list() == ["a", "a", "a"], "the tab was not replaced"
         _notes_survived(target)
 
-    def test_without_a_template_an_existing_workbook_is_written_into_rather_than_flattened(
+    def test_without_a_template_the_workbook_is_built_from_nothing_so_a_stale_tab_does_not_survive(
         self,
         tmp_path: Path,
     ) -> None:
-        """The decision that keeps ``overwrite_sheets`` meaning one thing: ``path`` is its own template.
+        """The file at ``path`` is never read. A run writes the same file whatever an earlier run left.
 
-        Something has to happen when ``path`` already holds a workbook and no template is named, and
-        the only two coherent answers are "write into it" and "destroy it". Destroying it would make
-        ``overwrite_sheets`` govern the file after all, in the one case where it is least visible, and it is
-        the unrecoverable answer. Writing into it makes the rule exceptionless: this tool never
-        removes a tab it was not told about.
-
-        The cost is real and is worth writing down. A flow whose tab names change between runs --
-        one tab per month, say -- accumulates tabs in a workbook that nobody ever clears out. The
-        fix is a template, which fixes what the pack contains; and the accumulation is visible in
-        the file, where the alternative failure is not.
+        Reading it would keep every tab a flow has stopped writing, forever, and the file would
+        depend on its own history. A curated tab that should survive belongs in a template.
         """
         target = _template(tmp_path / "pack.xlsx", tabs=("Notes",))
 
         _write(
             {"one": _rows("a")},
-            {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures"}]},
+            {"path": str(target), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]},
         )
 
-        _notes_survived(target)
-        assert _tab_names(target) == ["Notes", "Figures"]
+        assert _tab_names(target) == ["Figures"]
         assert _read_back(target, "Figures")["code"].to_list() == ["a", "a", "a"]
+
+    @pytest.mark.parametrize("with_template", [False, True], ids=["no_template", "from_a_template"])
+    def test_a_file_already_at_the_path_is_refused_at_load_unless_the_step_says_it_may_be_replaced(
+        self,
+        tmp_path: Path,
+        with_template: bool,
+    ) -> None:
+        """Refused when the flow loads, before any step runs, and the message says what to add."""
+        target = tmp_path / "pack.xlsx"
+        target.write_bytes(b"last month's pack")
+        config: dict[str, Any] = {
+            "path": str(target),
+            "template": str(_template(tmp_path / "template.xlsx")) if with_template else None,
+            "overwrite_sheets": False,
+            "sheets": [{"port": "one", "sheet": "Figures"}],
+        }
+
+        with pytest.raises(ConfigError) as caught:
+            WriteExcel().validate_config(config)
+
+        message = str(caught.value)
+        assert str(target) in message and "add 'overwrite_sheets: true'" in message, message
+        assert target.read_bytes() == b"last month's pack"
+
+    def test_a_second_run_writes_the_same_file_as_the_first(self, tmp_path: Path) -> None:
+        """Every part of the file, byte for byte, so the result cannot depend on what was there."""
+        target = tmp_path / "pack.xlsx"
+        config = {
+            "path": str(target),
+            "overwrite_sheets": True,
+            "sheets": [
+                {"port": "one", "sheet": "Figures", "formats": [{"type": "Float64", "format": "#,##0.00"}]},
+                {"port": "two", "sheet": "Checks"},
+            ],
+        }
+        frames = {"one": _rows("a"), "two": _rows("b").head(0)}
+
+        _write(frames, config)
+        first = _parts(target)
+        _write(frames, config)
+
+        assert _parts(target) == first
+
+    @pytest.mark.parametrize("folder", ["missing", "missing/deeper"])
+    def test_a_folder_that_is_not_there_is_refused_before_the_flow_runs(self, tmp_path: Path, folder: str) -> None:
+        target = tmp_path / folder / "pack.xlsx"
+
+        with pytest.raises(ConfigError) as caught:
+            WriteExcel().validate_config(
+                {"path": str(target), "template": None, "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "F"}]}
+            )
+
+        assert str(target.parent) in str(caught.value)
 
     def test_a_replaced_tab_in_the_middle_of_the_pack_comes_back_in_the_middle_of_the_pack(
         self,
@@ -1223,6 +1301,33 @@ class TestRefusalsAboutTheFrames:
         assert str(MAX_DATA_ROWS) in message or f"{MAX_DATA_ROWS:,}" in message, "the refusal names the limit"
         assert not target.exists(), "nothing was written on the way to finding out"
 
+    @pytest.mark.parametrize("on_second_port", [False, True], ids=["first_tab", "second_tab"])
+    def test_text_longer_than_a_cell_holds_is_refused_rather_than_cut(self, tmp_path: Path, on_second_port: bool) -> None:
+        """A cell holds at most 32,767 characters, and the engine would cut a longer value silently."""
+        target = tmp_path / "pack.xlsx"
+        long_note = pl.DataFrame({"key": ["r1", "r2"], "note": ["short", "x" * 40_000]})
+        frames = {"one": _rows("a"), "two": long_note} if on_second_port else {"one": long_note, "two": _rows("a")}
+
+        with pytest.raises(DataError) as caught:
+            _write(
+                frames,
+                {"path": str(target), "sheets": [{"port": "one", "sheet": "First"}, {"port": "two", "sheet": "Second"}]},
+            )
+
+        message = str(caught.value)
+        assert "'note'" in message and "32,767" in message, message
+        assert ("'two'" if on_second_port else "'one'") in message, message
+        assert "1 of 2 row(s)" in message and "40000" in message, message
+        assert len(message) < 2_000, "the refusal does not repeat the whole text"
+        assert not target.exists()
+
+    def test_text_exactly_as_long_as_a_cell_holds_is_written_whole(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+
+        _write({"one": pl.DataFrame({"note": ["x" * 32_767]})}, {"path": str(target), "sheets": [{"port": "one", "sheet": "F"}]})
+
+        assert len(_read_back(target, "F")["note"][0]) == 32_767
+
     def test_a_refused_write_leaves_the_template_and_an_existing_pack_exactly_as_it_found_them(
         self,
         tmp_path: Path,
@@ -1359,6 +1464,12 @@ class TestOneLoadAndOneSave:
         _write({"one": _rows("a")}, {"path": str(plain), "sheets": [{"port": "one", "sheet": "Figures"}]})
         from_nothing = (list(loads), list(saves))
 
+        loads.clear()
+        saves.clear()
+        again = {"path": str(plain), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]}
+        _write({"one": _rows("a")}, again)
+        over_a_pack = (list(loads), list(saves))
+
         monkeypatch.undo()
 
         assert from_a_template == ([str(template)], [str(target)]), (
@@ -1369,6 +1480,7 @@ class TestOneLoadAndOneSave:
             f"a run with no template and no pack yet opened {len(from_nothing[0])} workbook(s); "
             f"there is nothing to open"
         )
+        assert over_a_pack == ([], [str(plain)]), "with no template, the file already at 'path' is never opened"
         assert _tab_names(target) == ["Notes", "Summary", *tabs]
         assert _read_back(target, "Third")["code"].to_list() == ["c", "c", "c"], (
             "the delivered pack is not the workbook the tabs were written into"
@@ -2109,6 +2221,30 @@ class TestAColumnsNumbersAreShownAsTheSheetSays:
         assert formats["count"] == [WHOLE_NUMBER_FORMAT] * 2, "the rule about whole numbers reached no whole number"
         assert formats["key"] == [TEXT_FORMAT] * 2, "the rule about text reached no text"
         assert formats["ratio"] == ["General"] * 2, "a rule about Float64 reached a column that is not one"
+
+    @pytest.mark.parametrize("dtype", [pl.Int8, pl.Int16, pl.Int32, pl.UInt8, pl.UInt32], ids=str)
+    def test_a_rule_about_int64_reaches_every_width_of_whole_number(self, tmp_path: Path, dtype: pl.DataType) -> None:
+        """A formula makes a whole-number literal 32-bit, so 'flag = 1' is an Int32 column.
+
+        A rule about Int64 reaches it, as it reaches any whole number. A rule about Float64 still
+        does not: a whole number is not a decimal.
+        """
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"flag": pl.Series("flag", [1, 2], dtype=dtype), "small": pl.Series("small", [3, 4], dtype=dtype)})
+
+        _write(
+            {"one": frame, "two": frame},
+            {
+                "path": str(target),
+                "sheets": [
+                    {"port": "one", "sheet": "Whole", "formats": [{"type": "Int64", "format": WHOLE_NUMBER_FORMAT}]},
+                    {"port": "two", "sheet": "Decimal", "formats": [{"type": "Float64", "format": MONEY_FORMAT}]},
+                ],
+            },
+        )
+
+        assert _formats(target, "Whole")["flag"] == [WHOLE_NUMBER_FORMAT] * 2
+        assert _formats(target, "Decimal")["flag"] == ["General"] * 2
 
     def test_a_tab_stating_an_empty_list_of_rules_is_written_like_one_stating_none(
         self,

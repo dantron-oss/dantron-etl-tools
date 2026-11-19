@@ -1,36 +1,34 @@
 """WriteExcel: one frame per named port, one tab each, in one load and one save.
 
-This tool refreshes the data tabs of one XLSX workbook and rewrites the rest of it unchanged. A
-delivered pack is usually curated. Somebody built the charts, the formats and the notes by hand.
-Only a few tabs inside it hold figures that change every run, and those are the tabs this writes.
+This tool writes one XLSX workbook: the tabs it is given, on top of a template if one is named.
+A delivered pack is usually curated. Somebody built the charts, the formats and the notes by hand.
+That curated workbook is the template, and only the tabs holding figures that change every run are
+written into it.
 
-Rewritten is not the same as preserved. The whole file is read into an object model and a new file
+Rewritten is not the same as preserved. The template is read into an object model and a new file
 is written from it, so every part comes back as that model spells it rather than as the bytes it
 arrived as. Most of a pack survives that trip: tabs, formats, formulas, charts, pivot tables and the
-cached values behind a pivot's filter dropdowns were all measured coming through. The extension
-block on a pivot cache does not survive it. That block holds the parts of a pivot added after the
-original file format, a slicer link among them, and a test in this package records the loss. Write
-one pack and open it before pointing this at a workbook nobody could rebuild.
+cached values behind a pivot's filter dropdowns were all measured coming through. Two things do
+not. The result stored with each formula is cleared, so the file recalculates when a spreadsheet
+opens it, and a program reading it before then sees blanks. And the extension block on a pivot
+cache is lost. That block holds the parts of a pivot added after the original file format, a slicer
+link among them, and a test in this package records the loss. Write one pack and open it before
+pointing this at a workbook nobody could rebuild.
 
 It reads one input port per tab its configuration names. Eleven tabs is one step, not eleven. That
-is not only faster. A chain of eleven single-sheet writes has to decide, eleven times over, what to
-do about the tabs already in the file, and the curated parts of the workbook get eleven chances to
-be rebuilt. This tool opens the workbook once and saves it once.
+is not only faster. The workbook is opened once and saved once.
 
 It produces nothing at all, so a flow ends here. Handing eleven frames back out would be a fan-out
 this tool invented, and handing back a receipt is shape without information.
 
-The template is read and never written. The tool loads it, replaces the tabs it was told about, and
-saves the whole thing to ``path``. A ``path`` equal to the template is refused. A template
+The template is read and never written. A ``path`` equal to the template is refused. A template
 overwritten by its own first run is gone, and the run after it has nothing to start from.
 
-With no template, a workbook already at ``path`` is written into rather than flattened. The rule
-then has no exceptions: this tool never removes a tab it was not told about. The cost of that is
-real. A flow whose tab names change between runs accumulates tabs nobody clears out. It is still the
-cheaper mistake, because accumulation is visible in the file and silent destruction is not.
-
-``overwrite_sheets`` governs a tab rather than the file. A tab already in the workbook survives until an
-author says in writing that overwriting it is intended.
+The file already at ``path`` is never read. Each run builds the workbook from the template, or from
+nothing, so a run writes the same file whatever an earlier run left there, and a tab the flow stops
+writing does not linger. ``overwrite_sheets`` is the one permission for replacing something that is
+already there: the file at ``path`` (refused when the flow loads), and a tab of the template that a
+sheet entry names (refused when the template is opened).
 
 How a column's figures are *shown* is stated per tab, in ``formats``, and is stated or it does not
 happen. A rule names either a type -- reaching every column of it, including the ones named by the
@@ -51,10 +49,10 @@ before the workbook opens), ``_workbook_rules`` (which columns a type-or-column 
 ``_workbook_layout`` (headings, widths, wrapping, tables) and ``_workbook_examples``.
 
 The refusals are split across three places, and the split is deliberate. Anything answerable from
-the configuration is refused in :meth:`WriteExcel.validate_config`. Anything answerable from the
-frames is refused in :meth:`WriteExcel.validate_inputs`. One rule is left to
-:meth:`WriteExcel.execute`: whether a tab is already in the workbook. That is the only question
-here that cannot be answered without the workbook open, and asking it any earlier would cost a
+the configuration and the disk is refused in :meth:`WriteExcel.validate_config`. Anything answerable
+from the frames is refused in :meth:`WriteExcel.validate_inputs`. One rule is left to
+:meth:`WriteExcel.execute`: whether a tab is already in the template. That is the only question
+here that cannot be answered without the template open, and asking it any earlier would cost a
 second load of a file that can be megabytes.
 """
 
@@ -74,12 +72,14 @@ from ..authoring import (
 )
 from ..column_types import DECLARED_TYPES
 from ._spreadsheet import (
+    MAX_CELL_TEXT,
     MAX_DATA_ROWS,
     MAX_EXACT_INTEGER,
     MAX_SHEET_ROWS,
     require_xlsx_path,
     unsupported_dtype_reason,
 )
+from ._files import refuse_to_overwrite, require_output_folder
 from ._workbook_cells import write_tab
 from ._workbook_checks import (
     names_the_same_file,
@@ -298,8 +298,8 @@ class WriteExcel:
             ),
             "overwrite_sheets": ConfigField(
                 type="boolean",
-                description="Whether a tab already in the workbook may be overwritten; leave it out "
-                "and such a tab is refused.",
+                description="Whether something already there may be replaced: a file at 'path', or "
+                "a tab of the template that a sheet entry names. Leave it out and either is refused.",
                 default=False,
             ),
         }
@@ -321,15 +321,19 @@ class WriteExcel:
                 "newer formatting options are kept, so a slicer can come back disconnected. Write "
                 "one pack and open it before pointing this at a workbook you could not rebuild. "
                 "The template itself is never written to, and a 'path' naming the same file is "
-                "refused. With "
-                "no template, a workbook already at 'path' is written into rather than flattened, "
-                "so this tool never removes a tab it was not told about. A tab that is already "
-                "there is refused until 'overwrite_sheets' says in writing that overwriting it is intended. "
-                "A replaced tab keeps its place among the others. Nothing leaves on an output port: "
-                "a flow ends here."
+                "refused. The file already at 'path' is never read: each run builds the workbook "
+                "from the template, or from nothing, so a tab the flow stops writing does not "
+                "linger. A file already at 'path', or a template tab a sheet entry names, is "
+                "refused until 'overwrite_sheets' says in writing that replacing it is intended. A "
+                "replaced template tab keeps its place among the others. Nothing leaves on an "
+                "output port: a flow ends here."
             ),
             examples=(plain_write_example(), template_example(), laid_out_example()),
             notes=(
+                "Every formula on a template tab comes through, but its stored result is cleared. A "
+                "spreadsheet recalculates the file when it opens it, so a person sees the right "
+                "figures. A program that reads the file before then, read_excel among them, sees "
+                "blanks where the formulas are.",
                 "A port with no rows still gets its tab, with the header and nothing under it: a "
                 "missing tab reads as a broken report, where an empty one reads as 'nothing this "
                 "month'.",
@@ -340,6 +344,8 @@ class WriteExcel:
                 "A Time, a Duration, a Decimal, a list or a nested record is refused rather than "
                 "stringified: each has a plausible-looking wrong answer in a cell, and none of them "
                 "is the value it started as.",
+                "Text longer than 32,767 characters, the most a cell holds, is refused naming the "
+                "column, rather than cut short.",
                 "A frame taller than a tab -- more than 1,048,575 rows of data -- is refused rather "
                 "than truncated, because a truncated total is the worst outcome a delivered figure "
                 "can have.",
@@ -353,7 +359,9 @@ class WriteExcel:
                 "neither. A type rule reaches every column of that type, which is the only thing "
                 "that reaches a column named by the data -- a cross-tab gains one per period. A "
                 "column rule names one column and beats the rule about its type, whichever order "
-                "the two were written in. Nothing is read off a column's name.",
+                "the two were written in. A rule about Int64 reaches a whole number of any width, "
+                "Int32 included, since a formula makes a whole-number literal 32-bit. Nothing is "
+                "read off a column's name.",
                 "A format code is passed to the spreadsheet as written: this library does not parse "
                 "it and does not check it. It is in no position to know what a future spreadsheet "
                 "accepts, a code wrongly rejected would block a pack for no reason, and a code that "
@@ -397,9 +405,10 @@ class WriteExcel:
                 "keeps the cell's own font.",
             ),
             field_help={
-                "overwrite_sheets": "Defaults to false, and it is about a tab rather than the file: a tab "
-                "already in the workbook is refused until an author says in writing that "
-                "overwriting it is intended.",
+                "overwrite_sheets": "Defaults to false. A file already at 'path' is refused when the flow "
+                "loads, and a template tab a sheet entry names is refused when the template is "
+                "opened, until an author says in writing that replacing it is intended. A flow that "
+                "runs every night needs it from its first night.",
                 "template": "Read, never written. The tool writes to 'path' instead, so the same "
                 "template can be used again next run.",
             },
@@ -445,8 +454,10 @@ class WriteExcel:
             validate_layout(entry)
         validate_table_names(config["sheets"])
 
+        require_output_folder("write_excel", path)
         template = config["template"]
         if template is None:
+            refuse_to_overwrite("write_excel", path, "overwrite_sheets", config["overwrite_sheets"])
             return
         if names_the_same_file(template, path):
             raise ConfigError(
@@ -462,6 +473,7 @@ class WriteExcel:
                 f"there is not a template. Check the path, or leave 'template' out to start from "
                 f"nothing."
             )
+        refuse_to_overwrite("write_excel", path, "overwrite_sheets", config["overwrite_sheets"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse any frame a tab cannot hold, before the workbook is opened.
@@ -501,6 +513,23 @@ class WriteExcel:
                     )
 
             for name, dtype in frame.schema.items():
+                if dtype != pl.String:
+                    continue
+                too_long = frame.filter(pl.col(name).str.len_chars() > MAX_CELL_TEXT)
+                if too_long.height:
+                    raise DataError(
+                        f"write_excel refuses column {name!r} on port {port!r}, bound for tab "
+                        f"{sheet!r}: a cell holds at most {MAX_CELL_TEXT:,} characters, and a longer "
+                        f"text would be cut short without a word. Shorten or split the text upstream "
+                        f"(each text below shows its first 40 characters and its length)",
+                        offending=too_long.with_columns(
+                            pl.col(name).str.slice(0, 40),
+                            pl.col(name).str.len_chars().alias(f"{name} length"),
+                        ),
+                        total=frame.height,
+                    )
+
+            for name, dtype in frame.schema.items():
                 if not dtype.is_integer():
                     continue
                 offending = frame.filter(pl.col(name).abs() > MAX_EXACT_INTEGER)
@@ -521,7 +550,7 @@ class WriteExcel:
         is the last thing that happens inside it, and it is the only save on the way to a written
         pack. No branch below reaches a second load.
 
-        One refusal lives here rather than in a validate step: a tab already in the workbook, with
+        One refusal lives here rather than in a validate step: a tab already in the template, with
         no permission to overwrite it. That is the only rule in this tool that cannot be answered
         without the workbook open, and answering it earlier would mean loading a file that can be
         megabytes a second time. Because it is raised before the save, a refused run still leaves

@@ -1,4 +1,8 @@
-"""ReadTable: a named table in a database, arriving on one port with the database's own types.
+"""ReadTable: a named table in a database, arriving on one port.
+
+Each column's type is the type its values arrive as. An empty table has no values to look at, so
+its columns are typed from the table's definition instead, where that is certain; a column whose
+values could be of more than one kind stays Null.
 
 The catalog's first source, and the whole of what it may name is a schema and a table -- never a
 query. A ``query`` field would be arbitrary SQL arriving from a configuration file: nothing could
@@ -25,9 +29,18 @@ from typing import Any
 
 import polars as pl
 
-from ..db import open_connection, probe_columns, qualified_name, resolve_connection_uri, validate_identifier
+from ..column_types import DECLARED_DTYPE
+from ..db import (
+    driver_for,
+    open_connection,
+    probe_columns,
+    qualified_name,
+    resolve_connection_uri,
+    validate_identifier,
+)
 from ..authoring import (
     REGISTRY,
+    ConfigError,
     ConfigField,
     Ports,
     ToolHelp,
@@ -73,12 +86,19 @@ class ReadTable:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every row of the named table arrives on `rows`, with the columns and the dtypes "
-                "the database gave them -- this tool invents neither. No `query` field exists: "
-                "narrowing what comes back is a Filter or a SelectColumns put after this one."
+                "Every row of the named table arrives on `rows`. Each column's type is the type "
+                "its values arrive as, read from every row. An empty table is typed from its "
+                "definition instead. No `query` field exists: narrowing what comes back is a "
+                "Filter or a SelectColumns put after this one."
             ),
             examples=(_reads_a_table_example(),),
             notes=(
+                "An empty table has no values to type its columns by, so each column takes the "
+                "type a row of it would arrive as, from the table's definition: a whole number, a "
+                "figure, text, and on Postgres also a truth value, a date, a timestamp with no zone "
+                "or a time. A column whose values could arrive as more than one kind (a numeric, a "
+                "zone-aware timestamp, any SQLite column of another type) stays Null. A table with "
+                "rows is typed by its values alone, so a column that is null in every row is Null.",
                 "`connection` names an environment variable holding the connection URI; the URI "
                 "itself never sits in a configuration file.",
                 "Rows arrive in no particular order. A step that needs one puts a Sort in front "
@@ -117,7 +137,31 @@ class ReadTable:
             # pass over the result and buys a source that cannot invent a schema the table does not
             # have, which is the promise this tool's docstring makes.
             frame = pl.read_database(f"SELECT * FROM {qualified}", connection, infer_schema_length=None)
+            if frame.height == 0:
+                frame = _typed_from_the_table(frame, connection, config["schema"], config["table"])
         return Ports({"rows": frame})
+
+
+def _typed_from_the_table(frame: pl.DataFrame, connection: Any, schema: str | None, table: str) -> pl.DataFrame:
+    """An empty read, with each column typed as a row of it would have arrived.
+
+    With no values to look at, every column arrives as Null. The table's definition says what a
+    row's values would have been for most columns. A column where that depends on the value stays
+    Null. A read with rows never comes here, so no read that has rows changes.
+
+    A connection this library cannot load through (one opened by ADBC) is left alone: that driver
+    already types an empty read from the table.
+    """
+    try:
+        loader = driver_for(connection)
+    except ConfigError:
+        return frame
+    types = loader.value_types(connection, schema, table)
+    return frame.with_columns(
+        pl.col(name).cast(DECLARED_DTYPE[types[name]])
+        for name, dtype in frame.schema.items()
+        if dtype == pl.Null and types.get(name) is not None
+    )
 
 
 def _seed_example(connection: sqlite3.Connection) -> None:
@@ -137,7 +181,7 @@ def _reads_a_table_example() -> WorkedExample:
         scenario="read a two-row table from an in-memory database",
         configuration={"connection": _EXAMPLE_CONNECTION, "table": "sample"},
         explanation="'connection' names the environment variable the URI lives in, never the URI "
-        "itself; the rows arrive with the columns and the dtypes the database gave them.",
+        "itself; each column arrives with the type its values have.",
         inputs=Ports({}),
         outputs=outputs,
         setup=_example_database,

@@ -289,6 +289,53 @@ class TestWriteTableRefusals:
         assert "key" in message, f"the refusal must show the columns on both sides: {message}"
         assert _contents(database, "target") == _BEFORE_TARGET, "nothing may be emptied before this is checked"
 
+    @pytest.mark.parametrize(
+        ("frame", "column"),
+        [
+            pytest.param(pl.DataFrame({"key": [3, 4], "label": [5, 6]}), "label", id="a_number_for_text"),
+            pytest.param(pl.DataFrame({"key": ["00123", "n/a"], "label": ["a", "b"]}), "key", id="text_for_a_whole_number"),
+            pytest.param(pl.DataFrame({"key": [10.75], "label": ["a"]}), "key", id="a_fraction_for_a_whole_number"),
+        ],
+    )
+    def test_a_column_that_cannot_land_in_its_table_column_is_refused_as_publish_tables_refuses_it(
+        self, connection: str, database: Path, frame: pl.DataFrame, column: str
+    ) -> None:
+        """The same check as publish_tables, from the same code: SQLite would store the value and say nothing."""
+        with pytest.raises(DataError) as caught:
+            run_tool(WriteTable(), Ports({"rows": frame}), _write(connection))
+
+        message = str(caught.value)
+        assert f"column {column!r}" in message and "declares its column as" in message, message
+        assert _contents(database, "target") == _BEFORE_TARGET
+
+    def test_a_whole_number_lands_in_a_figure_column_and_a_column_of_nulls_lands_anywhere(
+        self, connection: str, database: Path
+    ) -> None:
+        frame = pl.DataFrame({"key": [3], "amount": [7]})
+        run_tool(WriteTable(), Ports({"rows": frame}), _write(connection, table="strict"))
+        nulls = pl.DataFrame({"key": [5, 6], "label": [None, None]})
+        run_tool(WriteTable(), Ports({"rows": nulls}), _write(connection))
+
+        assert _contents(database, "strict") == [(3, 7.0)]
+        assert _contents(database, "target") == [(5, None), (6, None)]
+
+    def test_a_load_the_engine_refuses_for_no_row_in_particular_says_the_rows_were_not_examined(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A view cannot be written to. The engine refuses the load, not a row, and the count says so."""
+        database = tmp_path / "views.db"
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute("create table base (key integer)")
+            connection.execute("create view shown as select key from base")
+            connection.commit()
+        monkeypatch.setenv(_VARIABLE, f"sqlite:///{database}")
+
+        with pytest.raises(DataError) as caught:
+            run_tool(WriteTable(), Ports({"rows": pl.DataFrame({"key": [1]})}), _write(_VARIABLE, table="shown"))
+
+        message = str(caught.value)
+        assert "0 of" not in message and "1 row(s), not examined one by one" in message, message
+
     @pytest.mark.parametrize("mode", ["replace", "append"])
     def test_an_empty_frame_stops_the_run_and_leaves_the_table_alone(
         self,

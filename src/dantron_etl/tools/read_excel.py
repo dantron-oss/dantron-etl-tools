@@ -11,19 +11,20 @@ words this library already uses for a column that is not on a port, and a near m
 a trailing space -- is not a match.
 
 What comes back is what the sheet holds, not what somebody once put in. A column of whole numbers
-written as floats comes back whole, and a column mixing text and figures comes back entirely as
-text, because a cell that once held ``10.25`` next to a cell that holds ``"not a number"`` cannot be
-un-mixed by guessing -- a reader that tried would be right most months and wrong in a way no run
-reports. A header row is a sheet's schema, so a repeated heading or a blank one is refused rather
-than repaired: this library's own vocabulary for either -- ``key_1``, ``__UNNAMED__1`` -- would
-otherwise leak into a flow's own column names, silently, the moment a downstream step names the
-column that came first.
+written as floats comes back whole. The engine decides each column's type from its first 100 rows,
+so text inside those rows makes the column text. Text further down a column of figures would read
+as null, and so would a word the engine treats as missing (``n/a``, ``#N/A``); the read stops
+instead and points to ``as_text``.
+
+A header row is a sheet's schema. A repeated heading, a blank one, or one that is a date or a truth
+value is refused rather than repaired, and two headings that read the same (the number 2026 and the
+text "2026") count as repeated. Repaired, the engine's own names -- ``key_1``, ``__UNNAMED__1`` --
+would leak into a flow's column names the moment a downstream step names one of them.
 """
 
 import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Final
 
 import fastexcel
@@ -35,12 +36,14 @@ from ..authoring import (
     SCRATCH_TOKEN,
     ConfigError,
     ConfigField,
+    DataError,
     Ports,
     ToolHelp,
     WorkedExample,
     check_output_column,
     scratch_path,
 )
+from ._files import require_file_to_read
 
 _EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/rows.xlsx"
 _MONTHS_EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/months.xlsx"
@@ -118,8 +121,8 @@ class ReadExcel:
         return ToolHelp(
             detailed_description=(
                 "The named sheet arrives on `rows` with the columns and the dtypes the sheet "
-                "itself holds: a column of round figures comes back whole, a column mixing text "
-                "and figures comes back entirely as text, and a blank cell comes back null rather "
+                "itself holds: a column of round figures comes back whole, a column with text in "
+                "its first 100 rows comes back as text, and a blank cell comes back null rather "
                 "than an empty string. The sheet is always named, in `sheet`, or found by a pattern, "
                 'in `sheets_matching`. It is never an index: "the first tab" silently reads the '
                 "wrong sheet the moment a delivered pack puts a cover sheet in front of the figures. "
@@ -127,12 +130,19 @@ class ReadExcel:
             ),
             examples=(_reads_a_sheet_example(), _reads_matching_sheets_example(), _reads_as_text_example()),
             notes=(
+                "Each column's type is decided from its first 100 rows. A cell that holds something "
+                "but would read as null is refused, naming the column and the row: text further "
+                "down a column of figures, or a word the engine treats as missing, such as n/a, "
+                "#N/A or null, anywhere in it. A cell of only spaces reads as null. Set as_text to "
+                "read every cell as its text and convert the columns with cast_columns after.",
                 "A sheet named in the configuration that is not in the workbook is refused with "
                 "the sheet names that are there; a name differing only in case or a trailing space "
                 "is a different name, not a near match.",
                 "has_header defaults to true, since a spreadsheet's first row is a header until an "
                 "author says otherwise; a duplicated or a blank heading is refused rather than "
-                "repaired, because a sheet's header row is its schema.",
+                "repaired, because a sheet's header row is its schema. Two headings that read the "
+                "same (the number 2026 and the text 2026) are a duplicate, and a heading that is a "
+                "date or a truth value is refused, because it cannot name a column.",
                 "There is no cell range: skip_rows reaches a header sitting below a title block, "
                 "and everything else about narrowing a read -- which columns, which rows -- is a "
                 "SelectColumns or a Filter put after this tool.",
@@ -212,17 +222,14 @@ class ReadExcel:
             ) from error
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        return None
+        """Refuse a workbook that is not there, before any step of the flow does work."""
+        require_file_to_read("read_excel", config["path"])
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         path = config["path"]
         sheet = config.get("sheet")
         has_header = config["has_header"]
         skip_rows = config["skip_rows"]
-
-        target = Path(path)
-        if not target.exists():
-            raise ConfigError(f"read_excel found no file at '{path}'")
 
         try:
             reader = fastexcel.read_excel(path)
@@ -312,6 +319,9 @@ def _read_sheet(
     """One sheet, read exactly as naming it in ``sheet`` reads it."""
     try:
         raw_header = reader.load_sheet_by_name(sheet, header_row=None, skip_rows=skip_rows, n_rows=1).to_polars()
+        header_text = reader.load_sheet_by_name(
+            sheet, header_row=None, skip_rows=skip_rows, n_rows=1, dtypes="string"
+        ).to_polars()
     except Exception as error:
         raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
@@ -320,26 +330,68 @@ def _read_sheet(
 
     if has_header:
         _validate_header_row(raw_header.row(0), sheet)
+        _refuse_headings_the_reader_would_rename(raw_header.row(0), header_text.row(0), sheet)
 
     read_options: dict[str, Any] = {"header_row": skip_rows if has_header else None}
     if not has_header:
         read_options["skip_rows"] = skip_rows
 
-    try:
-        if as_text:
-            return _read_sheet_as_text(path, sheet, has_header, read_options)
-        frame = pl.read_excel(
+    def read(options: Mapping[str, Any]) -> pl.DataFrame:
+        return pl.read_excel(
             path,
             sheet_name=sheet,
             has_header=has_header,
-            read_options=read_options,
+            read_options=dict(options),
+            drop_empty_rows=False,
             drop_empty_cols=False,
             raise_if_empty=False,
         )
+
+    try:
+        if as_text:
+            return _read_sheet_as_text(path, sheet, has_header, read_options)
+        frame = read(read_options)
+        text = read({**read_options, "dtypes": "string"})
     except Exception as error:
         raise ConfigError(f"read_excel could not read sheet {sheet!r} in '{path}': {error}") from error
 
-    return frame
+    _refuse_text_the_typed_read_lost(frame, text, sheet, has_header)
+    if frame.width == 0:
+        return frame
+    # A row blank in every column is layout, dropped here as the engine's own option would drop it.
+    # It is dropped after the check above, so a row whose only value was lost is still seen there.
+    return frame.filter(~pl.all_horizontal(pl.all().is_null()))
+
+
+def _refuse_text_the_typed_read_lost(frame: pl.DataFrame, text: pl.DataFrame, sheet: str, has_header: bool) -> None:
+    """Refuse a cell that holds something but reads as null, naming the first one.
+
+    The engine decides a column's type from its first 100 rows and forces every cell into it. Text
+    further down a column of figures then reads as null. So do a few words it treats as missing
+    (``n/a``, ``#N/A``, ``null``), wherever they sit. ``text`` is the same sheet read as text, row
+    for row, so a cell present there and null in ``frame`` was lost. A cell of nothing but spaces
+    loses nothing and is let through.
+    """
+    lost = [
+        frame.get_column(name).is_null() & text.get_column(name).str.strip_chars().str.len_chars().gt(0)
+        for name in frame.columns
+    ]
+    if not lost or not any(mask.any() for mask in lost):
+        return
+    where = pl.DataFrame({name: mask for name, mask in zip(frame.columns, lost, strict=True)})
+    offending_rows = where.select(pl.any_horizontal(pl.all())).to_series()
+    first_row = offending_rows.arg_true()[0]
+    column = next(name for name in frame.columns if where[name][first_row])
+    written = text[column][first_row]
+    position = f"row {first_row + 1} under the heading" if has_header else f"row {first_row + 1} read"
+    raise DataError(
+        f"read_excel refuses sheet {sheet!r}: column {column!r} holds {written!r} on {position}, but "
+        f"the column reads as {frame.schema[column]}, so that cell would arrive as null. Set "
+        f"as_text: true to read every cell as the text it holds, then convert the columns with "
+        f"cast_columns",
+        offending=text.filter(offending_rows),
+        total=text.height,
+    )
 
 
 def _read_sheet_as_text(path: str, sheet: str, has_header: bool, read_options: Mapping[str, Any]) -> pl.DataFrame:
@@ -460,6 +512,31 @@ def _validate_header_row(raw_header: Sequence[Any], sheet: str) -> None:
                 "duplicate cannot be told apart by guessing"
             )
         seen.add(value)
+
+
+def _refuse_headings_the_reader_would_rename(raw_header: Sequence[Any], header_text: Sequence[Any], sheet: str) -> None:
+    """Refuse a heading that cannot name its column as the sheet shows it.
+
+    A heading must be text or a number. The engine cannot name a column after a date, a time or a
+    truth value, and invents a name instead. And two headings that read the same, such as the
+    number 2026 and the text "2026", would have the second one renamed. Both are refused here,
+    before any name is invented.
+    """
+    seen: dict[str, int] = {}
+    for index, (value, text) in enumerate(zip(raw_header, header_text, strict=True), start=1):
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            raise ConfigError(
+                f"read_excel refuses sheet {sheet!r}: header cell {index} holds {text!r}, which is "
+                f"not text or a number and cannot name a column. Type the heading as text in the "
+                f"sheet, or set has_header: false and name the columns with rename_columns"
+            )
+        if text in seen:
+            raise ConfigError(
+                f"read_excel refuses sheet {sheet!r}: header cells {seen[text]} and {index} both "
+                f"read {text!r}, and a duplicate cannot be told apart by guessing. Make the two "
+                f"headings differ in the sheet, or set has_header: false"
+            )
+        seen[text] = index
 
 
 @contextmanager
