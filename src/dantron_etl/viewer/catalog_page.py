@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..catalog import CATEGORY_ORDER, catalog
+from ..catalog import CATEGORY_ORDER, catalog, example_yaml
 from .assets import escape as _e
 from .assets import page
 
@@ -120,7 +120,7 @@ def _tool_card(tool: dict[str, Any]) -> str:
     )
     examples = []
     for ex in tool["examples"]:
-        cfg = json.dumps(ex["configuration"], indent=2, default=str)
+        cfg = example_yaml(ex["configuration"])
         order = '<span class="pill">row order checked</span>' if ex["row_order_significant"] else ""
         ports_in = "".join(
             f'<div class="port"><h5><span class="anchor in">{_e(n)}</span></h5>{_frame_table(f)}</div>'
@@ -132,7 +132,7 @@ def _tool_card(tool: dict[str, Any]) -> str:
         )
         examples.append(
             f'<article class="example"><h4>{_e(ex["scenario"])}{order}</h4>'
-            f'<pre class="cfg">{_e(cfg)}</pre>'
+            f'<pre class="cfg yaml">{_e(cfg)}</pre>'
             f'<p class="why">{_e(ex["explanation"])}</p>'
             f'<div class="flow"><div class="side"><h6>in</h6>{ports_in}</div>'
             f'<div class="arrow" aria-hidden="true">&rarr;</div>'
