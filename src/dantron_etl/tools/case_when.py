@@ -153,10 +153,8 @@ class CaseWhen:
         ladder emptied by a loader reaches here rather than the template. It is refused rather than
         run as a constant column, because a constant column is what Formula is for and says so.
 
-        A blank ``output`` is not ruled on here, as Formula rules on a blank ``name``; note that it
-        now has two outcomes rather than one, depending on ``replace``: blank names no column the
-        input carries, so without the flag it writes a column called '', and with it the run is
-        refused for a column that is not there.
+        A blank ``output`` is refused in ``validate_inputs``, by ``check_output_column``, whatever
+        ``replace`` says.
         """
         if not config["cases"]:
             raise ConfigError("config field 'cases' must name at least one case")

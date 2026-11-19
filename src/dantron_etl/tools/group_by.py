@@ -23,10 +23,10 @@ put a figure nobody measured into a report, and nothing downstream could tell it
 Nulls are still skipped within a group holding any value at all, so ``[10, null]`` sums to ``10`` --
 which is what makes "every value missing" the one case that produces null.
 
-**``first`` is the only aggregate here that depends on the order rows arrived in**, and it is the
-only one that can give two answers for the same data. It exists because a group sometimes carries a
-column that is the same on every row of it -- a document number on the lines of one document -- and
-taking any of them is taking all of them. When that is true, ``first``, ``min`` and ``max`` agree and
+**``first`` and ``join_text`` depend on the order rows arrived in**, and they are the two
+aggregates that can give two answers for the same data. ``first`` exists because a group sometimes
+carries a column that is the same on every row of it -- a document number on the lines of one
+document -- and taking any of them is taking all of them. When that is true, ``first``, ``min`` and ``max`` agree and
 the choice does not matter.
 
 When it is *not* true, ``first`` answers with whichever row happens to be first, which is a fact
@@ -201,8 +201,8 @@ class GroupBy:
                 "'sum' of an all-null group is null, not zero: zero is a measured amount and null "
                 "is the absence of one, and nothing downstream can tell a fabricated zero from a "
                 "real one. Nulls are still skipped within a group holding any value at all.",
-                "'first' reads the order rows arrived in, and is the one aggregate here that can "
-                "answer differently for the same data. Use it for a column that is the same on every "
+                "'first' reads the order rows arrived in, so it can answer differently for the same "
+                "data, as 'join_text' can. Use it for a column that is the same on every "
                 "row of a group -- and count the distinct values beside it if that is an assumption "
                 "rather than a certainty.",
                 "'count' counts every row of a group and reads no column; 'count_non_null' reads one "

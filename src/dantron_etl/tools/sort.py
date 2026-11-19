@@ -104,6 +104,9 @@ class Sort:
             notes=(
                 "Missing values go last by default, in either direction. Write 'nulls: first' on a "
                 "key to put them on top.",
+                "A not-a-number value (what 0/0 gives) sorts as larger than every number: after "
+                "them ascending, before them descending. It is not a missing value, so 'nulls' "
+                "does not move it.",
                 "A direction or a placement written with no value is refused, not defaulted. A "
                 "definition file spells 'direction:' when its author meant to say something.",
             ),

@@ -514,7 +514,17 @@ Every one of these was measured, most of them the hard way.
 
 - **The integer literal in an expression is 32-bit.** `0` and `1` in a `formula` give a narrower
   column than a database's `BIGINT`. It is the right width for a rank or a small count; use
-  `cast_columns` when the width itself matters.
+  `cast_columns` when the width itself matters. A `sum` in `group_by` or `cross_tab` keeps the
+  32-bit type, and a total too large for it stops the run. Arithmetic inside an expression is not
+  checked that way: `year([d]) * 10000000` wraps round to a wrong number, so cast to `Int64` first.
+- **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
+  `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
+  unit (microseconds for one this library typed; a source may use nanoseconds). `date_diff` counts
+  days or months between two dates and says which.
+- **A format rule's `type` reaches a column of exactly that type.** `Int64` does not reach the
+  `Int32` column an integer literal gives, and no type name reaches `Int32`, `UInt32` or `Float32`.
+  Such a column is left unformatted and nothing says so. Cast it to `Int64` or `Float64`, or name
+  the column in the rule.
 - **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
   zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
   writer drop the zone quietly.
@@ -553,6 +563,10 @@ Every one of these was measured, most of them the hard way.
 - **`first` means "the first row as it arrives".** It is only meaningful after a `sort`. A `first`
   with no ordering in front of it is a coin toss that will land the same way in testing and
   differently in production.
+- **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
+  sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
+  and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
+  `read_table` with no `sort` in between. Put a `sort` there.
 
 ### Paths
 
@@ -586,6 +600,10 @@ Two more rulings you will meet:
   together produces a total nobody measured.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
+- **Not-a-number is not a null.** `0.0 / 0.0` gives not-a-number, and it compares as larger than
+  every number and equal to itself. So `[ratio] > 0.5` is true for it in `filter`, `case_when` and
+  `assert_rows`, and `sort` puts it after every number ascending and before them descending, while
+  `nulls` moves only the nulls. Guard the division with `case_when` if that matters.
 
 ---
 

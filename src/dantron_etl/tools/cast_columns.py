@@ -14,7 +14,9 @@ be doing something else. A column that changes type is worth seeing.
 **A value that will not convert stops the run, unless the flow says otherwise.** Turning it into a
 null by default would produce a frame that looks right and is not: the column has the declared type,
 the row is still there, and the value is simply gone. So ``on_invalid`` defaults to ``error``, and
-the refusal names the column, the type asked for, and the offending rows.
+the refusal names the column, the type asked for, and the offending rows. One exception today: a
+decimal cast to a whole number converts, and its fraction is dropped (1.99 becomes 1). Round it
+first.
 
 ``on_invalid: set_null`` is the other honest answer, and it is the one a large messy source usually
 wants: three unreadable values out of forty-six thousand should not stop a nightly build. It leaves
@@ -127,7 +129,14 @@ class CastColumns:
                 "does nothing, and the usual cause is a configuration edited halfway.",
                 "Not every pair converts. Text does not become a truth value here, because the "
                 "spellings a source might use for one -- true, T, Y, 1 -- are a decision a flow "
-                "should make in the open with CaseWhen rather than have a cast guess at.",
+                "should make in the open with CaseWhen rather than have a cast guess at. That pair "
+                "is refused when the step runs, not when the pipeline loads.",
+                "A decimal cast to a whole number drops its fraction without a word: 1.99 becomes "
+                "1 and -2.7 becomes -2. Round it first if the fraction matters.",
+                "A date cast to a number gives the days since 1 January 1970. A timestamp cast to "
+                "Int64 gives a count in the column's own time unit: microseconds for a timestamp "
+                "this library typed, but a source may hand over nanoseconds or milliseconds. To "
+                "count the days or months between two dates, date_diff says what it counts.",
             ),
             field_help={
                 "columns": "Order does not matter; each entry names a different column, and a "

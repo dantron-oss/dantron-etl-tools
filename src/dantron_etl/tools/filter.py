@@ -84,6 +84,9 @@ class Filter:
                 "A null predicate is not the same as a false one: 'nulls' decides where the "
                 "could-not-tell rows go, and defaults to the false port so a plain filter behaves the "
                 "way the query engine already does.",
+                "A not-a-number value (what 0/0 gives) compares as larger than every number and "
+                "equal to itself, so '[ratio] > 0.5' sends it to 'true'. Guard a division with "
+                "case_when if that matters.",
             ),
         )
 
