@@ -29,6 +29,9 @@ carries a column that is the same on every row of it -- a document number on the
 document -- and taking any of them is taking all of them. When that is true, ``first``, ``min`` and ``max`` agree and
 the choice does not matter.
 
+``first`` is the first row's value, null included: a group whose first row is blank answers null.
+``first_non_null`` is the first value that is there, and null only for a group of blanks.
+
 When it is *not* true, ``first`` answers with whichever row happens to be first, which is a fact
 about the order and not about the data. So a flow using it on a column that might vary should say so,
 and a flow that needs the answer to be repeatable puts a Sort in front of this step -- exactly as
@@ -96,7 +99,7 @@ from ..authoring import (
 # ``mean`` is absent on purpose -- no step wants it, and its denominator silently depends on how
 # nulls are treated, which is exactly the kind of question this tool refuses to answer quietly.
 AGGREGATE_FUNCTIONS: Final[frozenset[str]] = frozenset(
-    {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "join_text"}
+    {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "first_non_null", "join_text"}
 )
 
 # The one aggregate that reads no column at all: a row count is a property of the group, not of any
@@ -210,6 +213,10 @@ class GroupBy:
                 "data, as 'join_text' can. Use it for a column that is the same on every "
                 "row of a group -- and count the distinct values beside it if that is an assumption "
                 "rather than a certainty.",
+                "'first' is the first row's value as the rows arrive, null or not: a group whose "
+                "first row is blank answers null even when a later row has a value. "
+                "'first_non_null' skips the blanks and answers with the first value that is there; "
+                "only a group of blanks gives null.",
                 "'count' counts every row of a group and reads no column; 'count_non_null' reads one "
                 "and ignores its nulls. Porting a step from a library that spells the non-null count "
                 "'count' would otherwise silently swap the two numbers.",
@@ -388,6 +395,8 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
         return expression.min().alias(name)
     if function == "first":
         return expression.first().alias(name)
+    if function == "first_non_null":
+        return expression.drop_nulls().first().alias(name)
     if function == _JOINING_FUNCTION:
         separator = aggregation.get("separator")
         separator = DEFAULT_SEPARATOR if separator is None else separator

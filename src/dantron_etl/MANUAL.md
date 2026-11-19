@@ -602,9 +602,10 @@ Every one of these was measured, most of them the hard way.
 - **Sorting reorders ties unless the tool holds them.** This library's `sort` keeps the incoming
   order within a tie, so the same input always gives the same page. Do not assume any other step
   preserves order — put a `sort` in front of whatever needs one.
-- **`first` means "the first row as it arrives".** It is only meaningful after a `sort`. A `first`
-  with no ordering in front of it is a coin toss that will land the same way in testing and
-  differently in production.
+- **`first` means "the first row as it arrives", null or not.** It is only meaningful after a
+  `sort`. A `first` with no ordering in front of it is a coin toss that will land the same way in
+  testing and differently in production. A group whose first row is blank gives null even when a
+  later row has a value; `first_non_null` gives the first value that is there instead.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
   and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a

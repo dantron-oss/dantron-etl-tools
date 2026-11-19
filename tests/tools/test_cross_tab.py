@@ -567,6 +567,22 @@ class TestAMissingValueBesideARealOne:
         assert result["rows"].filter(pl.col("code") == "a")["p1"].to_list() == [expected]
 
 
+class TestFirstAndFirstNonNullInACell:
+    """``first`` is the first row's value in a cell, null included; ``first_non_null`` skips blanks."""
+
+    def test_a_cell_whose_first_row_is_blank_tells_the_two_apart(self) -> None:
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b", "b"], "period": ["p1", "p1", "p1", "p1"], "label": [None, "x", None, None]}
+        )
+        base = {"by": ["code"], "names_from": "period", "values_from": "label"}
+
+        first = run_tool(CrossTab(), Ports({"rows": rows}), {**base, "function": "first"})["rows"]
+        known = run_tool(CrossTab(), Ports({"rows": rows}), {**base, "function": "first_non_null"})["rows"]
+
+        assert first["p1"].to_list() == [None, None]
+        assert known["p1"].to_list() == ["x", None]
+
+
 def _one_cell_frame() -> pl.DataFrame:
     """One key and one period, so the whole frame is a single cell, built so no two aggregates agree.
 
@@ -589,8 +605,9 @@ def _one_cell_frame() -> pl.DataFrame:
             "period": ["p1", "p1", "p1", "p1", "p1", "p1"],
             "amount": [5.0, None, 1.0, 9.0, 5.0, 9.0],
             "note": ["beta", None, "alpha", "gamma", "beta", "delta"],
+            "late": [None, 7.5, 1.0, None, 2.0, None],
         },
-        schema={"code": pl.String, "period": pl.String, "amount": pl.Float64, "note": pl.String},
+        schema={"code": pl.String, "period": pl.String, "amount": pl.Float64, "note": pl.String, "late": pl.Float64},
     )
 
 
@@ -601,6 +618,8 @@ def _values_column(aggregate: str) -> str:
     column of numbers into a string is refused on the schema by both tools -- so asking it of
     ``amount`` would test the refusal, not the answer.
     """
+    if aggregate == "first_non_null":
+        return "late"  # its first row is blank, so first_non_null and first disagree
     return "note" if aggregate == "join_text" else "amount"
 
 
@@ -619,6 +638,7 @@ def _cell_answers() -> dict[str, Any]:
         "min": 1.0,
         "max": 9.0,
         "first": 5.0,
+        "first_non_null": 7.5,
         "join_text": "beta, alpha, gamma, beta, delta",
     }
 

@@ -379,6 +379,30 @@ class TestGroupByAggregates:
         assert result["terms"].dtype == pl.Int64
 
 
+class TestFirstAndFirstNonNull:
+    """``first`` is the first row's value as the rows arrive, null included (the owner's ruling).
+
+    ``first_non_null`` is the first value that is there. A group whose first row is blank tells the
+    two apart; a group with no blank cannot.
+    """
+
+    frame = pl.DataFrame({"code": ["A", "A", "A", "B", "B", "C"], "term": [None, "12", "6", "3", None, None]})
+
+    def test_first_keeps_a_blank_first_row_and_first_non_null_skips_it(self) -> None:
+        config = {
+            "by": ["code"],
+            "aggregations": [
+                _aggregation("first_term", "first", "[term]"),
+                _aggregation("first_known", "first_non_null", "[term]"),
+            ],
+        }
+
+        result = _grouped(self.frame, config)
+
+        assert result["first_term"].to_list() == [None, "3", None]
+        assert result["first_known"].to_list() == ["12", "3", None], "a group of blanks has no first value"
+
+
 # ---------------------------------------------------------------------------
 # join_text: a group's text as one string, and what it does with what is missing
 # ---------------------------------------------------------------------------
@@ -546,8 +570,9 @@ def _one_group_frame() -> pl.DataFrame:
             "code": ["A"] * 7,
             "amount": [8.0, None, 2.0, 13.0, 8.0, 8.0, 3.0],
             "note": ["beta", None, "alpha", "gamma", "beta", "delta", "epsilon"],
+            "late": [None, 6.5, 1.0, 20.0, None, None, None],
         },
-        schema={"code": pl.String, "amount": pl.Float64, "note": pl.String},
+        schema={"code": pl.String, "amount": pl.Float64, "note": pl.String, "late": pl.Float64},
     )
 
 
@@ -561,6 +586,8 @@ def _value_for(aggregate: str) -> str | None:
     """
     if aggregate == "count":
         return None
+    if aggregate == "first_non_null":
+        return "[late]"  # its first row is blank, so first_non_null and first disagree
     return "[note]" if aggregate == "join_text" else "[amount]"
 
 
@@ -579,6 +606,7 @@ def _group_answers() -> dict[str, Any]:
         "min": 2.0,
         "max": 13.0,
         "first": 8.0,
+        "first_non_null": 6.5,
         "join_text": "beta, alpha, gamma, beta, delta, epsilon",
     }
 
@@ -866,7 +894,7 @@ class TestGroupByTemplate:
         """
         assert isinstance(AGGREGATE_FUNCTIONS, frozenset)
         assert AGGREGATE_FUNCTIONS == frozenset(
-            {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "join_text"}
+            {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "first_non_null", "join_text"}
         )
 
         function_field = GroupBy().config_template()["aggregations"].items.fields["function"]
@@ -1068,6 +1096,7 @@ class TestAnAggregateOfAFixedValueIsRefused:
             ("min", "1"),
             ("max", "1"),
             ("first", "1"),
+            ("first_non_null", "1"),
             ("join_text", "'x'"),
         ],
     )

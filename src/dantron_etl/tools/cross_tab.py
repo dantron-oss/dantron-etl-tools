@@ -153,6 +153,9 @@ class CrossTab:
                 "given a column without inventing a name the data could also carry, and dropping it would "
                 "take its figures out of the tab in silence. A blank is refused with the null "
                 "because they are the same fact written two ways.",
+                "'first' is the first row's value in a cell as the rows arrive, null included; "
+                "'first_non_null' is the first value that is there. 'count_distinct' skips nulls, as "
+                "SQL's COUNT(DISTINCT) does. These are GroupBy's rules, for the same reason.",
                 "A 'sum' cell keeps the type of 'values_from'. A total of Int32 or UInt32 values "
                 "that does not fit in that type stops the run rather than wrapping round to a wrong "
                 "number. Cast the column to Int64 first if totals can be that large.",
@@ -327,6 +330,8 @@ def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> 
         return measure.min()
     if aggregate == "first":
         return measure.first()
+    if aggregate == "first_non_null":
+        return measure.drop_nulls().first()
     if aggregate == "join_text":
         # GroupBy's separator, not one of this tool's own. One aggregate fills every cell here, so
         # a separator would be a fifth field on a template whose four fields are the point, and a
