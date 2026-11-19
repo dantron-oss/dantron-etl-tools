@@ -240,3 +240,20 @@ naming 0 as the way to keep none.
 **`count` is a whole number with no default.** A plain number would accept 2.5 and leave the tool to
 round it, a policy nobody wrote down. A default of, say, 1,000 would truncate a frame silently, the
 very failure the second port exists to prevent.
+
+## select_columns
+
+**Its own step.** Carrying every column a flow ever read makes every later step harder to read.
+Narrowing to what is needed, or dropping what has served its purpose, is common enough to be a step
+of its own. Both directions share one setting list and an `action`.
+
+**Order follows the list under `keep`.** The list doubles as a reordering. Under `drop` there is no
+list of survivors to follow, so they keep the frame's order.
+
+**An entry that matches nothing is refused, wildcard included.** A wildcard that silently added zero
+columns would be a whitelist failing open: the schema moved under a configuration written for an
+older one, and the author needs to hear which entry stopped matching.
+
+**Only `*` is a wildcard; matching is case sensitive.** A header copied from a spreadsheet, such as
+`Total [CAD]`, must select itself and nothing else, so brackets and `?` are literal. An entry equal to
+a column's name selects that column even if it contains `*`.
