@@ -222,3 +222,21 @@ always empty edge on every flow.
 valid expression but not a condition; polars would fail with a type error from a library the author
 never heard of. A bare true/false column is a valid condition, because filtering on a status flag is
 a real use.
+
+## limit_rows
+
+**Two output ports.** A tool that quietly discards rows is how a report shows the top 500 of
+something while reading as if it showed everything. The rest leave by `dropped`, with the input's
+columns exactly. Put back together, the two ports are the input, in order.
+
+**It never sorts.** "Top N" elsewhere usually means a sort then a limit, built into one tool. Here
+the sort is its own step in front, where its options are written down.
+
+**`count: 0` is allowed.** Keeping none is a real setting, and a count that comes from a parameter
+should behave like a limit when it reaches zero, not stop the run. Nothing is lost: every row goes
+to `dropped`. A negative count is refused, quoting the number (to expose an off-by-one upstream) and
+naming 0 as the way to keep none.
+
+**`count` is a whole number with no default.** A plain number would accept 2.5 and leave the tool to
+round it, a policy nobody wrote down. A default of, say, 1,000 would truncate a frame silently, the
+very failure the second port exists to prevent.
