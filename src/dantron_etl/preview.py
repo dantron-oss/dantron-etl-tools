@@ -46,6 +46,7 @@ import re
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, urlparse
@@ -298,6 +299,7 @@ class PortStore:
         limit: int = 100,
         filters: dict[str, str] | None = None,
         level: str | None = None,
+        match: Mapping[str, Collection[str]] | None = None,
     ) -> Window:
         """``limit`` rows of ``port`` from ``offset``, after every filter has been applied.
 
@@ -318,6 +320,10 @@ class PortStore:
         cut. A reader types a party into one box and picks a level in the other, and the answer they
         expect is the intersection; either order of narrowing-then-narrowing gives a subset that
         looks entirely plausible and is not it.
+
+        ``match`` keeps the rows whose column, as text, is exactly one of the given values. It is
+        how one entity is followed through a saved run. A column the port does not carry is refused,
+        as for a filter, and it narrows together with the filters and the level.
         """
         entry = self.manifest.get(port)
         if entry is None:
@@ -329,7 +335,8 @@ class PortStore:
 
         columns: list[str] = entry["columns"]
         wanted = {name: text for name, text in (filters or {}).items() if text.strip()}
-        unknown = sorted(set(wanted) - set(columns))
+        exact = {name: [str(text) for text in values] for name, values in (match or {}).items()}
+        unknown = sorted((set(wanted) | set(exact)) - set(columns))
         if unknown:
             raise PreviewError(f"port {port!r} carries no column {unknown[0]!r}; it has: {', '.join(columns)}")
 
@@ -376,8 +383,10 @@ class PortStore:
             # Cast before matching so a filter reads the value the page shows: a reader typing 2026
             # into a date column means the text they are looking at, not an epoch.
             scan = scan.filter(pl.col(name).cast(pl.String, strict=False).str.contains(text, literal=True))
+        for name, texts in exact.items():
+            scan = scan.filter(pl.col(name).cast(pl.String, strict=False).is_in(texts))
 
-        narrowed = bool(wanted) or level is not None
+        narrowed = bool(wanted) or bool(exact) or level is not None
         matched = int(scan.select(pl.len()).collect().item()) if narrowed else int(entry["rows"])
         page = scan.slice(offset, limit).collect()
         # Named rather than `pl.all()`, so the marks travelling beside the rows cannot be handed back

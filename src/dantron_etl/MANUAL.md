@@ -58,8 +58,10 @@ Three sources, in order of how much you should trust them:
 **The generated catalog** — a JSON file produced from the live registry, holding every tool's
 description, its full configuration schema, and worked examples with real input and output frames.
 It cannot drift, because it is generated from the code and every example in it is **executed and
-compared** by the conformance suite. This is your reference. Ask whoever set up your environment
-where it is written; it is produced by a script in the repository, not shipped in the package.
+compared** by the conformance suite. This is your reference. `dantron-etl catalog` writes it
+(`tool_catalog.json`, and a page beside it), and `dantron-etl help <tool>` prints one tool's entry
+as plain text, with its first worked example as YAML you can paste. `dantron-etl tools` lists them
+all and `dantron-etl functions` lists the expression functions.
 
 **The registry, at runtime:**
 

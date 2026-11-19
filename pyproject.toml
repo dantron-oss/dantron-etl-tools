@@ -40,12 +40,16 @@ postgres = [
 # ruff is pinned exactly because lint is the gate. No rule set is chosen in [tool.ruff], so each
 # new ruff release brings new default rules: 0.17 reported 147 findings on code that 0.14 passes.
 # Raise the pin on purpose, and fix what the new version finds in the same change.
-# orjson is used by the tests and the page builders in scripts/, never by the library itself.
+# orjson was used by the page builders that lived in scripts/. Nothing uses it now; dropping it
+# changes uv.lock, so it is left for a change of its own.
 dev = [
     "pytest>=8.0.0",
     "ruff==0.14.0",
     "orjson>=3.10.0",
 ]
+
+[project.scripts]
+dantron-etl = "dantron_etl.cli:main"
 
 [project.urls]
 Source = "https://github.com/DanTron-Inc/dantron-etl-tools"
@@ -65,7 +69,6 @@ packages = ["src/dantron_etl"]
 only-include = [
     "src",
     "tests",
-    "scripts",
     "pipelines/fixture.yaml",
     "pipelines/fixture",
     "README.md",
@@ -98,8 +101,7 @@ testpaths = ["tests"]
 # This checkout's own source, ahead of whatever an editable install points at. Without it a run
 # inside a worktree imports the *main* checkout's package -- the tests pass or fail against code
 # nobody is editing, which is the one failure mode a test run cannot report.
-# The checkout's root is there too, so the page-builder tests can import `scripts`.
-pythonpath = ["src", "."]
+pythonpath = ["src"]
 # `postgres` is added by tests/conftest.py to every test that reaches the test server.
 markers = [
     "slow: takes seconds on its own; leave out with -m 'not slow'",

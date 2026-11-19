@@ -3749,7 +3749,7 @@ class TestTheConfigurationAgainstTheInputSchemas:
 # the catalog trustworthy: every example on the generated page has been executed against its tool.
 # A source or a sink breaks that assumption, and the only seam offered before this section was
 # ``help()`` itself: build a database and export a variable while describing yourself. That is
-# refused here, because ``scripts/tool_catalog_page.py`` calls ``help()`` for every registered
+# refused here, because the catalog (``catalog.catalog()``) calls ``help()`` for every registered
 # tool, so generating the documentation would create databases and write to ``os.environ`` as a
 # side effect of asking each tool what it does.
 #

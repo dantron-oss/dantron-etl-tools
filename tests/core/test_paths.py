@@ -1,9 +1,8 @@
-"""Tests for the tool library's own project-root convention, and for the viewer scripts using it.
+"""Tests for the tool library's own project-root convention.
 
-The library is about to be lifted into its own distribution and imported by other clients, and the
-last thread tying it to this repository is four viewer scripts that say ``from acme.paths import
-PROJECT_ROOT``. Cutting that thread is not a rename, because the client module resolves its root by
-walking up from its own file::
+The library is lifted into its own distribution and imported by other clients. Its viewer once found
+the project by importing the client's own paths module. Cutting that thread was not a rename, because
+the client module resolves its root by walking up from its own file::
 
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,7 +41,7 @@ repository, correct in a worktree, correct when the caller is a script and when 
 module, and -- the reason it is chosen -- **refusable**: when no marker is found there is nothing
 plausible to return, so the failure is a named exception rather than a path. The cost is that every
 caller must pass ``__file__``. That is the cost being bought deliberately: an explicit argument at
-four call sites against a class of silent defect that has already cost this project two rebuilds.
+every call site against a class of silent defect that has already cost this project two rebuilds.
 
 The environment variable stays, under the library's own name, because this repository is worked on
 in git worktrees against one editable install and every real run sets a root override; a library
@@ -54,8 +53,6 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping
-from functools import cache
 from pathlib import Path
 
 import pytest
@@ -69,19 +66,10 @@ from dantron_etl.paths import ROOT_ENV_VAR, ROOT_MARKERS, ProjectRootNotFound, p
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPO_SRC = REPO_ROOT / "src"
 LIBRARY_SRC = REPO_SRC / "dantron_etl"
-SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 #: The literal every script, container and CI job will spell. Written out here rather than taken
 #: from ``ROOT_ENV_VAR`` so that renaming the constant cannot quietly rename the contract.
 ROOT_ENV_VAR_NAME = "ETL_PROJECT_ROOT"
-
-#: The four viewer scripts that ship with the library and must stop importing client code.
-LIBRARY_SCRIPTS = (
-    "serve_runs.py",
-    "pipeline_walkthrough_page.py",
-    "tool_catalog_page.py",
-    "etl_architecture_page.py",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -126,24 +114,8 @@ except Exception as exc:
 print(json.dumps(answer))
 """
 
-#: Execute a script by path and report what it imported and every module-level Path it defined.
-_SCRIPT_PROBE = """
-import importlib.util, json, sys
-from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("script_under_test", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-
-print(json.dumps({
-    "top_level": sorted({name.split(".")[0] for name in sys.modules}),
-    "paths": {name: str(value) for name, value in vars(module).items() if isinstance(value, Path)},
-}))
-"""
-
-
-def _probe(body: str, argument: str, *, cwd: Path, env_overrides: Mapping[str, str | None] = {}) -> dict:
+def _probe(body: str, argument: str, *, cwd: Path) -> dict:
     """Run a probe in a fresh interpreter and return the JSON object it printed.
 
     ``PYTHONPATH`` points at this checkout's ``src`` so that the subprocess reads the code being
@@ -153,11 +125,6 @@ def _probe(body: str, argument: str, *, cwd: Path, env_overrides: Mapping[str, s
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_SRC)
     env.pop(ROOT_ENV_VAR_NAME, None)
-    for name, value in env_overrides.items():
-        if value is None:
-            env.pop(name, None)
-        else:
-            env[name] = value
 
     result = subprocess.run(
         [sys.executable, "-c", body, argument],
@@ -172,12 +139,6 @@ def _probe(body: str, argument: str, *, cwd: Path, env_overrides: Mapping[str, s
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
     )
     return json.loads(result.stdout.strip().splitlines()[-1])
-
-
-@cache
-def _script_probe(script_name: str) -> dict:
-    """``_SCRIPT_PROBE`` for one viewer script, run from this checkout. One subprocess per script per session."""
-    return _probe(_SCRIPT_PROBE, str(SCRIPTS_DIR / script_name), cwd=REPO_ROOT)
 
 
 def _make_project(root: Path, marker: str = "pyproject.toml") -> Path:
@@ -395,6 +356,26 @@ class TestTheUpwardSearch:
 
         assert project_root(start) == inner
 
+    def test_a_folder_holding_only_the_project_settings_file_is_a_project(self, tmp_path: Path) -> None:
+        """A non-developer's project folder has no ``pyproject.toml`` and no ``.git``, only its settings.
+
+        Written out as the literal file name, and the order pinned, so that dropping the marker from the
+        tuple is a failure here rather than a parametrised case that quietly disappears.
+        """
+        assert ROOT_MARKERS == ("pyproject.toml", ".git", "etl-project.yaml")
+        root = _make_project(tmp_path / "plain_folder", marker="etl-project.yaml")
+        start = root / "pipelines" / "orders"
+        start.mkdir(parents=True)
+
+        assert project_root(start) == root
+
+    def test_a_settings_file_with_another_extension_is_not_a_marker(self, tmp_path: Path) -> None:
+        """The mirror: only the exact settings file name anchors a project."""
+        root = _make_project(_nowhere(tmp_path), marker="etl-project.yml")
+
+        with pytest.raises(ProjectRootNotFound):
+            project_root(root)
+
 
 class TestARefusalNamesWhatItLookedForAndWhereItLooked:
     """Ruling three: a wrong answer must be loud, and a refusal must be actionable.
@@ -418,88 +399,3 @@ class TestARefusalNamesWhatItLookedForAndWhereItLooked:
         missing = [marker for marker in ROOT_MARKERS if marker not in message]
         assert not missing, f"the refusal {message!r} does not name marker(s) {missing}, so it cannot be acted on"
         assert ROOT_ENV_VAR_NAME in message, f"the refusal {message!r} does not name the override that would fix it"
-
-
-class TestTheViewerScriptsNoLongerReachIntoClientCode:
-    """Ruling four: the four scripts ship with the library and must behave identically without it."""
-
-    @pytest.mark.parametrize("script_name", LIBRARY_SCRIPTS)
-    def test_every_path_a_viewer_script_resolves_lands_inside_this_checkout(self, script_name: str) -> None:
-        """Run from this repository, a script must address this repository and nothing else.
-
-        The one property that catches the failure that has actually happened, and it catches it for
-        every path a script computes rather than for the ones named below. A root resolved from an
-        editable install pointing at another checkout, or from inside a virtualenv, shows up here as
-        a path that is not under this worktree -- which is what "a page built from a pipeline file
-        the author had never touched" looked like from the outside.
-        """
-        probe = _script_probe(script_name)
-
-        strays = {name: value for name, value in probe["paths"].items() if not Path(value).is_relative_to(REPO_ROOT)}
-        assert not strays, (
-            f"{script_name} resolved {strays} outside {REPO_ROOT}. Run from this checkout it must "
-            f"address this checkout; a path elsewhere is the borrowed-checkout defect."
-        )
-
-    @pytest.mark.parametrize(
-        ("script_name", "expected"),
-        (
-            ("serve_runs.py", ("", "output_files/runs")),
-            (
-                "tool_catalog_page.py",
-                ("output_files", "output_files/tool_catalog.html", "output_files/tool_catalog.json"),
-            ),
-            ("etl_architecture_page.py", ("output_files/runs/architecture",)),
-        ),
-    )
-    def test_a_viewer_script_still_addresses_the_same_places_as_before(
-        self, script_name: str, expected: tuple[str, ...]
-    ) -> None:
-        """Identical behaviour, stated as the set of places each script reads and writes.
-
-        Checked by value rather than by constant name, so renaming ``RUNS_ROOT`` is free and moving
-        where runs are served from is not -- which is the right way round, because a reader's
-        bookmarked URL and every run already on disk depend on the location, not the spelling.
-        ``serve_runs`` is expected to hold the checkout root itself: that is what it hands to the
-        preview service as ``source_root``, and it is what makes "show me the code behind this step"
-        answer from this repository.
-
-        ``pipeline_walkthrough_page.py`` is covered by the containment property above instead; it is
-        under active change, and pinning a filename it is in the middle of moving would be a test
-        about today's bytes rather than about the root.
-        """
-        probe = _script_probe(script_name)
-
-        resolved = {Path(value) for value in probe["paths"].values()}
-        wanted = {REPO_ROOT / relative if relative else REPO_ROOT for relative in expected}
-        assert wanted <= resolved, (
-            f"{script_name} no longer addresses {sorted(str(p) for p in wanted - resolved)}; "
-            f"it resolved {sorted(str(p) for p in resolved)}"
-        )
-
-    def test_the_environment_variable_still_moves_a_scripts_root(self, tmp_path: Path) -> None:
-        """The worktree workflow, preserved: point a script at a root and everything it touches moves.
-
-        ``serve_runs`` carries the least machinery of the four, so it measures the root and nothing
-        else. If the override stopped reaching the scripts, every worktree run would silently serve
-        the main checkout's runs -- which is the failure this whole module is a response to, with the
-        client's variable name filed off.
-        """
-        elsewhere = _make_project(tmp_path / "elsewhere")
-
-        probe = _probe(
-            _SCRIPT_PROBE,
-            str(SCRIPTS_DIR / "serve_runs.py"),
-            cwd=REPO_ROOT,
-            env_overrides={ROOT_ENV_VAR_NAME: str(elsewhere)},
-        )
-
-        resolved = {Path(value) for value in probe["paths"].values()}
-        assert elsewhere / "output_files" / "runs" in resolved, (
-            f"with {ROOT_ENV_VAR_NAME}={elsewhere} the script resolved {sorted(str(p) for p in resolved)}; "
-            f"the override did not reach it"
-        )
-        assert not any(path.is_relative_to(REPO_ROOT) for path in resolved), (
-            f"the override moved some paths but not all: {sorted(str(p) for p in resolved)} still "
-            f"contains paths under {REPO_ROOT}, so a run would read one root and write another"
-        )

@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="run-token" content="">
+<title>Pipelines</title>
+<style>@@css@@</style>
+<main class="home">
+  <header>
+    <h1>Pipelines</h1>
+    <p class="root">Project folder: <code>@@root@@</code></p>
+    <p class="links"><a href="/catalog/">Tool catalog</a></p>
+  </header>
+  <table class="pipelines">
+    <thead><tr><th>Pipeline</th><th class="num">Steps</th><th>Last run</th><th>Outcome</th><th>Kind</th><th>Run</th></tr></thead>
+    <tbody>@@rows@@</tbody>
+  </table>
+  <p class="hint">A preview runs every step except the ones that write, and the steps after them. Nothing leaves the project.
+  Open a pipeline to run it for real.</p>
+  @@problems@@
+</main>
+@@pagedata@@
+<script>@@script@@</script>

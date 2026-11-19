@@ -1,0 +1,54 @@
+# An example pipeline: the total of paid orders for each customer.
+#
+# Each step names a tool and gives it settings. "inputs" says which earlier step's rows it reads,
+# written as step.port. "why" is for the next person: say what the step is for, in plain words.
+#
+# Try it:   @@command@@ run example            (a preview: runs every step except the one that writes)
+#           @@command@@ run example --write    (writes output/paid_by_customer.csv)
+#           @@command@@ view                   (opens the viewer, where you can see every step's rows)
+# Every tool, with its settings:   @@command@@ tools   and   @@command@@ help <tool>
+name: Paid orders by customer
+
+steps:
+  - id: orders
+    tool: read_csv
+    why: The orders exactly as they arrive, before anything is decided about them.
+    config:
+      path: pipelines/example/orders.csv
+
+  - id: paid
+    tool: filter
+    why: >
+      Only paid orders count. Which status means paid is a rule, set in etl-project.yaml.
+      Orders with any other status leave on the "false" port, where you can still see them.
+    config:
+      predicate: "[status] = '${rules.status}'"
+    inputs: {rows: orders.rows}
+
+  - id: order_value
+    tool: formula
+    why: What each order is worth, its quantity times its unit price.
+    config:
+      columns:
+        - {name: value, value: "[quantity] * [unit_price]"}
+    inputs: {rows: paid.true}
+
+  - id: by_customer
+    tool: group_by
+    why: >
+      One row per customer, so customers can be compared. A customer with no paid orders
+      has no row here at all.
+    config:
+      by: [customer]
+      aggregations:
+        - {name: paid_total, function: sum, value: "[value]"}
+        - {name: paid_orders, function: count}
+    inputs: {rows: order_value.rows}
+
+  - id: save
+    tool: write_csv
+    why: The totals, saved as a file someone else can open. A preview never runs this step.
+    config:
+      path: output/paid_by_customer.csv
+      overwrite: true
+    inputs: {rows: by_customer.rows}

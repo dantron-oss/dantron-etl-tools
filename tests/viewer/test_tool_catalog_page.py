@@ -1,6 +1,6 @@
 """Tests for the generated tool catalog: the page has to say everything the registry declares.
 
-``scripts/tool_catalog_page.py`` turns ``REGISTRY`` into two artefacts -- a page a person browses
+``dantron_etl.viewer.catalog_page`` turns ``REGISTRY`` into two artefacts -- a page a person browses
 and a JSON twin a model reads -- and the page is the product: somebody who did not write the tools
 assembles a flow by copying a worked example off it.
 
@@ -51,7 +51,6 @@ that are not the catalog's.
 
 import html
 import json
-import importlib.util
 from typing import Any
 
 import pytest
@@ -62,23 +61,14 @@ from dantron_etl.contract import catalog_input_ports
 
 PROJECT_ROOT = project_root(__file__)
 
-# ``scripts`` is not an importable package -- it has no ``__init__`` and is not on the path -- so
-# the module under test is loaded from its file, by a path resolved from the project root rather
-# than relative to this file. One load for the whole module: executing it has no side effects
-# beyond importing the registry, and ``main`` (the only function that writes anything) is called
-# below with its output paths redirected.
-_SPEC = importlib.util.spec_from_file_location(
-    "library_tests.tool_catalog_page", PROJECT_ROOT / "scripts" / "tool_catalog_page.py"
-)
-assert _SPEC is not None and _SPEC.loader is not None, "tool_catalog_page.py is not where the project root says"
-catalog_page = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(catalog_page)
+from dantron_etl.viewer import catalog_page  # noqa: E402
+from dantron_etl.catalog import catalog  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def data() -> dict[str, Any]:
     """The catalog as plain data, generated once from the live registry."""
-    return catalog_page.catalog()
+    return catalog()
 
 
 @pytest.fixture(scope="module")
@@ -247,7 +237,7 @@ class TestCatalogArtefacts:
 
     def test_generating_the_catalog_twice_produces_the_same_bytes(self, data: dict[str, Any]) -> None:
         """The generator is a pure function of the registry, so a change to a tool is diffable."""
-        again = catalog_page.catalog()
+        again = catalog()
 
         assert _as_json(again) == _as_json(data), "two runs of the generator disagree"
         assert catalog_page.build_page(again) == catalog_page.build_page(data), "two renders of one catalog disagree"
@@ -263,12 +253,10 @@ class TestCatalogArtefacts:
         """
         stub = {"tool_count": 1, "tools": [data["tools"][0]]}
         html_path, json_path = tmp_path / "catalog.html", tmp_path / "catalog.json"
-        monkeypatch.setattr(catalog_page, "OUT_DIR", tmp_path)
-        monkeypatch.setattr(catalog_page, "HTML_PATH", html_path)
-        monkeypatch.setattr(catalog_page, "JSON_PATH", json_path)
+        html_path, json_path = tmp_path / "tool_catalog.html", tmp_path / "tool_catalog.json"
         monkeypatch.setattr(catalog_page, "catalog", lambda: stub)
 
-        catalog_page.main()
+        catalog_page.write_catalog(tmp_path)
 
         assert json.loads(json_path.read_bytes()) == json.loads(_as_json(stub)), "the JSON is not the catalog"
         assert html_path.read_text(encoding="utf-8") == catalog_page.build_page(stub), (
