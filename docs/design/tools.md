@@ -667,3 +667,56 @@ a separator setting would be a fifth field on a tool whose four fields are the p
 but no values is empty text; a cell with no rows stays null, a distinction group_by never has to make.
 
 **`values_from` is always required**, even for `count`, because one aggregate fills every cell.
+
+## unpivot
+
+**Why it exists.** cross_tab turns long into wide, and there was no way back. A frame with one column
+per period cannot be filtered, joined or grouped by period, because the period is a heading, not a
+value. One step that turns the headings into a column puts them where every other tool can read them.
+
+**No setting lists the columns to turn.** Every column is in `by` or turned; there is no third kind, so
+such a list would say nothing new and could contradict `by`. Its obvious name would also be `on`, which
+YAML reads as the boolean true (a trap that has cost this project twice). A setting that does not exist
+cannot be named `on`.
+
+**`by` is required and not empty.** Without an identifier, nothing says which row a value came from or
+lets it be joined back. A flow that wants that adds record_id first. A `by` naming every column is
+refused: nothing would be turned, and a wide frame would go on to steps written for a long one.
+
+**`names_to` and `values_to` have no default.** They are the point of the step; a default would put a
+name nobody chose into every later step and report.
+
+**The turned columns must share a type, except an all-null column.** This is union's rule, because an
+unpivot stacks columns the way union stacks frames. Text under a number turns money into text silently,
+so it is refused, naming both columns and types.
+
+**`values_type` turns a mixed block on purpose.** The case: a block that gains a column each period,
+with unrelated text beside it. The text moves as the block grows, so it cannot be named in `by`, and
+telling it from a period means reading its heading, which needs the unpivot to have happened. Stating
+the type keeps figures as figures; turned as text, a figure a hair under half a cent can come back a
+hair over and round the other way. Reading a column as the type it already has is accepted here and
+gives no note, unlike cast_columns: there the columns were named one by one, so one already right is a
+leftover line; here the set is everything not named, and "some already right" is normal. A decimal with
+a fraction does not convert to a whole number (owner's ruling E-01).
+
+**`on_invalid` follows cast_columns.** `error` (when absent) stops the run; `set_null` empties, counts
+before replacing, notes only columns that lost a value (most are clean), and marks each emptied row.
+The marks follow the output rows, so they are built one block per turned column and stacked like the
+values. `on_invalid` has no declared default, because the rule refusing it without `values_type` reads
+whether it was written. Known gap, shared with cast_columns: a type pair polars refuses for a whole
+column (Date to Float64) raises an ExecutionError, not a DataError.
+
+**Rows come out column by column.** All rows of the first turned column, then the second, in the frame's
+column order. Not interleaved (what a naive reshape gives) and not sorted (by something nobody wrote).
+The 'by' columns come in the order configured, because the configuration is the author's statement of
+the output's shape.
+
+**A null cell is a row by default.** The row existed and the cell was empty; both are data. Dropping it
+would make a later count short without looking short. `exclude_nulls: true` follows SQL's UNPIVOT
+default (EXCLUDE NULLS). Only null is left out; empty text, spaces, zero and not-a-number are values. A
+cell is judged as it arrived, so text that failed to convert stays, marked. The option exists to save
+memory on sparse sheets, so null cells are dropped per column before rows are built; filtering after
+would give the same rows and save nothing. A test measures peak memory.
+
+**Every refusal is read from the schema,** so an empty frame is refused the same way. A refusal that
+needs a row would report success the day a filter upstream matched nothing.
