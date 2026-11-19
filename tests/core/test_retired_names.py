@@ -1,20 +1,24 @@
 """A retired name fails helpfully.
 
 The library renamed many words a pipeline file is written in, and now accepts only the new ones.
-When the loader refuses a file that still uses an old name, the refusal is the same as before, and
-its message then says what the old name became and names the one command that migrates the file.
-A file refused for any other reason gets no such hint: its message is exactly what it always was.
+When the loader refuses a file that still uses an old name, the refusal says so in one sentence,
+gives the one command that migrates the file, and summarises the old names it found, one line per
+kind of rename with a count. It stays short however big the file is. A problem that is not an old
+name is still shown in full. A file refused for any other reason gets no such hint: its message is
+exactly what it always was.
 
 The expression language does the same for the one renamed function, ``strip``, now ``trim``.
 """
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
-from dantron_etl import REGISTRY, ConfigError, PipelineError, load_pipeline
+from dantron_etl import REGISTRY, ConfigError, PipelineError, load_pipeline, read_pipeline
 from dantron_etl.errors import RegistryError
 from dantron_etl.expr import ExpressionError, compile_expr
 
@@ -131,7 +135,7 @@ class TestLoaderNamesTheRename:
         RETIRED_CASES,
         ids=[case[0].__name__.removeprefix("_old_") for case in RETIRED_CASES],
     )
-    def test_a_retired_name_is_refused_as_before_then_names_the_new_name_and_the_command(
+    def test_a_retired_name_is_refused_with_the_command_first_and_the_rename_after(
         self,
         make_old: Callable[[dict[str, Any]], None],
         error_type: type[Exception],
@@ -143,12 +147,16 @@ class TestLoaderNamesTheRename:
         make_old(document)
 
         message = _refusal(document, error_type)
+        lines = message.splitlines()
 
-        assert refusal in message
-        assert MIGRATE_COMMAND in message
-        hint = message[message.index(refusal) + len(refusal) : message.rindex(MIGRATE_COMMAND)]
-        assert re.search(rf"'{old}'.*'{new}'", hint, flags=re.DOTALL), message
-        assert len(message) - message.rindex(MIGRATE_COMMAND) < 80, "the command should close the message"
+        assert "names from before" in lines[0], message
+        assert f"{MIGRATE_COMMAND} <file>" in lines[1], "the command comes straight after the first sentence"
+        assert any(re.search(rf"'{old}'.*'{new}'", line) for line in lines[2:]), message
+        assert refusal not in message, "a refusal caused only by an old name is not repeated"
+        # Swapping the tool name alone leaves a config the new tool refuses for its own reasons, and
+        # that second refusal is shown after the account of the old names. The account stays short.
+        account = lines[: next((n for n, line in enumerate(lines) if line.startswith("Once renamed")), len(lines))]
+        assert len(account) <= 4, message
 
     def test_a_strip_call_in_an_expression_is_refused_naming_trim_and_the_command(self) -> None:
         document = _flow()
@@ -156,9 +164,71 @@ class TestLoaderNamesTheRename:
 
         message = _refusal(document, ConfigError)
 
-        assert "step 'span'" in message
-        assert re.search(r"renamed to\W*trim\b", message), message
+        assert re.search(r"'strip'.*'trim'|strip\(\).*trim\(\)", message), message
         assert MIGRATE_COMMAND in message
+
+
+def _big_old_flow(extra: int) -> dict[str, Any]:
+    """The small flow plus ``extra`` writers, every step boxed with the old key and the join read as 'matched'."""
+    document = _flow()
+    _old_join_port(document)
+    for number in range(extra):
+        document["steps"].append(
+            {
+                "id": f"copy_{number:03d}",
+                "tool": "write_csv",
+                "lane": "main",
+                "container": "reading",
+                "config": {"path": f"copy_{number:03d}.csv"},
+                "inputs": {"rows": "pair_up.matched"},
+            }
+        )
+    _old_step_group(document)
+    _old_top_level_groups(document)
+    return document
+
+
+class TestTheRefusalStaysShort:
+    """A file of hundreds of steps gets a message a person can read, with the fix near the top."""
+
+    def test_five_hundred_old_names_give_a_short_message_with_the_command_near_the_top(self) -> None:
+        message = _refusal(_big_old_flow(500), PipelineError)
+        lines = message.splitlines()
+
+        assert len(lines) < 20, f"{len(lines)} lines"
+        assert len(message) < 2_000, f"{len(message)} characters"
+        assert any(MIGRATE_COMMAND in line for line in lines[:3]), message
+        boxed = next(line for line in lines if "'group'" in line and "'container'" in line)
+        assert re.search(r"\b502 steps\b", boxed), boxed
+        assert len(re.findall(r"'copy_\d{3}'|'orders'|'parties'", boxed)) <= 3, "at most three example steps"
+        read = next(line for line in lines if "'matched'" in line and "'joined'" in line)
+        assert re.search(r"\b501 inputs\b", read), read
+
+    def test_read_pipeline_names_the_file_in_the_command(self, tmp_path: Path) -> None:
+        path = tmp_path / "old_flow.yaml"
+        path.write_text(yaml.safe_dump(_big_old_flow(3)), encoding="utf8")
+
+        with pytest.raises(PipelineError) as refused:
+            read_pipeline(path)
+
+        assert f"{MIGRATE_COMMAND} {path}" in str(refused.value)
+        assert "<file>" not in str(refused.value)
+
+    def test_a_mapping_has_no_path_so_the_command_says_file(self) -> None:
+        message = _refusal(_big_old_flow(3), PipelineError)
+
+        assert f"{MIGRATE_COMMAND} <file>" in message
+
+    def test_a_problem_that_is_not_an_old_name_is_shown_beside_the_old_names(self) -> None:
+        document = _big_old_flow(3)
+        _step(document, "out")["wyh"] = "a misspelt key, not a renamed one"
+
+        message = _refusal(document, PipelineError)
+
+        assert MIGRATE_COMMAND in message
+        assert re.search(r"'group'.*'container'", message), "the old names are still summarised"
+        assert "step 'out'" in message and "'wyh'" in message, "the real problem is named"
+        assert "did you mean 'why'" in message, "with its suggestion, as any unknown key gets"
 
 
 class TestNoHintWithoutARetiredName:

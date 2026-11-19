@@ -24,7 +24,9 @@ __all__ = [
     "find_renames",
     "function_calls",
     "port_map",
+    "rename_document",
     "retired_names",
+    "summarise",
 ]
 
 MIGRATE_COMMAND: str = f"python -m {__package__}.migrate"
@@ -139,6 +141,105 @@ class Found:
 def retired_names(document: Mapping[str, Any], registry: Any = None) -> list[str]:
     """One sentence per retired name ``document`` uses. Empty when it uses only current names."""
     return [found.sentence for found in find_renames(document, registry) if found.retired]
+
+
+def summarise(found: list[Found], *, examples: int = 3, limit: int = 12) -> list[str]:
+    """One line per kind of rename among the retired names in ``found``, with a count and examples.
+
+    A file of five hundred steps that all use one old key gives one line, not five hundred. At most
+    ``limit`` lines; any kinds beyond that are counted on the last one.
+    """
+    groups: dict[tuple[str, str], list[str | None]] = {}
+    for item in found:
+        if item.retired:
+            groups.setdefault(_kind_of(item), []).append(item.step)
+    lines = []
+    for (noun, text), steps in groups.items():
+        if noun:
+            count = len(steps)
+            head = f"{count} {noun if count != 1 else noun.removesuffix('s')}: {text}"
+        else:
+            head = text
+        named = list(dict.fromkeys(step for step in steps if step is not None))
+        if named:
+            shown = ", ".join(repr(step) for step in named[:examples])
+            head += f" (for example {shown})" if len(named) > examples else f" ({shown})"
+        lines.append(head)
+    if len(lines) > limit:
+        lines = [*lines[: limit - 1], f"and {len(lines) - limit + 1} other kinds of rename"]
+    return lines
+
+
+def _kind_of(item: Found) -> tuple[str, str]:
+    """What a summary line counts (steps, inputs, ...) and what it says, for one retired name."""
+    old, new, label = repr(item.old), repr(item.new), item.label
+    if item.kind == "manual":
+        if item.path and item.path[-1] == "tool":
+            return "steps", f"the old single-sheet {item.old} was retired; rewrite it by hand with a 'sheets' list"
+        return "steps", f"config field {old} is written beside its new name {new}; keep one by hand"
+    if item.kind == "call":
+        return "expressions", f"function {item.old}() is now {item.new}()"
+    if label.startswith("port "):
+        tool, _, port = label.removeprefix("port ").partition(" -> ")[0].partition(".")
+        return "inputs", f"{tool}'s output port {port!r} is now {item.new.rpartition('.')[2]!r}"
+    if label.startswith("input port "):
+        tool = label.removeprefix("input port ").partition(".")[0]
+        return "steps", f"{tool}'s input port {old} is now {new}"
+    if label.startswith("tool "):
+        return "steps", f"tool {old} is now {new}"
+    if label.startswith("lane "):
+        return "lanes", f"key {old} is now {new}"
+    if label.startswith("step "):
+        return "steps", f"key {old} is now {new}"
+    if item.kind == "key" and len(item.path) == 1:
+        return "", f"the top-level key {old} is now {new}"
+    tool, _, rest = label.partition(".")
+    if item.kind == "value":
+        field = rest.partition(":")[0]
+        return "steps", f"{tool}'s config field {field!r}: the value {old} is now {new}"
+    return "steps", f"{tool}'s config field {old} is now {new}"
+
+
+def rename_document(document: Any, found: list[Found]) -> Any:
+    """A copy of the parsed ``document`` with every rename and old default in ``found`` applied.
+
+    Notes for a person (``manual``) change nothing. Values, calls and inserts go first, because their
+    paths are written in the names the file used; keys are renamed last, the deepest first.
+    """
+    import copy
+
+    renamed = copy.deepcopy(document)
+
+    def at(path: tuple[Any, ...]) -> Any:
+        value = renamed
+        for part in path:
+            value = value[part]
+        return value
+
+    for item in found:
+        try:
+            if item.kind == "value" and at(item.path) == item.old:
+                at(item.path[:-1])[item.path[-1]] = item.new
+            elif item.kind == "call":
+                text = at(item.path)
+                for offset in reversed(function_calls(text, item.old)[0]):
+                    text = text[:offset] + item.new + text[offset + len(item.old) :]
+                at(item.path[:-1])[item.path[-1]] = text
+            elif item.kind == "insert":
+                at(item.path).setdefault(item.new, item.old)
+        except (KeyError, IndexError, TypeError):
+            continue  # a value an alias already changed, or a key a rename above already moved
+    keys = [item for item in found if item.kind == "key"]
+    for item in sorted(keys, key=lambda item: len(item.path), reverse=True):
+        try:
+            mapping = at(item.path[:-1])
+        except (KeyError, IndexError, TypeError):
+            continue
+        if isinstance(mapping, dict) and item.old in mapping:
+            items = [(item.new if key == item.old else key, value) for key, value in mapping.items()]
+            mapping.clear()
+            mapping.update(items)
+    return renamed
 
 
 def find_renames(document: Any, registry: Any = None) -> list[Found]:

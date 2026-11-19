@@ -22,7 +22,7 @@ from .contract import TERMINAL_CATEGORIES, input_ports_for
 from .errors import ConfigError, PipelineError, RegistryError, ToolError
 from .expr import ExpressionError
 from .registry import REGISTRY, ToolRegistry
-from .renames import MIGRATE_COMMAND, retired_names
+from .renames import MIGRATE_COMMAND, find_renames, rename_document, summarise
 from .rules import resolve_rules
 from .spec import Container, Lane, Pipeline, PortRef, Step, toposort
 
@@ -51,18 +51,41 @@ def load_pipeline(
     ``document`` is a plain mapping because a file format is not part of what a pipeline *is* --
     see :func:`read_pipeline` for the file-reading convenience built on top of this.
 
-    When the document is refused and it still uses names that were renamed, the refusal says so:
-    the same error, with the old names and the command that migrates the file added at the end.
+    When the document is refused and it still uses names that were renamed, the refusal says so in a
+    few lines: the command that rewrites the file, and the old names it uses, grouped by rename.
+    """
+    return _load_explained(document, rules, registry, source=None)
+
+
+def _load_explained(
+    document: Mapping[str, Any],
+    rules: Mapping[str, Any] | None,
+    registry: ToolRegistry | None,
+    source: str | None,
+) -> Pipeline:
+    """:func:`_load_pipeline`, with a refusal rewritten when the document uses names that were renamed.
+
+    The refusal itself is about an old name more often than not, so it is replaced by a short
+    account: one sentence, the command (naming ``source`` when the file is known), and one line per
+    kind of rename. The renamed document is then loaded too. When that is refused as well, the
+    problem is not an old name, and its own refusal is shown after the account.
     """
     try:
         return _load_pipeline(document, rules, registry)
     except (ToolError, ExpressionError) as error:
-        renamed = retired_names(document, registry)
-        if not renamed:
+        found = find_renames(document, registry)
+        if not any(item.retired for item in found):
             raise
-        listed = "".join(f"\n- {sentence}" for sentence in renamed)
-        hint = f"\nThis file uses names that were renamed:{listed}\nTo rewrite it in the new names, run: {MIGRATE_COMMAND} <file>"
-        raise type(error)(f"{error}{hint}") from error
+        lines = [
+            "This file uses names from before the library renamed them, so it cannot be loaded as it is.",
+            f"To rewrite it in the new names, run: {MIGRATE_COMMAND} {source or '<file>'}",
+            *(f"  - {line}" for line in summarise(found)),
+        ]
+        try:
+            _load_pipeline(rename_document(document, found), rules, registry)
+        except (ToolError, ExpressionError) as remaining:
+            lines += ["Once renamed, it is still refused for another reason:", f"  {remaining}"]
+        raise type(error)("\n".join(lines)) from error
 
 
 def _load_pipeline(
@@ -157,7 +180,7 @@ def read_pipeline(
         ) from error
 
     document = yaml.safe_load(Path(path).read_text(encoding="utf8"))
-    return load_pipeline(document, rules=rules, registry=registry)
+    return _load_explained(document, rules, registry, source=str(path))
 
 
 # ---------------------------------------------------------------------------
