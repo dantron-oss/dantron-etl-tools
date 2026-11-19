@@ -14,7 +14,7 @@
     "regex_replace": 3,
     "round": 2,
     "starts_with": 2,
-    "strip": 1,
+    "trim": 1,
     "upper": 1,
     "uuid5": 2,
     "year": 1

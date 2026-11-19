@@ -207,9 +207,12 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
-Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `strip`,
+Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `trim`,
 `len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`,
 `concat`, `format_number`, `uuid5`.
+
+`trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
+inside the text alone.
 
 `format_number(value, decimals, thousands_separator, decimal_separator)` writes a number as text:
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`

@@ -302,8 +302,8 @@ def _replacing_example() -> WorkedExample:
     return WorkedExample(
         scenario="a ladder reads the column it writes, and writes it back in place",
         configuration={
-            "cases": [{"when": "strip([company]) = ''", "then": "null"}],
-            "otherwise": "strip([company])",
+            "cases": [{"when": "trim([company]) = ''", "then": "null"}],
+            "otherwise": "trim([company])",
             "output": "company",
             "replace": True,
         },

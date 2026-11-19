@@ -104,7 +104,7 @@ def _write_cases() -> list[Any]:
             {
                 "columns": [
                     {"name": "monthly", "value": "[line_amount] / [months_in_period]"},
-                    {"name": "code_key", "value": "upper(strip([code]))"},
+                    {"name": "code_key", "value": "upper(trim([code]))"},
                 ]
             },
             {
@@ -116,7 +116,7 @@ def _write_cases() -> list[Any]:
         ),
         pytest.param(
             rows,
-            {"columns": [{"name": "code", "value": "upper(strip([code]))", "replace": True}]},
+            {"columns": [{"name": "code", "value": "upper(trim([code]))", "replace": True}]},
             {"code": ["A1", "B2", None, "C3"]},
             ("key", "code", "line_amount", "currency_rate", "months_in_period"),
             id="a_replaced_column_keeps_its_position",
@@ -381,7 +381,7 @@ class TestFormulaRefusals:
         run_tool(
             Formula(),
             Ports({"rows": frame}),
-            {"columns": [{"name": "code", "value": "upper(strip([code]))", "replace": True}]},
+            {"columns": [{"name": "code", "value": "upper(trim([code]))", "replace": True}]},
         )
 
         assert_frame_equal(frame, before)

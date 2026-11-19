@@ -209,7 +209,7 @@ def _multi_column_with_replace_example() -> WorkedExample:
         scenario="one entry repairs 'code' in place, another appends a new column",
         configuration={
             "columns": [
-                {"name": "code", "value": "upper(strip([code]))", "replace": True},
+                {"name": "code", "value": "upper(trim([code]))", "replace": True},
                 {"name": "doubled", "value": "[line_amount] * 2"},
             ]
         },

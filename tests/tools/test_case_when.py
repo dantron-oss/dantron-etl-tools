@@ -556,9 +556,9 @@ def _blanking_ladder(*, replace: bool | None = True) -> dict[str, Any]:
     config: dict[str, Any] = {
         "cases": [
             {"when": "[status] = 'superseded'", "then": "'superseded_co'"},
-            {"when": "strip([company]) = ''", "then": "null"},
+            {"when": "trim([company]) = ''", "then": "null"},
         ],
-        "otherwise": "strip([company])",
+        "otherwise": "trim([company])",
         "output": "company",
     }
     if replace is not None:
@@ -666,7 +666,7 @@ class TestCaseWhenReplaces:
             run_tool(
                 Formula(),
                 Ports({"rows": frame}),
-                {"columns": [{"name": "copmany", "value": "strip([company])", "replace": True}]},
+                {"columns": [{"name": "copmany", "value": "trim([company])", "replace": True}]},
             )
 
         assert str(ladder.value).replace("'output'", "<field>") == str(formula.value).replace(
@@ -926,9 +926,9 @@ class TestCaseWhenReplaces:
         config = {
             "cases": [
                 {"when": "[status] = 'superseded'", "then": "'superseded_co'"},
-                {"when": "strip([company]) = ''", "then": "null", "replace": written},
+                {"when": "trim([company]) = ''", "then": "null", "replace": written},
             ],
-            "otherwise": "strip([company])",
+            "otherwise": "trim([company])",
             "output": "company",
             "replace": True,
         }

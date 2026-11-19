@@ -182,7 +182,7 @@ def _upper(subject: pl.Expr) -> pl.Expr:
     return subject.str.to_uppercase()
 
 
-def _strip(subject: pl.Expr) -> pl.Expr:
+def _trim(subject: pl.Expr) -> pl.Expr:
     return subject.str.strip_chars()
 
 
@@ -312,12 +312,12 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         example="upper([code])",
     ),
     Function(
-        "strip",
+        "trim",
         params=(_ON_TEXT,),
         result=Family.TEXT,
-        to_polars=_strip,
+        to_polars=_trim,
         summary="Text without the whitespace at its start and end.",
-        example="strip([name])",
+        example="trim([name])",
     ),
     Function(
         "len",

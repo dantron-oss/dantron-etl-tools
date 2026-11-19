@@ -264,13 +264,13 @@ class TestFunctions:
             ("abs([amount])", [10.256, 2.4, 100.0, None]),
             ("lower([code])", ["a", "b", "c", None]),
             ("upper([code])", ["A", "B", "C", None]),
-            ("strip([label])", ["alpha", "Beta", "gamma", None]),
+            ("trim([label])", ["alpha", "Beta", "gamma", None]),
             ("len([label])", [9, 4, 5, None]),
             ("starts_with([label], 'Be')", [False, True, False, None]),
             ("ends_with([label], 'ma')", [False, False, True, None]),
             ("contains([label], 'et')", [False, True, False, None]),
             ("regex_extract([label], '([a-z]+)', 1)", ["alpha", "eta", "gamma", None]),
-            ("upper(strip([label]))", ["ALPHA", "BETA", "GAMMA", None]),
+            ("upper(trim([label]))", ["ALPHA", "BETA", "GAMMA", None]),
             ("coalesce([code], 'Z') in ('A', 'Z')", [True, False, False, True]),
         ],
     )
@@ -279,7 +279,7 @@ class TestFunctions:
     ) -> None:
         """Each whitelisted function, evaluated against the frame, produces the documented values.
 
-        ``len`` is the character count of text, not a row count. ``strip`` removes leading and
+        ``len`` is the character count of text, not a row count. ``trim`` removes leading and
         trailing whitespace only. Functions nest.
         """
         assert evaluate(frame, text) == expected
@@ -722,7 +722,7 @@ class TestSecurity:
             "abs",
             "lower",
             "upper",
-            "strip",
+            "trim",
             "len",
             "starts_with",
             "ends_with",
@@ -814,7 +814,7 @@ def schema_message(frame: pl.DataFrame, text: str) -> str:
 DTYPE_SWEEP_TEMPLATES: tuple[str, ...] = (
     "upper({c})",
     "lower({c})",
-    "strip({c})",
+    "trim({c})",
     "len({c})",
     "abs({c})",
     "round({c}, 2)",
@@ -905,7 +905,7 @@ class TestSchemaDtypeChecking:
             # A string function on a column that holds no text.
             "upper([qty])",
             "lower([amount])",
-            "strip([flag])",
+            "trim([flag])",
             "len([qty])",
             "starts_with([start_date], 'a')",
             "ends_with([qty], 'a')",
@@ -1032,7 +1032,7 @@ class TestSchemaDtypeChecking:
             ("round([amount] * 2, 0)", [21.0, -5.0, 200.0, None]),
             ("abs([qty]) + 1 > 0", [True, True, True, None]),
             # Text, dates and truth values, each within their own family.
-            ("upper(strip([label]))", ["ALPHA", "BETA", "GAMMA", None]),
+            ("upper(trim([label]))", ["ALPHA", "BETA", "GAMMA", None]),
             ("[note] = 'a=b'", [True, False, False, None]),
             ("len([label]) > 3", [True, True, True, None]),
             ("regex_match([label], 'a.p')", [True, False, False, None]),
@@ -1177,7 +1177,7 @@ class TestSchemaDtypeChecking:
 TEXT_OPERATION_TEMPLATES: tuple[str, ...] = (
     "upper({c})",
     "lower({c})",
-    "strip({c})",
+    "trim({c})",
     "len({c})",
     "starts_with({c}, 'B')",
     "ends_with({c}, 'a')",
@@ -1262,9 +1262,9 @@ class TestCompactlyStoredText:
             # engine is not enough either.
             ("upper(coalesce([category], 'Z'))", "upper(coalesce([label], 'Z'))"),
             ("upper(coalesce([grade], 'Z'))", "upper(coalesce([label], 'Z'))"),
-            ("len(strip([category]))", "len(strip([label]))"),
+            ("len(trim([category]))", "len(trim([label]))"),
             ("regex_replace(upper([grade]), 'A', 'X')", "regex_replace(upper([label]), 'A', 'X')"),
-            ("contains(strip([category]), 'alpha')", "contains(strip([label]), 'alpha')"),
+            ("contains(trim([category]), 'alpha')", "contains(trim([label]), 'alpha')"),
             # ... and the reverse direction: such a column as the argument an operation compares
             # *against*, rather than the subject it works on.
             ("starts_with([label], [category])", "starts_with([label], [label])"),
@@ -1383,7 +1383,7 @@ class TestCompactlyStoredText:
             ("[grade]", pl.String),
             ("coalesce([category], 'Z')", pl.String),
             ("coalesce([grade], 'Z')", pl.String),
-            ("strip([category])", pl.String),
+            ("trim([category])", pl.String),
             ("concat([grade], 'x')", pl.String),
             ("[label]", pl.String),
             # ... and the rule is about text, not about casting everything: no other family's
@@ -1807,7 +1807,7 @@ class TestConcat:
             ("concat([code], [code], [code])", ["AAA", "BBB", "CCC", None]),
             # It returns text, so it nests both ways like every other text function.
             ("upper(concat([code], [label]))", ["A  ALPHA  ", "BBETA", "CGAMMA", None]),
-            ("concat(upper([code]), strip([label]))", ["Aalpha", "BBeta", "Cgamma", None]),
+            ("concat(upper([code]), trim([label]))", ["Aalpha", "BBeta", "Cgamma", None]),
             ("len(concat([code], 'xy'))", [3, 3, 3, None]),
             ("concat([code], [label]) = 'BBeta'", [False, True, False, None]),
             ("concat([code], '-x') in ('A-x', 'C-x')", [True, False, True, None]),
@@ -3423,7 +3423,7 @@ class TestUuid5:
         assert checked(frame, f"upper({text})") == [
             None if one is None else one.upper() for one in ids_for(NAMESPACE, joined)
         ]
-        assert checked(frame, f"uuid5('{NAMESPACE}', concat(upper([code]), '|', strip([label])))") == ids_for(
+        assert checked(frame, f"uuid5('{NAMESPACE}', concat(upper([code]), '|', trim([label])))") == ids_for(
             NAMESPACE, ["A|alpha", "B|Beta", "C|gamma", None]
         )
 
