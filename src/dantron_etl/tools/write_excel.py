@@ -357,7 +357,9 @@ class WriteExcel:
                 "neither. A type rule reaches every column of that type, which is the only thing "
                 "that reaches a column named by the data -- a cross-tab gains one per period. A "
                 "column rule names one column and beats the rule about its type, whichever order "
-                "the two were written in. Nothing is read off a column's name.",
+                "the two were written in. A rule about Int64 reaches a whole number of any width, "
+                "Int32 included, since a formula makes a whole-number literal 32-bit. Nothing is "
+                "read off a column's name.",
                 "A format code is passed to the spreadsheet as written: this library does not parse "
                 "it and does not check it. It is in no position to know what a future spreadsheet "
                 "accepts, a code wrongly rejected would block a pack for no reason, and a code that "

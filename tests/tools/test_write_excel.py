@@ -2222,6 +2222,30 @@ class TestAColumnsNumbersAreShownAsTheSheetSays:
         assert formats["key"] == [TEXT_FORMAT] * 2, "the rule about text reached no text"
         assert formats["ratio"] == ["General"] * 2, "a rule about Float64 reached a column that is not one"
 
+    @pytest.mark.parametrize("dtype", [pl.Int8, pl.Int16, pl.Int32, pl.UInt8, pl.UInt32], ids=str)
+    def test_a_rule_about_int64_reaches_every_width_of_whole_number(self, tmp_path: Path, dtype: pl.DataType) -> None:
+        """A formula makes a whole-number literal 32-bit, so 'flag = 1' is an Int32 column.
+
+        A rule about Int64 reaches it, as it reaches any whole number. A rule about Float64 still
+        does not: a whole number is not a decimal.
+        """
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"flag": pl.Series("flag", [1, 2], dtype=dtype), "small": pl.Series("small", [3, 4], dtype=dtype)})
+
+        _write(
+            {"one": frame, "two": frame},
+            {
+                "path": str(target),
+                "sheets": [
+                    {"port": "one", "sheet": "Whole", "formats": [{"type": "Int64", "format": WHOLE_NUMBER_FORMAT}]},
+                    {"port": "two", "sheet": "Decimal", "formats": [{"type": "Float64", "format": MONEY_FORMAT}]},
+                ],
+            },
+        )
+
+        assert _formats(target, "Whole")["flag"] == [WHOLE_NUMBER_FORMAT] * 2
+        assert _formats(target, "Decimal")["flag"] == ["General"] * 2
+
     def test_a_tab_stating_an_empty_list_of_rules_is_written_like_one_stating_none(
         self,
         tmp_path: Path,
