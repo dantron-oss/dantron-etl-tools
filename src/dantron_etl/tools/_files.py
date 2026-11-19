@@ -1,8 +1,4 @@
-"""Checks about files on disk, shared by the tools that read and write them.
-
-One copy of each check, so the readers ask the same questions in the same words, and so do the
-writers. The leading underscore keeps this module out of the tool catalog.
-"""
+"""Checks about files on disk, shared by the tools that read and write them."""
 
 from pathlib import Path
 from typing import Final
