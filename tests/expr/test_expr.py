@@ -1041,8 +1041,9 @@ class TestSchemaDtypeChecking:
             ("[flag] = true", [True, False, True, None]),
             ("[flag] and not [flag]", [False, False, False, None]),
             ("not ([code] = 'X')", [True, True, True, None]),
-            # null is in every family: it is the one literal that may meet any column at all.
-            ("[qty] = null", [None, None, None, None]),
+            # null is in every family: it is the one literal that may meet any column at all. (A
+            # comparison with null, as in [qty] = null, is refused: see test_expr_refusals.py.)
+            ("coalesce([qty], null) is null", [False, False, False, True]),
             ("coalesce([code], null) is null", [False, False, False, True]),
             ("[code] in ('A', null)", [True, False, False, None]),
         ],
@@ -1919,7 +1920,6 @@ KEPT_ROWS: tuple[tuple[str, list[int]], ...] = (
     ('[seen] is null', [4, 6]),
     ('[code] is null', [4]),
     ('[code] is not null', [1, 2, 3, 5, 6, 7, 8, 9, 10]),
-    ('[code] = null', []),
     ("[code] in ('A', 'B')", [1, 2, 7]),
     ("[code] not in ('A', 'B')", [3, 5, 6, 8, 9, 10]),
     ('[qty] in (1, 3)', [1, 3, 5, 7]),
@@ -1981,7 +1981,6 @@ NULL_LOGIC_CASES: tuple[tuple[str, Any], ...] = (
     ("[code] = 'A'", None),
     ("[code] != 'A'", None),
     ("not ([code] = 'A')", None),
-    ("[code] = null", None),
     ("[code] in ('A', 'B')", None),
     ("[code] not in ('A', 'B')", None),
     ("[code] = 'A' and false", False),

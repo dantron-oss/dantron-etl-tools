@@ -86,3 +86,129 @@ class TestASyntaxErrorSaysWhereAndHints:
     def test_a_list_that_is_too_long_is_explained_in_values(self) -> None:
         message = _refusal("[a] in (" + ", ".join(f"'C{i}'" for i in range(130)) + ")")
         assert "about 120 quoted values" in message and "join" in message
+
+
+FRAME = pl.DataFrame(
+    {
+        "s": ["abc", "de", None],
+        "t": [datetime(2025, 1, 31, 9, 30), datetime(2025, 1, 31), datetime(2025, 2, 1)],
+        "d": [date(2025, 1, 31)] * 3,
+        "u": pl.Series([1, 2, 3], dtype=pl.UInt32),
+        "dec": pl.Series([100, 7, 1], dtype=pl.Decimal(12, 2)),
+    }
+)
+
+
+class TestComparingWithNullIsRefused:
+    @pytest.mark.parametrize(
+        ("text", "fix"),
+        [
+            ("[s] = null", "is null"),
+            ("null = [s]", "is null"),
+            ("[s] != null", "is not null"),
+            ("null != [s]", "is not null"),
+            ("[u] > null", "is null"),
+        ],
+    )
+    def test_with_a_pointer_to_is_null(self, text: str, fix: str) -> None:
+        message = _refusal(text)
+        assert "never true" in message and fix in message
+
+    def test_is_null_still_works(self) -> None:
+        assert FRAME.select(compile_expr("[s] is null", FRAME.schema))["s"].to_list() == [False, False, True]
+
+
+class TestRegexExtractWithAGroupThePatternLacks:
+    @pytest.mark.parametrize(
+        ("text", "said"),
+        [
+            ("regex_extract([s], '[a-z]+', 1)", "has no groups"),
+            ("regex_extract([s], '([a-z])', 2)", "has 1 group"),
+            ("regex_extract([s], '(a)(?:b)(c)', 3)", "has 2 groups"),
+        ],
+    )
+    def test_is_refused_naming_how_many_groups_there_are(self, text: str, said: str) -> None:
+        assert said in _refusal(text)
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("regex_extract([s], '[a-z]+', 0)", ["abc", "de", None]),
+            ("regex_extract([s], '([a-z])', 1)", ["a", "d", None]),
+            ("regex_extract([s], '(a)(?:b)(c)', 2)", ["c", None, None]),
+        ],
+    )
+    def test_a_group_the_pattern_has_is_extracted(self, text: str, expected: list) -> None:
+        assert FRAME.select(compile_expr(text, FRAME.schema).alias("x"))["x"].to_list() == expected
+
+
+class TestATimestampAgainstADate:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "[t] = date'2025-01-31'",
+            "[t] != date'2025-01-31'",
+            "[t] <= date'2025-01-31'",
+            "[t] > date'2025-01-31'",
+            "date'2025-01-31' = [t]",
+            "date'2025-01-31' >= [t]",
+            "date'2025-01-31' < [t]",
+            "[t] = [d]",
+            "[d] >= [t]",
+            "[t] in (date'2025-01-31', date'2025-02-01')",
+        ],
+    )
+    def test_is_refused_where_reading_the_date_as_midnight_is_wrong(self, text: str) -> None:
+        message = _refusal(text, FRAME.schema)
+        assert "midnight" in message and "cast_columns" in message
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("[t] >= date'2025-01-31'", [True, True, True]),
+            ("[t] < date'2025-02-01'", [True, True, False]),
+            ("date'2025-02-01' <= [t]", [False, False, True]),
+            ("date'2025-02-01' > [t]", [True, True, False]),
+        ],
+    )
+    def test_the_two_comparisons_that_midnight_answers_correctly_still_work(self, text: str, expected: list) -> None:
+        assert FRAME.select(compile_expr(text, FRAME.schema).alias("x"))["x"].to_list() == expected
+
+    def test_two_timestamps_and_two_dates_are_compared_as_before(self) -> None:
+        assert FRAME.select(compile_expr("[t] = [t]", FRAME.schema).alias("x"))["x"].to_list() == [True] * 3
+        assert FRAME.select(compile_expr("[d] = date'2025-01-31'", FRAME.schema).alias("x"))["x"].to_list() == [True] * 3
+
+    def test_without_a_schema_nothing_is_known_and_nothing_is_refused(self) -> None:
+        compile_expr("[t] = date'2025-01-31'")
+
+
+class TestDividingADecimalColumn:
+    @pytest.mark.parametrize("text", ["[dec] / 3", "3 / [dec]", "[dec] / [dec]"])
+    def test_is_refused_with_a_pointer_to_a_cast(self, text: str) -> None:
+        message = _refusal(text, FRAME.schema)
+        assert "[dec] holds Decimal" in message and "Float64" in message
+
+    def test_other_arithmetic_on_a_decimal_column_is_unchanged(self) -> None:
+        out = FRAME.select(compile_expr("[dec] * 2 + 1", FRAME.schema).alias("x"))["x"]
+        assert isinstance(out.dtype, pl.Decimal)
+
+
+class TestUnsignedArithmeticDoesNotWrap:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("len([s]) - 5", [-2, -3, None]),
+            ("5 - len([s])", [2, 3, None]),
+            ("len([s]) - len([s]) - 1", [-1, -1, None]),
+            ("-len([s])", [-3, -2, None]),
+            ("[u] - 5", [-4, -3, -2]),
+            ("-[u]", [-1, -2, -3]),
+        ],
+    )
+    def test_the_result_is_a_signed_whole_number(self, text: str, expected: list) -> None:
+        out = FRAME.select(compile_expr(text, FRAME.schema).alias("x"))["x"]
+        assert out.to_list() == expected
+        assert out.dtype == pl.Int64
+
+    def test_len_on_its_own_still_gives_what_it_gave(self) -> None:
+        assert FRAME.select(compile_expr("len([s])", FRAME.schema).alias("x"))["x"].dtype == pl.UInt32

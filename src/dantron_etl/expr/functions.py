@@ -23,6 +23,7 @@ from .arguments import (
     WholeNumber,
     probe_pattern,
 )
+from .errors import Refusal
 from .families import Family
 from .formatting import written_as_text
 
@@ -215,6 +216,18 @@ def _regex_match(subject: pl.Expr, pattern: str) -> pl.Expr:
 
 
 def _regex_extract(subject: pl.Expr, pattern: str, group: int) -> pl.Expr:
+    """The text one group matched. A group the pattern does not have is refused, not left null.
+
+    Group 0 is the whole match. The pattern's groups are counted by the engine itself, with no row
+    read, so a pattern written without parentheses and asked for group 1 is caught in the file.
+    """
+    groups = len(pl.select(pl.lit("", dtype=pl.String).str.extract_groups(pattern)).to_series().struct.fields)
+    if group > groups:
+        held = f"has {groups} group{'s' if groups != 1 else ''}" if groups else "has no groups (no parentheses)"
+        raise Refusal(
+            f"regex_extract() was asked for group {group}, but the pattern '{pattern}' {held}, so every row "
+            f"would be null; put parentheses round the part to keep, or ask for group 0 for the whole match"
+        )
     return subject.str.extract(pattern, group)
 
 

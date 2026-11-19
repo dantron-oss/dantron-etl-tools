@@ -260,9 +260,24 @@ Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>
 functions, no attribute access, no subscripting, no lambdas. Those are refused by name, and that
 refusal is a security boundary rather than a preference.
 
-Where the expression is checked against the real frame's schema, a type error is refused before a
-row moves — `upper([quantity])` on a number is caught at load, not inside the query engine at run
-time.
+Loading checks an expression's syntax and the names it uses. Its types are checked when its step
+runs, against the frames that actually arrived and before the step reads a row:
+`upper([quantity])` on a number loads, and is refused when that step starts, not inside the query
+engine. In a long flow that can be minutes into a run, so `until=` (§7b) is the quick way to try a
+new step.
+
+Some expressions that look reasonable never give the answer they seem to, and are refused:
+
+- `[code] = null` is null on every row, so a filter keeps nothing. Write `[code] is null`.
+- `regex_extract([ref], '[0-9]+', 1)` asks for group 1 of a pattern with no parentheses, which
+  would be null on every row. Write `'([0-9]+)'`, or ask for group 0, the whole match.
+- A timestamp compared with a date reads the date as midnight at its start, so
+  `[posted_at] <= date'2025-01-31'` leaves out the 31st after midnight and `[posted_at] =
+  date'2025-01-31'` is almost never true. `>=` and `<` mean what they say and are allowed; for the
+  rest, cast the timestamp to `Date` first, or write the range as `>= start and < next day`.
+- `/` on a `Decimal` column keeps the column's own number of places (100.00 / 3 is 33.33). Cast the
+  column to `Float64` first.
+- A `#` outside quotes is not a comment; put notes in the step's `why`.
 
 **Only some fields are expressions, and it matters.** A tool's template says which: `filter`'s
 `predicate`, `formula`'s `value`, `case_when`'s `when`, `then` and `otherwise`, `group_by`'s
@@ -506,7 +521,11 @@ Every one of these was measured, most of them the hard way.
 
 - **The integer literal in an expression is 32-bit.** `0` and `1` in a `formula` give a narrower
   column than a database's `BIGINT`. It is the right width for a rank or a small count; use
-  `cast_columns` when the width itself matters.
+  `cast_columns` when the width itself matters. `year()` is 32-bit too, so a very large product
+  such as `year([d]) * 10000000` wraps.
+- **`len()` gives an unsigned whole number.** Arithmetic on it, or on any unsigned column, is done
+  as a signed 64-bit number, so `len([code]) - 5` is -2 for a three-letter code rather than wrapping
+  to about four billion.
 - **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
   zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
   writer drop the zone quietly.
