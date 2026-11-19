@@ -117,7 +117,7 @@ class Join:
                 "Give the same number of columns as 'right_keys'.",
                 "right_keys": "For example ['period']. Matched by position with 'left_keys'. These "
                 "columns are dropped from `joined`, since they repeat the left ones.",
-                "suffix": "For example '_invoice'. Key columns never get it. If the new name is taken "
+                "suffix": "For example '_order'. Key columns never get it. If the new name is taken "
                 "too, the step is refused.",
             },
         )

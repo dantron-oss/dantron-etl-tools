@@ -90,7 +90,7 @@ class MatchOneToOne:
         return ToolHelp(
             detailed_description=(
                 "Use match_one_to_one when each item may be paired at most once, such as matching "
-                "payments to invoices where several invoices could fit. Each input row is one possible "
+                "payments to orders where several orders could fit. Each input row is one possible "
                 "pair, with columns that rank it, such as the gap in days or amount. The best pairs "
                 "are taken first, and a pair is taken only if neither of its keys is used yet. Taken "
                 "pairs go to `accepted`; every other row goes to `rejected`, with all its columns."
@@ -117,7 +117,7 @@ class MatchOneToOne:
                 "arrived. Nothing else tells them apart.",
             ),
             field_help={
-                "left_key": "For example 'invoice_id'. Each left key is accepted at most once.",
+                "left_key": "For example 'order_id'. Each left key is accepted at most once.",
                 "right_key": "For example 'payment_id'. Each right key is accepted at most once. It "
                 "must be a different column from 'left_key'.",
                 "priority": "For example [{column: day_gap}, {column: amount_gap}]. Later columns only "

@@ -55,7 +55,7 @@ class RemoveDuplicates:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Use remove_duplicates to keep one row per customer, per invoice, or per whole row. "
+                "Use remove_duplicates to keep one row per customer, per order, or per whole row. "
                 "One row of each group of matching rows goes to `unique`; the others go to "
                 "`duplicate`, so you can see what was removed. The two ports together hold every "
                 "input row, each in its arrival order. Matching follows SQL's DISTINCT."
@@ -71,7 +71,7 @@ class RemoveDuplicates:
                 "no fixed order, sort first so the row kept is the one you chose.",
             ),
             field_help={
-                "by": "For example ['invoice_id']. Leave it out to remove rows that repeat in every column.",
+                "by": "For example ['order_id']. Leave it out to remove rows that repeat in every column.",
                 "keep": "Use 'last' after sorting by date to keep each group's latest row.",
             },
         )
