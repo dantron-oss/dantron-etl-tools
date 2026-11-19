@@ -1,14 +1,9 @@
-"""Helpers a tool calls to check its configuration against the frames it was given.
+"""Helpers a tool calls to check its settings against the frames it was given.
 
-A tool's ``validate_inputs`` and ``execute`` see the configuration and the frames together. The
-helpers here answer the questions most tools ask at that point: does this column exist on this
-port, does this expression compile against these columns, what type does it produce, may this step
-write a column of this name. Each one refuses in the library's own words, naming the field.
-
-Everything here answers a question that needs both halves in front of it -- the configuration an
-author wrote, and the schema of the frame that turned up -- which is why none of it can live in a
-template and none of it can wait for ``execute``. Each one exists because several tools were
-already asking it, and the third or fourth spelling of a question is where the answers diverge.
+A tool's ``validate_inputs`` and ``execute`` see the settings and the frames together. These
+helpers answer the questions most tools ask there: is this column on this port, does this
+expression compile against these columns, what type does it give, may the step write a column of
+this name. Each refuses with a :class:`ConfigError` (or :class:`DataError`) that names the field.
 """
 
 from collections.abc import Sequence
@@ -36,24 +31,13 @@ __all__ = [
 
 
 def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
-    """Compile ``text`` against ``frame``'s schema, for a tool's own ``execute``.
+    """Compile the expression ``text`` against ``frame``'s columns and types, and return it.
 
-    Every tool that declares an ``expression`` field ends up doing the same two things at the
-    boundary between its configuration and the frame it runs against, and each is the kind of thing
-    that is easy to get right once and easy to forget once per tool: pass the frame's *schema*
-    (name to dtype), not merely its column names, because a schema is what lets a misspelled column
-    and a function applied to the wrong dtype both fail here, in the author's words, rather than one
-    of them surviving to fail three layers down inside the query engine; and translate
-    :class:`~.expr.ExpressionError` into this module's own error family, because a tool's caller
-    already catches :class:`ToolError` and an expression failure that arrived as a bare
-    ``ExpressionError`` would slip past it -- :func:`check_tool`'s own example runner is exactly such
-    a caller, so a worked example with a bad predicate would otherwise escape catalog conformance
-    entirely instead of being reported as a drifted example.
+    ``field`` is the setting the text came from. A misspelled column, a function given the wrong
+    type, or bad syntax is refused as a :class:`ConfigError` that names the field and quotes the
+    text.
 
-    ``field`` is the config key ``text`` came from, so the refusal names which field to open, and
-    the offending text is quoted alongside it for the same reason every refusal in this module and
-    in :mod:`~.expr` quotes the text it is about: this is read later, in a log, by someone holding a
-    file of many expressions.
+    Why: docs/design/core.md#expression-errors-become-config-errors
     """
     try:
         return compile_expr(text, frame.schema)
@@ -62,20 +46,15 @@ def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
 
 
 def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
-    """Stop when a '/' in ``text`` divides by zero on a row of ``frame`` the step uses.
+    """Stop the step when a ``/`` in ``text`` divides by zero on a row of ``frame``.
 
-    A division by zero has no answer. Left to the engine it gives infinity, or not-a-number for
-    0 / 0, and a later filter reads not-a-number as larger than every number. So the step stops and
-    names the field, the expression, the divisor and up to five of the rows.
+    Raises :class:`DataError` naming the field, the expression, the divisor and up to five rows.
+    Zero means 0, 0.0 or -0.0. A null divisor gives null and is allowed; so is not-a-number.
 
-    Zero means 0, 0.0 or -0.0. A null divisor is not zero: the division gives null, as everything
-    does with a null. Not-a-number is not zero either: dividing by it gives not-a-number, as before.
+    ``among`` limits the check to the rows the expression is used on (``case_when`` passes the
+    rows that reach a case). Other tools pass nothing.
 
-    ``among`` limits the check to the rows the step uses the expression on. ``case_when`` passes
-    the rows that reach a rung, so a rung that sends the zero rows elsewhere first guards the rung
-    that divides. Every other tool uses an expression on every row and passes nothing.
-
-    One pass per '/', each a whole-column comparison: no row-by-row work.
+    Why: docs/design/core.md#division-by-zero-stops-the-step
     """
     try:
         found = divisions(text, frame.schema)
@@ -99,35 +78,20 @@ def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among
 
 
 def compiled_dtype(frame: pl.DataFrame, text: str, field: str) -> tuple[str, pl.DataType]:
-    """What ``text`` produces against ``frame``'s schema: the column's name, and its dtype.
+    """Return ``(column name, dtype)`` of what ``text`` produces against ``frame``'s schema.
 
-    Asked by every tool that has to decide something about an expression before it runs it -- a
-    condition must be a truth value, the branches of an ordered rule must agree with one another, a
-    date part must be a whole number -- and answered off the *schema*, so the answer is the same on
-    a frame of a million rows and a frame of none. That property is not incidental: a tool that
-    refuses a whole run on the strength of this must not start behaving differently once a frame
-    happens to arrive empty.
-
-    The pair, rather than the dtype alone, because every caller that refuses a dtype has to name the
-    column in its refusal. The pair, rather than a whole schema, because a compiled expression
-    produces exactly one column, and handing back a mapping would make each caller re-derive "the
-    first and only entry" -- which is the line this function exists to delete.
+    Worked out from the schema alone, so an empty frame gives the same answer as a full one.
+    Refuses, as :func:`compile_for` does, an expression that does not compile or cannot apply to
+    these columns.
     """
     return _produced(frame, compile_for(frame, text, field), text, field)
 
 
 def compile_predicate_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
-    """:func:`compile_for`, plus the refusal that what it compiled is a condition.
+    """Compile ``text`` like :func:`compile_for` and refuse it unless it gives a true/false value.
 
-    ``[amount]`` is what an author writes when they meant ``[amount] > 0``. It compiles, because
-    that is exactly how a column reference is spelled, and handed to the query engine as a mask it
-    fails there instead -- as a complaint about a dtype, from a library the author has never heard
-    of, naming neither the field to open nor the text to change. A bare truth column, by contrast,
-    *is* a predicate as written, because a plain status filter is one of the real uses of every
-    filtering tool: the question is what the expression produces, never what it looks like.
-
-    The refusal names the column, the config field, the offending text and the dtype it produced
-    instead, because all four are what a reader needs while holding a file of many expressions.
+    ``[amount]`` written for ``[amount] > 0`` is refused here, naming the field, the column and
+    the type it gave. A column that already holds true/false is accepted as written.
     """
     expression = compile_for(frame, text, field)
     column, dtype = _produced(frame, expression, text, field)
@@ -140,13 +104,7 @@ def compile_predicate_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr
 
 
 def _produced(frame: pl.DataFrame, expression: pl.Expr, text: str, field: str) -> tuple[str, pl.DataType]:
-    """Resolve one compiled expression against a schema, in this module's error family.
-
-    The resolution is asked of the query engine, which is entitled to raise its own exception types
-    at this point as much as anywhere else, so this is a translating boundary like every other place
-    this module reaches into it -- otherwise a probe would hand a caller catching
-    :class:`ToolError` something it has never heard of.
-    """
+    """Return the name and dtype one compiled expression gives, as a :class:`ConfigError` on failure."""
     try:
         produced = frame.lazy().select(expression).collect_schema()
     except pl.exceptions.PolarsError as error:
@@ -159,16 +117,11 @@ def _produced(frame: pl.DataFrame, expression: pl.Expr, text: str, field: str) -
 
 
 def require_columns(frame: pl.DataFrame, names: Sequence[str], field: str, port: str) -> None:
-    """Refuse a configuration naming a column that is not on the port it will be read from.
+    """Refuse when any of ``names`` is not a column of ``frame``.
 
-    Every tool whose configuration names columns asks this, and each one that spelled its own
-    version spelled it differently. ``port`` is the reason a shared version is worth more than four
-    private ones: a single-input tool passes its one port name, a pairing tool passes ``left`` or
-    ``right``, and "column not found" without a side is a refusal that sends the reader to both.
-
-    Listing the columns that *are* present is the other half, and it is what turns the refusal into
-    the answer rather than merely the complaint: the two mistakes made here are a misspelling and a
-    wrong case, and both are obvious the moment the real list sits beside them.
+    ``field`` is the setting that named them and ``port`` the input port ``frame`` came from. The
+    :class:`ConfigError` names both and lists the columns that are there, so a misspelling or a
+    wrong case is easy to see.
     """
     present = frame.columns
     absent = [name for name in names if name not in present]
@@ -179,10 +132,8 @@ def require_columns(frame: pl.DataFrame, names: Sequence[str], field: str, port:
         )
 
 
-# The one canonical declaration of the flag that answers :func:`check_output_column`. Shared so the
-# wording is identical on every catalog page rather than reinvented per tool, and carrying no
-# default on purpose: a default would be inert wherever this field sits inside an array element, so
-# absent means "not asked", which is the reading the check takes.
+# The shared ``replace`` setting that :func:`check_output_column` reads. It has no default, so a
+# missing value means "not asked".
 REPLACE_FIELD: Final[ConfigField] = ConfigField(
     type="boolean",
     description="Whether writing this column may overwrite a column of that name that is already "
@@ -191,47 +142,19 @@ REPLACE_FIELD: Final[ConfigField] = ConfigField(
 
 
 def check_output_column(frame: pl.DataFrame, name: str, field: str, *, replace: bool | None) -> None:
-    """Refuse a name that is not a name, refuse writing ``name`` into ``frame`` silently, and refuse
-    repairing a column that is absent.
+    """Check that a step may write a column called ``name`` into ``frame``.
 
-    A blank name is ruled on first, and it is ruled on here rather than left to each tool. Blank
-    means empty or nothing but whitespace. A column called ``"   "`` is invisible in a rendering,
-    sits in a header row looking exactly like its neighbours, and cannot be referred to at all in an
-    expression, because ``[   ]`` is not something an author can write and mean. Measured across the
-    catalog before this check existed, seven tools were asked and gave three different answers, so the
-    rule sits in the one place every output-naming tool already reaches: a tool written next year
-    inherits it by calling this function, which it has to call anyway for the collision rule below.
-    Nothing is trimmed or tidied, only refused -- ``" total "`` is a strange name and still a name,
-    and a rule that quietly reshaped it would be writing a column nobody asked for.
+    ``field`` is the setting that holds the name; ``replace`` is the step's ``replace`` setting.
+    Raises :class:`ConfigError` when:
 
-    The blank is refused before ``replace`` is read, deliberately. A name made of nothing is wrong
-    either way, and reading the flag first is what used to give one mistake two unrelated
-    explanations: under ``replace: true`` a blank was reported as a column the input does not carry,
-    which is a sentence about the frame and sends the author to the wrong file.
+    - ``name`` is empty or only whitespace;
+    - ``name`` is already a column and ``replace`` is not true;
+    - ``replace`` is true and ``name`` is not a column (likely a misspelling).
 
-    A field that declares ``non_empty`` in its own template is answered earlier than this and more
-    tersely -- ``must not be empty``, at pipeline load, with no frame in front of it -- so ``""`` on
-    such a field never reaches here and only whitespace does. That fork in the wording is kept on
-    purpose. The load-time refusal is the better of the two: it needs no frame to be right, and it
-    catches a tool whose ports were never wired. Moving it here to make two correct messages read
-    alike would trade a refusal at load for one at run. This function is the backstop for the fields
-    that do not declare it, which is every field whose tool author never thought to.
-
-    The rest is the question about a name already in use, where the answer is neither of the two
-    obvious ones. Refusing replacement outright is too strict, because repairing a column in place
-    is a legitimate step. Taking the name silently is the real hazard, because whoever writes one
-    step does not know all the columns of the frame they are writing into, and the value they
-    overwrote is gone.
-
-    So both directions are refused. A collision nobody asked for names the column, the field and the
-    flag, so the fix is one keystroke. And ``replace`` on a column that is not there is refused too,
-    because unchecked it is the subtler defect of the two: a misspelling quietly creates a new
-    column while the column the author meant to repair keeps its old values, and the run reports
-    success having changed nothing.
+    Why: docs/design/core.md#writing-a-column-name
     """
     if not name.strip():
-        # The offending value is not quoted back: three spaces and an empty string print the same,
-        # so repeating it tells the reader nothing and would fork one refusal into six.
+        # Not quoted back: a blank name prints as nothing.
         raise ConfigError(
             f"config field {field!r} must not be blank: a column name has to carry at least one "
             f"character that is not whitespace, or nothing can point at the column it writes"
@@ -251,9 +174,8 @@ def check_output_column(frame: pl.DataFrame, name: str, field: str, *, replace: 
         )
 
 
-# The setting a step uses to say in which time zone a timestamp is read as a date. Shared so the
-# wording is the same on every catalog page. No default: which day a timestamp falls on depends on
-# the zone, so the author states it.
+# The shared setting that names the time zone a timestamp is read in as a date. No default:
+# which day a timestamp falls on depends on the zone, so the author states it.
 ZONE_FIELD: Final[ConfigField] = ConfigField(
     type="string",
     description="The time zone in which a timestamp that carries a zone is read as a date, such as "
@@ -273,9 +195,11 @@ def check_zone_name(zone: str, field: str) -> None:
 
 
 def require_stated_zone(dtype: pl.DataType, zone: str | None, field: str, *, reading: str) -> None:
-    """Refuse a timestamp in a zone read as a date with no zone stated, and a zone stated for nothing.
+    """Refuse reading a zone-aware timestamp as a date when no zone is stated.
 
-    ``reading`` says what is being read, for the refusal: a column, or a side of a range.
+    ``dtype`` is the column's type, ``zone`` the stated zone (or ``None``) and ``field`` the
+    setting to name. ``reading`` says what is being read, for the message: a column, or a side of
+    a range. A zone stated for a column without one is not refused here.
     """
     carried = dtype.time_zone if isinstance(dtype, pl.Datetime) else None
     if carried is not None and zone is None:
@@ -287,7 +211,7 @@ def require_stated_zone(dtype: pl.DataType, zone: str | None, field: str, *, rea
 
 
 def as_calendar_date(expression: pl.Expr, dtype: pl.DataType, zone: str | None) -> pl.Expr:
-    """A date, or a timestamp read as the date it falls on: in ``zone`` when it carries a zone."""
+    """Return ``expression`` as a date. A zone-aware timestamp is read in ``zone`` when one is given."""
     if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None and zone is not None:
         return expression.dt.convert_time_zone(zone).dt.date()
     return expression.cast(pl.Date)

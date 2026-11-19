@@ -1,19 +1,11 @@
-"""A tool's configuration template, and the checks that hold a configuration to it.
+"""A tool's settings template, and the checks that hold a step's settings to it.
 
-A tool describes its settings as a mapping of ``ConfigField`` entries: a type, a description,
-whether the setting is required, a default. This module checks a configuration against that
-template, fills in the defaults, and finds the expressions a configuration holds. It needs no frame,
-so everything here can run when a pipeline file is loaded.
+A tool describes its settings as a mapping of names to ``ConfigField``: a type, a description,
+whether it is required, a default. This module checks settings against that template, fills in the
+defaults, and finds the expressions the settings hold. It needs no frame, so all of it can run when
+a pipeline file is loaded.
 
-The template is enforced by the boundary rather than by each tool, because a tool with no
-cross-field rules has no reason to write anything of its own, and a rule that holds only when an
-author remembers to apply it is a convention rather than a rule. A configuration field can declare
-itself an *expression*, which is the seam to the small expression language this package also ships:
-a caller that loads a pipeline definition can lift the column references out of a field like that
-and check them against an upstream frame before a single row runs through it. A field can also
-describe the shape *below* itself -- an array's element type, an object's members -- because the
-common configuration shape is an ordered list of small objects, and a seam that reaches only the
-top level of such a configuration reaches nothing at all.
+Why: docs/design/core.md#the-template-is-checked-at-the-boundary
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -36,10 +28,7 @@ __all__ = [
 ]
 
 
-# One check per declared type. A boolean is refused by both numeric types because ``bool`` is an
-# ``int`` subclass in Python, which is the same trap the expression language had to sidestep for its
-# own whole-number arguments; the two must agree, or a template accepts ``true`` where it says it
-# takes a count.
+# One check per field type. A boolean is not accepted as a number: in Python ``bool`` is an ``int``.
 _TYPE_CHECKS: Final[dict[str, Any]] = {
     "string": lambda value: isinstance(value, str),
     "expression": lambda value: isinstance(value, str),
@@ -50,45 +39,32 @@ _TYPE_CHECKS: Final[dict[str, Any]] = {
     "object": lambda value: isinstance(value, dict),
 }
 
-# The field types a template may declare. Kept as a published set, the same way expr.py publishes
-# its own whitelists, so that a template author sees exactly what is available rather than
-# discovering the boundary by trial and error. "expression" is one of these types rather than a
-# separate flag on the field, so a field cannot claim to be an expression in one place and a plain
-# string in another. Derived from the checks above rather than written out beside them, so the
-# published set and the set that is actually enforced cannot drift apart -- a type in one and not
-# the other would be a field that validates nothing while looking as if it does.
+# The field types a template may declare. Read from the checks above, so the two cannot differ.
 FIELD_TYPES: Final[frozenset[str]] = frozenset(_TYPE_CHECKS)
 
 
-# The types ``non_empty`` can mean anything about. A count of zero or a number of zero are values in
-# full, not an absence of one, so ``non_empty`` on either would constrain nothing -- the same silent
-# no-op ``_check_spec`` already refuses for ``items`` outside an array and ``fields`` outside an
-# object.
+# The types ``non_empty`` applies to. Zero is a value, so it means nothing on a number.
 _SIZED_TYPES: Final[frozenset[str]] = frozenset({"string", "expression", "array", "object"})
 
 
 @dataclass(frozen=True, slots=True)
 class ConfigField:
-    """One entry in a tool's configuration template.
+    """One setting in a tool's template.
 
-    ``type`` is a member of :data:`FIELD_TYPES`, and ``"expression"`` is one of those types rather
-    than a separate boolean, so :func:`expression_fields` has exactly one place to read instead of
-    two that could disagree.
+    ``ConfigField("string", "The column to read.", required=True)``
 
-    ``items`` describes an array's element and ``fields`` describes an object's members, which is
-    the smallest pair of additions that makes the common configuration shape -- an ordered list of
-    small objects, as used for ordered rules, lists of aggregations, lists of key pairs -- say
-    anything about itself. Without them such a configuration is one untyped ``array`` field, so
-    nothing inside it is type checked, required checked, or compiled, and the expressions it holds
-    are invisible to a caller pre-flighting them.
+    - ``type``: one of :data:`FIELD_TYPES`. ``"expression"`` is a string the expression language
+      compiles.
+    - ``required``: refuses a missing value or ``None``. An empty ``[]``, ``""`` or ``{}`` still
+      counts as a value.
+    - ``non_empty``: refuses an empty ``[]``, ``""`` or ``{}``.
+    - ``default``: filled in when the setting is not written. Never filled inside ``items`` or
+      ``fields``.
+    - ``enum``: the only values allowed.
+    - ``items``: the shape of each element of an ``array``. ``fields``: the members of an
+      ``object``. With these, settings nested in a list of small objects are checked too.
 
-    A default is not filled inside ``items`` or ``fields``: an element that does not exist has
-    nothing to fill, and inventing one would put a rule in an ordered list that nobody wrote.
-
-    ``required`` and ``non_empty`` answer two different questions: whether a value arrived at all,
-    and whether the value that arrived carries anything. ``required=True`` accepts ``[]``, ``""``
-    and ``{}`` -- each is a value -- and ``non_empty=True`` is how a field refuses them, on its own
-    or alongside ``required``, without teaching ``required`` a second meaning.
+    Why: docs/design/core.md#nested-fields
     """
 
     type: str
@@ -105,14 +81,11 @@ class ConfigField:
 
 
 def expression_fields(template: Mapping[str, ConfigField]) -> tuple[str, ...]:
-    """Paths of the fields in ``template`` that hold an expression, in template order.
+    """Return the paths of the fields in ``template`` that hold an expression, in template order.
 
-    The declared field type is the whole seam to the expression language, and the path is how a
-    field nested inside an array or an object is named: ``"rules[].when"`` is the ``when`` member
-    of an element of the ``rules`` array. A path carries no index, because a template describes
-    what *may* be there and no particular element exists in it -- which is exactly the question a
-    form renderer or a documentation page asks. For what a configuration *does* hold, and where,
-    use :func:`expression_values`.
+    A nested field is named by its path: ``"rules[].when"`` is the ``when`` member of each element
+    of the ``rules`` array. The path has no index, because a template has no elements. For the
+    expressions a step's settings actually hold, use :func:`expression_values`.
     """
     return tuple(_expression_paths(template, prefix=""))
 
@@ -135,16 +108,10 @@ def expression_values(
     template: Mapping[str, ConfigField],
     config: Mapping[str, Any],
 ) -> tuple[tuple[str, str], ...]:
-    """Every expression ``config`` actually holds, as ``(path, text)`` pairs in template order.
+    """Return every expression ``config`` holds, as ``(path, text)`` pairs in template order.
 
-    Separate from :func:`expression_fields` because the two answer different questions and only one
-    of them can be answered by a template. A concrete index -- ``rules[0].when`` -- is the only
-    form of path a caller can put in front of a person who has to go and fix the expression, and an
-    index cannot exist in a template, so the reportable path needs the configuration.
-
-    This is what makes the seam reach a configuration that has no top-level expression field at
-    all: a caller lifts the references out of every pair, checks them against the upstream frame,
-    and reports the ones that miss by the path they sit at, before a single row is read.
+    Paths carry the index, such as ``rules[0].when``, so a message can tell a person exactly
+    which expression to fix. The loader uses this to check column names before any row is read.
     """
     return tuple(_expression_values(template, config, prefix=""))
 
@@ -172,23 +139,12 @@ def _spec_expression_values(path: str, spec: ConfigField, value: Any) -> Iterato
 
 
 def apply_defaults(template: Mapping[str, ConfigField], config: Mapping[str, Any]) -> dict[str, Any]:
-    """``config`` with every field of ``template`` present -- its default, or ``None``.
+    """Return a copy of ``config`` with every field of ``template`` present.
 
-    Every field, not only the ones carrying a declared default, because the alternative makes
-    ``execute`` read its own configuration two ways: subscript the field with a default, ``.get``
-    the field beside it without one, a distinction with no meaning that every author has to
-    rediscover field by field. Filling all of them makes "was this configured?" one expression,
-    ``config["x"] is None``, everywhere.
+    A field not written gets its default, or ``None`` when it has none. So a tool can test
+    ``config["x"] is None`` for any field. Nothing is filled inside an array or an object.
 
-    That only composes because :func:`validate_against_template` accepts ``None`` for an optional
-    field: a filled configuration is handed to a tool's own ``validate_config``, which validates it
-    against the same template a second time, and it has to survive that.
-
-    Nothing is filled inside an array or an object. There is no element to fill a member of, and
-    inventing one would add an entry to an ordered list that nobody wrote.
-
-    Public because a loader assembling a configuration from a file wants the same filling the
-    boundary does.
+    Why: docs/design/core.md#every-field-is-filled
     """
     filled = dict(config)
     for name, spec in template.items():
@@ -209,38 +165,18 @@ def require_not_blank(value: str, field: str) -> None:
 
 
 def validate_against_template(template: Mapping[str, ConfigField], config: Mapping[str, Any]) -> None:
-    """Everything a template can express about ``config``, checked uniformly for every field.
+    """Check ``config`` against ``template``. Returns nothing; raises :class:`ConfigError`.
 
-    An unknown field, a missing required one, a value of the wrong type, a value outside its
-    ``enum``, and an expression that will not compile are all refused here -- the last one compiled
-    with no known columns, so bad *syntax* is caught at this boundary while a missing *column* stays
-    the caller's problem, because only the caller knows the frame the tool is about to run against.
+    Refuses: an unknown field; a required field that is missing or ``None``; a value of the wrong
+    type; an empty value on a ``non_empty`` field; a value outside ``enum``; an expression that
+    does not compile (syntax only, since no columns are known here); a ``${...}`` placeholder left
+    in any string; a key that is not a string; and a field whose declared type is unknown.
 
-    A string still holding ``${...}`` anywhere inside it -- including nested inside an array or an
-    object value -- is refused too, regardless of the field's declared type. Such a placeholder is
-    meant to be resolved by whoever assembles the configuration; it is not this module's job to
-    resolve it, but it is exactly this module's job to refuse one that arrives unresolved, because a
-    placeholder like that would otherwise compile as an ordinary piece of text, match nothing, and
-    leave the run looking as if it had succeeded.
+    ``None`` is accepted for an optional field, so settings filled by :func:`apply_defaults` pass.
+    Nested values are checked by the same rules and named by their path, such as
+    ``rules[0].when``.
 
-    Wherever a field declares the shape below itself, a nested value is held to exactly these same
-    rules and the refusal names it by its path -- ``rules[0].when`` -- because a configuration whose
-    expressions all sit inside an array of objects is the common case, not the exotic one.
-
-    A field whose declared type is not in :data:`FIELD_TYPES` is refused rather than skipped. The
-    lookup used to fail open, which meant a template author reaching for the obvious name of a type
-    that does not exist got a field accepting anything at all.
-
-    ``None`` is accepted for an optional field and still refused for a required one. That is what
-    makes filling and validating composable: :func:`apply_defaults` fills every field, so a
-    configuration on its way to a tool carries ``None`` for everything nobody configured and has to
-    survive its own type, enum and expression checks.
-
-    ``required`` and ``non_empty`` are checked separately and answer different questions.
-    ``required`` refuses ``None`` -- did a value arrive at all -- and is satisfied by ``[]``,
-    ``""`` or ``{}``, each of which is a value. ``non_empty`` refuses exactly those empty values on
-    a field that declares it, whether or not the field is also ``required``, because knowing a
-    value arrived says nothing about whether it carries anything.
+    Why: docs/design/core.md#what-the-template-check-refuses
     """
     _check_level(template, config, prefix="")
 
@@ -265,15 +201,9 @@ def _check_level(template: Mapping[str, ConfigField], config: Mapping[str, Any],
 
 
 def _refuse_key_that_is_not_a_name(config: Mapping[str, Any], prefix: str) -> None:
-    """Refuse a configuration key that is not a string, before anything tries to report it.
+    """Refuse a settings key that is not a string, such as YAML's ``on`` read as ``True``.
 
-    A key like this comes from a definition file. The author wrote ``on: period``, the loader
-    turned the bare word into ``True``, and the key stopped being a name. So this is its own
-    refusal rather than an unknown field. An unknown field is a typo, and the fix is a different
-    word. This is a name the file ate, and the fix is a pair of quotes.
-
-    The message carries the type as well as the key, because ``True`` and ``"True"`` print the
-    same and the difference between them is the whole problem.
+    Why: docs/design/core.md#a-key-yaml-turned-into-true
     """
     for key in config:
         if isinstance(key, str):
@@ -341,10 +271,11 @@ def _check_no_placeholder(path: str, value: Any) -> None:
 
 
 def with_base_dir(template: Mapping[str, ConfigField], config: Mapping[str, Any], base_dir: Path) -> dict[str, Any]:
-    """``config`` with every relative path in a ``file_path`` field joined onto ``base_dir``.
+    """Return a copy of ``config`` with each relative path in a ``file_path`` field joined onto
+    ``base_dir``.
 
-    An absolute path is left as it is, and so is a value holding a ``{`` token such as
-    ``{scratch}``, which something else resolves. Only text values are touched.
+    Absolute paths, values holding a ``{`` token such as ``{scratch}``, and values that are not
+    text are left as they are.
     """
     resolved = dict(config)
     for name, spec in template.items():
