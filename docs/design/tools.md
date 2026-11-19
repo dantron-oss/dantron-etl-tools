@@ -300,3 +300,25 @@ default declared inside a sort key would look as if it applied and never would.
 
 **A repeated key is refused.** The second one can never decide anything: the first already ordered
 every row it would look at.
+
+## union
+
+**Why it exists.** filter, remove_duplicates and join split a frame into ports; none puts two frames
+back together. Without union, a flow that treats rows apart cannot carry them on as one, and a flow
+reading the same thing from two sources runs every later step twice. The name stays `union` (owner,
+stage 4) because it is Alteryx's word for stacking; the help says plainly that it keeps duplicates and
+matches columns by name.
+
+**A missing column is refused, not filled.** Filling it with nulls is the quiet version of a join that
+lost half its rows: the frame has the expected shape and a column of nothing where the data was. A
+flow that wants the column adds it with a formula, where it is written down.
+
+**Column order may differ.** The same columns in a different order are the same data. Refusing them
+would force a select_columns step whose only job is to please this tool.
+
+**Types must agree, except an all-null column.** Text stacked onto a number turns money into text, and
+whichever side was rewritten, it happened silently; the refusal names both types. A column of nothing
+has no type to disagree with: null belongs to every type, and an empty branch is an ordinary frame.
+
+**Rows keep their order and nothing is de-duplicated.** All of `top`, then all of `bottom`. Stacking
+is not judging; remove_duplicates reports what it removes.
