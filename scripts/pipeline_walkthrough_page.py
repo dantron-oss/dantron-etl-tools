@@ -40,7 +40,7 @@ from dantron_etl.focus import FocusSpec, PortSlice, available_entities, slice_tr
 from dantron_etl.paths import project_root
 from dantron_etl.expr import ExpressionError
 from dantron_etl import Pipeline, PipelineTrace, Step, StepFailedError, ToolError, read_pipeline, run_pipeline
-from dantron_etl.spec import Group
+from dantron_etl.spec import Container
 from dantron_etl.preview import PAGE_NAME, PreviewError, persist_panels, persist_trace, serve
 from dantron_etl.status import STATUS_LEVELS
 
@@ -165,9 +165,9 @@ def _group_parts(spec: Pipeline, lanes: dict[str, int]) -> list[tuple[int, tuple
     which is two steps drawn at one coordinate, the defect this whole function exists under.
     """
     split: list[tuple[int, tuple[str, ...]]] = []
-    for group in spec.groups:
+    for group in spec.containers:
         mine: dict[int, list[str]] = {}
-        for member in spec.group_members(group.id):
+        for member in spec.container_members(group.id):
             mine.setdefault(_lane_row(spec.step(member), lanes), []).append(member)
         split.extend((row, tuple(members)) for row, members in mine.items())
     return split
@@ -335,7 +335,7 @@ def _canvas(spec: Pipeline, trace: PipelineTrace) -> str:
     # halo, both read, and the name wins the few characters they share. The name is the one label
     # on the canvas a reader cannot recover from anything else on screen, so it is the one to keep.
     lane_names = "".join(
-        f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.label)}</text>' for lane in spec.lanes
+        f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.title)}</text>' for lane in spec.lanes
     )
 
     edges = []
@@ -384,8 +384,8 @@ def _canvas(spec: Pipeline, trace: PipelineTrace) -> str:
             # embeds its own data; the arithmetic staying in one language is worth that.
             edges.append(
                 f'<g class="edge" data-from="{_e(ref.step)}" data-to="{_e(step.id)}" data-port="{_e(ref.port)}"'
-                f' data-from-group="{_e(spec.step(ref.step).group or "")}"'
-                f' data-to-group="{_e(step.group or "")}"'
+                f' data-from-group="{_e(spec.step(ref.step).container or "")}"'
+                f' data-to-group="{_e(step.container or "")}"'
                 f' data-sx="{x1}" data-sy="{y1}" data-tx="{x2}" data-ty="{y2}">'
                 f'<path class="wire" d="{curve}"/><path class="hit" d="{curve}"/>'
                 f'<text class="elab" x="{(x1 + x2) / 2}" y="{(y1 + y2) / 2 - 6}">{label}</text>'
@@ -418,8 +418,8 @@ def _canvas(spec: Pipeline, trace: PipelineTrace) -> str:
     # out exactly as it always was: most of a 672-step flow will be in none for a long while, and a
     # canvas that indented those, or reserved space for a box round them, would make the first person
     # who tries this feature undo it.
-    boxed = {member for group in spec.groups for member in spec.group_members(group.id)}
-    containers = "".join(_group_box(spec, trace, group, box, nodes) for group in spec.groups)
+    boxed = {member for group in spec.containers for member in spec.container_members(group.id)}
+    containers = "".join(_group_box(spec, trace, group, box, nodes) for group in spec.containers)
     loose = "".join(nodes[step.id] for step in spec.steps if step.id not in boxed)
     return (
         f'<div class="scroll canvas" id="flow"><svg viewBox="0 0 {width} {height}" '
@@ -436,7 +436,7 @@ def _canvas(spec: Pipeline, trace: PipelineTrace) -> str:
 def _group_box(
     spec: Pipeline,
     trace: PipelineTrace,
-    group: Group,
+    group: Container,
     box: Callable[[str], tuple[float, float]],
     nodes: Mapping[str, str],
 ) -> str:
@@ -468,15 +468,15 @@ def _group_box(
     lifted out of its box the first time a reader followed it, and never come back. Each names its
     container at each end instead, which is what the collapse handler re-points from.
     """
-    members = spec.group_members(group.id)
+    members = spec.container_members(group.id)
     corners = [box(member) for member in members]
     left = min(x for x, _ in corners) - GROUP_PAD
     top = min(y for _, y in corners) - GROUP_HEAD
     width = max(x for x, _ in corners) + NODE_W + GROUP_PAD - left
     height = max(y for _, y in corners) + NODE_H + GROUP_PAD - top
 
-    rows_in = sum(trace.shapes[port].rows for port in spec.group_inputs(group.id) if port in trace.shapes)
-    rows_out = sum(trace.shapes[port].rows for port in spec.group_outputs(group.id) if port in trace.shapes)
+    rows_in = sum(trace.shapes[port].rows for port in spec.container_inputs(group.id) if port in trace.shapes)
+    rows_out = sum(trace.shapes[port].rows for port in spec.container_outputs(group.id) if port in trace.shapes)
     return (
         f'<g class="group" id="group-{_e(group.id)}" data-group="{_e(group.id)}" '
         f'data-rows-in="{rows_in}" data-rows-out="{rows_out}">'
@@ -704,7 +704,7 @@ def _index(spec: Pipeline, trace: PipelineTrace) -> str:
             f"<span>{_e(step_id)}</span><em>{_e(step.tool)}</em></button></li>"
         )
 
-    labels = {lane.id: lane.label for lane in spec.lanes}
+    labels = {lane.id: lane.title for lane in spec.lanes}
     groups = "".join(
         f'<li class="lanehead">{_e(labels.get(lane, lane) or "elsewhere")}</li>{"".join(items)}'
         for lane, items in lanes.items()

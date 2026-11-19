@@ -106,7 +106,7 @@ OLD_PATHS = [
     ("pipeline", "read_pipeline_file", "loader", "read_pipeline"),
     ("pipeline", "load_pipeline", "loader", "load_pipeline"),
     ("pipeline", "PortRef", "spec", "PortRef"),
-    ("pipeline", "Group", "spec", "Group"),
+    ("pipeline", "Container", "spec", "Container"),
     ("pipeline", "Lane", "spec", "Lane"),
     ("pipeline", "PipelineError", "errors", "PipelineError"),
     ("pipeline", "REGISTRY", "registry", "REGISTRY"),

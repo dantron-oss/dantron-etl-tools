@@ -10,7 +10,7 @@ imports working until the client code is moved over.
 from .errors import PipelineError
 from .loader import load_pipeline, read_pipeline
 from .registry import REGISTRY
-from .spec import Group, Lane, Pipeline, PortRef, Step
+from .spec import Container, Lane, Pipeline, PortRef, Step
 
 PipelineSpec = Pipeline  # compatibility: removed in the names stage
 StepSpec = Step  # compatibility: removed in the names stage
@@ -18,7 +18,7 @@ read_pipeline_file = read_pipeline  # compatibility: removed in the names stage
 
 __all__ = [
     "REGISTRY",
-    "Group",
+    "Container",
     "Lane",
     "Pipeline",
     "PipelineError",

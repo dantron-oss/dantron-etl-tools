@@ -138,8 +138,8 @@ def _flow() -> PipelineSpec:
         {
             "name": "a neutral fixture that degrades something",
             "lanes": [
-                {"id": "source", "label": "Source", "order": 1},
-                {"id": "shaping", "label": "Shaping", "order": 2},
+                {"id": "source", "title": "Source", "order": 1},
+                {"id": "shaping", "title": "Shaping", "order": 2},
             ],
             "steps": [
                 {"id": "entries", "tool": "read_csv", "lane": "source", "config": {"path": "sources/entries.csv"}},

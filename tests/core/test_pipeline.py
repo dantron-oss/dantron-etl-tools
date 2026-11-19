@@ -95,8 +95,8 @@ def _document() -> dict[str, Any]:
     return {
         "name": "a neutral fixture",
         "lanes": [
-            {"id": "intake", "label": "Intake", "order": 1},
-            {"id": "shaping", "label": "Shaping", "order": 2},
+            {"id": "intake", "title": "Intake", "order": 1},
+            {"id": "shaping", "title": "Shaping", "order": 2},
         ],
         "steps": [
             {
@@ -1541,7 +1541,7 @@ class TestAFingerprintAnswersWhetherAPortIsStillTheSamePort:
 # can -- "fetch the crm accounts and put the header row back" says in one line what six boxes
 # say in six, and a reader who trusts that line never has to open it.
 #
-# The shape is a `group` field on the step and a `groups:` block giving each id a title. Steps stay
+# The shape is a `container` field on the step and a `containers:` block giving each id a title. Steps stay
 # in one flat list, so a step moves between containers by editing one line and nothing about the
 # file's shape changes. It is exactly how `lane` and `stage` already work, which is the reason it was
 # chosen: a second nesting level in the document would make every tool that reads a pipeline file
@@ -1572,9 +1572,9 @@ def _grouped_document() -> dict[str, Any]:
     container has a real boundary in both directions rather than being the whole flow.
     """
     document = _document()
-    document["groups"] = [{"id": "shape", "title": SHAPE_TITLE}]
+    document["containers"] = [{"id": "shape", "title": SHAPE_TITLE}]
     for step_id in ("kept", "paired", "published"):
-        _step(document, step_id)["group"] = "shape"
+        _step(document, step_id)["container"] = "shape"
     return document
 
 
@@ -1584,37 +1584,37 @@ class TestStepsAreBoxedIntoContainers:
     def test_a_document_declaring_groups_loads_them_with_their_titles_and_members(self) -> None:
         """The whole surface: the declared containers, the title of each, and who is in them.
 
-        ``Group`` is imported inside the test rather than at the top of this file, so that a suite
+        ``Container`` is imported inside the test rather than at the top of this file, so that a suite
         run before containers exist fails on the cases that are about them instead of collecting
         nothing at all.
         """
-        from dantron_etl.pipeline import Group
+        from dantron_etl.spec import Container
 
         spec = load_pipeline(_grouped_document(), rules=RULES)
 
-        assert spec.groups == (Group("shape", SHAPE_TITLE),)
-        assert spec.group("shape").title == SHAPE_TITLE
+        assert spec.containers == (Container("shape", SHAPE_TITLE),)
+        assert spec.container("shape").title == SHAPE_TITLE
         # Members in the order the steps were declared, which is the order the file reads in and the
         # only order a container has: a set would draw its title over a different arrangement on
         # every render, and a reader comparing two renders would be comparing two drawings.
-        assert spec.group_members("shape") == ("kept", "paired", "published")
-        assert spec.step("kept").group == "shape"
+        assert spec.container_members("shape") == ("kept", "paired", "published")
+        assert spec.step("kept").container == "shape"
         # The property that lets containers be adopted one stage at a time rather than all at once:
         # a step that names no group is a step nothing changed about.
-        assert spec.step("entries").group is None
-        assert spec.group_members("shape") == tuple(s.id for s in spec.steps if s.group == "shape")
+        assert spec.step("entries").container is None
+        assert spec.container_members("shape") == tuple(s.id for s in spec.steps if s.container == "shape")
 
         # Named by id and refused by name, the way a missing step already is -- a reader who asks
         # for a container that is not there is told which ones there are.
         with pytest.raises(PipelineError) as raised:
-            spec.group("shpae")
+            spec.container("shpae")
         assert "shpae" in str(raised.value) and "shape" in str(raised.value)
 
     def test_a_group_is_presentation_and_never_changes_what_a_step_computes(self) -> None:
         """The same ruling lane, stage and why already live under, and for the same reason.
 
         A container is a line drawn round some boxes so a person can read the canvas. It reaches no
-        tool, so a frame produced inside a container is the identical frame outside one. Put `group`
+        tool, so a frame produced inside a container is the identical frame outside one. Put `container`
         into the fingerprint and boxing three steps together throws away every cached frame behind
         them -- which is to say the first person to tidy the canvas pays for it with an hour of
         re-running, and the second person does not tidy the canvas.
@@ -1622,7 +1622,7 @@ class TestStepsAreBoxedIntoContainers:
         plain = load_pipeline(_document(), rules=RULES)
         boxed = load_pipeline(_grouped_document(), rules=RULES)
 
-        assert boxed.step("paired").group == "shape", "the group did not survive the load at all"
+        assert boxed.step("paired").container == "shape", "the group did not survive the load at all"
         for step_id in ("kept", "paired", "published"):
             assert plain.fingerprint(step_id) == boxed.fingerprint(step_id), (
                 f"drawing a box round {step_id} invalidated its cache, so tidying the canvas costs a re-run"
@@ -1637,7 +1637,7 @@ class TestStepsAreBoxedIntoContainers:
         lane already is, naming the spelling that was written and the ones that exist.
         """
         document = _grouped_document()
-        _step(document, "paired")["group"] = "shpae"
+        _step(document, "paired")["container"] = "shpae"
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -1660,7 +1660,7 @@ class TestStepsAreBoxedIntoContainers:
         """
         for missing in ({"id": "shape"}, {"id": "shape", "title": ""}, {"id": "shape", "title": "   "}):
             document = _grouped_document()
-            document["groups"] = [missing]
+            document["containers"] = [missing]
 
             with pytest.raises(PipelineError) as raised:
                 load_pipeline(document, rules=RULES)
@@ -1674,12 +1674,12 @@ class TestStepsAreBoxedIntoContainers:
 
         It is the mirror of the refusal above it, and the pair is the point: a group named by a step
         and not declared is refused, and a group declared and named by no step is refused. Pin only
-        one side and the other spelling of the same typo -- fixing the `groups:` block instead of the
+        one side and the other spelling of the same typo -- fixing the `containers:` block instead of the
         step, or the step instead of the block -- passes the loader and shows a reader an empty
         rectangle with a title over nothing.
         """
         document = _grouped_document()
-        document["groups"].append({"id": "orphan", "title": "Something that used to be here"})
+        document["containers"].append({"id": "orphan", "title": "Something that used to be here"})
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -1700,7 +1700,7 @@ class TestStepsAreBoxedIntoContainers:
         the container in two -- and only the author knows which of the two they meant.
         """
         document = _grouped_document()
-        _step(document, "entries")["group"] = "shape"  # lane 'intake', among three steps in 'shaping'
+        _step(document, "entries")["container"] = "shape"  # lane 'intake', among three steps in 'shaping'
 
         with pytest.raises(PipelineError) as raised:
             load_pipeline(document, rules=RULES)
@@ -1724,15 +1724,15 @@ class TestStepsAreBoxedIntoContainers:
         easily -- so it is pinned where it can actually be checked, over the rendered markup.
         """
         document = _grouped_document()
-        document["groups"] = [{"id": "sources", "title": "Read both extracts as they arrived"}]
+        document["containers"] = [{"id": "sources", "title": "Read both extracts as they arrived"}]
         for step_id in ("kept", "paired", "published"):
-            _step(document, step_id).pop("group")
+            _step(document, step_id).pop("container")
         for step_id in ("entries", "headers"):  # two sources, one lane, no edge between them
-            _step(document, step_id)["group"] = "sources"
+            _step(document, step_id)["container"] = "sources"
 
         spec = load_pipeline(document, rules=RULES)
 
-        assert spec.group_members("sources") == ("entries", "headers")
+        assert spec.container_members("sources") == ("entries", "headers")
 
     def test_a_container_names_what_entered_it_and_what_left_it(self) -> None:
         """The boundary, which is a question about the wiring and so is answered by the graph.
@@ -1753,8 +1753,8 @@ class TestStepsAreBoxedIntoContainers:
         """
         spec = load_pipeline(_grouped_document(), rules=RULES)
 
-        assert spec.group_inputs("shape") == (PortRef("entries", "rows"), PortRef("headers", "rows"))
-        assert spec.group_outputs("shape") == (
+        assert spec.container_inputs("shape") == (PortRef("entries", "rows"), PortRef("headers", "rows"))
+        assert spec.container_outputs("shape") == (
             PortRef("kept", "false"),  # read by nobody: the rows the container set aside
             PortRef("paired", "left_only"),
             PortRef("paired", "right_only"),
@@ -1764,13 +1764,13 @@ class TestStepsAreBoxedIntoContainers:
         # Named once, not twice: `kept` and `also` both read the same upstream port, and that is one
         # lot of rows entering the container.
         shared = _grouped_document()
-        shared["steps"].append({**_filter_step("also", "entries.rows"), "group": "shape"})
-        shared["steps"].append({**_writer_step("also_out", "also.true"), "group": "shape"})
+        shared["steps"].append({**_filter_step("also", "entries.rows"), "container": "shape"})
+        shared["steps"].append({**_writer_step("also_out", "also.true"), "container": "shape"})
 
         widened = load_pipeline(shared, rules=RULES)
 
-        assert widened.group_inputs("shape").count(PortRef("entries", "rows")) == 1
-        assert PortRef("also", "true") not in widened.group_outputs("shape"), (
+        assert widened.container_inputs("shape").count(PortRef("entries", "rows")) == 1
+        assert PortRef("also", "true") not in widened.container_outputs("shape"), (
             "a port read by another member of the same container is the container's own plumbing"
         )
-        assert PortRef("also", "false") in widened.group_outputs("shape")
+        assert PortRef("also", "false") in widened.container_outputs("shape")

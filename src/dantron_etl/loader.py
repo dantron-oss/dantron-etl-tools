@@ -22,7 +22,7 @@ from .contract import TERMINAL_CATEGORIES, input_ports_for
 from .errors import ConfigError, PipelineError, RegistryError
 from .registry import REGISTRY, ToolRegistry
 from .rules import resolve_rules
-from .spec import Group, Lane, Pipeline, PortRef, Step, toposort
+from .spec import Container, Lane, Pipeline, PortRef, Step, toposort
 
 __all__ = ["load_pipeline", "read_pipeline"]
 
@@ -80,11 +80,11 @@ def load_pipeline(
         for raw in raw_steps
     ]
 
-    lanes = tuple(Lane(raw["id"], raw["label"], raw["order"]) for raw in raw_lanes)
+    lanes = tuple(Lane(raw["id"], raw["title"], raw["order"]) for raw in raw_lanes)
     _refuse_undeclared_lanes(resolved_steps, lanes)
 
-    groups = _read_groups(document.get("groups", ()) or ())
-    _refuse_bad_groups(resolved_steps, groups)
+    containers = _read_containers(document.get("containers", ()) or ())
+    _refuse_bad_containers(resolved_steps, containers)
 
     step_ids = tuple(raw["id"] for raw in resolved_steps)
     inputs_by_step = {raw["id"]: _resolve_edges(raw, tools_by_step, step_ids) for raw in resolved_steps}
@@ -105,12 +105,12 @@ def load_pipeline(
             lane=raw.get("lane"),
             stage=raw.get("stage"),
             why=raw.get("why"),
-            group=raw.get("group"),
+            container=raw.get("container"),
         )
         for raw in resolved_steps
     )
 
-    return Pipeline(name=document["name"], steps=steps, lanes=lanes, groups=groups, registry=active_registry)
+    return Pipeline(name=document["name"], steps=steps, lanes=lanes, containers=containers, registry=active_registry)
 
 
 def read_pipeline(
@@ -145,23 +145,23 @@ def read_pipeline(
 
 # The keys each part of a pipeline file may hold. A key outside these is refused, because the loader
 # reads only the keys it knows: a misspelt one would otherwise be dropped without a word.
-_DOCUMENT_KEYS: tuple[str, ...] = ("name", "steps", "lanes", "groups")
-_STEP_KEYS: tuple[str, ...] = ("id", "tool", "config", "inputs", "lane", "stage", "group", "why")
-_LANE_KEYS: tuple[str, ...] = ("id", "label", "order")
-_GROUP_KEYS: tuple[str, ...] = ("id", "title")
+_DOCUMENT_KEYS: tuple[str, ...] = ("name", "steps", "lanes", "containers")
+_STEP_KEYS: tuple[str, ...] = ("id", "tool", "config", "inputs", "lane", "stage", "container", "why")
+_LANE_KEYS: tuple[str, ...] = ("id", "title", "order")
+_CONTAINER_KEYS: tuple[str, ...] = ("id", "title")
 
-# The keys that must be there. A group's title is checked by _read_groups, which says why it matters.
+# The keys that must be there. A container's title is checked by _read_containers, which says why it matters.
 _DOCUMENT_REQUIRED: tuple[str, ...] = ("name", "steps")
 _STEP_REQUIRED: tuple[str, ...] = ("id", "tool")
-_LANE_REQUIRED: tuple[str, ...] = ("id", "label", "order")
-_GROUP_REQUIRED: tuple[str, ...] = ("id",)
+_LANE_REQUIRED: tuple[str, ...] = ("id", "title", "order")
+_CONTAINER_REQUIRED: tuple[str, ...] = ("id",)
 
 
 def _refuse_bad_shape(document: Any) -> None:
     """Refuse a file whose keys are not the ones this format has, before anything else is read.
 
-    Checks the top level, every step, every lane and every group: no unknown key, no missing
-    required key. Also refuses a flow with no steps, and two lanes or two groups sharing an id.
+    Checks the top level, every step, every lane and every container: no unknown key, no missing
+    required key. Also refuses a flow with no steps, and two lanes or two containers sharing an id.
     """
     if not isinstance(document, Mapping):
         raise PipelineError(
@@ -178,7 +178,7 @@ def _refuse_bad_shape(document: Any) -> None:
     for kind, keys, required in (
         ("steps", _STEP_KEYS, _STEP_REQUIRED),
         ("lanes", _LANE_KEYS, _LANE_REQUIRED),
-        ("groups", _GROUP_KEYS, _GROUP_REQUIRED),
+        ("containers", _CONTAINER_KEYS, _CONTAINER_REQUIRED),
     ):
         singular = kind[:-1]
         seen: set[Any] = set()
@@ -192,7 +192,7 @@ def _refuse_bad_shape(document: Any) -> None:
             _refuse_unknown_keys(entry, keys, where, f"a {singular}")
             _refuse_missing_keys(entry, required, where)
             # Duplicate step ids are refused by _refuse_duplicate_ids, with the reason that matters
-            # for steps. A lane or group with a second definition would never be drawn.
+            # for steps. A lane or container with a second definition would never be drawn.
             if kind != "steps" and entry["id"] in seen:
                 raise PipelineError(
                     f"duplicate {singular} id {entry['id']!r}: only the first would be used, so the "
@@ -272,35 +272,35 @@ def _refuse_undeclared_lanes(resolved_steps: list[Mapping[str, Any]], lanes: tup
 
 
 # ---------------------------------------------------------------------------
-# Groups
+# Containers
 # ---------------------------------------------------------------------------
 
 
-def _read_groups(raw_groups: Any) -> tuple[Group, ...]:
+def _read_containers(raw_containers: Any) -> tuple[Container, ...]:
     """The declared containers, refusing any that offers no sentence to write on itself.
 
     Blank counts as missing. A title of spaces satisfies every check that asks whether the key is
     there and draws a box with nothing written on it, which is the same silent failure as falling
     back on the id: the container looks finished and nothing says a sentence was owed.
     """
-    groups: list[Group] = []
-    for raw in raw_groups:
+    containers: list[Container] = []
+    for raw in raw_containers:
         title = raw.get("title")
         if not isinstance(title, str) or not title.strip():
             raise PipelineError(
-                f"group {raw['id']!r} declares no title; a container's whole value is the one "
+                f"container {raw['id']!r} declares no title; a container's whole value is the one "
                 f"sentence a reader gets instead of the steps it stands over, and an id is not a "
                 f"sentence"
             )
-        groups.append(Group(raw["id"], title))
-    return tuple(groups)
+        containers.append(Container(raw["id"], title))
+    return tuple(containers)
 
 
-def _refuse_bad_groups(resolved_steps: list[Mapping[str, Any]], groups: tuple[Group, ...]) -> None:
+def _refuse_bad_containers(resolved_steps: list[Mapping[str, Any]], containers: tuple[Container, ...]) -> None:
     """Both spellings of a mis-boxed step, and a container a lane band cannot be drawn round.
 
-    The first two are mirrors of each other and the pair is the point: a group named by a step and
-    not declared leaves a container one step short with a stray node beside it, and a group declared
+    The first two are mirrors of each other and the pair is the point: a container named by a step and
+    not declared leaves a container one step short with a stray node beside it, and a container declared
     and named by no step draws an empty rectangle with a title over nothing. Neither says anything is
     wrong, and on six hundred steps nobody finds either by looking.
 
@@ -314,29 +314,29 @@ def _refuse_bad_groups(resolved_steps: list[Mapping[str, Any]], groups: tuple[Gr
     workbooks* -- is three reads that touch nothing of each other and meet in a join outside the box,
     and a connectedness rule refuses exactly it.
     """
-    declared = {group.id for group in groups}
+    declared = {container.id for container in containers}
     joined: dict[str, list[Mapping[str, Any]]] = {}
     for raw in resolved_steps:
-        group_id = raw.get("group")
-        if group_id is None:
+        container_id = raw.get("container")
+        if container_id is None:
             continue
-        if group_id not in declared:
+        if container_id not in declared:
             available = ", ".join(sorted(declared)) if declared else "none"
             raise PipelineError(
-                f"step {raw['id']!r} declares group {group_id!r}, which is not declared; groups are: {available}"
+                f"step {raw['id']!r} declares container {container_id!r}, which is not declared; containers are: {available}"
             )
-        joined.setdefault(group_id, []).append(raw)
+        joined.setdefault(container_id, []).append(raw)
 
-    for group in groups:
-        if group.id not in joined:
+    for container in containers:
+        if container.id not in joined:
             raise PipelineError(
-                f"group {group.id!r} is declared and no step belongs to it, so it would be drawn as "
+                f"container {container.id!r} is declared and no step belongs to it, so it would be drawn as "
                 f"an empty box with a title over nothing"
             )
-        lanes = sorted({raw.get("lane") or "no lane" for raw in joined[group.id]})
+        lanes = sorted({raw.get("lane") or "no lane" for raw in joined[container.id]})
         if len(lanes) > 1:
             raise PipelineError(
-                f"group {group.id!r} holds steps in lanes {' and '.join(repr(lane) for lane in lanes)}; "
+                f"container {container.id!r} holds steps in lanes {' and '.join(repr(lane) for lane in lanes)}; "
                 f"a lane is a horizontal band and one box cannot honestly be drawn across two. Move "
                 f"the step, or split the container in two"
             )

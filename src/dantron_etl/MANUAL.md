@@ -118,8 +118,8 @@ Four capabilities that each replace a shape you would otherwise build badly:
 name: Monthly figures
 
 lanes:
-  - {id: source,  label: "As loaded",   order: 0}
-  - {id: figures, label: "The figures", order: 1}
+  - {id: source,  title: "As loaded",   order: 0}
+  - {id: figures, title: "The figures", order: 1}
 
 steps:
   - id: orders
@@ -148,8 +148,8 @@ Every step has `id`, `tool`, `config`, and `inputs` (except a source, which read
 `stage` and `why` drive the rendered walkthrough.
 
 The loader refuses any key it does not know, at every level: the top of the file (`name`, `steps`,
-`lanes`, `groups`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `group`, `why`), a
-lane (`id`, `label`, `order`) and a group (`id`, `title`). A misspelt key would otherwise be dropped
+`lanes`, `containers`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `container`,
+`why`), a lane (`id`, `title`, `order`) and a container (`id`, `title`). A misspelt key would otherwise be dropped
 without a word. The refusal names the key and suggests the one you probably meant. `stage` is free
 text, so a misspelt stage is not caught: it draws as a stage of its own.
 
@@ -278,11 +278,11 @@ no field that only applies when another field holds a particular value.
 
 ### 4.4 Containers
 
-A flow of any size is unreadable as a list of steps. `groups` names boxes and each step says which
+A flow of any size is unreadable as a list of steps. `containers` names boxes and each step says which
 box it is in:
 
 ```yaml
-groups:
+containers:
   - {id: read_accounts, title: "Fetch the account list and put its header row back"}
 
 steps:
@@ -290,7 +290,7 @@ steps:
     tool: read_table
     lane: sources
     stage: parties
-    group: read_accounts
+    container: read_accounts
 ```
 
 On the drawn page a container is a titled box its steps sit inside, which a reader can close to a
@@ -301,7 +301,7 @@ they do not need to look at today.
 
 | | |
 |---|---|
-| a `group` naming no declared container | a typo is refused, never quietly ignored |
+| a `container` naming no declared container | a typo is refused, never quietly ignored |
 | a container with no members | it would draw as an empty box |
 | a blank or whitespace title | the title is the only thing a closed container shows |
 | a container whose steps sit in two different lanes | a box spans one lane; two is a drawing that cannot be laid out |
@@ -317,7 +317,7 @@ words, what the steps produce, no vocabulary from this library. Sentence case, n
 about seventy characters.
 
 A container is a way of reading the flow. It changes nothing about what runs, in what order, or what
-any step produces -- `group` is not part of a step's fingerprint (§7b), so boxing an existing flow
+any step produces -- `container` is not part of a step's fingerprint (§7b), so boxing an existing flow
 does not invalidate a cache.
 
 ---
@@ -625,7 +625,7 @@ if anything upstream has been edited since, the cache is **refused by name** rat
 That refusal is the whole feature. A cache that fails to load is a nuisance; a cache that loads
 perfectly against a pipeline somebody has since edited is a wrong number nobody can see.
 
-Deliberately **not** part of the fingerprint: `lane`, `stage`, `why` and `group`. None of them
+Deliberately **not** part of the fingerprint: `lane`, `stage`, `why` and `container`. None of them
 changes a figure, so re-drawing or re-describing a flow does not throw away a cache you would still
 have been right to use.
 

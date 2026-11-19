@@ -108,8 +108,8 @@ def _document() -> dict[str, Any]:
     return {
         "name": "a neutral fixture",
         "lanes": [
-            {"id": "intake", "label": "Intake", "order": 1},
-            {"id": "shaping", "label": "Shaping", "order": 2},
+            {"id": "intake", "title": "Intake", "order": 1},
+            {"id": "shaping", "title": "Shaping", "order": 2},
         ],
         "steps": [
             # Written first, run last, deliberately -- do not tidy it back into place.

@@ -99,7 +99,7 @@ than the one you are editing. If anything looks impossible, run
 | `example_world.py` | The scratch directory, temporary environment and in-memory database a worked example runs in. |
 | `conformance.py` | `check_tool` and `check_registry`: every catalog rule, and every worked example run and compared. |
 | `expr/` | The bracket expression language. Parsed with `ast`, checked against a whitelist, compiled to a polars expression. Never `eval`. One module per job; the package docstring lists them. Every function is defined once, in `expr/functions.py`. |
-| `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Group`, the walk order, the fingerprint. |
+| `spec.py` | What a loaded flow is: `Pipeline`, `Step`, `PortRef`, `Lane`, `Container`, the walk order, the fingerprint. |
 | `rules.py` | Resolving `${rules.*}` references in a step's configuration. |
 | `loader.py` | `read_pipeline` and `load_pipeline`. Every refusal that can happen before a frame exists: duplicate ids, unknown tools, bad edges, cycles, bad config, unresolved `${rules.*}`, dead-end steps, bad containers. |
 | `walk.py` | Works out a run before it starts: which steps `until=` and `cached=` leave to walk, the frames handed in, and when each frame can be freed. |

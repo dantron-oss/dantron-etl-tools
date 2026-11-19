@@ -21,17 +21,16 @@
   },
   "pipeline_file_keys": {
     "document": [
-      "groups",
+      "containers",
       "lanes",
       "name",
       "steps"
     ],
     "entry": [
       "config",
-      "group",
+      "container",
       "id",
       "inputs",
-      "label",
       "lane",
       "order",
       "stage",
