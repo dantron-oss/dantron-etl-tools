@@ -198,9 +198,6 @@ def test_sort_is_a_stable_permutation_in_the_order_asked_for() -> None:
             Sort(), Ports({"rows": rows}), {"by": [{"column": "k", "direction": direction, "nulls": nulls}]}
         )["rows"]
 
-        if direction == "desc" and rows.height > 1 and rows["k"].null_count() == rows.height:
-            continue  # the one case where order is not kept; pinned in the test below
-
         present = sorted(
             (pair for pair in zip(rows["k"], rows["x_id"], strict=True) if pair[0] is not None),
             key=lambda pair: pair[0],
@@ -211,14 +208,65 @@ def test_sort_is_a_stable_permutation_in_the_order_asked_for() -> None:
         assert result["x_id"].to_list() == expected, _show(rows=rows) + f"\ndirection={direction} nulls={nulls}"
 
 
-# pins current behaviour; see the stage-2 test report (new finding, not in report F): with a single
-# sort key whose column is entirely null, a descending sort reverses the rows instead of keeping
-# them in arrival order. polars 1.38 does this even with maintain_order=True. A second key, or one
-# non-null value, restores the arrival order. record_id numbers rows after this sort.
-@pytest.mark.parametrize("nulls", ["first", "last"])
-def test_a_descending_sort_on_an_all_null_key_reverses_the_rows(nulls: str) -> None:
-    rows = pl.DataFrame({"x_id": [0, 1, 2], "k": [None, None, None]}, schema={"x_id": pl.Int64, "k": pl.String})
+def _sort_key_column(rng: random.Random, height: int) -> tuple[pl.DataType, list[Any]]:
+    """One sort key column: all missing, partly missing, never missing, or one repeated value."""
+    dtype, pool = rng.choice([(pl.String, ["a", "b", "c"]), (pl.Int64, [1, 2, 3]), (pl.Null, [None])])
+    shape = rng.choice(["all_missing", "some_missing", "none_missing", "one_value"])
+    if dtype == pl.Null or shape == "all_missing":
+        return dtype, [None] * height
+    if shape == "one_value":
+        return dtype, [pool[0]] * height
+    choices = pool + ([None] if shape == "some_missing" else [])
+    return dtype, [rng.choice(choices) for _ in range(height)]
 
-    result = run_tool(Sort(), Ports({"rows": rows}), {"by": [{"column": "k", "direction": "desc", "nulls": nulls}]})
 
-    assert result["rows"]["x_id"].to_list() == [2, 1, 0]
+def _stable_order(values: dict[str, list[Any]], keys: list[dict[str, str]], height: int) -> list[int]:
+    """The row positions in the order a stable sort gives, worked out in plain Python.
+
+    One stable pass per key, last key first, so the first key decides and each later key breaks
+    the ties the earlier ones leave. Python's sort keeps tied items in order, also when reversed.
+    """
+    order = list(range(height))
+    for key in reversed(keys):
+        column = values[key["column"]]
+        descending = key.get("direction", "asc") == "desc"
+        nulls_first = key.get("nulls", "last") == "first"
+        # A missing value ranks as if it were outside every value, at the end it was asked for.
+        # Reversing the sort for a descending key also reverses that rank, so it is flipped first.
+        missing_rank = 0 if nulls_first != descending else 2
+
+        def rank(position: int, column: list[Any] = column, missing_rank: int = missing_rank) -> tuple:
+            value = column[position]
+            return (missing_rank, 0) if value is None else (1, value)
+
+        order = sorted(order, key=rank, reverse=descending)
+    return order
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_sort_keeps_tied_rows_in_arrival_order_whatever_the_keys_hold(seed: int) -> None:
+    """Rows that tie on every key keep the order they arrived in, for every key shape.
+
+    The keys are drawn missing on every row, missing on some, never missing, or one repeated value,
+    in each direction and with missing values placed first or last, one to three keys at a time.
+    polars once handed rows back in reverse when the only key was missing on every row and sorted
+    descending, which a record number taken after the sort would have carried forward.
+    """
+    rng = random.Random(100 + seed)
+    for _ in range(CASES):
+        height = rng.randint(0, 9)
+        names = [f"key{n}" for n in range(rng.randint(1, 3))]
+        columns = {name: _sort_key_column(rng, height) for name in names}
+        rows = pl.DataFrame(
+            {"x_id": list(range(height)), **{name: values for name, (_, values) in columns.items()}},
+            schema={"x_id": pl.Int64, **{name: dtype for name, (dtype, _) in columns.items()}},
+        )
+        keys = [
+            {"column": name, "direction": rng.choice(["asc", "desc"]), "nulls": rng.choice(["first", "last"])}
+            for name in names
+        ]
+
+        result = run_tool(Sort(), Ports({"rows": rows}), {"by": keys})["rows"]
+
+        expected = _stable_order({name: values for name, (_, values) in columns.items()}, keys, height)
+        assert result["x_id"].to_list() == expected, _show(rows=rows) + f"\nkeys={keys}"

@@ -663,17 +663,23 @@ class TestSortOnAKeyThatSeparatesNothing:
     shuffling ties on a flat key has something to fail against.
     """
 
+    @pytest.mark.parametrize("direction", ["asc", "desc"])
     @pytest.mark.parametrize("nulls", ["last", "first"])
-    def test_a_key_that_is_missing_on_every_row_leaves_the_frame_alone(self, nulls: str) -> None:
-        """Every row ties, so the output is the input. Both placements give the same answer.
+    def test_a_key_that_is_missing_on_every_row_leaves_the_frame_alone(self, nulls: str, direction: str) -> None:
+        """Every row ties, so the output is the input. Both placements and both directions agree.
 
         Where missing values go stops meaning anything when they are the only values there are. A
         tool that took the all-missing case down a path of its own would show it here, and the two
-        placements would disagree.
+        placements would disagree. polars took that path once: sorted descending on this one key,
+        it handed the rows back in reverse.
         """
         frame = _flat_key_rows(1000, None)
 
-        result = run_tool(Sort(), Ports({"rows": frame}), {"by": [{"column": "period", "nulls": nulls}]})
+        result = run_tool(
+            Sort(),
+            Ports({"rows": frame}),
+            {"by": [{"column": "period", "direction": direction, "nulls": nulls}]},
+        )
 
         assert_frame_equal(result["rows"], frame)
         assert result["rows"]["position"].to_list() == list(range(1000)), "the rows arrived in this order"
