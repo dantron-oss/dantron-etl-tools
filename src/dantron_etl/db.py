@@ -50,11 +50,12 @@ __all__ = [
     "validate_identifier",
 ]
 
-_ENV_NAME: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Matched with fullmatch: '$' alone would also accept a name with a newline at its end.
+_ENV_NAME: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _SQLITE_PREFIX: Final[str] = "sqlite:///"
-_KNOWN_SCHEMES: Final[tuple[str, ...]] = ("sqlite", "postgresql")
+_KNOWN_SCHEMES: Final[tuple[str, ...]] = ("sqlite", "file", "postgresql", "postgres")
 _POSTGRES_SCHEMES: Final[frozenset[str]] = frozenset({"postgresql", "postgres"})
 
 # The word that makes a SQLite table definition unreadable to anything short of a SQL parser. The
@@ -149,7 +150,7 @@ def validate_identifier(value: str, field: str) -> None:
     bound as a parameter, so this grammar check is the only defence against a name carrying a second
     statement, and it has to run first for that defence to mean anything.
     """
-    if not _IDENTIFIER.match(value):
+    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
         raise ConfigError(
             f"config field {field!r} must be a plain identifier (letters, digits and underscores, "
             f"not starting with a digit); refusing {value!r}"
@@ -170,7 +171,7 @@ def resolve_connection_uri(name: str, field: str) -> str:
     plausible name but is not set is refused by that name, which is safe to repeat because it is
     never the secret itself.
     """
-    if not _ENV_NAME.match(name):
+    if not isinstance(name, str) or not _ENV_NAME.fullmatch(name):
         raise ConfigError(
             f"config field {field!r} must name an environment variable holding the connection, not "
             f"the connection string itself"
@@ -192,11 +193,14 @@ def open_connection(uri: str) -> Iterator[Any]:
 
 
 def _connect(uri: str) -> Any:
-    scheme = urlparse(uri).scheme.lower()
+    try:
+        scheme = urlparse(uri).scheme.lower()
+    except ValueError:
+        scheme = ""
     if scheme == "sqlite":
         return _connect_sqlite_path(uri)
     if scheme == "file":
-        return sqlite3.connect(uri, uri=True)
+        return _connect_sqlite_file_uri(uri)
     if scheme in _POSTGRES_SCHEMES:
         return _connect_postgres(uri)
     known = ", ".join(_KNOWN_SCHEMES)
@@ -220,6 +224,51 @@ def _connect_sqlite_path(uri: str) -> sqlite3.Connection:
     return sqlite3.connect(path)
 
 
+def _connect_sqlite_file_uri(uri: str) -> sqlite3.Connection:
+    """A sqlite ``file:`` URI. One that states no ``mode`` opens an existing file only.
+
+    sqlite would otherwise create a missing file, and a read from it would report a missing table
+    while leaving an empty database behind. A URI that states a mode (``mode=memory``,
+    ``mode=rwc``) is opened as written.
+    """
+    if "mode=" not in uri:
+        uri = f"{uri}{'&' if '?' in uri else '?'}mode=rw"
+    failure: str | None = None
+    try:
+        return sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as error:
+        failure = f"{type(error).__name__}: {error}"
+    raise ConfigError(f"could not open the sqlite database the file: URI names ({failure}); a missing file is not created")
+
+
+def _could_not_connect(uri: str, failure: str) -> str:
+    """A refusal to connect that names where, and never the connection string, the user or the password.
+
+    A driver's own message can quote the connection string, password included, so only the kind of
+    failure is kept from it.
+    """
+    try:
+        parsed = urlparse(uri)
+        host, database = parsed.hostname, parsed.path.lstrip("/")
+        port = parsed.port
+    except ValueError:
+        host = database = port = None
+    where = ", ".join(
+        part
+        for part in (
+            f"database {database!r}" if database else "",
+            f"host {host!r}" if host else "",
+            f"port {port}" if port else "",
+        )
+        if part
+    )
+    return (
+        f"could not connect to the postgresql database{f' ({where})' if where else ''}: the driver raised "
+        f"{failure}. Its own message is not shown, because it can contain the connection string or the "
+        f"password; check the value of the environment variable the step names"
+    )
+
+
 def _connect_postgres(uri: str) -> Any:
     """A postgres connection through whichever driver the consumer installed, imported lazily by scheme.
 
@@ -232,15 +281,25 @@ def _connect_postgres(uri: str) -> Any:
         import psycopg
     except ImportError:
         psycopg = None  # type: ignore[assignment]
-    if psycopg is not None:
-        return psycopg.connect(uri)
+    connect = psycopg.connect if psycopg is not None else None
 
-    try:
-        import adbc_driver_postgresql.dbapi as adbc_postgres
-    except ImportError:
-        adbc_postgres = None  # type: ignore[assignment]
-    if adbc_postgres is not None:
-        return adbc_postgres.connect(uri)
+    if connect is None:
+        try:
+            import adbc_driver_postgresql.dbapi as adbc_postgres
+        except ImportError:
+            adbc_postgres = None  # type: ignore[assignment]
+        if adbc_postgres is not None:
+            connect = adbc_postgres.connect
+
+    if connect is not None:
+        # The refusal is raised after the except block, so the driver's error is not even chained to
+        # it: a traceback, a trace or a log cannot show its message.
+        failure: str | None = None
+        try:
+            return connect(uri)
+        except Exception as error:  # noqa: BLE001 - any driver failure is reported the same safe way
+            failure = type(error).__name__
+        raise ConfigError(_could_not_connect(uri, failure))
 
     raise ConfigError(
         "connection scheme 'postgresql' needs a driver this environment does not have installed; "
@@ -258,11 +317,24 @@ def probe_columns(connection: Any, qualified: str) -> tuple[str, ...]:
     cursor = connection.cursor()
     try:
         cursor.execute(f"SELECT * FROM {qualified} LIMIT 0")
-    except Exception as error:  # noqa: BLE001 - any failure at this point means the table is not there
-        raise ConfigError(f"table {qualified!r} was not found") from error
-    columns = tuple(entry[0] for entry in cursor.description)
-    cursor.close()
-    return columns
+        return tuple(entry[0] for entry in cursor.description)
+    except Exception as error:  # noqa: BLE001 - every failure is named below, in this library's words
+        if _is_missing_table(error):
+            raise ConfigError(f"table {qualified!r} was not found") from error
+        first_line = str(error).strip().splitlines()[0] if str(error).strip() else ""
+        raise ConfigError(
+            f"could not read table {qualified!r}: {type(error).__name__}{f': {first_line}' if first_line else ''}"
+        ) from error
+    finally:
+        cursor.close()
+
+
+def _is_missing_table(error: Exception) -> bool:
+    """Whether a driver's error says the table (or its schema) does not exist, and nothing else."""
+    if type(error).__name__ in ("UndefinedTable", "InvalidSchemaName"):
+        return True
+    text = str(error).lower()
+    return "no such table" in text or ("does not exist" in text and ("relation" in text or "schema" in text))
 
 
 def require_matching_columns(
@@ -408,8 +480,10 @@ class RowLoader:
         connection.execute(self._insert_statement(qualified, columns), row)
 
     def _insert_statement(self, qualified: str, columns: Sequence[str]) -> str:
+        # Every column quoted, as a merge already quotes them: a column named like a reserved word
+        # ('order') or holding a space is otherwise a syntax error that reads as bad rows.
         marks = ", ".join(self.placeholder for _ in columns)
-        return f"INSERT INTO {qualified} ({', '.join(columns)}) VALUES ({marks})"
+        return f"INSERT INTO {qualified} ({', '.join(quoted_identifier(column) for column in columns)}) VALUES ({marks})"
 
     def table_rules(self, connection: Any, schema: str | None, table: str) -> TableRules:
         """What ``table`` demands of a row, read from the catalog rather than learned by attempting one.
@@ -616,7 +690,7 @@ class _PostgresLoader(RowLoader):
     ) -> None:
         if not rows:
             return
-        statement = f"COPY {qualified} ({', '.join(columns)}) FROM STDIN"
+        statement = f"COPY {qualified} ({', '.join(quoted_identifier(column) for column in columns)}) FROM STDIN"
         with connection.cursor() as cursor, cursor.copy(statement) as stream:
             for row in rows:
                 stream.write_row(row)
