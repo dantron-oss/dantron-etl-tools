@@ -1,77 +1,87 @@
 [project]
 name = "dantron-etl-tools"
-version = "0.1.0"
-description = "Generic, configurable data transformation tools: a pipeline is a data file, and a run leaves evidence."
+# The version is written once, as __version__ in src/dantron_etl/__init__.py (see [tool.hatch.version]).
+dynamic = ["version"]
+description = "Data pipelines written as YAML files, built from a fixed set of tools, with every step's rows open to inspection."
 requires-python = ">=3.13"
 readme = "README.md"
+authors = [{ name = "DanTron Inc" }]
+keywords = ["etl", "data pipeline", "yaml", "polars", "data transformation", "data lineage", "excel"]
+# No licence classifier yet: the licence is still to be chosen.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
 
-# Declared from measurement, not from habit. polars is the library. xlsxwriter and fastexcel are
-# here because `read_excel` and `write_excel` import them at module level, and importing this
-# package registers every tool -- so without them `import dantron_etl` itself fails, which is a
-# worse error than a missing feature. openpyxl and PyYAML are imported inside the one function that
-# needs each, so they would fail later and more precisely; they are declared anyway because writing
-# a workbook and loading a pipeline file are what most consumers came for.
+# polars is the engine. xlsxwriter and fastexcel are needed when the package loads, because every
+# tool registers itself on import. openpyxl and PyYAML are imported only where they are used.
 dependencies = [
-    # 1.38 is the verified floor, not the theoretical one: the join parameters these tools rely on
-    # (nulls_equal, maintain_order) arrived well after 1.0, and nulls_equal was spelled join_nulls
-    # before that. A floor we have run beats a lower one we have only reasoned about.
-    # The ceiling is there for the same reason. Polars 2.0 stopped casting text to a date, which
-    # cast_columns relies on, so a fresh install picked up 2.x and failed 40 tests. Moving to 2.x is
-    # its own change to the library, made on purpose, not something an install does by accident.
+    # 1.38 is the lowest version tested. Below 2 because polars 2 stopped casting text to a date,
+    # which cast_columns relies on. Moving to 2 is a change to make on purpose.
     "polars>=1.38,<2",
     "xlsxwriter>=3.2.0",
     "fastexcel>=0.21.0",
-    # Writing a workbook without flattening it: openpyxl loads an existing file and saves it back,
-    # which xlsxwriter cannot do, and which is the whole promise of write_workbook.
+    # write_excel fills a template workbook without flattening it, which needs openpyxl.
     "openpyxl>=3.1.0",
     "PyYAML>=6.0.0",
 ]
 
-# No database driver in the core set, deliberately. A driver is the heavy, platform-specific
-# dependency, and a project using these tools for files and frames should not be made to build one.
-# `read_table` and `write_table` import theirs lazily by URI scheme and name the package to install
-# when it is missing; SQLite needs nothing at all, which is what lets every worked example in the
-# catalog execute with no server.
+# Database drivers are an extra. The table tools import a driver only when a step uses one, and
+# name the package to install when it is missing. SQLite needs nothing.
 [project.optional-dependencies]
 postgres = [
     "psycopg[binary]>=3.1.0",
     "adbc-driver-postgresql>=1.0.0",
 ]
-# ruff is pinned exactly because lint is the gate. No rule set is chosen in [tool.ruff], so each
-# new ruff release brings new default rules: 0.17 reported 147 findings on code that 0.14 passes.
+# ruff is pinned exactly because lint is the gate and a new ruff brings new default rules.
 # Raise the pin on purpose, and fix what the new version finds in the same change.
-# orjson was used by the page builders that lived in scripts/. Nothing uses it now; dropping it
-# changes uv.lock, so it is left for a change of its own.
 dev = [
     "pytest>=8.0.0",
     "ruff==0.14.0",
-    "orjson>=3.10.0",
 ]
 
 [project.scripts]
 dantron-etl = "dantron_etl.cli:main"
 
 [project.urls]
+Homepage = "https://github.com/DanTron-Inc/dantron-etl-tools"
+Documentation = "https://github.com/DanTron-Inc/dantron-etl-tools/tree/develop/docs"
 Source = "https://github.com/DanTron-Inc/dantron-etl-tools"
 Issues = "https://github.com/DanTron-Inc/dantron-etl-tools/issues"
+Changelog = "https://github.com/DanTron-Inc/dantron-etl-tools/blob/develop/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/dantron_etl/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/dantron_etl"]
 
-# The source package lists what goes in, rather than taking the working tree minus .gitignore.
-# Otherwise anything lying in a checkout -- a .env, a key, a client's CSV under pipelines/ -- ships
-# to everyone who downloads it. The exclude list catches a secret inside one of these folders too.
+# The source package lists what goes in, so nothing else lying in a checkout (a .env, a key, a
+# client's CSV) can ship. The exclude list catches a secret inside one of these folders too.
 [tool.hatch.build.targets.sdist]
 only-include = [
     "src",
     "tests",
     "pipelines/fixture.yaml",
     "pipelines/fixture",
+    "docs",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
     "pyproject.toml",
     "uv.lock",
     "Makefile",
@@ -98,9 +108,8 @@ target-version = "py313"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# This checkout's own source, ahead of whatever an editable install points at. Without it a run
-# inside a worktree imports the *main* checkout's package -- the tests pass or fail against code
-# nobody is editing, which is the one failure mode a test run cannot report.
+# This checkout's own source, ahead of whatever an editable install points at, so a worktree tests
+# its own code and not the main checkout's.
 pythonpath = ["src"]
 # `postgres` is added by tests/conftest.py to every test that reaches the test server.
 markers = [

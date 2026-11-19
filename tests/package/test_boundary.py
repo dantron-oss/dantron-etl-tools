@@ -254,6 +254,15 @@ class TestVersion:
 
         assert isinstance(dantron_etl.__version__, str) and dantron_etl.__version__.strip()
 
+    def test_the_version_is_written_in_one_place(self) -> None:
+        """pyproject.toml reads the version from __init__.py, so the two cannot disagree."""
+        import tomllib
+
+        pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf8"))
+        assert "version" not in pyproject["project"]
+        assert "version" in pyproject["project"]["dynamic"]
+        assert pyproject["tool"]["hatch"]["version"]["path"] == "src/dantron_etl/__init__.py"
+
 
 class TestTheManualDescribesTheLibraryThatExists:
     """The manual's tool table, counts, categories and function list match the library.
