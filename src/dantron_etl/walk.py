@@ -1,9 +1,9 @@
-"""Working out a run before any step of it runs.
+"""Plan a run before any step of it runs.
 
-``run_pipeline`` asks this module which steps to walk (all of them, or the ancestor closure of what
-``until`` names, less what a cache makes unnecessary), which frames a caller handed in through
-``sources`` and ``cached``, and when each frame can be freed under ``retain="live"``. Every refusal
-here comes before the first step runs.
+``run_pipeline`` asks this module which steps to run (all of them, or what ``until`` needs, less
+what ``cached`` makes unnecessary), checks the frames handed in through ``sources``, ``cached``
+and ``keep``, and works out when each frame can be freed under ``retain="live"``. Every refusal
+here happens before the first step runs.
 """
 
 from collections.abc import Collection, Mapping
@@ -20,22 +20,13 @@ __all__ = ["release_schedule", "resolve_cached", "resolve_keep", "resolve_source
 
 
 def walk_for(spec: Pipeline, until: str | Collection[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(the steps asked for, the steps to walk)``, both in dependency order.
+    """Return ``(steps asked for, steps to run)``, both in the order the whole flow runs them.
 
-    A whole run asks for nothing and walks everything. A truncated one walks the ancestor closure of
-    what it named, followed through :attr:`~.spec.Step.inputs`, which is the only edge list
-    a flow has. Neither tuple is ordered here: both are :meth:`~.spec.Pipeline.order`
-    filtered down to a set of ids. So a step that runs sits in exactly the position it occupies in a
-    whole run, a step reached from two directions is still walked once, and what the trace reports
-    as asked for is in the same order as what it reports as run -- whatever order, and whatever kind
-    of container, the caller wrote them in.
+    With ``until=None`` nothing is asked for and every step runs. Otherwise ``until`` is one step
+    id or several, and the steps to run are those and every step that feeds them. Refuses an
+    unknown step id and an empty collection.
 
-    Both refusals happen here, before a caller can have done anything: a step id this pipeline does
-    not have is a typo, and silently running nothing or silently running everything are equally
-    defensible readings of one, each leaving an author looking at a result that does not answer the
-    question they asked. An empty collection is refused for the same reason -- it almost always
-    arrives from a comprehension over something that turned out empty, and a trace with no events
-    reads identically to a run that failed on its first step.
+    Why: docs/design/loading-and-running.md#until-refuses-an-unknown-or-empty-list
     """
     order = spec.order()
     if until is None:
@@ -71,17 +62,11 @@ def _named_port(
     key: PortRef | str,
     argument: Literal["sources", "cached", "keep"],
 ) -> tuple[PortRef, Tool]:
-    """One key of ``sources`` or of ``cached`` read as a port of this flow, with the tool behind it.
+    """Read one key of ``sources``, ``cached`` or ``keep`` as a port of this flow.
 
-    Two arguments hand frames to a run, and a typo has to read the same way in either: the spelling
-    of a key -- a :class:`PortRef` or the text a file would carry -- a step this pipeline has not
-    got, and a port that step does not declare are the same three mistakes whichever argument they
-    were written in, so they are worded once here and told apart only by ``argument``, which names
-    the one the caller actually wrote.
-
-    What the two arguments disagree about is left to them: whether the step behind the port reads
-    anything is the question they want opposite answers to, and is the whole distinction between
-    stating a run's input and standing in for a computation.
+    Returns the :class:`PortRef` and the tool of its step. Refuses a key that is not a
+    :class:`PortRef` or ``"step.port"``, an unknown step, and a port the step does not have. The
+    refusals name ``argument``, so they read the same for each argument.
     """
     if isinstance(key, PortRef):
         ref = key
@@ -111,12 +96,13 @@ def resolve_sources(
     tools_by_step: Mapping[str, Tool],
     sources: Mapping[PortRef | str, pl.DataFrame],
 ) -> dict[PortRef, pl.DataFrame]:
-    """``sources`` keyed by :class:`PortRef`, refusing anything that is not a real source port.
+    """Return ``sources`` keyed by :class:`PortRef`, after checking each entry.
 
-    A source port is an output of a step that reads nothing -- the only kind of step a run can hand
-    a frame to without the frame it hands over silently becoming the flow that actually ran. What a
-    step reads is asked of its tool with its own configuration, because a tool that derives its
-    ports names none in its attribute even when the step reads three.
+    A frame may only be handed to a source step, one that reads nothing. Refuses a computed step,
+    a value that is not a polars ``DataFrame``, and a step given some of its output ports but not
+    all of them.
+
+    Why: docs/design/loading-and-running.md#sources-and-cached-are-different-doors
     """
     resolved: dict[PortRef, pl.DataFrame] = {}
     for key, frame in sources.items():
@@ -133,8 +119,7 @@ def resolve_sources(
             raise RunError(f"sources supplies {ref!s} with a {type(frame).__name__}, not a polars DataFrame{hint}")
         resolved[ref] = frame
 
-    # Checked here, before the first step runs, like its mirror in resolve_cached: found mid-walk,
-    # the steps before it would already have written their files.
+    # Checked before the first step runs, so no earlier step has written anything yet.
     for step_id in dict.fromkeys(ref.step for ref in resolved):
         tool = tools_by_step[step_id]
         missing = [str(PortRef(step_id, port)) for port in tool.output_ports if PortRef(step_id, port) not in resolved]
@@ -151,9 +136,9 @@ def resolve_keep(
     tools_by_step: Mapping[str, Tool],
     keep: Collection[PortRef | str],
 ) -> frozenset[PortRef]:
-    """The ports ``keep`` names, refusing a step or port this flow does not have.
+    """Return the ports ``keep`` names. A step named alone keeps all its output ports.
 
-    A step named alone keeps every one of its output ports.
+    Refuses a step or port this flow does not have.
     """
     if isinstance(keep, (str, PortRef)):
         keep = (keep,)
@@ -174,22 +159,13 @@ def resolve_cached(
     tools_by_step: Mapping[str, Tool],
     cached: Mapping[PortRef | str, CachedFrame],
 ) -> dict[PortRef, CachedFrame]:
-    """``cached`` keyed by :class:`PortRef`, refusing every entry that cannot stand in for a step.
+    """Return ``cached`` keyed by :class:`PortRef`, after checking each entry.
 
-    Structure first and fingerprints after, because a fingerprint cannot be taken of a step that
-    does not exist, and a refusal about a stale cache would send an author to the wrong problem.
+    Refuses, in this order: an unknown step or port; a source step (use ``sources`` for those); a
+    step cached on some but not all of its output ports; and a frame whose saved fingerprint no
+    longer matches the flow in the file.
 
-    A source port is refused, and the refusal names ``sources``. The two arguments do not mean the
-    same thing: a supplied source is the caller stating this run's input, checked against nothing
-    because there is nothing upstream of it to check, while a cached port is a claim that a
-    computation which already happened may be skipped. One frame with two doors and two different
-    guards would leave every question afterwards -- was this run resumed, is this trace evidence --
-    answerable both ways at once.
-
-    A step cached on some but not all of its output ports is refused for a plainer reason: it
-    produced all of them in one pass, so obtaining the rest would mean running the step, and its
-    ancestors, and the reads they open, which is the entire cost the cache was taken to avoid --
-    and would then leave two answers for one step, one of them from a previous run.
+    Why: docs/design/loading-and-running.md#what-cached-refuses
     """
     resolved: dict[PortRef, CachedFrame] = {}
     for key, entry in cached.items():
@@ -236,19 +212,13 @@ def walk_around_cache(
     requested: tuple[str, ...],
     cached_steps: Collection[str],
 ) -> tuple[str, ...]:
-    """``order`` with every step dropped that was only there to produce something now cached.
+    """Return ``order`` without the steps that only fed something now cached.
 
-    The ancestors are the whole point of the feature. Skipping the cached step alone would save one
-    step out of fifty, still open every file the flow reads, take just as long, and report that it
-    had resumed.
+    Works backwards from what the run is for (the ``until`` steps, or else the steps nothing reads),
+    stopping at each cached step. A step still needed by some other running step stays. A cache
+    that saves nothing is allowed.
 
-    So the walk is recomputed backwards from what the run is *for*: the steps ``until`` named, or,
-    for a whole run, the steps nothing else in the walk reads. From each, every input edge is
-    followed -- except through a cached step, which reads nothing this run and so ends the backward
-    walk there. What survives is every step some running step still needs, which is why an ancestor
-    two further steps read is not dropped merely because one of its consumers was cached. A cache
-    that saves nothing at all is left alone rather than refused: it is not a mistake, and a refusal
-    would send an author hunting for one they have not made.
+    Why: docs/design/loading-and-running.md#a-cache-skips-the-steps-behind-it
     """
     if not cached_steps:
         return order
@@ -272,7 +242,7 @@ def walk_around_cache(
 
 
 # ---------------------------------------------------------------------------
-# The release schedule -- a property of the wiring, computed once per run
+# When each frame can be freed, worked out once per run from the wiring
 # ---------------------------------------------------------------------------
 
 
@@ -282,20 +252,12 @@ def release_schedule(
     order: tuple[str, ...],
     keep: Collection[PortRef] = frozenset(),
 ) -> dict[str, tuple[PortRef, ...]]:
-    """``step id -> ports to free once that step has finished``, for ``retain="live"``.
+    """Return ``{step id: ports to free once that step has finished}``, for ``retain="live"``.
 
-    A port is due at the last step that still reads it -- read off :meth:`Pipeline.consumers`,
-    a property of the wiring alone. ``order`` is what decides *last*, and under a truncated run
-    that is the closure rather than the whole flow: a consumer that will never run cannot be a
-    port's last use, and counting one would leave a source frame -- the largest in the run -- due
-    at a step the walk never reaches, which is to say never freed at all. A port nothing remaining
-    reads is due at the very step that produced it, for the same reason: a terminal frame kept
-    "just in case" is the largest one in the run, and this is what keeps it from being kept.
+    A port is freed after the last step in ``order`` that reads it. A port that no step in this
+    run reads is freed straight after the step that made it. A port in ``keep`` is never freed.
 
-    Both halves of that are the one question -- is this step in the walk? -- asked of a producer by
-    walking ``order`` rather than the spec, and of a consumer by looking its step up in ``position``.
-
-    A port in ``keep`` is never due: the caller asked to read it once the run is over.
+    Why: docs/design/loading-and-running.md#when-a-frame-is-freed
     """
     position = {step_id: index for index, step_id in enumerate(order)}
     schedule: dict[str, list[PortRef]] = {step_id: [] for step_id in order}
