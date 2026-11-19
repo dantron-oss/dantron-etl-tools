@@ -810,3 +810,27 @@ runs before the file is opened.
 **`overwrite`.** A file at `path` is refused at load unless `overwrite: true`. A flow that runs nightly
 needs it from its first night, or its second run will not load. Saying true when nothing is there is
 accepted.
+
+## read_table
+
+**A schema and a table, never a query.** A `query` setting would be arbitrary SQL in a configuration
+file: its column references could not be checked before the run, its dialect would tie a portable flow
+to one database, and it would repeat filter and select_columns in a language none of the library's
+checks can read. So a step names two identifiers, each checked against a plain-name grammar before a
+connection opens (the only defence, since a name cannot be a bound parameter). Narrowing is a filter or
+select_columns after it, where the columns are visible to the same checks as every other step.
+
+**`connection` names an environment variable.** A pipeline file is then safe to commit and to hand to
+another client as a template. `db.py` holds the rest of that ruling.
+
+**Types come from every row.** A column null for its first hundred rows and filled later is ordinary
+(an id only recent rows carry, a field added by a later migration). Sampling would infer Null and then
+fail on the first value, or infer too narrow a type silently. Reading every row costs one pass and
+means the tool cannot invent a schema the table does not have.
+
+**An empty table is typed from its definition**, where that is certain; a column whose values could be
+of more than one kind (numeric, zone-aware timestamp, most SQLite types) stays Null. A read with rows
+never takes this path.
+
+**Rows come in no particular order.** A database promises none without ORDER BY; a step that needs
+order sorts first.

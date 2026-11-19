@@ -1,25 +1,9 @@
-"""ReadTable: a named table in a database, arriving on one port.
+"""ReadTable: read every row of one named database table onto the `rows` port.
 
-Each column's type is the type its values arrive as. An empty table has no values to look at, so
-its columns are typed from the table's definition instead, where that is certain; a column whose
-values could be of more than one kind stays Null.
+The step names a schema and a table, never a query. `connection` names an environment variable that
+holds the address. Column types come from the values; an empty table is typed from its definition.
 
-The catalog's first source, and the whole of what it may name is a schema and a table -- never a
-query. A ``query`` field would be arbitrary SQL arriving from a configuration file: nothing could
-lift its column references out to pre-flight them, its dialect would tie a portable definition to
-one database, and it would duplicate Filter and SelectColumns in a second language none of this
-library's checks can read. So a step names two identifiers instead, each held to a plain-name
-grammar and checked before a connection opens, and narrowing a read is a Filter or a SelectColumns
-put after it, where the columns named are visible to the same machinery that checks every other
-step.
-
-``connection`` names an environment variable rather than holding a connection string, so a pipeline
-definition naming this tool is safe to commit and safe to hand to another client as a template --
-see :mod:`~.db` for the whole of that ruling and the refusals it earns.
-
-Rows arrive in no particular order: a database promises none without an ``ORDER BY``, and the
-standing rule in this library is that a step needing meaningful order puts a Sort in front of it
-rather than leaning on a source to keep a promise it cannot make.
+Why: docs/design/tools.md#read_table
 """
 
 import sqlite3
@@ -53,10 +37,10 @@ _EXAMPLE_URI = "file:read_table_example?mode=memory&cache=shared"
 
 
 class ReadTable:
-    """Read every row of one named table onto the ``rows`` port."""
+    """Read every row of one named table onto the `rows` port."""
 
     name = "read_table"
-    description = "Read a named table from a database onto the `rows` port."
+    description = "Read a database table into a table."
     category = "input"
     input_ports = ()
     output_ports = ("rows",)
@@ -65,19 +49,21 @@ class ReadTable:
         return {
             "connection": ConfigField(
                 type="string",
-                description="The name of an environment variable holding the connection URI; never the URI itself.",
+                description="The name of the environment variable that holds the database address, "
+                "such as 'SOURCE_DATABASE_URL'. Never the address itself.",
                 required=True,
                 non_empty=True,
             ),
             "schema": ConfigField(
                 type="string",
-                description="The schema the table sits in; left out, the table is named unqualified.",
+                description="The schema the table is in, such as 'sales'. Left out, the table name is "
+                "used on its own.",
                 required=False,
                 default=None,
             ),
             "table": ConfigField(
                 type="string",
-                description="The table to read; a plain identifier, never a query.",
+                description="The table to read, such as 'orders'. A plain name, never a query.",
                 required=True,
                 non_empty=True,
             ),
@@ -86,36 +72,37 @@ class ReadTable:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every row of the named table arrives on `rows`. Each column's type is the type "
-                "its values arrive as, read from every row. An empty table is typed from its "
-                "definition instead. No `query` field exists: narrowing what comes back is a "
-                "Filter or a SelectColumns put after this one."
+                "Use read_table to start a flow from a database table. Every row of the table goes to "
+                "`rows`, each column typed by the values it holds. There is no query setting: to keep "
+                "fewer rows or columns, put filter or select_columns after it."
             ),
             examples=(_reads_a_table_example(),),
             notes=(
-                "An empty table has no values to type its columns by, so each column takes the "
-                "type a row of it would arrive as, from the table's definition: a whole number, a "
-                "figure, text, and on Postgres also a truth value, a date, a timestamp with no zone "
-                "or a time. A column whose values could arrive as more than one kind (a numeric, a "
-                "zone-aware timestamp, any SQLite column of another type) stays Null. A table with "
-                "rows is typed by its values alone, so a column that is null in every row is Null.",
-                "`connection` names an environment variable holding the connection URI; the URI "
-                "itself never sits in a configuration file.",
-                "Rows arrive in no particular order. A step that needs one puts a Sort in front "
-                "of it, which is why no worked example here claims to preserve order.",
+                "'connection' names an environment variable that holds the address, so the address "
+                "and its password never sit in the pipeline file.",
+                "Each column's type comes from all its values, not a sample. A column that is null in "
+                "every row has type Null.",
+                "An empty table is typed from its definition instead: whole numbers, decimals and "
+                "text, and on Postgres also true/false, dates, timestamps without a zone and times.",
+                "In an empty table, a column whose values could arrive as more than one kind (a "
+                "numeric, a zone-aware timestamp, any SQLite column of another type) stays Null.",
+                "Rows arrive in no particular order. Put a sort after it if order matters.",
+                "The schema and table names must be plain names. Anything else is refused before a "
+                "connection opens.",
             ),
             field_help={
-                "schema": "Left out, `table` is read unqualified; given, the two compose as "
-                "`schema.table`, the only form either is ever handed to the database.",
+                "connection": "Set the variable in your environment or .env file, for example "
+                "SOURCE_DATABASE_URL=postgresql://user:password@host/db.",
+                "schema": "For example 'sales'. The table is then read as sales.orders.",
+                "table": "For example 'orders'.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse a schema or a table that is not a plain identifier, before any connection opens.
+        """Refuse a schema or table that is not a plain name, before any connection opens.
 
-        An identifier is spliced into a statement and cannot be bound as a parameter, so this
-        grammar check is the whole of the defence against a name carrying a second statement --
-        which is why it runs here, ahead of every step that would otherwise touch a database.
+        A name is put into the SQL text and cannot be a parameter, so this check is the defence against a
+        name carrying a second statement.
         """
         if config["schema"] is not None:
             validate_identifier(config["schema"], "schema")
@@ -129,13 +116,7 @@ class ReadTable:
         qualified = qualified_name(config["schema"], config["table"])
         with open_connection(uri) as connection:
             probe_columns(connection, qualified)
-            # Every row decides the dtype, not the first hundred. A column that is null for its
-            # first hundred rows and holds a value afterwards is ordinary in a real table -- an
-            # identifier only recent rows carry, a field added by a later migration -- and sampling
-            # infers `Null` from the head and then fails on the first real value, or, worse, infers
-            # a narrower type than the column needs and mistypes it without saying so. This costs a
-            # pass over the result and buys a source that cannot invent a schema the table does not
-            # have, which is the promise this tool's docstring makes.
+            # Every row decides the type, not a sample. Why: docs/design/tools.md#read_table
             frame = pl.read_database(f"SELECT * FROM {qualified}", connection, infer_schema_length=None)
             if frame.height == 0:
                 frame = _typed_from_the_table(frame, connection, config["schema"], config["table"])
@@ -143,14 +124,10 @@ class ReadTable:
 
 
 def _typed_from_the_table(frame: pl.DataFrame, connection: Any, schema: str | None, table: str) -> pl.DataFrame:
-    """An empty read, with each column typed as a row of it would have arrived.
+    """An empty read, each column typed as a row of it would have arrived, from the table's definition.
 
-    With no values to look at, every column arrives as Null. The table's definition says what a
-    row's values would have been for most columns. A column where that depends on the value stays
-    Null. A read with rows never comes here, so no read that has rows changes.
-
-    A connection this library cannot load through (one opened by ADBC) is left alone: that driver
-    already types an empty read from the table.
+    A column whose type depends on the value stays Null. A connection opened by ADBC is left alone: that
+    driver already types an empty read.
     """
     try:
         loader = driver_for(connection)
@@ -178,10 +155,10 @@ def _example_database() -> AbstractContextManager[None]:
 def _reads_a_table_example() -> WorkedExample:
     outputs = Ports({"rows": pl.DataFrame({"key": [1, 2], "label": ["first", "second"]})})
     return WorkedExample(
-        scenario="read a two-row table from an in-memory database",
+        scenario="read a table from a database",
         configuration={"connection": _EXAMPLE_CONNECTION, "table": "sample"},
-        explanation="'connection' names the environment variable the URI lives in, never the URI "
-        "itself; each column arrives with the type its values have.",
+        explanation="'connection' names the environment variable that holds the database address. Each column "
+        "comes in with the type of its values.",
         inputs=Ports({}),
         outputs=outputs,
         setup=_example_database,
