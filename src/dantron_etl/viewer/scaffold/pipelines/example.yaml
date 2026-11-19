@@ -50,5 +50,8 @@ steps:
     why: The totals, saved as a file someone else can open. A preview never runs this step.
     config:
       path: output/paid_by_customer.csv
+      # A file from the last real run is replaced. Without this line, the run stops instead.
       overwrite: true
+      # If no order is paid, the run stops rather than writing a file with only headings.
+      allow_empty: false
     inputs: {rows: by_customer.rows}

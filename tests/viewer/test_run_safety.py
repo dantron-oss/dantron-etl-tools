@@ -217,11 +217,11 @@ def write_cases(tmp: Path) -> dict[str, tuple[str, dict[str, str], dict[str, Any
         ),
         "write_table mode": ("write_table", {"rows": "read.rows"}, table, {**table, "mode": "append"}),
         "write_table allow_empty": ("write_table", {"rows": "read.rows"}, table, {**table, "allow_empty": True}),
-        "write_excel overwrite_sheets": (
+        "write_excel overwrite": (
             "write_excel",
             {"figures": "read.rows"},
             excel,
-            {**excel, "overwrite_sheets": True},
+            {**excel, "overwrite": True},
         ),
         "write_excel template": (
             "write_excel",
@@ -236,6 +236,24 @@ def write_cases(tmp: Path) -> dict[str, tuple[str, dict[str, str], dict[str, Any
             published(allow_empty=True),
         ),
         "publish_tables mode": ("publish_tables", {"totals": "read.rows"}, published(), published(mode="append")),
+        "write_csv allow_empty": (
+            "write_csv",
+            {"rows": "read.rows"},
+            {"path": str(tmp / "a.csv")},
+            {"path": str(tmp / "a.csv"), "allow_empty": True},
+        ),
+        "write_excel sheet allow_empty": (
+            "write_excel",
+            {"figures": "read.rows"},
+            excel,
+            {**excel, "sheets": [{**sheets[0], "allow_empty": True}]},
+        ),
+        "publish_tables merge null rule": (
+            "publish_tables",
+            {"totals": "read.rows"},
+            published(mode="merge", keys=["k"], when_incoming_is_null="keep_published"),
+            published(mode="merge", keys=["k"], when_incoming_is_null="overwrite"),
+        ),
     }
 
 
@@ -243,11 +261,35 @@ CASE_NAMES = (
     "write_csv overwrite",
     "write_table mode",
     "write_table allow_empty",
-    "write_excel overwrite_sheets",
+    "write_excel overwrite",
     "write_excel template",
     "publish_tables allow_empty",
     "publish_tables mode",
+    "write_csv allow_empty",
+    "write_excel sheet allow_empty",
+    "publish_tables merge null rule",
 )
+
+
+#: For each case, words the detail must hold for the first configuration and for the second. They
+#: say in plain words what the writer does with what is already there, with an empty result, and,
+#: for a merge, with a blank incoming value.
+DETAIL_WORDS = {
+    "write_csv overwrite": ("stops if the file is already there", "replaces the file if it is already there"),
+    "write_csv allow_empty": ("stops the run if there are no rows", "writes headings only if there are no rows"),
+    "write_excel overwrite": ("stops if the file is already there", "replaces the file if it is already there"),
+    "write_excel sheet allow_empty": (
+        "sheet Figures stops the run if it has no rows",
+        "sheet Figures is written with headings only if it has no rows",
+    ),
+    "write_table mode": ("empties the table, then loads the rows", "adds the rows to what is there"),
+    "write_table allow_empty": ("stops the run if there are no rows", "loads even if there are no rows"),
+    "publish_tables mode": ("empties the table, then loads the rows", "adds the rows to what is there"),
+    "publish_tables merge null rule": (
+        "a blank incoming value keeps the published value",
+        "a blank incoming value blanks the published value",
+    ),
+}
 
 
 class TestDigestCoversHowAWriteTreatsWhatIsThere:
@@ -265,12 +307,27 @@ class TestDigestCoversHowAWriteTreatsWhatIsThere:
         )
 
     def test_write_excel_detail_says_when_it_replaces_what_is_there(self, tmp_path: Path) -> None:
-        tool, inputs, before, after = write_cases(tmp_path)["write_excel overwrite_sheets"]
+        tool, inputs, before, after = write_cases(tmp_path)["write_excel overwrite"]
         (kept,) = writes(writer_flow(tool, before, inputs), tmp_path)
         (replaced,) = writes(writer_flow(tool, after, inputs), tmp_path)
         assert isinstance(replaced, Write)
         assert replaced.detail != kept.detail
         assert re.search(r"overwrit|replac", replaced.detail, re.I), replaced.detail
+
+
+    @pytest.mark.parametrize("case", sorted(DETAIL_WORDS))
+    def test_the_detail_says_in_plain_words_what_each_setting_does(self, tmp_path: Path, case: str) -> None:
+        tool, inputs, before, after = write_cases(tmp_path)[case]
+        first, second = DETAIL_WORDS[case]
+        (one,) = writes(writer_flow(tool, before, inputs), tmp_path)
+        (other,) = writes(writer_flow(tool, after, inputs), tmp_path)
+        assert first in one.detail and second not in one.detail, one.detail
+        assert second in other.detail and first not in other.detail, other.detail
+
+    def test_a_merge_names_its_keys(self, tmp_path: Path) -> None:
+        tool, inputs, before, _ = write_cases(tmp_path)["publish_tables merge null rule"]
+        (merged,) = writes(writer_flow(tool, before, inputs), tmp_path)
+        assert "updates the rows matching on k and adds the rest" in merged.detail, merged.detail
 
 
 # ---------------------------------------------------------------------------

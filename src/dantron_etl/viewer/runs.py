@@ -46,6 +46,7 @@ __all__ = [
     "last_runs",
     "latest",
     "preview_plan",
+    "save_run",
     "writes",
     "writes_digest",
 ]
@@ -130,47 +131,80 @@ def _setting(config: Mapping[str, Any], template: Mapping[str, Any], key: str) -
     return getattr(field, "default", None)
 
 
-def _sheet_names(sheets: Any) -> list[str]:
-    names = []
-    for item in sheets if isinstance(sheets, list | tuple) else []:
-        if isinstance(item, Mapping):
-            name = item.get("sheet", item.get("name", item.get("port")))
-        else:
-            name = item
-        if name is not None:
-            names.append(str(name))
-    return names
-
-
-def _either(config: Mapping[str, Any], template: Mapping[str, Any], key: str, yes: str, no: str) -> list[str]:
-    """``yes`` or ``no`` for an on-or-off setting the step or its tool has, else nothing."""
+def _is_set(config: Mapping[str, Any], template: Mapping[str, Any], key: str) -> bool | None:
+    """Whether an on-or-off setting is on, from the step or its tool's default; None if there is none."""
     if key not in config and key not in template:
+        return None
+    return bool(_setting(config, template, key))
+
+
+def _what_is_there(config: Mapping[str, Any], template: Mapping[str, Any]) -> list[str]:
+    """What a file writer does with a file, or a template tab, already at its target."""
+    overwrite = _is_set(config, template, "overwrite")
+    if overwrite is None:
         return []
-    return [yes if _setting(config, template, key) else no]
+    if not overwrite:
+        return ["stops if the file is already there"]
+    tabs = " and any template tab a sheet names" if config.get("template") else ""
+    return [f"replaces the file if it is already there{tabs}"]
 
 
-def _detail(config: Mapping[str, Any], template: Mapping[str, Any]) -> str:
-    """The plain words that go with a write: how it treats what is there, and where it goes."""
-    parts = _either(config, template, "overwrite", "overwrites the file", "stops if the file is already there")
-    names = _sheet_names(config.get("sheets"))
-    if names:
-        parts.append(f"sheets: {', '.join(names)}")
-    parts += _either(
-        config, template, "overwrite_sheets", "replaces sheets already there", "stops if a sheet is already there"
-    )
+def _when_empty(config: Mapping[str, Any], template: Mapping[str, Any], *, file: bool) -> list[str]:
+    """What a writer does when it is handed no rows."""
+    allow = _is_set(config, template, "allow_empty")
+    if allow is None:
+        return []
+    if not allow:
+        return ["stops the run if there are no rows"]
+    return ["writes headings only if there are no rows" if file else "loads even if there are no rows"]
+
+
+def _sheets(config: Mapping[str, Any]) -> list[str]:
+    """Each sheet a workbook writer makes, and what it does when its rows are empty."""
+    parts = []
+    for item in config.get("sheets") or ():
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("sheet", item.get("port"))
+        if item.get("allow_empty"):
+            parts.append(f"sheet {name} is written with headings only if it has no rows")
+        else:
+            parts.append(f"sheet {name} stops the run if it has no rows")
+    return parts
+
+
+def _table_mode(config: Mapping[str, Any]) -> list[str]:
+    """What a table writer does with the rows already in the table."""
+    mode = config.get("mode")
+    if mode == "replace":
+        return ["empties the table, then loads the rows"]
+    if mode == "append":
+        return ["adds the rows to what is there"]
+    if mode == "merge":
+        keys = config.get("keys") or ()
+        on = ", ".join(map(str, keys)) if isinstance(keys, list | tuple) else str(keys)
+        parts = [f"updates the rows matching on {on} and adds the rest"]
+        rule = config.get("when_incoming_is_null")
+        if rule == "keep_published":
+            parts.append("a blank incoming value keeps the published value")
+        elif rule == "overwrite":
+            parts.append("a blank incoming value blanks the published value")
+        return parts
+    return [f"mode {mode}"] if mode is not None else []
+
+
+def _detail(config: Mapping[str, Any], template: Mapping[str, Any], *, file: bool) -> str:
+    """In plain words: what the write does with what is already there, with no rows, and where it goes."""
+    parts = _what_is_there(config, template)
     if config.get("template"):
-        parts.append(f"starts from template {config['template']}")
-    mode = _setting(config, template, "mode")
-    if mode is not None:
-        parts.append(f"mode {mode}")
-    keys = config.get("keys")
-    if keys:
-        parts.append(f"keys: {', '.join(map(str, keys)) if isinstance(keys, list | tuple) else keys}")
-    parts += _either(config, template, "allow_empty", "writes even when there are no rows", "stops when there are no rows")
+        parts.append(f"starts from the template {config['template']}")
+    parts += _sheets(config)
+    parts += _table_mode(config)
+    parts += _when_empty(config, template, file=file)
     connection = config.get("connection")
     if connection:
-        parts.append(f"database named by {connection}")
-    return ", ".join(parts)
+        parts.append(f"in the database named by {connection}")
+    return "; ".join(parts)
 
 
 def _table_name(schema: Any, table: Any) -> str:
@@ -193,16 +227,18 @@ def writes(spec: Pipeline, root: Path) -> tuple[Write, ...]:
         tables = config.get("tables")
         if isinstance(config.get("path"), str):
             target = str(Path(root) / config["path"])
-            found.append(Write(step_id, step.tool, "file", target, _detail(config, template), settings))
+            found.append(Write(step_id, step.tool, "file", target, _detail(config, template, file=True), settings))
         elif isinstance(config.get("table"), str):
             target = _table_name(config.get("schema"), config["table"])
-            found.append(Write(step_id, step.tool, "table", target, _detail(config, template), settings))
+            found.append(Write(step_id, step.tool, "table", target, _detail(config, template, file=False), settings))
         elif isinstance(tables, list | tuple) and tables and all(
             isinstance(item, Mapping) and isinstance(item.get("table"), str) for item in tables
         ):
             for item in tables:
                 target = _table_name(item.get("schema", config.get("schema")), item["table"])
-                detail = _detail({**config, **item}, template)
+                item_template = getattr(template.get("tables"), "items", None)
+                fields = dict(getattr(item_template, "fields", None) or {})
+                detail = _detail({**config, **item}, {**template, **fields}, file=False)
                 found.append(Write(step_id, step.tool, "table", target, detail, settings))
         else:
             found.append(Write(step_id, step.tool, "other", settings, "", settings))
@@ -472,10 +508,24 @@ def execute(
     try:
         trace = run_pipeline(spec, until=until, sink=sink, base_dir=project.root)
     except StepFailedError as failure:
-        trace = failure.trace
+        return _save_trace(project, spec, trace=failure.trace, data=data, focus=entry.focus, failure=failure)
+    return _save_trace(project, spec, trace=trace, data=data, focus=entry.focus, failure=None)
+
+
+def _save_trace(
+    project: Project,
+    spec: Pipeline,
+    *,
+    trace: PipelineTrace,
+    data: dict[str, Any],
+    focus: FocusSpec | None,
+    failure: StepFailedError | None,
+) -> RunRecord:
+    """Save a trace with its record, in the good slot if it finished and the failed slot if not."""
+    if failure is not None:
         data.update(outcome="failed", failed_step=failure.step_id, message=str(failure))
     data["steps_ran"] = sum(1 for event in trace.events if event.step_id != data["failed_step"])
-    focus = entry.focus
+    data["focus"] = _focus_data(focus)
 
     def fill(into: Path) -> None:
         persist_trace(trace, into)
@@ -490,5 +540,46 @@ def execute(
         (into / PAGE_NAME).write_text(page, encoding="utf-8")
         _write_record(into, data)
 
-    target = _save(project, entry.name, data["outcome"] == "finished", fill)
+    target = _save(project, str(data["pipeline"]), data["outcome"] == "finished", fill)
     return _record(target, data)
+
+
+def save_run(
+    project: Project,
+    name: str,
+    spec: Pipeline,
+    trace: PipelineTrace,
+    *,
+    failure: StepFailedError | None = None,
+    focus: FocusSpec | None = None,
+    kind: str = "real",
+    started: str | None = None,
+) -> RunRecord:
+    """Save a run a project's own script made, so the viewer lists and shows it like its own runs.
+
+    ``name`` must be one of the project's pipelines. Pass the ``StepFailedError`` as ``failure`` when
+    the run stopped; it is then saved beside the last good run, which is kept. ``focus`` is the
+    column to follow; left out, the project's setting for this pipeline is used. ``started`` is when
+    the run began, as ISO 8601 text; left out, it is now.
+    """
+    entry = project.pipelines.get(name)
+    if entry is None:
+        known = ", ".join(project.pipelines) or "none"
+        raise ProjectError(f"the project has no pipeline '{name}' to save a run for; it has: {known}")
+    if kind not in KINDS:
+        raise ProjectError(f"a run is 'preview' or 'real', not {kind!r}")
+    _clear_incoming(project.runs_folder, name)
+    data: dict[str, Any] = {
+        "pipeline": name,
+        "kind": kind,
+        "outcome": "finished",
+        "started": started or _now(),
+        "finished": None,
+        "steps_total": len(spec.steps),
+        "steps_ran": 0,
+        "held_back": [step for step in spec.order() if step not in trace.until] if trace.until else [],
+        "failed_step": None,
+        "message": None,
+        "focus": None,
+    }
+    return _save_trace(project, spec, trace=trace, data=data, focus=focus or entry.focus, failure=failure)

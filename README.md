@@ -169,6 +169,22 @@ and a page you can open on its own. A run is moved into place only when it finis
 fails, it is saved beside the last good one as `<pipeline>.failed/`, and the viewer shows the step
 that failed and its error at the top. The last good run is still there.
 
+A project's own script can run a pipeline itself, for example to compare it with another system
+first, and still have the viewer show the run. It saves the run with `save_run`:
+
+```python fragment
+from dantron_etl import StepFailedError, run_pipeline
+from dantron_etl.viewer import save_run
+from dantron_etl.viewer.project import find_project, load_entry
+
+project = find_project(__file__)
+spec = load_entry(project, project.pipelines["sales"])
+try:
+    save_run(project, "sales", spec, run_pipeline(spec, base_dir=project.root))
+except StepFailedError as failure:
+    save_run(project, "sales", spec, failure.trace, failure=failure)
+```
+
 ### Safety
 
 The viewer listens on `127.0.0.1`, so only your computer can reach it. It refuses a request whose

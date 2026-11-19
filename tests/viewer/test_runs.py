@@ -20,6 +20,7 @@ from dantron_etl.viewer.runs import (
     last_runs,
     latest,
     preview_plan,
+    save_run,
     writes,
     writes_digest,
 )
@@ -372,3 +373,68 @@ class TestRunStore:
         assert (good.kind, good.outcome) == ("unknown", "unknown")
         assert good.directory == saved
         assert good.started
+
+
+# ---------------------------------------------------------------------------
+# A run made by a project's own script, saved where the viewer lists it
+# ---------------------------------------------------------------------------
+
+
+def run_outside(root: Path, *, fail: bool = False) -> tuple[Any, Any, Any]:
+    """Run the project's pipeline the way a project's own script would, from its project folder."""
+    from dantron_etl import StepFailedError, run_pipeline
+
+    project = load_project(root)
+    spec = load_entry(project, project.pipelines[NAME])
+    if fail:
+        (root / DATA).unlink()
+    try:
+        return project, spec, (run_pipeline(spec, base_dir=root), None)
+    except StepFailedError as failure:
+        return project, spec, (failure.trace, failure)
+
+
+class TestSaveRun:
+    def test_a_finished_run_is_saved_as_a_good_real_run_with_its_entities(self, project_root: Path) -> None:
+        project, spec, (trace, _) = run_outside(project_root)
+
+        record = save_run(project, NAME, spec, trace)
+
+        good, failed = last_runs(project.runs_folder, NAME)
+        assert failed is None and good is not None
+        assert (good.kind, good.outcome, good.failed_step) == ("real", "finished", None)
+        assert good.steps_ran == good.steps_total == 3
+        assert record.directory == project.runs_folder / NAME
+        entities = json.loads((record.directory / "entities.json").read_text(encoding="utf8"))
+        assert entities["values"] == [str(101 + n) for n in range(7)]
+        assert good.focus is not None and good.focus.identity == ("party",)
+        assert (record.directory / PAGE_NAME).is_file()
+
+    def test_a_failed_run_goes_to_the_failed_slot_and_keeps_the_good_one(self, project_root: Path) -> None:
+        project, spec, (trace, _) = run_outside(project_root)
+        save_run(project, NAME, spec, trace)
+        good_before = snapshot(project.runs_folder / NAME)
+
+        project, spec, (trace, failure) = run_outside(project_root, fail=True)
+        record = save_run(project, NAME, spec, trace, failure=failure)
+
+        assert (record.outcome, record.failed_step) == ("failed", "read")
+        assert "orders.csv" in (record.message or "")
+        assert snapshot(project.runs_folder / NAME) == good_before
+        good, failed = last_runs(project.runs_folder, NAME)
+        assert latest(good, failed) == failed
+
+    def test_a_name_the_project_does_not_have_is_refused(self, project_root: Path) -> None:
+        project, spec, (trace, _) = run_outside(project_root)
+        with pytest.raises(ProjectError, match="nope"):
+            save_run(project, "nope", spec, trace)
+        assert not (project.runs_folder / "nope").exists()
+
+    def test_the_focus_given_wins_over_the_settings(self, project_root: Path) -> None:
+        from dantron_etl import FocusSpec
+
+        project, spec, (trace, _) = run_outside(project_root)
+        record = save_run(project, NAME, spec, trace, focus=FocusSpec(label="amount", identity=("amount",)))
+        good, _ = last_runs(project.runs_folder, NAME)
+        assert good is not None and good.focus is not None and good.focus.identity == ("amount",)
+        assert json.loads((record.directory / "entities.json").read_text(encoding="utf8"))["label"] == "amount"
