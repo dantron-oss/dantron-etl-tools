@@ -358,3 +358,21 @@ a collision taken quietly destroys a column and reports success. There is no ove
 **Overflow is refused twice.** A start outside Int64 is wrong whatever the frame, so it is refused
 from the configuration. A start that fits but would pass the ceiling part way down depends on the row
 count, so it is refused when the frame arrives; left alone it would wrap to large negative numbers.
+
+## formula
+
+**A list of `{name, value, replace}` entries, not one `[out] = expr` string.** A single string would
+pack the output name, the expression and the number of columns into one opaque value. A real step
+often writes several columns, so the setting is an ordered list.
+
+**Every expression reads the input as it arrived.** This matches polars' `with_columns`, which works
+out every expression against the frame before any of them ran. A second value that needs the first
+goes in a second formula step, which shows the dependency in the flow instead of hiding it in the
+order of a list. One `with_columns` call also keeps a replaced column in its place: polars keeps a
+name already in the frame where it was and appends only new names. A client flow depends on this
+behaviour (finding E-11), so it is kept and documented.
+
+**Division by zero stops the run** (owner's ruling 2026-11-18, finding C-02). Left to polars it gives
+infinity, or not-a-number for 0/0, which a later filter reads as larger than every number. The step
+names the field, the expression, the divisor and some of the rows. A null divisor is not zero: the
+division gives null. A flow that expects zeros guards with case_when first.
