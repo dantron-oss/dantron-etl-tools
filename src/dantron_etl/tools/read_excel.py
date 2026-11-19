@@ -27,9 +27,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, Final
 
-import fastexcel
 import polars as pl
-import xlsxwriter
 
 from ..authoring import (
     REGISTRY,
@@ -231,6 +229,7 @@ class ReadExcel:
         has_header = config["has_header"]
         skip_rows = config["skip_rows"]
 
+        fastexcel = _import_fastexcel()
         try:
             reader = fastexcel.read_excel(path)
         except Exception as error:
@@ -245,6 +244,30 @@ class ReadExcel:
                 f"{', '.join(sheet_names)}"
             )
         return Ports({"rows": _read_sheet(reader, path, sheet, has_header, skip_rows, config[AS_TEXT])})
+
+
+def _import_fastexcel() -> Any:
+    """The workbook reader, imported only when a sheet is read, or a refusal naming the package."""
+    try:
+        import fastexcel
+    except ImportError as error:
+        raise ConfigError(
+            "read_excel needs fastexcel, which this environment does not have installed; "
+            "install 'fastexcel' to read a workbook"
+        ) from error
+    return fastexcel
+
+
+def _xlsxwriter() -> Any:
+    """The workbook writer the worked examples build their files with, imported when one runs."""
+    try:
+        import xlsxwriter
+    except ImportError as error:
+        raise ConfigError(
+            "read_excel's examples need xlsxwriter, which this environment does not have installed; "
+            "install 'xlsxwriter' to run them"
+        ) from error
+    return xlsxwriter
 
 
 def _read_matching(reader: Any, config: Mapping[str, Any]) -> pl.DataFrame:
@@ -550,7 +573,7 @@ def _example_workbook() -> Iterator[None]:
     run; nothing here tears it back down, because that directory is the checker's to remove.
     """
     target = scratch_path(_EXAMPLE_PATH)
-    with xlsxwriter.Workbook(str(target)) as workbook:
+    with _xlsxwriter().Workbook(str(target)) as workbook:
         worksheet = workbook.add_worksheet("Sample")
         worksheet.write_row(0, 0, ["key", "label"])
         worksheet.write_row(1, 0, [1, "first"])
@@ -574,7 +597,7 @@ def _reads_a_sheet_example() -> WorkedExample:
 def _months_workbook() -> Iterator[None]:
     """A workbook of a cover sheet and two month sheets, for the stacking example."""
     target = scratch_path(_MONTHS_EXAMPLE_PATH)
-    with xlsxwriter.Workbook(str(target)) as workbook:
+    with _xlsxwriter().Workbook(str(target)) as workbook:
         workbook.add_worksheet("Cover").write_row(0, 0, ["Monthly report"])
         for name, rows in {"Feb 2026": [["f1", 2.5]], "Jan 2026": [["j1", 10.25], ["j2", 4.0]]}.items():
             worksheet = workbook.add_worksheet(name)
@@ -616,7 +639,7 @@ def _reads_matching_sheets_example() -> WorkedExample:
 def _mixed_workbook() -> Iterator[None]:
     """A workbook whose one column mixes a figure, text and a date, for the as_text example."""
     target = scratch_path(_TEXT_EXAMPLE_PATH)
-    with xlsxwriter.Workbook(str(target)) as workbook:
+    with _xlsxwriter().Workbook(str(target)) as workbook:
         worksheet = workbook.add_worksheet("Sample")
         date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
         worksheet.write_row(0, 0, ["key", "amount"])
