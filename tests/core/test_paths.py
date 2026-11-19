@@ -395,6 +395,26 @@ class TestTheUpwardSearch:
 
         assert project_root(start) == inner
 
+    def test_a_folder_holding_only_the_project_settings_file_is_a_project(self, tmp_path: Path) -> None:
+        """A non-developer's project folder has no ``pyproject.toml`` and no ``.git``, only its settings.
+
+        Written out as the literal file name, and the order pinned, so that dropping the marker from the
+        tuple is a failure here rather than a parametrised case that quietly disappears.
+        """
+        assert ROOT_MARKERS == ("pyproject.toml", ".git", "etl-project.yaml")
+        root = _make_project(tmp_path / "plain_folder", marker="etl-project.yaml")
+        start = root / "pipelines" / "orders"
+        start.mkdir(parents=True)
+
+        assert project_root(start) == root
+
+    def test_a_settings_file_with_another_extension_is_not_a_marker(self, tmp_path: Path) -> None:
+        """The mirror: only the exact settings file name anchors a project."""
+        root = _make_project(_nowhere(tmp_path), marker="etl-project.yml")
+
+        with pytest.raises(ProjectRootNotFound):
+            project_root(root)
+
 
 class TestARefusalNamesWhatItLookedForAndWhereItLooked:
     """Ruling three: a wrong answer must be loud, and a refusal must be actionable.
