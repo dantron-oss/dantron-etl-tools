@@ -308,7 +308,7 @@ _FIELD_RENAMES: dict[str, dict[str, str]] = {
     "remove_duplicates": {"columns": "by"},
     "publish_tables": {"stamp": "stamp_column"},
     "write_csv": {"replace": "overwrite"},
-    "write_excel": {"replace": "overwrite_sheets"},
+    "write_excel": {"replace": "overwrite", "overwrite_sheets": "overwrite"},
     "match_one_to_one": {"left": "left_key", "right": "right_key"},
     "normalize_text": {"strip_suffixes": "suffixes"},
     "make_groups": {"node_column": "record_column", "component_column": "group_column"},
@@ -321,7 +321,7 @@ _VALUE_RENAMES: dict[tuple[str, str], dict[str, str]] = {
     ("assemble_date", "on_invalid"): {"empty": "set_null"},
     ("cast_columns", "on_invalid"): {"empty": "set_null"},
     ("unpivot", "on_invalid"): {"empty": "set_null"},
-    ("cross_tab", "function"): {"count_values": "count_non_null"},
+    ("cross_tab", "function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
 }
 
 # The expression fields this document puts a strip( call in, by (new) tool.
@@ -364,10 +364,19 @@ def _renamed_step(step: dict[str, Any], tool_by_id: dict[str, str]) -> dict[str,
         for table in config["tables"]:
             if "key" in table:
                 table["keys"] = table.pop("key")
+            if table.get("mode") == "merge":
+                table.setdefault("when_incoming_is_null", "keep_published")
+    if tool == "write_csv":
+        config.setdefault("allow_empty", True)
+    if tool == "write_excel":
+        for sheet in config.get("sheets") or []:
+            sheet.setdefault("allow_empty", True)
     if tool == "group_by":
         for aggregation in config["aggregations"]:
             if aggregation["function"] == "count_values":
                 aggregation["function"] = "count_non_null"
+            if aggregation["function"] == "n_unique":
+                aggregation["function"] = "count_distinct"
     for path in _EXPRESSION_FIELDS.get(tool, ()):
         _rename_strip_at(config, path)
     if "config" in step:
@@ -676,7 +685,7 @@ class TestRenamedByWhereItSits:
             inputs: {rows: pair_up.matched}
           - id: out
             tool: write_csv
-            config: {path: out.csv}
+            config: {path: out.csv, allow_empty: true}
             inputs: {rows: checked.matched}
         """)
         expected = old.replace("{rows: pair_up.matched}", "{rows: pair_up.joined}")
@@ -718,7 +727,7 @@ class TestRenamedByWhereItSits:
         old = _flow("""\
           - id: out
             tool: write_csv
-            config: {path: 'out.csv', replace: true, delimiter: ";"}
+            config: {path: 'out.csv', replace: true, delimiter: ";", allow_empty: true}
             inputs: {rows: src.rows}
         """)
         expected = old.replace("replace: true", "overwrite: true")
@@ -858,6 +867,102 @@ OLD_SINGLE_SHEET = _flow("""\
 """)
 
 
+class TestSettingsNowStatedAreWrittenIn:
+    """A setting that is now required, where the file alone says which value keeps a step's behaviour."""
+
+    def test_a_block_merge_entry_gets_keep_published_at_its_own_indentation(self) -> None:
+        old = _flow("""\
+          - id: publish
+            tool: publish_tables
+            config:
+              connection: TARGET_DB
+              tables:
+                - port: parties
+                  table: parties
+                  mode: merge
+                  keys: [party]
+                - port: totals
+                  table: totals
+                  mode: replace
+            inputs: {parties: src.rows, totals: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        tables = _step_config(migration.text, "publish")["tables"]
+        assert tables[0]["when_incoming_is_null"] == "keep_published"
+        assert "when_incoming_is_null" not in tables[1], "a replace entry was given a merge setting"
+        assert "\n          when_incoming_is_null: keep_published\n" in migration.text
+        assert any("keep_published" in label and "today" in label for label in migration.counts), migration.counts
+
+    def test_a_flow_style_merge_entry_gets_it_inside_its_braces(self) -> None:
+        old = _flow("""\
+          - id: publish
+            tool: publish_tables
+            config:
+              connection: TARGET_DB
+              tables:
+                - {port: parties, table: parties, mode: merge, keys: [party]}
+            inputs: {parties: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert "{port: parties, table: parties, mode: merge, keys: [party], when_incoming_is_null: keep_published}" in (
+            migration.text
+        )
+
+    def test_every_file_writer_that_does_not_say_gets_allow_empty_true_which_is_what_it_did(self) -> None:
+        old = _flow("""\
+          - id: extract
+            tool: write_csv
+            config:
+              path: out.csv
+              overwrite: true
+            inputs: {rows: src.rows}
+          - id: strict
+            tool: write_csv
+            config: {path: strict.csv, allow_empty: false}
+            inputs: {rows: src.rows}
+          - id: pack
+            tool: write_excel
+            config:
+              path: pack.xlsx
+              sheets:
+                - {port: one, sheet: Figures}
+                - port: two
+                  sheet: Checks
+                  allow_empty: false
+            inputs: {one: src.rows, two: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert _step_config(migration.text, "extract")["allow_empty"] is True
+        assert _step_config(migration.text, "strict")["allow_empty"] is False, "a stated choice is kept"
+        sheets = _step_config(migration.text, "pack")["sheets"]
+        assert [sheet["allow_empty"] for sheet in sheets] == [True, False]
+        assert "      allow_empty: true\n" in migration.text
+        assert "{port: one, sheet: Figures, allow_empty: true}" in migration.text
+        assert sum(migration.counts.values()) == 2
+
+    def test_a_merge_entry_that_already_says_keeps_its_choice(self) -> None:
+        old = _flow("""\
+          - id: publish
+            tool: publish_tables
+            config:
+              connection: TARGET_DB
+              tables:
+                - {port: parties, table: parties, mode: merge, keys: [party], when_incoming_is_null: overwrite}
+            inputs: {parties: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert migration.text == old
+        assert migration.changes == []
+
+
 class TestReportedNotMigrated:
     """Things the tool sees and cannot safely change are reported, and left exactly as they are."""
 
@@ -872,10 +977,10 @@ class TestReportedNotMigrated:
         old = OLD_SINGLE_SHEET + _steps("""\
           - id: out
             tool: write_csv
-            config: {path: out.csv, replace: true}
+            config: {path: out.csv, replace: true, allow_empty: true}
             inputs: {rows: tab_out.rows}
         """)
-        expected = old.replace("{path: out.csv, replace: true}", "{path: out.csv, overwrite: true}")
+        expected = old.replace("{path: out.csv, replace: true, allow_empty: true}", "{path: out.csv, overwrite: true, allow_empty: true}")
 
         migration = migrate_text(old)
 
@@ -941,7 +1046,7 @@ RULES_FLOW = textwrap.dedent("""\
         inputs: {rows: split_up.rows}
       - id: out
         tool: write_csv
-        config: {path: out.csv}
+        config: {path: out.csv, allow_empty: true}
         inputs: {rows: both_check.true}
 """)
 
@@ -1043,7 +1148,7 @@ steps:
     inputs: {left: orders.rows, right: parties.rows}
   - id: out
     tool: write_csv
-    config: {path: out.csv, replace: true}
+    config: {path: out.csv, replace: true, allow_empty: true}
     inputs: {rows: pair_up.matched}
 """
 
@@ -1222,6 +1327,51 @@ class TestRenamedValuesByWhereTheySit:
 
         assert migrate_text(old).text == expected
 
+    def test_write_excel_overwrite_sheets_and_the_older_replace_both_become_overwrite(self) -> None:
+        old = _flow("""\
+          - id: pack
+            tool: write_excel
+            config:
+              path: pack.xlsx
+              overwrite_sheets: true
+              sheets: [{port: one, sheet: Figures, allow_empty: true}]
+            inputs: {one: src.rows}
+          - id: older
+            tool: write_workbook
+            config: {path: older.xlsx, replace: true, sheets: [{port: one, sheet: F, allow_empty: true}]}
+            inputs: {one: src.rows}
+        """)
+
+        migration = migrate_text(old)
+
+        assert _step_config(migration.text, "pack")["overwrite"] is True
+        assert _step_config(migration.text, "older")["overwrite"] is True
+        assert "overwrite_sheets" not in migration.text and "replace" not in migration.text
+
+    def test_n_unique_becomes_count_distinct_and_the_report_says_nulls_are_now_skipped(self) -> None:
+        old = _flow("""\
+          - id: spread
+            tool: group_by
+            config:
+              by: [n_unique]
+              aggregations:
+                - {name: n_unique, function: n_unique, value: "[term]"}
+            inputs: {rows: src.rows}
+          - id: wide
+            tool: cross_tab
+            config: {by: [code], names_from: period, values_from: label, function: n_unique}
+            inputs: {rows: src.rows}
+        """)
+        expected = old.replace("function: n_unique, value", "function: count_distinct, value").replace(
+            "label, function: n_unique}", "label, function: count_distinct}"
+        )
+
+        migration = migrate_text(old)
+
+        assert migration.text == expected
+        assert len(migration.changes) == 2
+        assert all("skips nulls" in label for label in migration.counts), migration.counts
+
     def test_a_formula_columns_replace_flag_stays_while_write_csv_replace_becomes_overwrite(self) -> None:
         old = _flow("""\
           - id: figured
@@ -1232,10 +1382,10 @@ class TestRenamedValuesByWhereTheySit:
             inputs: {rows: src.rows}
           - id: out
             tool: write_csv
-            config: {path: out.csv, replace: true}
+            config: {path: out.csv, replace: true, allow_empty: true}
             inputs: {rows: figured.rows}
         """)
-        expected = old.replace("{path: out.csv, replace: true}", "{path: out.csv, overwrite: true}")
+        expected = old.replace("{path: out.csv, replace: true, allow_empty: true}", "{path: out.csv, overwrite: true, allow_empty: true}")
 
         assert migrate_text(old).text == expected
 
@@ -1255,11 +1405,11 @@ class TestSharedAnchoredConfig:
             inputs: {left: src.rows, right: src.rows}
           - id: out_first
             tool: write_csv
-            config: {path: first.csv, overwrite: true}
+            config: {path: first.csv, overwrite: true, allow_empty: true}
             inputs: {rows: first.joined}
           - id: out_second
             tool: write_csv
-            config: {path: second.csv, overwrite: true}
+            config: {path: second.csv, overwrite: true, allow_empty: true}
             inputs: {rows: second.joined}
         """)
         expected = old.replace("&j {left_on: [a], right_on: [b]}", "&j {left_keys: [a], right_keys: [b]}")
@@ -1449,7 +1599,7 @@ class TestInsertedLineLayout:
           # next step
           - id: out
             tool: write_csv
-            config: {path: out.csv, overwrite: true}
+            config: {path: out.csv, overwrite: true, allow_empty: true}
             inputs: {rows: span.rows}
         """)
         expected = _flow("""\
@@ -1466,7 +1616,7 @@ class TestInsertedLineLayout:
           # next step
           - id: out
             tool: write_csv
-            config: {path: out.csv, overwrite: true}
+            config: {path: out.csv, overwrite: true, allow_empty: true}
             inputs: {rows: span.rows}
         """)
 
@@ -1540,3 +1690,23 @@ class TestCommandLineWithManualItems:
         assert code == 1
         assert "tab_out" in printed
         assert path.read_bytes() == OLD_SINGLE_SHEET.encode("utf8")
+
+
+class TestWhatTheFileCannotShow:
+    def test_the_time_zone_setting_is_printed_as_guidance_because_only_the_data_shows_where_it_is_needed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "flow.yaml"
+        path.write_text(_flow("""\
+          - id: dated
+            tool: cast_columns
+            config:
+              columns: [{column: paid_at, type: Date}]
+            inputs: {rows: src.rows}
+        """), encoding="utf8")
+
+        main([str(path)])
+        printed = capsys.readouterr().out
+
+        assert "in_zone: UTC" in printed and "date_diff" in printed
+        assert path.read_text(encoding="utf8").count("in_zone") == 0, "the migration cannot know, so it writes nothing"

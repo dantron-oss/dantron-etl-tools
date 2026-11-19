@@ -230,7 +230,8 @@ count, so the same day is 1) or `'elapsed'` (completed units only). They give ex
 `date_diff` tool gives, from the same code. `make_date(year, month, day)` builds a date from three
 whole numbers and gives null when they name no date, such as 30 February; it is `assemble_date`
 with `on_invalid: set_null`. `month_end(date)` is the last day of that date's month. All four take
-dates; a timestamp in a time zone is refused, so cast it to `Date` first and choose the day. Use
+dates; a timestamp in a time zone is refused, so cast it to `Date` first with `cast_columns` and
+its `in_zone`, which chooses the day. Use
 these instead of casting dates to whole numbers to subtract them: `days_between([from], [to],
 'elapsed')` says what it counts, and a date cast to a number is a count of days since 1970 that a
 reader has to know to trust.
@@ -242,9 +243,9 @@ inside the text alone.
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`
 gives `123.456,789`. All four arguments are required, because nothing in this language has a
 default, and you state both separators rather than having one chosen for you. The last three are
-quoted decisions written in the file, never columns. See section 5 for how its rounding differs
-from `round`, and note that it works a row at a time, as `uuid5` does — put it at the end of a
-flow, on the rows somebody reads, not in the middle of one.
+quoted decisions written in the file, never columns. It writes what `round` gives (section 5),
+and it works a row at a time, as `uuid5` does — put it at the end of a flow, on the rows somebody
+reads, not in the middle of one.
 
 `uuid5(namespace, value)` derives a stable id: one 36-character column where the natural key is
 three or four columns of text, which is a poor thing to join on and a worse thing to quote in a
@@ -478,16 +479,16 @@ Every one of these was measured, most of them the hard way.
   which in a library for amounts is unacceptable. The consequence is that a pattern cannot
   rearrange what it matched. `regex_extract` does return capture groups, so pull the pieces out and
   put them back together with `concat`.
-- **`format_number` and `round` disagree in the last place, and both are right.**
-  `round([x], 2)` on `-15.215` gives `-15.22`; `format_number([x], 2, ',', '.')` gives `-15.21`.
-  Neither is a bug. `round` rounds the decimal you wrote. `format_number` writes out the value the
-  column actually holds, and a column cannot hold `-15.215`: the nearest double is
-  `-15.21499999999999985789...`, which is below the half. The same rule makes `999999.995` read
-  `999,999.99`, which looks like a defect and is not — that double is `999999.99499999999534...`.
-  If a figure has to be rounded *and* formatted to the same answer, `round` it first and format the
-  result. Decide which you want; do not discover the difference in a finished report.
-  On an exact tie `format_number` rounds to the even digit: `2.5` at no places reads `2`, and
-  `0.125` at two reads `0.12`. That rule is fixed; no setting elsewhere in the program can move it.
+- **`round` rounds a half away from zero, as a spreadsheet's ROUND does, on the number as you read
+  it.** `round(2.5, 0)` is `3`, `round(-2.5, 0)` is `-3` and `round(0.125, 2)` is `0.13`. A double
+  cannot hold `1.005` (it holds `1.00499999999999989...`), yet `round(1.005, 2)` is `1.01`: a
+  decimal is read to 15 significant digits, the precision a spreadsheet works to, so a value that
+  differs from a half only past its fifteenth digit is a half. That also catches arithmetic:
+  `476.725` computed as `476.72499999999997` still rounds to `476.73`. When the digit you round on
+  lies past the fifteenth significant digit, the value comes back unchanged. A whole-number column
+  is unchanged; an exact decimal column rounds its own digits the same way.
+- **`format_number` writes what `round` gives**, so the two never disagree: `-15.215` at two places
+  is `-15.22` from both. A negative figure that rounds to zero keeps its minus sign, `-0.00`.
 - **`uuid5` on a key with a missing part gives a null id, not an id.** A null anywhere in the value
   — straight from a column, or through the `concat` that builds the key — makes the whole id null,
   the way `concat` itself already behaves. The alternative is worse than it looks: hashing a
@@ -496,14 +497,11 @@ Every one of these was measured, most of them the hard way.
   there. A null id matches nothing and shows up as a null in a count, which is a question somebody
   asks. If a missing part should still produce an id, write the substitution where a reviewer sees
   it: `uuid5('...', concat(coalesce([code], 'none'), '|', [period]))`.
-- **`format_number` writes a figure that is not a number as blank, not as a number.** `/` is true
-  division, so `[total] / [count]` is infinity on the row where the count is zero and `0.0 / 0.0`
-  is not-a-number. Formatting either gives null — an empty cell — because a figure that cannot be
-  stated is stated as absent rather than as a plausible-looking wrong one, which is the same answer
-  a null already gets. So a blank in a formatted ratio column means the division had nothing to
-  divide by. Use `coalesce(format_number([ratio], 2, ',', '.'), 'n/a')` if the report needs a word
-  there instead, and guard the division itself with `case_when` if the blank is hiding a fault
-  upstream rather than a genuinely empty row.
+- **`format_number` writes a figure that is not a number as blank, not as a number.** Infinity and
+  not-a-number can still arrive from a source, even though a division by zero inside a step now
+  stops it (section 6). Formatting either gives null — an empty cell — because a figure that cannot
+  be stated is stated as absent, the same answer a null gets. Use
+  `coalesce(format_number([ratio], 2, ',', '.'), 'n/a')` if the report needs a word there instead.
 
 ### Columns
 
@@ -548,6 +546,9 @@ Every one of these was measured, most of them the hard way.
 - **`len()` gives an unsigned whole number.** Arithmetic on it, or on any unsigned column, is done
   as a signed 64-bit number, so `len([code]) - 5` is -2 for a three-letter code rather than wrapping
   to about four billion.
+- **A decimal becomes a whole number only when it already is one.** `cast_columns` (and `unpivot`'s
+  `values_type`) reads `12.0` as `Int64` 12, but stops on `1.99`, naming the column and the values,
+  because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
@@ -556,9 +557,17 @@ Every one of these was measured, most of them the hard way.
 - **A format rule for `Int64` reaches every whole-number column**, including the `Int32` column an
   integer literal gives. A rule for `Float64` does not reach a `Float32` column: cast it to
   `Float64`, or name the column in the rule.
+- **Which day a timestamp in a time zone falls on depends on the zone, so you state it.** 23:30 on
+  31 January in Toronto is 1 February in UTC. `cast_columns` to `Date`, `date_diff` and
+  `expand_date_range` refuse such a timestamp unless `in_zone` says which zone's calendar to use:
+  `in_zone: UTC` reads the UTC date, which is what they read before the rule. There is no default,
+  and `in_zone` where no timestamp carries a zone is refused too.
+- **A spreadsheet tab refuses not-a-number and infinity.** `write_excel` would show them as blank
+  cells, which read as "no figure". It stops instead, naming the tab, the column and the rows. A
+  null is written as an empty cell, as before.
 - **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
-  zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
-  writer drop the zone quietly.
+  zone-aware timestamp. `cast_columns` it to `Date` first, with `in_zone`, deliberately, rather
+  than letting a writer drop the zone quietly.
 - **A text file states no types at all.** `read_csv` infers, reading the *whole* column before it
   casts. Declare `column_types` as `String` for any column that is an identifier or a name: a
   customer literally called `3600` inferred as a number stops matching the same name everywhere
@@ -596,9 +605,10 @@ Every one of these was measured, most of them the hard way.
 - **Sorting reorders ties unless the tool holds them.** This library's `sort` keeps the incoming
   order within a tie, so the same input always gives the same page. Do not assume any other step
   preserves order — put a `sort` in front of whatever needs one.
-- **`first` means "the first row as it arrives".** It is only meaningful after a `sort`. A `first`
-  with no ordering in front of it is a coin toss that will land the same way in testing and
-  differently in production.
+- **`first` means "the first row as it arrives", null or not.** It is only meaningful after a
+  `sort`. A `first` with no ordering in front of it is a coin toss that will land the same way in
+  testing and differently in production. A group whose first row is blank gives null even when a
+  later row has a value; `first_non_null` gives the first value that is there instead.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
   and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
@@ -610,10 +620,16 @@ Every one of these was measured, most of them the hard way.
   not against the pipeline file. Run from a consistent place, use absolute paths, or pass
   `run_pipeline(spec, base_dir=project_folder)`: then a relative path is read from that folder,
   whatever the working directory is.
+- **A writer stops on an empty frame unless the step allows it.** `write_table`, `publish_tables`
+  (per table), `write_csv` and `write_excel` (per sheet) all refuse a frame with no rows until
+  `allow_empty: true` says the branch may be empty, because a table or file that is empty for a
+  reason upstream looks exactly like a quiet month. Allowed, a file is written with its header and
+  a tab with its headings.
 - **A file writer is checked against the disk when the pipeline loads.** The folder of its `path`
   must already exist. A file already at `path` is refused unless the step says it may be replaced,
-  so a flow that runs every night needs `overwrite: true` on `write_csv` (and `overwrite_sheets:
-  true` on `write_excel`) from its first night, or its second run will not load.
+  so a flow that runs every night needs `overwrite: true` on `write_csv` and `write_excel` from its
+  first night, or its second run will not load. On `write_excel` the same word also lets a sheet
+  entry replace a tab of the template.
 - **Config names an environment variable, never a secret.** `connection: DATABASE_URL` is the name
   of the variable; the value is read from the environment. No credential may enter a pipeline file,
   so that a definition is safe to commit and safe to hand to someone else as a template.
@@ -640,12 +656,29 @@ Two more rulings you will meet:
 - **`join_text` of the same group is the empty string** — deliberately the opposite. Joining no
   strings together produces the empty string in any language that has both; adding no numbers
   together produces a total nobody measured.
+- **A `publish_tables` merge says what a null in tonight's row does.** `when_incoming_is_null:
+  keep_published` leaves the published value standing, so one unreadable source cannot blank a
+  column. `overwrite` writes the null, as SQL's `MERGE` does. There is no default: the two publish
+  different figures.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
-- **Not-a-number is not a null.** `0.0 / 0.0` gives not-a-number, and it compares as larger than
-  every number and equal to itself. So `[ratio] > 0.5` is true for it in `filter`, `case_when` and
-  `assert_rows`, and `sort` puts it after every number ascending and before them descending, while
-  `nulls` moves only the nulls. Guard the division with `case_when` if that matters.
+- **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a
+  group of nulls counts 0. To count a blank as a value too, count `coalesce([v], '(blank)')`. It
+  was called `n_unique` and counted a null as one more value; the migration renames it.
+- **A division by zero stops the step.** It has no answer, and the infinity or not-a-number the
+  engine would give reads as larger than every number in a later `filter` or `sort`. So a `/`
+  whose divisor is zero (`0`, `0.0` or `-0.0`) on any row the step uses stops the run, naming the
+  step, the field, the expression and up to five of the rows; a divisor written as zero is refused
+  when the file loads. A null divisor is not zero: the answer is null. Not-a-number is not zero
+  either: dividing by it gives not-a-number, as before. A flow that expects zeros guards them in
+  `case_when`, with a rung of their own before the rung that divides: `case_when` checks each
+  division only on the rows that reach it, as SQL's `CASE` does. A guard inside one expression,
+  `[b] != 0 and [a] / [b] > 1`, does not count, because every part of an expression is worked out
+  on every row.
+- **Not-a-number from a source is not a null.** It compares as larger than every number and equal
+  to itself. So `[ratio] > 0.5` is true for it in `filter`, `case_when` and `assert_rows`, and
+  `sort` puts it after every number ascending and before them descending, while `nulls` moves only
+  the nulls.
 
 ---
 

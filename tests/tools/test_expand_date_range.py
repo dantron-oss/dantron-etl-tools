@@ -391,7 +391,7 @@ class TestExpandDateRangeRefusals:
         """
         template = ExpandDateRange().config_template()
 
-        assert set(template) == {"start", "end", "unit", "period_column"}
+        assert set(template) == {"start", "end", "unit", "period_column", "in_zone"}
         assert (template["start"].required, template["end"].required) == (True, True)
         assert expression_fields(template) == ("start", "end"), "the loader seam is the declared type"
         assert tuple(template["unit"].enum or ()) == ("month",)
@@ -489,3 +489,33 @@ class TestTheEndsAreReadAsDates:
         message = str(caught.value)
         for word in ("'end'", "'e'", "not a date"):
             assert word in message, f"refusal should name {word!r}: {message}"
+
+
+class TestATimestampInAZoneIsExpandedInAStatedZone:
+    """expand_date_range reads a zone-aware start or end as its date in the zone 'in_zone' states."""
+
+    def _frame(self) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"s": [datetime(2026, 1, 1, 5, 0)], "e": [datetime(2026, 2, 1, 3, 0)], "d": [date(2026, 1, 1)]}
+        ).with_columns(
+            pl.col("s").dt.replace_time_zone("UTC").dt.convert_time_zone("America/Toronto"),
+            pl.col("e").dt.replace_time_zone("UTC").dt.convert_time_zone("America/Toronto"),
+        )
+
+    def _periods(self, **extra: Any) -> list[Any]:
+        config = {"start": "[s]", "end": "[e]", **extra}
+        return run_tool(REGISTRY.get("expand_date_range"), Ports({"rows": self._frame()}), config)["rows"]["period_start"].to_list()
+
+    def test_without_a_zone_it_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            self._periods()
+        assert "in_zone" in str(caught.value) and "America/Toronto" in str(caught.value)
+
+    def test_utc_expands_as_before_and_the_local_zone_by_the_local_calendar(self) -> None:
+        assert self._periods(in_zone="UTC") == [date(2026, 1, 1), date(2026, 2, 1)]
+        assert self._periods(in_zone="America/Toronto") == [date(2026, 1, 1)]
+
+    def test_a_zone_when_neither_side_carries_one_is_refused(self) -> None:
+        config = {"start": "[d]", "end": "[d]", "in_zone": "UTC"}
+        with pytest.raises(ConfigError):
+            run_tool(REGISTRY.get("expand_date_range"), Ports({"rows": self._frame()}), config)

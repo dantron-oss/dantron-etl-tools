@@ -48,6 +48,7 @@ from ..authoring import (
     compile_for,
     compile_predicate_for,
     compiled_dtype,
+    refuse_division_by_zero,
 )
 
 # The coarse families a branch's value may belong to, named the way an author would read a
@@ -143,6 +144,11 @@ class CaseWhen:
                 "A replacement writes the whole column rather than only the rows a case matched, so "
                 "a row no case reached takes 'otherwise', or null when there is none, exactly as it "
                 "would in a new column, instead of keeping the value it had.",
+                "A '/' whose divisor is zero stops the step, but only on a row that reaches it, as "
+                "in SQL's CASE: a case's condition is checked on the rows no earlier case took, its "
+                "value on the rows it takes, and 'otherwise' on the rows no case took. So a case that "
+                "takes the zero rows first, such as when: '[months] = 0', guards a later case that "
+                "divides by [months].",
             ),
         )
 
@@ -180,6 +186,7 @@ class CaseWhen:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         cases = config["cases"]
+        _refuse_division_by_zero_where_used(frame, config)
 
         ladder = pl.when(compile_predicate_for(frame, cases[0]["when"], "cases[0].when")).then(
             compile_for(frame, cases[0]["then"], "cases[0].then")
@@ -192,6 +199,25 @@ class CaseWhen:
             ladder = ladder.otherwise(compile_for(frame, config["otherwise"], "otherwise"))
 
         return Ports({"rows": frame.with_columns(ladder.alias(config["output"]))})
+
+
+def _refuse_division_by_zero_where_used(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
+    """Check each '/' only on the rows that reach the part of the ladder it sits in, as SQL's CASE does.
+
+    A rung's condition is used on the rows no earlier rung took, and its value on the rows its own
+    condition then takes. 'otherwise' is used on the rows no rung took. A null condition takes no
+    row, as it does when the column is built. So a rung that sends the zero rows elsewhere first
+    guards the division in the rung after it.
+    """
+    taken = pl.lit(False)
+    for index, case in enumerate(config["cases"]):
+        reached = ~taken
+        refuse_division_by_zero(frame, case["when"], f"cases[{index}].when", among=reached)
+        takes = compile_predicate_for(frame, case["when"], f"cases[{index}].when").fill_null(False)
+        refuse_division_by_zero(frame, case["then"], f"cases[{index}].then", among=reached & takes)
+        taken = taken | takes
+    if config.get("otherwise") is not None:
+        refuse_division_by_zero(frame, config["otherwise"], "otherwise", among=~taken)
 
 
 def _check_family(

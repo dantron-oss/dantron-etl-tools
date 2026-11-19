@@ -17,15 +17,20 @@ from typing import Final
 import polars as pl
 
 from .config import ConfigField
-from .errors import ConfigError
-from .expr import ExpressionError, compile_expr
+from .errors import ConfigError, DataError
+from .expr import ExpressionError, compile_expr, divisions
 
 __all__ = [
     "REPLACE_FIELD",
     "check_output_column",
     "compile_for",
     "compile_predicate_for",
+    "ZONE_FIELD",
+    "as_calendar_date",
+    "check_zone_name",
     "compiled_dtype",
+    "refuse_division_by_zero",
+    "require_stated_zone",
     "require_columns",
 ]
 
@@ -54,6 +59,43 @@ def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
         return compile_expr(text, frame.schema)
     except ExpressionError as error:
         raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+
+
+def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
+    """Stop when a '/' in ``text`` divides by zero on a row of ``frame`` the step uses.
+
+    A division by zero has no answer. Left to the engine it gives infinity, or not-a-number for
+    0 / 0, and a later filter reads not-a-number as larger than every number. So the step stops and
+    names the field, the expression, the divisor and up to five of the rows.
+
+    Zero means 0, 0.0 or -0.0. A null divisor is not zero: the division gives null, as everything
+    does with a null. Not-a-number is not zero either: dividing by it gives not-a-number, as before.
+
+    ``among`` limits the check to the rows the step uses the expression on. ``case_when`` passes
+    the rows that reach a rung, so a rung that sends the zero rows elsewhere first guards the rung
+    that divides. Every other tool uses an expression on every row and passes nothing.
+
+    One pass per '/', each a whole-column comparison: no row-by-row work.
+    """
+    try:
+        found = divisions(text, frame.schema)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+    if not found or frame.height == 0:
+        return
+    used = pl.lit(True) if among is None else among.fill_null(False)
+    for division in found:
+        zero = (division.expr == 0).fill_null(False) & used
+        if not frame.select(zero.any()).item():
+            continue
+        raise DataError(
+            f"config field {field!r} divides by zero: the divisor `{division.divisor}` is zero, in "
+            f"expression: `{text}`. A division by zero has no answer, so the step stops rather than "
+            f"write infinity or not-a-number; give the rows whose divisor is zero a case_when rung "
+            f"of their own, before the one that divides",
+            offending=frame.filter(zero),
+            total=frame.height,
+        )
 
 
 def compiled_dtype(frame: pl.DataFrame, text: str, field: str) -> tuple[str, pl.DataType]:
@@ -207,3 +249,45 @@ def check_output_column(frame: pl.DataFrame, name: str, field: str, *, replace: 
             f"config field {field!r} names output column {name!r}, which the input already carries; "
             f"say replace: true to overwrite it deliberately, or write to a name nothing uses"
         )
+
+
+# The setting a step uses to say in which time zone a timestamp is read as a date. Shared so the
+# wording is the same on every catalog page. No default: which day a timestamp falls on depends on
+# the zone, so the author states it.
+ZONE_FIELD: Final[ConfigField] = ConfigField(
+    type="string",
+    description="The time zone in which a timestamp that carries a zone is read as a date, such as "
+    "UTC or America/Toronto. Required when one does, refused when none does; no default.",
+)
+
+
+def check_zone_name(zone: str, field: str) -> None:
+    """Refuse a time zone name the engine does not know, naming the field and the name."""
+    try:
+        pl.Series([None], dtype=pl.Datetime("us")).dt.replace_time_zone(zone)
+    except pl.exceptions.PolarsError:
+        raise ConfigError(
+            f"config field {field!r} names the time zone {zone!r}, which is not one the engine knows; "
+            f"write an IANA name such as UTC or America/Toronto"
+        ) from None
+
+
+def require_stated_zone(dtype: pl.DataType, zone: str | None, field: str, *, reading: str) -> None:
+    """Refuse a timestamp in a zone read as a date with no zone stated, and a zone stated for nothing.
+
+    ``reading`` says what is being read, for the refusal: a column, or a side of a range.
+    """
+    carried = dtype.time_zone if isinstance(dtype, pl.Datetime) else None
+    if carried is not None and zone is None:
+        raise ConfigError(
+            f"{reading} is a timestamp in time zone {carried!r}, read here as a date, and which day it "
+            f"falls on depends on the zone; write {field}: UTC to read it as the UTC date, as before, "
+            f"or the zone whose calendar the dates belong to"
+        )
+
+
+def as_calendar_date(expression: pl.Expr, dtype: pl.DataType, zone: str | None) -> pl.Expr:
+    """A date, or a timestamp read as the date it falls on: in ``zone`` when it carries a zone."""
+    if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None and zone is not None:
+        return expression.dt.convert_time_zone(zone).dt.date()
+    return expression.cast(pl.Date)

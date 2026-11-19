@@ -358,7 +358,8 @@ class TestDateDiffRefusals:
         """
         template = DateDiff().config_template()
 
-        assert set(template) == {"start", "end", "unit", "counting", "output"}
+        assert set(template) == {"start", "end", "unit", "counting", "output", "in_zone"}
+        assert template["in_zone"].default is None, "which day a timestamp falls on is never inferred from silence"
         assert expression_fields(template) == ("start", "end"), "the loader seam is the declared type"
         assert template["start"].required is True
         assert template["end"].required is True
@@ -416,3 +417,35 @@ class TestDateDiffInTheCatalog:
         """Registered under its machine name. The whole catalog is checked once, in tests/core/test_registry.py."""
         assert "date_diff" in REGISTRY
         assert isinstance(REGISTRY.get("date_diff"), DateDiff)
+
+
+class TestATimestampInAZoneIsCountedInAStatedZone:
+    """date_diff reads a zone-aware start or end as its date in the zone 'in_zone' states; no default."""
+
+    def _frame(self) -> pl.DataFrame:
+        start = datetime(2026, 1, 1, 5, 0)  # 00:00 1 Jan in Toronto
+        end = datetime(2026, 2, 1, 3, 0)  # 22:00 31 Jan in Toronto, already 1 Feb in UTC
+        return pl.DataFrame({"s": [start], "e": [end], "d": [date(2026, 1, 1)]}).with_columns(
+            pl.col("s").dt.replace_time_zone("UTC").dt.convert_time_zone("America/Toronto"),
+            pl.col("e").dt.replace_time_zone("UTC").dt.convert_time_zone("America/Toronto"),
+        )
+
+    def _count(self, start: str, end: str, **extra: Any) -> list[int | None]:
+        config = {"start": start, "end": end, "unit": "month", "counting": "inclusive", "output": "n", **extra}
+        return run_tool(DateDiff(), Ports({"rows": self._frame()}), config)["rows"]["n"].to_list()
+
+    def test_without_a_zone_it_is_refused_naming_the_side_and_the_setting(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            self._count("[d]", "[e]")
+        message = str(caught.value)
+        for word in ("end", "America/Toronto", "in_zone"):
+            assert word in message, message
+
+    def test_utc_counts_what_it_counted_before_and_the_local_zone_counts_the_local_days(self) -> None:
+        assert self._count("[s]", "[e]", in_zone="UTC") == [2]
+        assert self._count("[s]", "[e]", in_zone="America/Toronto") == [1]
+
+    def test_a_zone_when_neither_side_carries_one_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            self._count("[d]", "[d]", in_zone="UTC")
+        assert "in_zone" in str(caught.value)

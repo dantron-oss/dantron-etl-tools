@@ -65,7 +65,8 @@ from collections.abc import Collection, Mapping
 
 import polars as pl
 
-from .compiler import build
+from .compiler import Division, build
+from .compiler import divisions as _divisions
 from .errors import ExpressionError
 from .functions import ALLOWED_FUNCTIONS
 from .parse import ALLOWED_NODES, MAX_DEPTH, MAX_NODES, MAX_TEXT_LENGTH
@@ -77,8 +78,10 @@ __all__ = [
     "MAX_DEPTH",
     "MAX_NODES",
     "MAX_TEXT_LENGTH",
+    "Division",
     "ExpressionError",
     "compile_expr",
+    "divisions",
     "escape_text",
     "quote_text",
     "references",
@@ -114,6 +117,16 @@ def compile_expr(text: str, columns: Mapping[str, pl.DataType] | Collection[str]
     """
     expression, _ = build(text, columns)
     return expression
+
+
+def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None = None) -> tuple[Division, ...]:
+    """Every '/' in ``text``, in the order written: the divisor as the author wrote it, and its column.
+
+    A tool that runs an expression asks this so it can stop on a row whose divisor is zero (see
+    ``refuse_division_by_zero`` in ``frame_checks``). The expression is checked exactly as
+    :func:`compile_expr` checks it, so a bad one is refused here in the same words.
+    """
+    return _divisions(text, columns)
 
 
 def references(text: str) -> frozenset[str]:

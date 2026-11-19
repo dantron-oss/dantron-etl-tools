@@ -15,11 +15,13 @@ would give each table a value milliseconds from its neighbour's, and the tables 
 no longer be selected as one build; taken from a constant or off a frame it would give every build
 the same answer, and "which build produced this row" would have none. The frames never carry it.
 
-**A merge keeps what the incoming row is silent about.** ``coalesce(excluded.c, target.c)``, not
-``= excluded.c``. A refresh that carries a value overwrites it and a refresh that fills a gap fills
-it, but a null the build has nothing to say about leaves the published value standing -- because the
-alternative is that one unreadable upstream source publishes a dimension of nulls over every row
-that already held a figure. A merge stages its rows first, in a temporary table named
+**A merge says what a null in tonight's row does.** Each merge entry states
+``when_incoming_is_null``, with no default. ``keep_published`` writes ``coalesce(excluded.c,
+target.c)``: a value overwrites, a gap is filled, and a null leaves the published value standing, so
+one unreadable upstream source cannot publish a column of nulls over every row. ``overwrite`` writes
+``= excluded.c``, as SQL's ``MERGE ... UPDATE SET`` does: a value that has gone blank upstream goes
+blank in the table. Both are reasonable and they publish different figures, so the author chooses in
+writing. A merge stages its rows first, in a temporary table named
 ``_etl_merge_staging``: the bulk path on one of the two drivers is ``COPY``, which carries no
 conflict resolution of its own, so the rows are loaded in bulk and upserted out of the scratch in
 one statement. One fixed name, created and dropped inside the publish -- a destination that holds a
@@ -83,6 +85,9 @@ from ._table_load import require_landable_columns, require_matching_table, requi
 #: Spelled so a definition file hands each of them over as the word itself.
 _MODE_ENUM: Final[tuple[str, ...]] = ("replace", "append", "merge")
 
+# What a merge does with a null in an incoming row. No default: the two publish different figures.
+_WHEN_NULL_ENUM: Final[tuple[str, ...]] = ("keep_published", "overwrite")
+
 _EXAMPLE_CONNECTION: Final[str] = "TARGET_DATABASE_URL"
 _EXAMPLE_URI: Final[str] = "file:publish_tables_example?mode=memory&cache=shared"
 
@@ -103,6 +108,8 @@ class _Entry:
     mode: str
     key: tuple[str, ...]
     allow_empty: bool
+    #: For a merge, what a null in an incoming row does: "keep_published" or "overwrite". None otherwise.
+    when_incoming_is_null: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,8 +200,8 @@ class PublishTables:
                         "mode": ConfigField(
                             type="string",
                             description="'replace' empties the table before loading; 'append' adds "
-                            "without emptying it; 'merge' upserts on 'keys', keeping any published "
-                            "value the incoming row carries a null for. Required, with no default.",
+                            "without emptying it; 'merge' upserts on 'keys', and 'when_incoming_is_null' "
+                            "says what a null does. Required, with no default.",
                             required=True,
                             enum=_MODE_ENUM,
                         ),
@@ -208,6 +215,13 @@ class PublishTables:
                                 description="One column of the merge key.",
                                 non_empty=True,
                             ),
+                        ),
+                        "when_incoming_is_null": ConfigField(
+                            type="string",
+                            description="For a merge: what a null in an incoming row does. "
+                            "'keep_published' leaves the published value standing; 'overwrite' writes "
+                            "the null. Required by 'merge', with no default, and read by no other mode.",
+                            enum=_WHEN_NULL_ENUM,
                         ),
                         "allow_empty": ConfigField(
                             type="boolean",
@@ -237,9 +251,10 @@ class PublishTables:
                 "exists rather than a chain of write_table steps, which is one transaction each.",
                 "The stamp is one instant, read once and written identically onto every table, so "
                 "the tables of one build can be selected afterwards as one build.",
-                "A merge writes coalesce(incoming, published): a value overwrites and a gap is "
-                "filled, but a null the build has nothing to say about leaves the published value "
-                "standing rather than blanking it.",
+                "A merge entry must say what a null in tonight's row does. 'when_incoming_is_null: "
+                "keep_published' writes coalesce(incoming, published): a value overwrites, a gap is "
+                "filled, and a null leaves the published value standing. 'overwrite' writes the null, "
+                "as SQL's MERGE does. There is no default, because the two publish different figures.",
                 "A merge needs one row per key. A frame with a null in a key column, or the same "
                 "key twice, is refused before anything is written, naming the key and the rows.",
                 "'mode' has no default: the three differ in whether re-running the flow is safe, "
@@ -280,6 +295,17 @@ class PublishTables:
                     f"the entry publishing table {entry.qualified!r} is a merge with no 'keys'; a "
                     f"merge matches a published row on the key, so there is nothing it could do "
                     f"without one"
+                )
+            if entry.mode == "merge" and entry.when_incoming_is_null is None:
+                raise ConfigError(
+                    f"the entry publishing table {entry.qualified!r} is a merge that does not say what a "
+                    f"null in an incoming row does; write when_incoming_is_null: keep_published to leave "
+                    f"the published value standing, or when_incoming_is_null: overwrite to write the null"
+                )
+            if entry.mode != "merge" and entry.when_incoming_is_null is not None:
+                raise ConfigError(
+                    f"the entry publishing table {entry.qualified!r} sets 'when_incoming_is_null', which "
+                    f"only a merge reads; this entry is a {entry.mode!r}, so remove it"
                 )
 
         _refuse_repeats(entry.port for entry in entries)
@@ -372,7 +398,7 @@ def _stamp_for(config: Mapping[str, Any]) -> _Stamp | None:
 def _entries(config: Mapping[str, Any]) -> tuple[_Entry, ...]:
     """The configuration's table entries, read once into the shape the rest of this module asks.
 
-    ``keys`` and ``allow_empty`` are read with ``.get`` because a default declared on a member of an
+    ``keys``, ``allow_empty`` and ``when_incoming_is_null`` are read with ``.get`` because a default declared on a member of an
     element is never filled in: an element nobody wrote has nothing to fill, so the value they take
     when they are absent is stated here rather than in the template, where the next reader would
     trust it.
@@ -386,6 +412,7 @@ def _entries(config: Mapping[str, Any]) -> tuple[_Entry, ...]:
             mode=entry["mode"],
             key=tuple(entry.get("keys") or ()),
             allow_empty=bool(entry.get("allow_empty", False)),
+            when_incoming_is_null=entry.get("when_incoming_is_null"),
         )
         for entry in config["tables"]
     )
@@ -474,7 +501,8 @@ def _publish_one(
         elif entry.mode == "append":
             loader.load_rows(connection, entry.qualified, columns, rows)
         else:
-            loader.merge_rows(connection, schema, entry.table, columns, entry.key, rows)
+            keep_published = entry.when_incoming_is_null == "keep_published"
+            loader.merge_rows(connection, schema, entry.table, columns, entry.key, rows, keep_published=keep_published)
     except loader.driver_errors as error:
         raise DataError(
             f"publishing table {entry.qualified!r} was refused: {error}; the publish is one unit, "
@@ -547,12 +575,20 @@ def _merge_example() -> WorkedExample:
         scenario="a merge fills a gap, overwrites a value, and leaves what it is silent about standing",
         configuration={
             "connection": _EXAMPLE_CONNECTION,
-            "tables": [{"port": "parties", "table": "parties", "mode": "merge", "keys": ["party"]}],
+            "tables": [
+                {
+                    "port": "parties",
+                    "table": "parties",
+                    "mode": "merge",
+                    "keys": ["party"],
+                    "when_incoming_is_null": "keep_published",
+                }
+            ],
         },
         explanation="Party 'a' is already published as ('Alpha', 10.0). Tonight's row carries a new "
         "amount and no label, so afterwards it reads ('Alpha', 11.0): the amount moves and the "
-        "published label survives, because a null says the build had nothing to report rather than "
-        "that the label is now empty. Party 'c' is new and is inserted. The receipt counts the two "
+        "published label survives, because 'when_incoming_is_null: keep_published' reads a null as "
+        "the build having nothing to report. With 'overwrite' the label would be written empty. Party 'c' is new and is inserted. The receipt counts the two "
         "incoming rows.",
         inputs=inputs,
         outputs=outputs,

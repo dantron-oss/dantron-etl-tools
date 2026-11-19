@@ -1740,3 +1740,33 @@ def test_a_blank_new_column_name_is_refused_when_the_pipeline_loads(field: str, 
 
     with pytest.raises(ConfigError, match=f"'{field}' must not be"):
         run_tool(Unpivot(), Ports({"rows": pl.DataFrame({"code": ["a"], "p1": [1.0]})}), config)
+
+
+class TestAStatedWholeNumberTypeRefusesAFraction:
+    """'values_type: Int64' holds a melted decimal to cast_columns' rule: whole, or it does not read."""
+
+    def _melt(self, frame: pl.DataFrame, **extra: Any) -> Ports:
+        config = {"by": ["code"], "names_to": "period", "values_to": "count", "values_type": "Int64", **extra}
+        return run_tool(Unpivot(), Ports({"rows": frame}), config)
+
+    def test_a_fraction_stops_the_run_naming_the_column_the_value_and_round(self) -> None:
+        frame = pl.DataFrame({"code": ["a"], "p1": [1.99], "p2": ["3"]})
+
+        with pytest.raises(DataError) as caught:
+            self._melt(frame)
+
+        message = str(caught.value)
+        for word in ("p1", "1.99", "Int64", "round"):
+            assert word in message, message
+
+    def test_whole_decimals_melt_into_whole_numbers(self) -> None:
+        frame = pl.DataFrame({"code": ["a"], "p1": [2.0], "p2": [3.0]})
+        assert self._melt(frame)["rows"]["count"].to_list() == [2, 3]
+
+    def test_set_null_empties_and_counts_the_fraction(self) -> None:
+        frame = pl.DataFrame({"code": ["a", "b"], "p1": [1.5, 2.0], "p2": [3.0, 4.0]})
+
+        result = self._melt(frame, on_invalid="set_null")
+
+        assert result["rows"]["count"].to_list() == [None, 2, 3, 4]
+        assert any("1.5" in note for note in result.notes), result.notes

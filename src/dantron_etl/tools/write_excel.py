@@ -26,7 +26,7 @@ overwritten by its own first run is gone, and the run after it has nothing to st
 
 The file already at ``path`` is never read. Each run builds the workbook from the template, or from
 nothing, so a run writes the same file whatever an earlier run left there, and a tab the flow stops
-writing does not linger. ``overwrite_sheets`` is the one permission for replacing something that is
+writing does not linger. ``overwrite`` is the one permission for replacing something that is
 already there: the file at ``path`` (refused when the flow loads), and a tab of the template that a
 sheet entry names (refused when the template is opened).
 
@@ -156,6 +156,12 @@ class WriteExcel:
                             "and none of '[' ']' ':' '*' '?' '/' '\\'.",
                             required=True,
                             non_empty=True,
+                        ),
+                        "allow_empty": ConfigField(
+                            type="boolean",
+                            description="Whether a port with no rows is written, as a tab with its "
+                            "headings and nothing under them, instead of stopping the run. Left out, "
+                            "it is false.",
                         ),
                         "formats": ConfigField(
                             type="array",
@@ -296,7 +302,7 @@ class WriteExcel:
                 required=False,
                 file_path=True,
             ),
-            "overwrite_sheets": ConfigField(
+            "overwrite": ConfigField(
                 type="boolean",
                 description="Whether something already there may be replaced: a file at 'path', or "
                 "a tab of the template that a sheet entry names. Leave it out and either is refused.",
@@ -324,7 +330,7 @@ class WriteExcel:
                 "refused. The file already at 'path' is never read: each run builds the workbook "
                 "from the template, or from nothing, so a tab the flow stops writing does not "
                 "linger. A file already at 'path', or a template tab a sheet entry names, is "
-                "refused until 'overwrite_sheets' says in writing that replacing it is intended. A "
+                "refused until 'overwrite' says in writing that replacing it is intended. A "
                 "replaced template tab keeps its place among the others. Nothing leaves on an "
                 "output port: a flow ends here."
             ),
@@ -334,9 +340,11 @@ class WriteExcel:
                 "spreadsheet recalculates the file when it opens it, so a person sees the right "
                 "figures. A program that reads the file before then, read_excel among them, sees "
                 "blanks where the formulas are.",
-                "A port with no rows still gets its tab, with the header and nothing under it: a "
-                "missing tab reads as a broken report, where an empty one reads as 'nothing this "
-                "month'.",
+                "A port with no rows stops the run unless its sheet entry says allow_empty: true, "
+                "as on the table sinks: a tab that is empty because something upstream failed looks "
+                "exactly like a quiet month. Allowed, it gets its tab, with the header and nothing "
+                "under it: a missing tab reads as a broken report, where an empty one reads as "
+                "'nothing this month'.",
                 "A whole number past 2**53 - 1 in either direction is refused rather than rounded "
                 "or silently written as text. A cell holds a double, so exactness past that point "
                 "is a promise this tool cannot keep, and the fix is one explicit cast upstream "
@@ -346,6 +354,9 @@ class WriteExcel:
                 "is the value it started as.",
                 "Text longer than 32,767 characters, the most a cell holds, is refused naming the "
                 "column, rather than cut short.",
+                "Not-a-number or infinity in a decimal column is refused, naming the tab, the column "
+                "and the rows, rather than written as a blank: a blank reads as no figure, where "
+                "these mean a figure went wrong upstream. A null is written as the empty cell it is.",
                 "A frame taller than a tab -- more than 1,048,575 rows of data -- is refused rather "
                 "than truncated, because a truncated total is the worst outcome a delivered figure "
                 "can have.",
@@ -405,7 +416,7 @@ class WriteExcel:
                 "keeps the cell's own font.",
             ),
             field_help={
-                "overwrite_sheets": "Defaults to false. A file already at 'path' is refused when the flow "
+                "overwrite": "Defaults to false. A file already at 'path' is refused when the flow "
                 "loads, and a template tab a sheet entry names is refused when the template is "
                 "opened, until an author says in writing that replacing it is intended. A flow that "
                 "runs every night needs it from its first night.",
@@ -457,7 +468,7 @@ class WriteExcel:
         require_output_folder("write_excel", path)
         template = config["template"]
         if template is None:
-            refuse_to_overwrite("write_excel", path, "overwrite_sheets", config["overwrite_sheets"])
+            refuse_to_overwrite("write_excel", path, "overwrite", config["overwrite"])
             return
         if names_the_same_file(template, path):
             raise ConfigError(
@@ -473,7 +484,7 @@ class WriteExcel:
                 f"there is not a template. Check the path, or leave 'template' out to start from "
                 f"nothing."
             )
-        refuse_to_overwrite("write_excel", path, "overwrite_sheets", config["overwrite_sheets"])
+        refuse_to_overwrite("write_excel", path, "overwrite", config["overwrite"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse any frame a tab cannot hold, before the workbook is opened.
@@ -490,6 +501,17 @@ class WriteExcel:
         for entry in config["sheets"]:
             validate_formatted_columns(entry, inputs[entry["port"]])
             validate_layout_columns(entry, inputs[entry["port"]])
+
+        for entry in config["sheets"]:
+            frame = inputs[entry["port"]]
+            if frame.height == 0 and not entry.get("allow_empty", False):
+                raise DataError(
+                    f"write_excel refuses port {entry['port']!r}, bound for tab {entry['sheet']!r}: it has "
+                    f"no rows, and an empty tab looks like a quiet month even when something upstream "
+                    f"failed; set allow_empty: true on that sheet entry if the tab may be empty",
+                    offending=frame,
+                    total=0,
+                )
 
         for port, sheet in _entries(config):
             frame = inputs[port]
@@ -530,6 +552,21 @@ class WriteExcel:
                     )
 
             for name, dtype in frame.schema.items():
+                if not dtype.is_float():
+                    continue
+                not_a_figure = frame.filter(pl.col(name).is_not_null() & ~pl.col(name).is_finite())
+                if not_a_figure.height:
+                    raise DataError(
+                        f"write_excel refuses column {name!r} on port {port!r}, bound for tab "
+                        f"{sheet!r}: it holds not-a-number or infinity, which a cell would show as a "
+                        f"blank, as if no figure were there. A figure went wrong upstream; fix it "
+                        f"there, or turn those rows into null with case_when if a blank is what the "
+                        f"tab should show",
+                        offending=not_a_figure,
+                        total=frame.height,
+                    )
+
+            for name, dtype in frame.schema.items():
                 if not dtype.is_integer():
                     continue
                 offending = frame.filter(pl.col(name).abs() > MAX_EXACT_INTEGER)
@@ -560,7 +597,7 @@ class WriteExcel:
         with opened_once(path, config["template"]) as book:
             refuse_names_in_use(book, config["sheets"])
             for entry in config["sheets"]:
-                worksheet = empty_tab(book, entry["sheet"], replace=config["overwrite_sheets"])
+                worksheet = empty_tab(book, entry["sheet"], replace=config["overwrite"])
                 frame = inputs[entry["port"]]
                 # Two passes, in this order. The first writes every value and number format. The
                 # second only changes how the tab looks, and must never set a value or a format.

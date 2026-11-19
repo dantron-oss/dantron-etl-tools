@@ -435,14 +435,15 @@ def _sqlite_value_type(spelling: str) -> str | None:
     return None
 
 
-def _merge_statement(qualified: str, staging: str, columns: Sequence[str], key: Sequence[str]) -> str:
-    """Upsert every staged row into ``qualified``, keeping what the incoming row is silent about.
+def _merge_statement(
+    qualified: str, staging: str, columns: Sequence[str], key: Sequence[str], *, keep_published: bool
+) -> str:
+    """Upsert every staged row into ``qualified``, doing with a null what the author chose.
 
-    ``coalesce(excluded.c, {target}.c)`` rather than ``= excluded.c``, and the difference is the
-    whole substance of a merge. A refresh that carries a value overwrites; a refresh that carries a
-    null has nothing to say about that column and the published value stands. The plain assignment
-    behaves identically on three of the four cases and, on the night one upstream source cannot be
-    read, publishes a column of nulls over every row that already held a figure.
+    ``keep_published`` writes ``coalesce(excluded.c, {target}.c)``: a value overwrites, and a null
+    leaves the published value standing. Otherwise the plain ``= excluded.c``: a null is written.
+    The two agree on three of the four cases and differ on the one that matters, a value that has
+    gone blank upstream, so the caller states which one it wants.
 
     ``WHERE true`` is not decoration. sqlite refuses ``INSERT ... SELECT ... ON CONFLICT`` outright
     without a ``WHERE`` on the select -- it reads the ``ON`` as the start of a join -- and postgres
@@ -451,12 +452,13 @@ def _merge_statement(qualified: str, staging: str, columns: Sequence[str], key: 
     quoted = [quoted_identifier(column) for column in columns]
     named = ", ".join(quoted)
     conflict = ", ".join(quoted_identifier(column) for column in key)
-    updated = [
-        f"{quoted_identifier(column)} = coalesce(excluded.{quoted_identifier(column)}, "
-        f"{qualified}.{quoted_identifier(column)})"
-        for column in columns
-        if column not in set(key)
-    ]
+    def assigned(column: str) -> str:
+        incoming = f"excluded.{quoted_identifier(column)}"
+        if keep_published:
+            return f"{quoted_identifier(column)} = coalesce({incoming}, {qualified}.{quoted_identifier(column)})"
+        return f"{quoted_identifier(column)} = {incoming}"
+
+    updated = [assigned(column) for column in columns if column not in set(key)]
     resolution = f"UPDATE SET {', '.join(updated)}" if updated else "NOTHING"
     return (
         f"INSERT INTO {qualified} ({named}) SELECT {named} FROM {staging} WHERE true "
@@ -554,8 +556,13 @@ class RowLoader:
         columns: Sequence[str],
         key: Sequence[str],
         rows: Sequence[tuple[Any, ...]],
+        *,
+        keep_published: bool,
     ) -> None:
         """Upsert ``rows`` into ``table`` on ``key``, through ``_etl_merge_staging``, which it disposes of.
+
+        ``keep_published`` says what a null in an incoming row does: leave the published value
+        standing (true) or write the null (false).
 
         Staged rather than done a row at a time because the bulk path on one of the two drivers is
         ``COPY``, which cannot carry a conflict resolution of its own. Loading into scratch and
@@ -671,6 +678,8 @@ class _SqliteLoader(RowLoader):
         columns: Sequence[str],
         key: Sequence[str],
         rows: Sequence[tuple[Any, ...]],
+        *,
+        keep_published: bool,
     ) -> None:
         """Scratch built from a zero-row select, and dropped by name on both sides of the upsert.
 
@@ -686,7 +695,7 @@ class _SqliteLoader(RowLoader):
         connection.execute(f"CREATE TEMPORARY TABLE {_MERGE_STAGING} AS SELECT * FROM {qualified} WHERE 0")
         if rows:
             connection.executemany(self._insert_statement(_MERGE_STAGING, columns), rows)
-            connection.execute(_merge_statement(qualified, _MERGE_STAGING, columns, key))
+            connection.execute(_merge_statement(qualified, _MERGE_STAGING, columns, key, keep_published=keep_published))
         connection.execute(f"DROP TABLE IF EXISTS temp.{_MERGE_STAGING}")
 
     def existing_values(self, connection: Any, qualified: str, column: str, values: Sequence[Any]) -> set[Any]:
@@ -831,6 +840,8 @@ class _PostgresLoader(RowLoader):
         columns: Sequence[str],
         key: Sequence[str],
         rows: Sequence[tuple[Any, ...]],
+        *,
+        keep_published: bool,
     ) -> None:
         """Scratch shaped by ``LIKE``, loaded by ``COPY``, and upserted from in one statement.
 
@@ -843,7 +854,7 @@ class _PostgresLoader(RowLoader):
         connection.execute(f"CREATE TEMPORARY TABLE {_MERGE_STAGING} (LIKE {qualified}) ON COMMIT DROP")
         if rows:
             self.load_rows(connection, _MERGE_STAGING, columns, rows)
-            connection.execute(_merge_statement(qualified, _MERGE_STAGING, columns, key))
+            connection.execute(_merge_statement(qualified, _MERGE_STAGING, columns, key, keep_published=keep_published))
         connection.execute(f"DROP TABLE {_MERGE_STAGING}")
 
     def existing_values(self, connection: Any, qualified: str, column: str, values: Sequence[Any]) -> set[Any]:

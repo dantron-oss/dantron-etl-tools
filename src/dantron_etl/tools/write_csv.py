@@ -17,8 +17,9 @@ configurable, because a sink is choosing rather than discovering a fact about so
 the deliberate asymmetry with the paired reader's ``encoding`` field.
 
 **A null and an empty string are both written as an empty field**, and the reader hands both back as
-nothing; the loss is one-way and is stated here rather than only assumed. **A frame with no rows
-writes a header-only file**, because that is a real, empty delivery, not a run that never happened.
+nothing; the loss is one-way and is stated here rather than only assumed. **A frame with no rows stops the run unless
+``allow_empty`` says otherwise**, as on the table sinks, because a file that is empty for a reason
+upstream looks exactly like a quiet month. Allowed, it is written as a header-only file.
 """
 
 from collections.abc import Iterator, Mapping
@@ -32,6 +33,7 @@ from ..authoring import (
     SCRATCH_TOKEN,
     ConfigError,
     ConfigField,
+    DataError,
     Ports,
     ToolHelp,
     WorkedExample,
@@ -75,6 +77,12 @@ class WriteCsv:
                 "an existing file is refused.",
                 default=False,
             ),
+            "allow_empty": ConfigField(
+                type="boolean",
+                description="Whether a frame with no rows is written, as a header-only file, instead "
+                "of stopping the run.",
+                default=False,
+            ),
         }
 
     def help(self) -> ToolHelp:
@@ -97,10 +105,14 @@ class WriteCsv:
                 "A List, a Struct or a Duration is refused rather than stringified: each has a "
                 "plausible-looking wrong answer as a line of text, and none of them is the value it "
                 "started as.",
-                "A frame with no rows still writes a header-only file, because that is a delivery "
-                "that was empty, not a run that never happened.",
+                "A frame with no rows stops the run unless 'allow_empty' says otherwise, as on the "
+                "table sinks: a file that is empty because something upstream failed looks exactly "
+                "like a quiet month. Allowed, it is written as a header-only file, so whoever opens "
+                "it can see the delivery was empty rather than missing.",
             ),
             field_help={
+                "allow_empty": "Defaults to false: an empty frame stops the run until a flow says "
+                "in writing that this file may be empty.",
                 "overwrite": "Defaults to false: a path already occupied is refused until an author "
                 "says in writing that overwriting it is intended.",
             },
@@ -128,6 +140,14 @@ class WriteCsv:
         must not leave a half-written file behind.
         """
         frame = inputs["rows"]
+        if frame.height == 0 and not config["allow_empty"]:
+            raise DataError(
+                f"write_csv refuses to write {config['path']!r} from a frame with no rows: an empty file "
+                f"looks like a quiet month even when something upstream failed; set allow_empty: true "
+                f"if this file may be empty",
+                offending=frame,
+                total=0,
+            )
         for name, dtype in frame.schema.items():
             reason = _unsupported_dtype_reason(dtype)
             if reason is not None:

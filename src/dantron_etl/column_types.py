@@ -36,3 +36,31 @@ TEMPORAL_TYPES: Final[frozenset[str]] = frozenset({"Date", "Datetime", "Time"})
 DATE_DEFAULT_FORMAT: Final[str] = "%Y-%m-%d"
 DATETIME_DEFAULT_FORMAT: Final[str] = "%Y-%m-%dT%H:%M:%S.%f"
 TIME_DEFAULT_FORMAT: Final[str] = "%H:%M:%S.%f"
+
+
+def cut_fractions(column: pl.Series, target: pl.DataType) -> pl.Series:
+    """True on each row where reading ``column`` as ``target`` would cut a fraction off.
+
+    The engine reads 1.99 as the whole number 1 and -2.7 as -2, without a word. So a decimal with a
+    fraction is a value that does not read as a whole number, and both tools that read a column as
+    a stated type ask this first. Only a decimal read as a whole number can lose a fraction; for any
+    other pair every row is false. Null, not-a-number and infinity are not counted here: the engine
+    refuses the last two on its own.
+    """
+    decimal = column.dtype.is_float() or isinstance(column.dtype, pl.Decimal)
+    if not (target.is_integer() and decimal):
+        return pl.Series(column.name, [False] * column.len(), dtype=pl.Boolean)
+    value = column.cast(pl.Float64) if column.dtype.is_float() else column
+    finite = value.is_finite() if column.dtype.is_float() else value.is_not_null()
+    return (finite & (value != value.round(0))).fill_null(False)
+
+
+def fraction_refusal(column: str, values: pl.Series, declared: str, *, melted: bool = False) -> str:
+    """The sentence that refuses a decimal with a fraction, naming the column and a few of the values."""
+    shown = ", ".join(str(value) for value in values.unique(maintain_order=True).head(3).to_list())
+    kind = "melted column" if melted else "column"
+    return (
+        f"{kind} {column!r} holds decimals with a fraction, such as {shown}, so it does not read as "
+        f"{declared} without cutting the fraction off; round it first, with round([{column}], 0) in "
+        f"a formula step, or say on_invalid: set_null to empty those values instead"
+    )

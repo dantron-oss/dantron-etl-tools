@@ -36,7 +36,7 @@ first run is gone, and the next run has nothing to start from. So the template i
 written, and ``path`` equal to ``template`` is refused outright rather than left to be discovered
 once.
 
-**``overwrite_sheets`` governs the tab, not the file.** A tab already in the workbook is refused until an
+**``overwrite`` governs the tab, not the file.** A tab already in the workbook is refused until an
 author says in writing that overwriting it is intended, and a tab nobody named is never at risk
 either way.
 
@@ -375,14 +375,12 @@ class TestSeveralFramesBecomeSeveralTabs:
         self,
         tmp_path: Path,
     ) -> None:
-        """An empty tab, never an absent one -- and the tabs beside it are unaffected.
+        """An empty tab, never an absent one, once the sheet entry says it may be empty.
 
-        Three things could happen to an empty frame and only one of them is defensible. Leaving the
-        tab out delivers a pack whose contents page does not match its tabs, and a reader cannot
-        tell a month with nothing in it from a run that half failed. Refusing stops a flow that is
-        otherwise correct, and AssertRows already exists for a flow that wants emptiness to stop the
-        run, said in writing. So the tab is written with its header and no rows, which reads as
-        "nothing this month" to the person who opens it.
+        Leaving the tab out would deliver a pack whose contents page does not match its tabs. So an
+        allowed empty port is written with its header and no rows, which reads as "nothing this
+        month" to the person who opens it. Without 'allow_empty' it stops the run (see
+        TestAnEmptyPortMustBeAllowed).
         """
         target = tmp_path / "pack.xlsx"
 
@@ -390,7 +388,10 @@ class TestSeveralFramesBecomeSeveralTabs:
             {"full": _rows("a"), "empty": _rows("b").head(0)},
             {
                 "path": str(target),
-                "sheets": [{"port": "full", "sheet": "Figures"}, {"port": "empty", "sheet": "Adjustments"}],
+                "sheets": [
+                    {"port": "full", "sheet": "Figures"},
+                    {"port": "empty", "sheet": "Adjustments", "allow_empty": True},
+                ],
             },
         )
 
@@ -808,11 +809,11 @@ class TestWritingIntoATemplate:
 
 
 # ---------------------------------------------------------------------------
-# overwrite_sheets, which is about a tab
+# overwrite, which is about a tab
 # ---------------------------------------------------------------------------
 
 
-class TestWhatOverwriteSheetsGoverns:
+class TestWhatOverwriteGoverns:
     """One permission for anything already there: a file at ``path``, or a template tab a sheet names."""
 
     @pytest.mark.parametrize(
@@ -845,7 +846,7 @@ class TestWhatOverwriteSheetsGoverns:
             "sheets": [{"port": "one", "sheet": "Summary"}, {"port": "two", "sheet": "Figures"}],
         }
         if overwrite is not None:
-            config["overwrite_sheets"] = overwrite
+            config["overwrite"] = overwrite
 
         if outcome == "refused":
             with pytest.raises(ConfigError) as caught:
@@ -853,7 +854,7 @@ class TestWhatOverwriteSheetsGoverns:
 
             message = str(caught.value)
             assert "Summary" in message, f"the refusal does not name the tab it declined to destroy: {message}"
-            assert "overwrite_sheets" in message, f"the refusal does not name the keystroke that authorises it: {message}"
+            assert "overwrite" in message, f"the refusal does not name the keystroke that authorises it: {message}"
             assert not target.exists(), "a refused write left a pack behind"
             return
 
@@ -876,7 +877,7 @@ class TestWhatOverwriteSheetsGoverns:
 
         _write(
             {"one": _rows("a")},
-            {"path": str(target), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]},
+            {"path": str(target), "overwrite": True, "sheets": [{"port": "one", "sheet": "Figures"}]},
         )
 
         assert _tab_names(target) == ["Figures"]
@@ -894,7 +895,7 @@ class TestWhatOverwriteSheetsGoverns:
         config: dict[str, Any] = {
             "path": str(target),
             "template": str(_template(tmp_path / "template.xlsx")) if with_template else None,
-            "overwrite_sheets": False,
+            "overwrite": False,
             "sheets": [{"port": "one", "sheet": "Figures"}],
         }
 
@@ -902,7 +903,7 @@ class TestWhatOverwriteSheetsGoverns:
             WriteExcel().validate_config(config)
 
         message = str(caught.value)
-        assert str(target) in message and "add 'overwrite_sheets: true'" in message, message
+        assert str(target) in message and "add 'overwrite: true'" in message, message
         assert target.read_bytes() == b"last month's pack"
 
     def test_a_second_run_writes_the_same_file_as_the_first(self, tmp_path: Path) -> None:
@@ -910,10 +911,10 @@ class TestWhatOverwriteSheetsGoverns:
         target = tmp_path / "pack.xlsx"
         config = {
             "path": str(target),
-            "overwrite_sheets": True,
+            "overwrite": True,
             "sheets": [
                 {"port": "one", "sheet": "Figures", "formats": [{"type": "Float64", "format": "#,##0.00"}]},
-                {"port": "two", "sheet": "Checks"},
+                {"port": "two", "sheet": "Checks", "allow_empty": True},
             ],
         }
         frames = {"one": _rows("a"), "two": _rows("b").head(0)}
@@ -930,7 +931,7 @@ class TestWhatOverwriteSheetsGoverns:
 
         with pytest.raises(ConfigError) as caught:
             WriteExcel().validate_config(
-                {"path": str(target), "template": None, "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "F"}]}
+                {"path": str(target), "template": None, "overwrite": True, "sheets": [{"port": "one", "sheet": "F"}]}
             )
 
         assert str(target.parent) in str(caught.value)
@@ -957,7 +958,7 @@ class TestWhatOverwriteSheetsGoverns:
             {
                 "path": str(target),
                 "template": str(template),
-                "overwrite_sheets": True,
+                "overwrite": True,
                 "sheets": [{"port": "one", "sheet": "Summary"}, {"port": "two", "sheet": "Figures"}],
             },
         )
@@ -1349,7 +1350,7 @@ class TestRefusalsAboutTheFrames:
                 {
                     "path": str(target),
                     "template": str(template),
-                    "overwrite_sheets": True,
+                    "overwrite": True,
                     "sheets": [{"port": "one", "sheet": "Summary"}, {"port": "two", "sheet": "Detail"}],
                 },
             )
@@ -1466,7 +1467,7 @@ class TestOneLoadAndOneSave:
 
         loads.clear()
         saves.clear()
-        again = {"path": str(plain), "overwrite_sheets": True, "sheets": [{"port": "one", "sheet": "Figures"}]}
+        again = {"path": str(plain), "overwrite": True, "sheets": [{"port": "one", "sheet": "Figures"}]}
         _write({"one": _rows("a")}, again)
         over_a_pack = (list(loads), list(saves))
 
@@ -1507,23 +1508,24 @@ class TestWriteExcelInTheCatalog:
         """
         template = WriteExcel().config_template()
 
-        assert set(template) == {"path", "sheets", "template", "overwrite_sheets"}
+        assert set(template) == {"path", "sheets", "template", "overwrite"}
         assert template["path"].type == "string"
         assert template["path"].required is True
         assert template["path"].non_empty is True, "an empty path is a value, and not one to act on"
         assert template["sheets"].type == "array"
         assert template["template"].type == "string"
         assert template["template"].required is False, "most packs start from nothing"
-        assert template["overwrite_sheets"].type == "boolean"
-        assert template["overwrite_sheets"].default is False, "a tab that is already there survives until an author says so"
+        assert template["overwrite"].type == "boolean"
+        assert template["overwrite"].default is False, "a tab that is already there survives until an author says so"
 
         entry = template["sheets"].items
         assert entry is not None and entry.type == "object", "a sheet entry has a declared shape"
         assert entry.fields is not None
         # 'formats' is the third member, and its own shape is pinned where it is argued, below.
-        assert set(entry.fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
+        assert set(entry.fields) == {"port", "sheet", "allow_empty", "formats", "widths", "fit_widths", "wrap", "table", "header"}
         assert entry.fields["port"].required is True and entry.fields["port"].non_empty is True
         assert entry.fields["sheet"].required is True and entry.fields["sheet"].non_empty is True
+        assert entry.fields["allow_empty"].type == "boolean" and entry.fields["allow_empty"].required is False
         assert expression_fields(template) == (), "nothing here is a column reference"
 
     def test_write_excel_is_terminal_and_conforms_twice_over_leaving_nothing_behind(self) -> None:
@@ -1565,7 +1567,7 @@ class TestWriteExcelInTheCatalog:
 
         documented = " ".join((help_.detailed_description, *help_.notes)).lower()
         assert "template" in documented
-        assert "overwrite_sheets" in documented, "the destructive case has to be documented"
+        assert "overwrite" in documented, "the destructive case has to be documented"
         assert "exact" in documented or "precision" in documented, "so does what a cell cannot keep"
 
     def test_write_excel_is_in_the_shipped_catalog(self) -> None:
@@ -2482,7 +2484,7 @@ class TestHowNumbersAreShownIsDeclaredAndDocumented:
         entry = template["sheets"].items
 
         assert entry is not None and entry.fields is not None
-        assert set(entry.fields) == {"port", "sheet", "formats", "widths", "fit_widths", "wrap", "table", "header"}
+        assert set(entry.fields) == {"port", "sheet", "allow_empty", "formats", "widths", "fit_widths", "wrap", "table", "header"}
 
         formats = entry.fields["formats"]
         assert formats.type == "array"
@@ -2633,3 +2635,75 @@ class TestTextThatLooksLikeAFormulaIsWrittenAsText:
         cells = self._write_text(target, template, pl.DataFrame({name: ["x"]}))
 
         assert cells["A1"] == ("s", name)
+
+
+class TestAFigureThatIsNotANumber:
+    """Not-a-number or infinity in a decimal column is refused by name, never written as a blank.
+
+    The owner's ruling. A blank cell reads as "no figure", where not-a-number or infinity means a
+    figure went wrong upstream. The refusal names the tab, the port, the column and the rows, and
+    comes before the workbook is opened, so nothing is left on disk.
+    """
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")], ids=["nan", "infinity", "minus_infinity"])
+    def test_it_stops_the_run_naming_the_tab_and_the_column_and_writes_nothing(self, tmp_path: Path, bad: float) -> None:
+        target = tmp_path / "pack.xlsx"
+        frames = {"one": _rows("a"), "two": pl.DataFrame({"key": ["r1", "r2", "r3"], "ratio": [0.5, bad, None]})}
+        config = {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures"}, {"port": "two", "sheet": "Ratios"}]}
+
+        with pytest.raises(DataError) as caught:
+            _write(frames, config)
+
+        message = str(caught.value)
+        for word in ("Ratios", "ratio", "'two'", "r2"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1
+        assert not target.exists(), "a refused pack left a file behind"
+
+    def test_a_null_is_written_as_the_empty_cell_it_is(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"key": ["r1", "r2"], "ratio": [0.5, None]})
+
+        _write({"one": frame}, {"path": str(target), "sheets": [{"port": "one", "sheet": "Ratios"}]})
+
+        assert _read_back(target, "Ratios")["ratio"].to_list() == [0.5, None]
+
+    def test_a_32_bit_decimal_column_is_held_to_the_same_rule(self, tmp_path: Path) -> None:
+        frame = pl.DataFrame({"ratio": pl.Series([float("nan")], dtype=pl.Float32)})
+        with pytest.raises(DataError):
+            _write({"one": frame}, {"path": str(tmp_path / "pack.xlsx"), "sheets": [{"port": "one", "sheet": "R"}]})
+
+
+class TestAnEmptyPortMustBeAllowed:
+    """A port with no rows stops the run unless its sheet entry says allow_empty: true.
+
+    The table sinks' rule, for the same reason: a tab that is empty because something upstream
+    failed looks exactly like a quiet month. The refusal names the tab and the port, and comes
+    before the workbook is opened, so no pack is left half written.
+    """
+
+    def test_an_empty_port_without_the_setting_stops_the_run_and_writes_nothing(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        config = {
+            "path": str(target),
+            "sheets": [{"port": "full", "sheet": "Figures"}, {"port": "empty", "sheet": "Adjustments"}],
+        }
+
+        with pytest.raises(DataError) as caught:
+            _write({"full": _rows("a"), "empty": _rows("b").head(0)}, config)
+
+        message = str(caught.value)
+        for word in ("Adjustments", "'empty'", "allow_empty"):
+            assert word in message, message
+        assert not target.exists(), "a refused pack left a file behind"
+
+    def test_the_setting_belongs_to_one_sheet_and_not_to_its_neighbour(self, tmp_path: Path) -> None:
+        config = {
+            "path": str(tmp_path / "pack.xlsx"),
+            "sheets": [
+                {"port": "full", "sheet": "Figures", "allow_empty": True},
+                {"port": "empty", "sheet": "Adjustments"},
+            ],
+        }
+        with pytest.raises(DataError):
+            _write({"full": _rows("a"), "empty": _rows("b").head(0)}, config)

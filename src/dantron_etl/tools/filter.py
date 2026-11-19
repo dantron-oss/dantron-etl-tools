@@ -39,6 +39,7 @@ from ..authoring import (
     ToolHelp,
     WorkedExample,
     compile_predicate_for,
+    refuse_division_by_zero,
 )
 
 _NULLS_ENUM: Final[tuple[str, ...]] = ("exclude", "include")
@@ -106,6 +107,7 @@ class Filter:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         predicate = compile_predicate_for(frame, config["predicate"], "predicate")
+        refuse_division_by_zero(frame, config["predicate"], "predicate")
         routed = predicate.fill_null(config["nulls"] == "include")
         return Ports({"true": frame.filter(routed), "false": frame.filter(~routed)})
 

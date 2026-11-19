@@ -64,7 +64,7 @@ def empty_tab(book: Any, sheet: str, *, replace: bool) -> Any:
     if not replace:
         raise ConfigError(
             f"write_excel refuses to overwrite the tab {sheet!r}, which is already in the "
-            f"template; set overwrite_sheets: true to overwrite it deliberately, or write to a tab of "
+            f"template; set overwrite: true to overwrite it deliberately, or write to a tab of "
             f"another name"
         )
 

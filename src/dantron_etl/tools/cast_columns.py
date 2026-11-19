@@ -14,9 +14,9 @@ be doing something else. A column that changes type is worth seeing.
 **A value that will not convert stops the run, unless the flow says otherwise.** Turning it into a
 null by default would produce a frame that looks right and is not: the column has the declared type,
 the row is still there, and the value is simply gone. So ``on_invalid`` defaults to ``error``, and
-the refusal names the column, the type asked for, and the offending rows. One exception today: a
-decimal cast to a whole number converts, and its fraction is dropped (1.99 becomes 1). Round it
-first.
+the refusal names the column, the type asked for, and the offending rows. A decimal with a
+fraction is one such value when the type is a whole number: the engine would cut 1.99 to 1 without
+a word, so it is refused, or emptied under 'set_null'. Round it first.
 
 ``on_invalid: set_null`` is the other honest answer, and it is the one a large messy source usually
 wants: three unreadable values out of forty-six thousand should not stop a nightly build. It leaves
@@ -46,7 +46,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES
+from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, cut_fractions, fraction_refusal
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -55,7 +55,10 @@ from ..authoring import (
     Ports,
     ToolHelp,
     WorkedExample,
+    as_calendar_date,
+    check_zone_name,
     require_columns,
+    require_stated_zone,
     row_status,
     unreadable_report,
 )
@@ -98,6 +101,12 @@ class CastColumns:
                             required=True,
                             enum=DECLARED_TYPES,
                         ),
+                        "in_zone": ConfigField(
+                            type="string",
+                            description="For a timestamp that carries a time zone, read as a 'Date': "
+                            "the zone whose calendar decides the day, such as UTC. Required then, "
+                            "refused anywhere else; no default.",
+                        ),
                     },
                 ),
             ),
@@ -131,8 +140,12 @@ class CastColumns:
                 "spellings a source might use for one -- true, T, Y, 1 -- are a decision a flow "
                 "should make in the open with CaseWhen rather than have a cast guess at. That pair "
                 "is refused when the step runs, not when the pipeline loads.",
-                "A decimal cast to a whole number drops its fraction without a word: 1.99 becomes "
-                "1 and -2.7 becomes -2. Round it first if the fraction matters.",
+                "A decimal becomes a whole number only when it already is one. 12.0 reads as 12, "
+                "but 1.99 does not read as Int64: it stops the run, naming the column and the "
+                "values, or is emptied and counted under 'set_null'. Round it first.",
+                "A timestamp that carries a time zone becomes a Date only with 'in_zone' beside "
+                "it, because which day it falls on depends on the zone: 23:30 on 31 January in "
+                "Toronto is 1 February in UTC. 'in_zone: UTC' reads the UTC date. There is no default.",
                 "A date cast to a number gives the days since 1 January 1970. A timestamp cast to "
                 "Int64 gives a count in the column's own time unit: microseconds for a timestamp "
                 "this library typed, but a source may hand over nanoseconds or milliseconds. To "
@@ -148,6 +161,14 @@ class CastColumns:
         named: set[str] = set()
         for index, entry in enumerate(config["columns"]):
             column = entry["column"]
+            zone = entry.get("in_zone")
+            if zone is not None:
+                check_zone_name(zone, f"columns[{index}].in_zone")
+                if entry["type"] != "Date":
+                    raise ConfigError(
+                        f"config field 'columns[{index}].in_zone' is set for {column!r}, which is read as "
+                        f"{entry['type']}; a zone only decides the day a timestamp is read as a Date, so remove it"
+                    )
             if column in named:
                 raise ConfigError(
                     f"config field 'columns' states a type for {column!r} twice, the second at entry "
@@ -170,6 +191,17 @@ class CastColumns:
                 f"that changes nothing is a configuration edited halfway"
             )
 
+        for index, entry in enumerate(config["columns"]):
+            column, zone, dtype = entry["column"], entry.get("in_zone"), frame.schema[entry["column"]]
+            field = f"columns[{index}].in_zone"
+            if entry["type"] == "Date":
+                require_stated_zone(dtype, zone, field.rpartition(".")[2], reading=f"column {column!r}")
+            if zone is not None and not (isinstance(dtype, pl.Datetime) and dtype.time_zone is not None):
+                raise ConfigError(
+                    f"config field {field!r} is set for {column!r}, which holds {dtype} and carries no time "
+                    f"zone; there is no zone to read it in, so remove it"
+                )
+
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         lenient = config["on_invalid"] == "set_null"
@@ -181,13 +213,19 @@ class CastColumns:
 
         for entry in config["columns"]:
             column, declared = entry["column"], entry["type"]
+            if declared == "Date" and entry.get("in_zone") is not None:
+                # A timestamp in a zone, read as the date it falls on in the zone the author stated.
+                frame = frame.with_columns(as_calendar_date(pl.col(column), frame.schema[column], entry["in_zone"]))
+                continue
             if lenient:
                 # Taken before the values are replaced, because afterwards the evidence is gone:
                 # a null that failed to convert and a null that was always there look identical, and
                 # the whole point of this mode is to say how many of the first there were. The
                 # sentence and the marks are the same mask read once, in one call, so there is no
                 # second reading of the column for the two of them to disagree over.
+                cut = cut_fractions(frame[column], DECLARED_DTYPE[declared])
                 read = frame.select(pl.col(column).cast(DECLARED_DTYPE[declared], strict=False)).to_series()
+                read = pl.select(pl.when(cut).then(None).otherwise(read)).to_series().alias(column)
                 failed = frame[column].is_not_null() & read.is_null()
                 if failed.any():
                     reasons, note = unreadable_report(frame, column, failed, declared)
@@ -195,6 +233,13 @@ class CastColumns:
                     notes.append(note)
                 frame = frame.with_columns(read.alias(column))
                 continue
+            cut = cut_fractions(frame[column], DECLARED_DTYPE[declared])
+            if cut.any():
+                raise DataError(
+                    fraction_refusal(column, frame[column].filter(cut), declared),
+                    offending=inputs["rows"].filter(cut),
+                    total=inputs["rows"].height,
+                )
             try:
                 frame = frame.with_columns(pl.col(column).cast(DECLARED_DTYPE[declared]))
             except Exception as error:

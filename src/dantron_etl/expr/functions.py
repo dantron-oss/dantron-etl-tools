@@ -54,6 +54,10 @@ class Function:
 
     ``summary`` says in one line what the function gives. ``example`` is one call, as an author
     would write it.
+
+    ``typed`` says the builder also wants the first argument's type, as ``dtype=`` (None when the
+    expression was compiled without a schema). round() and format_number() need it, because a
+    whole number, a decimal and an exact decimal type round in three different ways.
     """
 
     name: str
@@ -64,6 +68,7 @@ class Function:
     example: str
     variadic: bool = False
     result_dtype: pl.DataType | Literal["subject", "common"] | None = None
+    typed: bool = False
 
 
 def _coalesce(*parts: pl.Expr) -> pl.Expr:
@@ -80,8 +85,55 @@ def _concat(*parts: pl.Expr) -> pl.Expr:
     return pl.concat_str(list(parts), separator="", ignore_nulls=False)
 
 
-def _round(subject: pl.Expr, digits: int) -> pl.Expr:
-    return subject.round(digits)
+# How many significant digits a decimal is read to before round() decides whether it is a half.
+# Fifteen is the most a 64-bit double always carries faithfully from decimal and back, and what a
+# spreadsheet works to and shows; six is the same for a 32-bit one.
+_READ_DIGITS: Final[dict[pl.DataType, int]] = {pl.Float64(): 15, pl.Float32(): 6}
+
+
+def _round(subject: pl.Expr, digits: int, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    """A number rounded to ``digits`` places, a half going away from zero, as a spreadsheet's ROUND.
+
+    **A half is decided on the number as a person reads it, not on the binary fraction held.**
+    1.005 is held as 1.00499999999999989..., below the half, yet it is written 1.005 and a
+    spreadsheet rounds it to 1.01. So a decimal is read to 15 significant digits (6 for a 32-bit
+    one): a value that differs from a half only past its fifteenth digit is a half. In practice
+    the value is moved away from zero by half a unit of its fifteenth digit and then rounded half
+    away from zero. That move is far too small to change any value that is not within noise of a
+    half.
+
+    When the digit rounded on lies past the fifteenth, nothing the reading can see is past the
+    place asked for, so the value comes back as it is. A whole number is already whole. An exact
+    decimal type holds no binary noise, so it is rounded on its own digits. Null, NaN and infinity
+    pass through.
+
+    Without a schema the type is not known when the expression is built, so the choice is made per
+    batch, on the whole column at once.
+    """
+    if dtype is None:
+        return subject.map_batches(lambda series: _rounded_series(series, digits), is_elementwise=True)
+    return _rounded(subject, digits, dtype)
+
+
+def _rounded(subject: pl.Expr, digits: int, dtype: pl.DataType) -> pl.Expr:
+    if isinstance(dtype, pl.Decimal):
+        return subject.round(digits, mode="half_away_from_zero")
+    read = _READ_DIGITS.get(dtype)
+    if read is None:
+        if dtype.is_integer() or dtype == pl.Null:
+            return subject  # a whole number, or a null: nothing to round
+        return subject.round(digits)  # not a number: the engine refuses it, as it always did
+    value = subject.cast(pl.Float64)
+    magnitude = value.abs().log10().floor()
+    half_a_unit = pl.lit(0.5) * pl.lit(10.0).pow(magnitude - (read - 1))
+    nudged = (value + value.sign() * half_a_unit).round(digits, mode="half_away_from_zero")
+    within_reading = (magnitude + digits) <= (read - 2)
+    return pl.when(within_reading).then(nudged).otherwise(value).cast(dtype)
+
+
+def _rounded_series(series: pl.Series, digits: int) -> pl.Series:
+    """round() on a column whose type was not known when the expression was built."""
+    return series.to_frame("value").select(_rounded(pl.col("value"), digits, series.dtype)).to_series().alias(series.name)
 
 
 def _abs(subject: pl.Expr) -> pl.Expr:
@@ -130,28 +182,20 @@ def _month_end(subject: pl.Expr) -> pl.Expr:
     return date_or_null(year, month, days_in_month(year, month))
 
 
-def _format_number(subject: pl.Expr, decimals: int, thousands: str, point: str) -> pl.Expr:
+def _format_number(
+    subject: pl.Expr, decimals: int, thousands: str, point: str, *, dtype: pl.DataType | None = None
+) -> pl.Expr:
     """A number written as text: grouped in threes, to exactly ``decimals`` places.
 
-    **Rounding follows the value the column holds, not the decimal somebody typed.** -15.215 at
-    two places is -15.21, for three reasons worth stating together:
+    **It writes what round() gives.** The value is rounded by round()'s own rule first, a half
+    going away from zero, and then written out. So -15.215 at two places is -15.22 from both, and
+    the two can never disagree in the last place. A negative value that rounds to zero keeps its
+    minus sign: -0.004 reads -0.00, while a value that is zero reads 0.00.
 
-    * it is what the figure this library is measured against says, because that figure is
-      formatted by the same rule;
-    * it is the more honest reading -- an amount summed out of decimals *is* the decimal, and
-      -15.215 as one is -15.21499999999999985789..., which is below the half;
-    * and it is a disagreement with round() in this same language, which takes the other view
-      and gives -15.22. The two are written side by side here, and in the manual, so that a
-      reader meets the disagreement in the catalog rather than in a finished report.
-
-    **This works a row at a time, which is a cost nothing here pays without an argument.**
-    The alternatives were measured rather than assumed: round(), a cast to a 2-place decimal
-    type and the obvious scale-then-round all answer -15.22, and a very wide decimal type lands
-    on the right side of this tie by luck and drifts the other way at wider scales still. There
-    is no route through the engine's own kernels that keeps the rule above. What makes the cost
-    payable is where this belongs: it writes a figure for somebody to read, so it runs at the
-    end of a flow on the rows that reach a report, not in the middle of one on a million rows.
-    Put it last, after the filtering and the joining, and the cost is the rows a person sees.
+    **The writing works a row at a time.** No kernel in the engine groups digits in threes with
+    stated separators. What makes the cost payable is where this belongs: it writes a figure for
+    somebody to read, so it runs at the end of a flow on the rows that reach a report, not in the
+    middle of one on a million rows.
 
     A null is left null, the way it is everywhere else here: a formatted 0.00 where nothing was
     measured cannot be told from a real zero by whoever reads the column.
@@ -161,10 +205,22 @@ def _format_number(subject: pl.Expr, decimals: int, thousands: str, point: str) 
     digits and regex_extract()'s group are -- a width that varied row by row would not be a width
     at all.
     """
-    return subject.map_elements(
-        lambda value: written_as_text(value, decimals, thousands, point),
+    # The value is written from round()'s answer, and its sign from the value itself: -0.004 at two
+    # places rounds to zero, and the minus sign is the one thing left saying the figure was below it.
+    return pl.struct(value=subject, rounded=_round(subject, decimals, dtype=dtype)).map_elements(
+        lambda row: None
+        if row["rounded"] is None
+        else written_as_text(row["rounded"], decimals, thousands, point, negative=_below_zero(row["value"])),
         return_dtype=pl.String,
     )
+
+
+def _below_zero(value: object) -> bool:
+    """Whether a value is a number below zero; false for null and NaN."""
+    try:
+        return bool(value is not None and value < 0)  # type: ignore[operator]
+    except TypeError:
+        return False
 
 
 def _uuid5(namespace: uuid.UUID, subject: pl.Expr) -> pl.Expr:
@@ -305,7 +361,8 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype="subject",
         to_polars=_round,
-        summary="A number rounded to a given number of decimal places.",
+        typed=True,
+        summary="A number rounded to a given number of decimal places, a half going away from zero.",
         example="round([amount], 2)",
     ),
     Function(
@@ -482,6 +539,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.TEXT,
         result_dtype=pl.String(),
         to_polars=_format_number,
+        typed=True,
         summary="A number written as text, to a fixed number of places, with the separators stated.",
         example="format_number([total], 2, ',', '.')",
     ),

@@ -39,7 +39,12 @@ from ..authoring import (
     WorkedExample,
     compile_for,
     compiled_dtype,
+    refuse_division_by_zero,
     require_not_blank,
+    ZONE_FIELD,
+    as_calendar_date,
+    check_zone_name,
+    require_stated_zone,
 )
 
 # One member, on purpose: every other unit brings its own boundary question -- what a partial
@@ -72,6 +77,7 @@ class ExpandDateRange:
                 description="The name of the added column carrying each period's first day.",
                 default="period_start",
             ),
+            "in_zone": ZONE_FIELD,
         }
 
     def help(self) -> ToolHelp:
@@ -95,14 +101,20 @@ class ExpandDateRange:
                 "union-compatible with the rows that arrived.",
             ),
             field_help={
-                "start": "Must produce a date or a timestamp; a timestamp is read as its calendar date.",
-                "end": "Must produce a date or a timestamp; a timestamp is read as its calendar date.",
+                "start": "Must produce a date or a timestamp; a timestamp is read as its calendar date, "
+                "in the zone 'in_zone' states when it carries one.",
+                "end": "Must produce a date or a timestamp; a timestamp is read as its calendar date, "
+                "in the zone 'in_zone' states when it carries one.",
+                "in_zone": "Required when 'start' or 'end' is a timestamp in a time zone, because which "
+                "day it falls on depends on the zone. 'UTC' reads the UTC date. Refused otherwise.",
                 "period_column": "Refused if the input already carries a column of that name.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
         require_not_blank(config["period_column"], "period_column")
+        if config["in_zone"] is not None:
+            check_zone_name(config["in_zone"], "in_zone")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """The two questions the schema alone can answer: are the ends dates, and is the name free.
@@ -127,13 +139,18 @@ class ExpandDateRange:
                     f"config field {field!r} produces column {column!r}, which holds {dtype}, not "
                     f"a date, in expression: `{config[field]}`"
                 )
+        _require_zone_where_needed(frame, config)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         # A timestamp is read as its calendar date before anything else, as date_diff reads it.
         # So 15:00 and 09:00 on one day are the same day, not a backwards range.
-        start = compile_for(frame, config["start"], "start").cast(pl.Date)
-        end = compile_for(frame, config["end"], "end").cast(pl.Date)
+        for side in ("start", "end"):
+            refuse_division_by_zero(frame, config[side], side)
+        start, end = (
+            as_calendar_date(compile_for(frame, config[side], side), compiled_dtype(frame, config[side], side)[1], config["in_zone"])
+            for side in ("start", "end")
+        )
 
         valid = start.is_not_null() & end.is_not_null() & (end >= start)
 
@@ -148,6 +165,20 @@ class ExpandDateRange:
         unexpanded = frame.filter(~valid)
 
         return Ports({"rows": rows, "unexpanded": unexpanded})
+
+
+def _require_zone_where_needed(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
+    """'in_zone' is needed when a side is a timestamp in a zone, and refused when neither side is."""
+    zoned = False
+    for side in ("start", "end"):
+        column, dtype = compiled_dtype(frame, config[side], side)
+        require_stated_zone(dtype, config["in_zone"], "in_zone", reading=f"config field {side!r} (column {column!r})")
+        zoned = zoned or (isinstance(dtype, pl.Datetime) and dtype.time_zone is not None)
+    if config["in_zone"] is not None and not zoned:
+        raise ConfigError(
+            "config field 'in_zone' is set, but neither 'start' nor 'end' is a timestamp that carries a "
+            "time zone; there is no zone to read them in, so remove it"
+        )
 
 
 def _clean_term_example() -> WorkedExample:

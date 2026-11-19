@@ -272,11 +272,11 @@ def _wide_cases() -> list[Any]:
             id="the_same_cell_answers_differently_for_min_and_for_max",
         ),
         pytest.param(
-            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "n_unique"},
+            {"by": ["code"], "names_from": "period", "values_from": "label", "function": "count_distinct"},
             pl.DataFrame(
                 {
                     "code": ["b", "a", "c"],
-                    "p1": [1, 3, None],
+                    "p1": [1, 2, None],
                     "p2": [1, 1, None],
                     "p3": [None, None, 1],
                 },
@@ -540,7 +540,7 @@ class TestAMissingValueBesideARealOne:
             ("sum", 13.0),
             ("count", 3),
             ("count_non_null", 2),
-            ("n_unique", 3),
+            ("count_distinct", 2),
             ("min", 3.0),
             ("max", 10.0),
             ("first", 10.0),
@@ -553,9 +553,8 @@ class TestAMissingValueBesideARealOne:
         says 2. That the two differ is the whole reason they have two names, and only a cell with
         more than one row and a blank among them can show it.
 
-        ``n_unique`` says 3, counting the blank as one distinct value. That is GroupBy's published
-        ruling, not an accident: a distinct count that ignored blanks would report 1 for a group
-        holding one value and one blank, and a check written to catch exactly that would pass.
+        ``count_distinct`` says 2: it skips the blank, as SQL's ``COUNT(DISTINCT)`` does, so it
+        agrees with ``count_non_null`` here, where the two real figures differ.
 
         ``sum``, ``min`` and ``max`` skip the blank and answer from the real figures.
         """
@@ -566,6 +565,22 @@ class TestAMissingValueBesideARealOne:
         )
 
         assert result["rows"].filter(pl.col("code") == "a")["p1"].to_list() == [expected]
+
+
+class TestFirstAndFirstNonNullInACell:
+    """``first`` is the first row's value in a cell, null included; ``first_non_null`` skips blanks."""
+
+    def test_a_cell_whose_first_row_is_blank_tells_the_two_apart(self) -> None:
+        rows = pl.DataFrame(
+            {"code": ["a", "a", "b", "b"], "period": ["p1", "p1", "p1", "p1"], "label": [None, "x", None, None]}
+        )
+        base = {"by": ["code"], "names_from": "period", "values_from": "label"}
+
+        first = run_tool(CrossTab(), Ports({"rows": rows}), {**base, "function": "first"})["rows"]
+        known = run_tool(CrossTab(), Ports({"rows": rows}), {**base, "function": "first_non_null"})["rows"]
+
+        assert first["p1"].to_list() == [None, None]
+        assert known["p1"].to_list() == ["x", None]
 
 
 def _one_cell_frame() -> pl.DataFrame:
@@ -590,8 +605,9 @@ def _one_cell_frame() -> pl.DataFrame:
             "period": ["p1", "p1", "p1", "p1", "p1", "p1"],
             "amount": [5.0, None, 1.0, 9.0, 5.0, 9.0],
             "note": ["beta", None, "alpha", "gamma", "beta", "delta"],
+            "late": [None, 7.5, 1.0, None, 2.0, None],
         },
-        schema={"code": pl.String, "period": pl.String, "amount": pl.Float64, "note": pl.String},
+        schema={"code": pl.String, "period": pl.String, "amount": pl.Float64, "note": pl.String, "late": pl.Float64},
     )
 
 
@@ -602,6 +618,8 @@ def _values_column(aggregate: str) -> str:
     column of numbers into a string is refused on the schema by both tools -- so asking it of
     ``amount`` would test the refusal, not the answer.
     """
+    if aggregate == "first_non_null":
+        return "late"  # its first row is blank, so first_non_null and first disagree
     return "note" if aggregate == "join_text" else "amount"
 
 
@@ -616,10 +634,11 @@ def _cell_answers() -> dict[str, Any]:
         "sum": 29.0,
         "count": 6,
         "count_non_null": 5,
-        "n_unique": 4,
+        "count_distinct": 3,
         "min": 1.0,
         "max": 9.0,
         "first": 5.0,
+        "first_non_null": 7.5,
         "join_text": "beta, alpha, gamma, beta, delta",
     }
 

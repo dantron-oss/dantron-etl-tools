@@ -72,7 +72,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, Tool, check_tool, run_tool
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, Tool, check_tool, run_tool
 from dantron_etl.config import expression_fields
 from dantron_etl.tools.write_csv import WriteCsv
 
@@ -242,30 +242,34 @@ class TestWhatReachesTheFile:
 
         assert target.read_text() == "key,note\nr1,seen\nr2,\nr3,\n", "the two are indistinguishable on the page"
 
-    def test_a_frame_with_no_rows_writes_a_header_only_file_and_hands_the_empty_frame_on(
+    def test_a_frame_with_no_rows_stops_the_run_unless_the_step_says_it_may_be_empty(
         self,
         tmp_path: Path,
     ) -> None:
-        """A header line, not an absent file.
+        """The table sinks' rule, for the same reason: an upstream failure looks like a quiet month.
 
-        Three things could happen to an empty frame and only one of them is defensible for a file.
-        Writing nothing leaves whoever opens the folder unable to tell a month with no items from a
-        run that never happened. Refusing makes a legitimately empty branch break a flow that is
-        otherwise correct, and the catalog already has an assertion tool for a flow that wants
-        emptiness to stop the run, said in writing.
-
-        The catalog's table sink rules the other way, and the difference is the destination rather
-        than taste: replacing a table with nothing empties the table, where writing a file with a
-        header still delivers something somebody can open and see was empty.
+        Left out, 'allow_empty' is false, and an empty frame stops the run before the file is
+        touched, naming the path. A branch that is legitimately empty in some months says so once,
+        and then gets the header-only file it always got.
         """
         target = tmp_path / "extract.csv"
         frame = _rows().head(0)
 
-        passed_on = _written(frame, {"path": str(target)})
+        with pytest.raises(DataError) as caught:
+            _written(frame, {"path": str(target)})
+        assert "extract.csv" in str(caught.value) and "allow_empty" in str(caught.value)
+        assert not target.exists(), "a refused write left a file behind"
+
+        passed_on = _written(frame, {"path": str(target), "allow_empty": True})
 
         assert target.read_text() == "key,amount,code\n"
         assert passed_on.height == 0
         assert passed_on.schema == frame.schema, "an empty frame still carries its schema onwards"
+
+    def test_allow_empty_changes_nothing_about_a_frame_with_rows(self, tmp_path: Path) -> None:
+        target = tmp_path / "extract.csv"
+        _written(_rows(), {"path": str(target), "allow_empty": False})
+        assert target.read_text().count("\n") == _rows().height + 1
 
     def test_a_frame_far_taller_than_a_sheet_is_written_rather_than_refused(self, tmp_path: Path) -> None:
         """The row limit the other sink has is not a limit this one has, and the absence is pinned.
@@ -564,12 +568,12 @@ class TestWriteCsvInTheCatalog:
         file somebody else produced was written in. There is no ``quote`` and no ``line_ending``,
         because every non-default value of either produces a file that fewer things can read. There
         is no ``header``, because a file whose column names live only in somebody's memory is not
-        one this library will produce. And there is no ``allow_empty``: the table sink needs it
-        because a replace of nothing empties a table, where a header-only file is a delivery.
+        one this library will produce. ``allow_empty`` defaults to false, as on the table sinks.
         """
         template = WriteCsv().config_template()
 
-        assert set(template) == {"path", "delimiter", "overwrite"}
+        assert set(template) == {"path", "delimiter", "overwrite", "allow_empty"}
+        assert template["allow_empty"].default is False
         assert template["path"].type == "string"
         assert template["path"].required is True
         assert template["path"].non_empty is True, "an empty path is a value, and not one to act on"

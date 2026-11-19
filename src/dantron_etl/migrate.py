@@ -22,6 +22,8 @@ from typing import Any
 
 from .renames import (
     FUNCTION_RENAMES,
+    NEEDS_THE_DATA,
+    as_written,
     MIGRATE_COMMAND,
     PYTHON_RENAMES,
     Found,
@@ -325,7 +327,7 @@ class _Editor:
         if not isinstance(mapping, yaml.MappingNode):
             self._by_hand(mapping, f"{found.sentence}; the config is not a mapping, so write it by hand")
             return
-        entry = f"{found.new}: {found.old}"
+        entry = f"{found.new}: {as_written(found.old)}"
         if mapping.flow_style:
             if mapping.value:
                 at = mapping.value[-1][1].end_mark.index
@@ -499,6 +501,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.port_map:
         Path(arguments.port_map).write_text(json.dumps(port_map(), indent=2) + "\n", encoding="utf8")
+
+    print("\nWhat a pipeline file cannot show, so check by hand:")
+    for sentence in NEEDS_THE_DATA:
+        print(f"  {sentence}")
 
     print("\nPython code is not rewritten. Rename these by hand:")
     for old, new in PYTHON_RENAMES:

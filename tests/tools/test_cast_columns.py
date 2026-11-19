@@ -18,7 +18,9 @@ declaration in this library.
 Vocabulary is generic: the library carries no caller's nouns.
 """
 
-from datetime import date
+from datetime import date, datetime
+from typing import Any
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -269,3 +271,120 @@ class TestReportingWhatCouldNotBeRead:
         choices = set(CastColumns().config_template()["on_invalid"].enum or ())
         assert choices == {"error", "set_null"}
         assert not choices & YAML_UNSAFE_VALUES
+
+
+class TestADecimalBecomesAWholeNumberOnlyWhenItIsOne:
+    """A decimal read as Int64 refuses unless every value is already whole (the owner's ruling).
+
+    The engine cuts the fraction off without a word: 1.99 becomes 1 and -2.7 becomes -2. So a value
+    with a fraction is a value that does not read as a whole number. Under 'error' it stops the run,
+    naming the column, some of the values, and saying to round first. Under 'set_null' it is
+    emptied, counted and marked, like any other value that does not read.
+    """
+
+    def test_a_fraction_stops_the_run_naming_the_column_the_values_and_round(self) -> None:
+        frame = pl.DataFrame({"key": ["a", "b", "c", "d"], "seats": [12.0, 1.99, -2.7, None]})
+
+        with pytest.raises(DataError) as caught:
+            run_tool(CastColumns(), Ports({"rows": frame}), {"columns": [{"column": "seats", "type": "Int64"}]})
+
+        message = str(caught.value)
+        for word in ("seats", "1.99", "-2.7", "Int64", "round"):
+            assert word in message, message
+        assert caught.value.offending_rows == 2
+
+    def test_whole_values_held_as_decimals_still_read(self) -> None:
+        frame = pl.DataFrame({"seats": [12.0, -3.0, None, 0.0]})
+        assert _cast(frame, ("seats", "Int64"))["seats"].to_list() == [12, -3, None, 0]
+
+    def test_an_exact_decimal_type_is_held_to_the_same_rule(self) -> None:
+        whole = pl.DataFrame({"seats": pl.Series([Decimal("12.00"), Decimal("3.00")], dtype=pl.Decimal(10, 2))})
+        assert _cast(whole, ("seats", "Int64"))["seats"].to_list() == [12, 3]
+
+        cut = pl.DataFrame({"seats": pl.Series([Decimal("12.50")], dtype=pl.Decimal(10, 2))})
+        with pytest.raises(DataError):
+            _cast(cut, ("seats", "Int64"))
+
+    def test_set_null_empties_counts_and_marks_a_fraction_like_any_value_that_did_not_read(self) -> None:
+        frame = pl.DataFrame({"seats": [12.0, 1.99, None]})
+        config = {"columns": [{"column": "seats", "type": "Int64"}], "on_invalid": "set_null"}
+
+        result = run_tool(CastColumns(), Ports({"rows": frame}), config)
+
+        assert result["rows"]["seats"].to_list() == [12, None, None]
+        assert any("1 of 3" in note and "1.99" in note for note in result.notes), result.notes
+
+    def test_a_decimal_read_as_another_decimal_type_or_as_text_is_not_held_to_it(self) -> None:
+        frame = pl.DataFrame({"seats": [1.99]})
+        assert _cast(frame, ("seats", "String"))["seats"].to_list() == ["1.99"]
+
+    def test_text_digits_and_whole_numbers_read_as_before(self) -> None:
+        frame = pl.DataFrame({"a": ["12", "-3"], "b": pl.Series([1, 2], dtype=pl.Int32)})
+        result = _cast(frame, ("a", "Int64"), ("b", "Int64"))
+        assert result["a"].to_list() == [12, -3] and result["b"].to_list() == [1, 2]
+
+
+def _late_in_toronto() -> pl.DataFrame:
+    """23:30 on 31 January in Toronto, which is 04:30 on 1 February in UTC, and a zone-less twin."""
+    moment = datetime(2026, 2, 1, 4, 30)
+    return pl.DataFrame({"paid_at": [moment, None], "noted_at": [moment, None]}).with_columns(
+        pl.col("paid_at").dt.replace_time_zone("UTC").dt.convert_time_zone("America/Toronto")
+    )
+
+
+class TestATimestampInAZoneIsReadAsADateInAStatedZone:
+    """Which day a timestamp falls on depends on the zone, so the author states it (the owner's ruling).
+
+    No default: a cast to Date of a zone-aware timestamp without 'in_zone' is refused by name, on
+    the schema, before any row is read. 'in_zone: UTC' gives the UTC date, which is what the cast
+    gave before. 'in_zone' anywhere it would do nothing is refused too.
+    """
+
+    def _cast_paid(self, **entry: Any) -> pl.DataFrame:
+        config = {"columns": [{"column": "paid_at", "type": "Date", **entry}]}
+        return run_tool(CastColumns(), Ports({"rows": _late_in_toronto()}), config)["rows"]
+
+    @pytest.mark.parametrize("height", [2, 0])
+    def test_without_a_zone_it_is_refused_naming_the_column_its_zone_and_the_setting(self, height: int) -> None:
+        config = {"columns": [{"column": "paid_at", "type": "Date"}]}
+        with pytest.raises(ConfigError) as caught:
+            run_tool(CastColumns(), Ports({"rows": _late_in_toronto().head(height)}), config)
+        message = str(caught.value)
+        for word in ("paid_at", "America/Toronto", "in_zone", "UTC"):
+            assert word in message, message
+
+    def test_utc_gives_the_date_the_cast_gave_before(self) -> None:
+        assert self._cast_paid(in_zone="UTC")["paid_at"].to_list() == [date(2026, 2, 1), None]
+
+    def test_the_stated_zone_decides_the_day(self) -> None:
+        assert self._cast_paid(in_zone="America/Toronto")["paid_at"].to_list() == [date(2026, 1, 31), None]
+
+    def test_a_timestamp_with_no_zone_needs_none_and_refuses_one(self) -> None:
+        plain = {"columns": [{"column": "noted_at", "type": "Date"}]}
+        assert run_tool(CastColumns(), Ports({"rows": _late_in_toronto()}), plain)["rows"]["noted_at"].to_list() == [
+            date(2026, 2, 1),
+            None,
+        ]
+        with pytest.raises(ConfigError) as caught:
+            run_tool(
+                CastColumns(),
+                Ports({"rows": _late_in_toronto()}),
+                {"columns": [{"column": "noted_at", "type": "Date", "in_zone": "UTC"}]},
+            )
+        assert "in_zone" in str(caught.value) and "noted_at" in str(caught.value)
+
+    def test_a_zone_beside_a_type_other_than_date_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            run_tool(
+                CastColumns(),
+                Ports({"rows": _late_in_toronto()}),
+                {"columns": [{"column": "paid_at", "type": "String", "in_zone": "UTC"}]},
+            )
+        assert "in_zone" in str(caught.value)
+
+    def test_a_zone_nobody_has_heard_of_is_refused_before_any_frame(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            CastColumns().validate_config(
+                {"columns": [{"column": "paid_at", "type": "Date", "in_zone": "Mars/Olympus"}], "on_invalid": "error"}
+            )
+        assert "Mars/Olympus" in str(caught.value)

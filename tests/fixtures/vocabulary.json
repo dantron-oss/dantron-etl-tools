@@ -236,6 +236,15 @@
                 "required": true,
                 "type": "string"
               },
+              "in_zone": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
+              },
               "type": {
                 "default": null,
                 "enum": [
@@ -307,12 +316,13 @@
           "default": null,
           "enum": [
             "count",
+            "count_distinct",
             "count_non_null",
             "first",
+            "first_non_null",
             "join_text",
             "max",
             "min",
-            "n_unique",
             "sum"
           ],
           "fields": null,
@@ -371,6 +381,15 @@
           "required": true,
           "type": "expression"
         },
+        "in_zone": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
         "output": {
           "default": null,
           "enum": null,
@@ -420,6 +439,15 @@
           "non_empty": false,
           "required": true,
           "type": "expression"
+        },
+        "in_zone": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
         },
         "period_column": {
           "default": "period_start",
@@ -563,12 +591,13 @@
                 "default": null,
                 "enum": [
                   "count",
+                  "count_distinct",
                   "count_non_null",
                   "first",
+                  "first_non_null",
                   "join_text",
                   "max",
                   "min",
-                  "n_unique",
                   "sum"
                 ],
                 "fields": null,
@@ -1036,6 +1065,18 @@
                 "items": null,
                 "non_empty": true,
                 "required": true,
+                "type": "string"
+              },
+              "when_incoming_is_null": {
+                "default": null,
+                "enum": [
+                  "keep_published",
+                  "overwrite"
+                ],
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
                 "type": "string"
               }
             },
@@ -1655,6 +1696,15 @@
     "write_csv": {
       "category": "output",
       "config": {
+        "allow_empty": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
         "delimiter": {
           "default": ",",
           "enum": null,
@@ -1693,7 +1743,7 @@
     "write_excel": {
       "category": "output",
       "config": {
-        "overwrite_sheets": {
+        "overwrite": {
           "default": false,
           "enum": null,
           "fields": null,
@@ -1719,6 +1769,15 @@
             "default": null,
             "enum": null,
             "fields": {
+              "allow_empty": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "boolean"
+              },
               "fit_widths": {
                 "default": null,
                 "enum": null,

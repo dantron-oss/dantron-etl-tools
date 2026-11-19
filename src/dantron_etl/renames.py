@@ -19,6 +19,10 @@ from typing import Any
 
 __all__ = [
     "MIGRATE_COMMAND",
+    "NEEDS_THE_DATA",
+    "RENAME_NOTES",
+    "STATED_NOW",
+    "as_written",
     "Found",
     "call_pattern",
     "find_renames",
@@ -48,7 +52,7 @@ FIELD_RENAMES: dict[str, dict[str, str]] = {
     "remove_duplicates": {"columns": "by"},
     "publish_tables": {"stamp": "stamp_column", "tables[].key": "keys"},
     "write_csv": {"replace": "overwrite"},
-    "write_excel": {"replace": "overwrite_sheets"},
+    "write_excel": {"replace": "overwrite", "overwrite_sheets": "overwrite"},
     "match_one_to_one": {"left": "left_key", "right": "right_key"},
     "normalize_text": {"strip_suffixes": "suffixes"},
     "make_groups": {"node_column": "record_column", "component_column": "group_column"},
@@ -61,8 +65,17 @@ VALUE_RENAMES: dict[tuple[str, str], dict[str, str]] = {
     ("assemble_date", "on_invalid"): {"empty": "set_null"},
     ("cast_columns", "on_invalid"): {"empty": "set_null"},
     ("unpivot", "on_invalid"): {"empty": "set_null"},
-    ("group_by", "aggregations[].function"): {"count_values": "count_non_null"},
-    ("cross_tab", "function"): {"count_values": "count_non_null"},
+    ("group_by", "aggregations[].function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
+    ("cross_tab", "function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
+}
+
+# A renamed value whose meaning moved with its name, and what moved. The migration's report and the
+# loader's refusal both say it, so nobody takes the new name for the old answer.
+RENAME_NOTES: dict[tuple[str, str], str] = {
+    ("n_unique", "count_distinct"): (
+        "count_distinct skips nulls, as SQL's COUNT(DISTINCT) does, where n_unique counted a null as "
+        "one more value: a group holding a null counts one fewer"
+    ),
 }
 
 # Old defaults that differ from the new ones. Keyed by the tool name as the file writes it, then by
@@ -71,6 +84,17 @@ OLD_DEFAULTS: dict[str, dict[str, str]] = {
     "date_diff": {"counting": "inclusive"},
     "connected_components": {"record_column": "node", "group_column": "component"},
 }
+
+# Settings a step must now state, where the file alone says which value keeps what the step did
+# before. The migration writes that value in. Each entry: the tool, the path of the mapping the
+# setting goes in (written in the new names, "" for the step's config itself), the values that
+# mapping must hold for the setting to apply, the setting, and the value that keeps the old behaviour.
+STATED_NOW: tuple[tuple[str, str, Mapping[str, Any], str, Any], ...] = (
+    ("publish_tables", "tables[]", {"mode": "merge"}, "when_incoming_is_null", "keep_published"),
+    # A file writer always wrote an empty frame; it now stops on one unless the step allows it.
+    ("write_csv", "", {}, "allow_empty", True),
+    ("write_excel", "sheets[]", {}, "allow_empty", True),
+)
 
 # New tool name -> old port -> new port.
 OUTPUT_PORT_RENAMES: dict[str, dict[str, str]] = {"join": {"matched": "joined"}}
@@ -86,6 +110,14 @@ FUNCTION_RENAMES: dict[str, str] = {"strip": "trim"}
 
 # The old single-sheet workbook writer: this tool with this config key. It cannot be migrated.
 SINGLE_SHEET_TOOL: tuple[str, str] = ("write_excel", "sheet")
+
+# Settings now required that the file alone cannot show are needed. The migration prints these as
+# guidance, because only the data's types can say which steps need them.
+NEEDS_THE_DATA: tuple[str, ...] = (
+    "A cast to Date, date_diff and expand_date_range now need 'in_zone' when they read a timestamp "
+    "that carries a time zone, which a pipeline file does not show. Such a step stops when it runs, "
+    "naming itself; write in_zone: UTC there to keep the dates it gave before.",
+)
 
 # Python names. Code cannot be rewritten by the migration, so these are printed as guidance.
 PYTHON_RENAMES: tuple[tuple[str, str], ...] = (
@@ -130,7 +162,7 @@ class Found:
 
     kind: str
     path: tuple[Any, ...]
-    old: str
+    old: Any
     new: str
     label: str
     sentence: str
@@ -196,7 +228,8 @@ def _kind_of(item: Found) -> tuple[str, str]:
     tool, _, rest = label.partition(".")
     if item.kind == "value":
         field = rest.partition(":")[0]
-        return "steps", f"{tool}'s config field {field!r}: the value {old} is now {new}"
+        moved = RENAME_NOTES.get((item.old, item.new))
+        return "steps", f"{tool}'s config field {field!r}: the value {old} is now {new}" + (f"; {moved}" if moved else "")
     return "steps", f"{tool}'s config field {old} is now {new}"
 
 
@@ -432,14 +465,16 @@ def _config_renames(
                 continue
             if value in values:
                 new = values[value]
+                moved = RENAME_NOTES.get((value, new))
                 found.append(
                     Found(
                         "value",
                         where,
                         value,
                         new,
-                        f"{tool}.{path}: {value} -> {new}",
-                        f"{here}: config field {shown!r} has the value {value!r}, which is now {new!r}",
+                        f"{tool}.{path}: {value} -> {new}" + (f" ({moved})" if moved else ""),
+                        f"{here}: config field {shown!r} has the value {value!r}, which is now {new!r}"
+                        + (f"; {moved}" if moved else ""),
                         step_id,
                     )
                 )
@@ -488,6 +523,28 @@ def _config_renames(
                 _key((*where, old), old, new, f"{tool}.{old_path} -> {new}", f"{here}: config field {field!r} is now {new!r}", step_id)
             )
 
+    for owner, path, condition, setting, value in STATED_NOW:
+        if owner != tool:
+            continue
+        for mapping, where, shown in _reach(config, _split(path), tool, at, ""):
+            if not isinstance(mapping, Mapping) or setting in mapping:
+                continue
+            if any(mapping.get(key) != wanted for key, wanted in condition.items()):
+                continue
+            field = f"{shown}.{setting}" if shown else setting
+            found.append(
+                Found(
+                    "insert",
+                    where,
+                    value,
+                    setting,
+                    f"{tool}.{path + '.' if path else ''}{setting}: {as_written(value)} written (keeps today's behaviour)",
+                    f"{here}: config field {field!r} is written as {as_written(value)!r}, which keeps what it did before",
+                    step_id,
+                    retired=False,
+                )
+            )
+
     for new, value in OLD_DEFAULTS.get(written, {}).items():
         olds = _old_names(tool, "", new)
         if new not in config and not any(old in config for old in olds):
@@ -504,6 +561,13 @@ def _config_renames(
                 )
             )
     return found
+
+
+def as_written(value: Any) -> str:
+    """A scalar as it is written in a pipeline file: true and false in lower case, text as it is."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def _split(path: str) -> list[str]:
