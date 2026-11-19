@@ -1,4 +1,4 @@
-"""Unpivot: turn a wide frame long. Every column outside the index becomes a name and a value.
+"""Unpivot: turn a wide frame long. Every column outside 'by' becomes a name and a value.
 
 CrossTab turns long into wide, and until this tool there was no way back. That asymmetry is the
 whole justification for adding a tool at all: a frame that arrives one column per period cannot be
@@ -6,20 +6,20 @@ filtered by period, joined on period or grouped by it, because the period is a h
 a value anywhere in the frame. One step that melts those headings into a column puts them back
 where every other tool in this catalog can read them.
 
-**There is no field naming the columns to melt.** Every column is either named in ``index``, in
+**There is no field naming the columns to melt.** Every column is either named in ``by``, in
 which case it stays as it is and repeats on every output row, or it is melted. There is no third
-category, so a list of the melted columns would say nothing ``index`` does not already say -- and
+category, so a list of the melted columns would say nothing ``by`` does not already say -- and
 would be the one place two halves of a configuration could disagree about the same frame. The
 second reason matters more: the obvious name for such a field is ``on``, and a definition file
 reading ``on: [p1, p2]`` hands this library the boolean ``True`` standing where a name should be.
 That trap has cost this project twice, and a field that does not exist cannot be named ``on``.
 
-**``index`` is required and cannot be empty.** An unpivot with no identifier produces a column of
+**``by`` is required and cannot be empty.** An unpivot with no identifier produces a column of
 names and a column of values with nothing to say which row each came from, and nothing can be
 joined back to it. A flow that genuinely wants that writes a RecordId in front, which is one step
 and leaves the identifier visible.
 
-**``into`` and ``values`` are required and have no default.** The two new columns are the whole
+**``names_to`` and ``values_to`` are required and have no default.** The two new columns are the whole
 point of the reshape, and a default would publish a column called something nobody chose into the
 frame every later step and every report reads from.
 
@@ -36,7 +36,7 @@ unpopulated column is an ordinary frame rather than a mistake.
 the type every melted column is read as, in the spelling ``cast_columns`` uses, and while it is
 given the refusal above no longer applies. The shape it exists for is a block that gains a column
 every period with unrelated text beside it: the text shifts position as the block grows, so nothing
-in the configuration can name it in ``index``, and telling it apart from a period means reading what
+in the configuration can name it in ``by``, and telling it apart from a period means reading what
 its heading says -- which needs the melt to have happened first. Stating the type is what keeps the
 figures figures. Melted as text they come back as whatever a renderer shortened them to, and a
 figure a hair under a half-cent comes back a hair over it and rounds the other way.
@@ -72,7 +72,7 @@ not sorted, which would order the output by something the author never wrote dow
 columns are read in the order the frame carries them for the same reason CrossTab sorts the columns
 it creates: each tool takes the one order that is a fact about what it was given.
 
-**An ``index`` that covers every column is refused.** Nothing is left to melt, so the step reshapes
+**A ``by`` that covers every column is refused.** Nothing is left to melt, so the step reshapes
 nothing and the wide frame travels on to steps written for a long one. That is the reading
 ``cast_columns`` already gives a cast to the type a column already holds: a configuration edited
 halfway, where saying so beats agreeing.
@@ -84,7 +84,7 @@ short.
 
 **``exclude_nulls: true`` leaves those rows out.** This follows SQL's ``UNPIVOT``, whose default is
 ``EXCLUDE NULLS``. Only a null is left out. An empty string, text that is only spaces, a zero and
-not-a-number are all values, and all come through. A null in an index column drops nothing; only
+not-a-number are all values, and all come through. A null in a 'by' column drops nothing; only
 melted cells are judged. With ``values_type``, a cell is judged as it arrived, before it is
 converted. So text that fails to convert under ``on_invalid: empty`` still comes through as a row
 holding nothing, with its warning mark. The survivors keep the order the full melt gives them.
@@ -97,7 +97,7 @@ the whole melt and filtering it afterwards would give the same rows and save not
 refused identically. An unpivot whose configuration only fails once a row has been seen is an
 unpivot that reports success on the day a filter upstream matched nothing.
 
-**The index columns come back in the order they were configured**, not the order the frame happens
+**The 'by' columns come back in the order they were configured**, not the order the frame happens
 to carry them in. A pipeline file is read to find out what a step produces, and the configuration
 is the author's own statement of the output's shape; taking the frame's order instead would make
 the output depend on something that is not written down anywhere in the file.
@@ -129,17 +129,17 @@ _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "empty")
 
 
 class Unpivot:
-    """Turn `rows` long: every column outside `index` becomes a row naming it and holding its cell."""
+    """Turn `rows` long: every column outside `by` becomes a row naming it and holding its cell."""
 
     name = "unpivot"
-    description = "Turn `rows` long: every column outside `index` becomes a row naming it and holding its cell."
+    description = "Turn `rows` long: every column outside `by` becomes a row naming it and holding its cell."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
 
     def config_template(self) -> Mapping[str, ConfigField]:
         return {
-            "index": ConfigField(
+            "by": ConfigField(
                 type="array",
                 description="The column names that stay as they are and repeat on every output "
                 "row, in the order the output carries them. Every other column is melted, and "
@@ -151,14 +151,14 @@ class Unpivot:
                     description="One column name; naming the same column twice counts it once.",
                 ),
             ),
-            "into": ConfigField(
+            "names_to": ConfigField(
                 type="string",
                 description="The name of the new column holding the melted column's own name. "
                 "Always text, and it may not take the name of a column already present.",
                 required=True,
                 non_empty=True,
             ),
-            "values": ConfigField(
+            "values_to": ConfigField(
                 type="string",
                 description="The name of the new column holding the melted cell. It takes the "
                 "melted columns' type, or the type named in 'values_type', and may not take the "
@@ -197,9 +197,9 @@ class Unpivot:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "One output row per input row per melted column. The index columns come first, in "
+                "One output row per input row per melted column. The 'by' columns come first, in "
                 "the order they were configured, keeping their types and repeating once per melted "
-                "column; then 'into', holding the melted column's name as text; then 'values', "
+                "column; then 'names_to', holding the melted column's name as text; then 'values_to', "
                 "holding the cell at the melted columns' own type, or at the type 'values_type' "
                 "states. Rows come back column-major: all the rows of the first melted column, then "
                 "all the rows of the second, in the frame's own column order. This is the inverse "
@@ -212,8 +212,8 @@ class Unpivot:
                 _null_cells_are_left_out(),
             ),
             notes=(
-                "There is no field naming the columns to melt. Every column is either in 'index' "
-                "or melted, so such a list would say nothing new, could contradict 'index', and "
+                "There is no field naming the columns to melt. Every column is either in 'by' "
+                "or melted, so such a list would say nothing new, could contradict 'by', and "
                 "would want to be called 'on' -- a word a definition file reads as the boolean "
                 "true where a column name should be.",
                 "The melted columns must agree on type, except that a column that is all nulls "
@@ -225,19 +225,19 @@ class Unpivot:
                 "row. The row existed and the cell was empty, and both are facts about the data.",
                 "'exclude_nulls: true' leaves a null melted cell out, as SQL's UNPIVOT does by "
                 "default (EXCLUDE NULLS). Only null goes. An empty string, spaces, zero and "
-                "not-a-number are values and come through. A null in an index column drops "
+                "not-a-number are values and come through. A null in a 'by' column drops "
                 "nothing. With 'values_type', a cell is judged as it arrived, so text that fails "
                 "to convert is kept as a row holding nothing, with its warning mark. The rows that "
                 "are left keep the order the full melt gives them. The null rows are never built, "
                 "so a sparse sheet melts in a fraction of the memory.",
                 "Row order is column-major and is not sorted, so a step needing another order puts "
                 "a Sort after it, as everywhere else here.",
-                "An 'index' that covers every column is refused: the step would reshape nothing "
+                "A 'by' that covers every column is refused: the step would reshape nothing "
                 "and hand a wide frame on to steps written for a long one.",
                 "'values_type' states the type every melted column is read as, which is how a block "
                 "whose columns disagree is melted deliberately -- the case being a block that gains "
                 "a column every period, with text beside it that therefore cannot be named in "
-                "'index'. Reading it as the type it is keeps a figure a figure; reading the lot as "
+                "'by'. Reading it as the type it is keeps a figure a figure; reading the lot as "
                 "text loses a digit to whatever shortens it later.",
                 "'on_invalid' says what a value that will not convert to 'values_type' does: "
                 "'error' stops the run, 'empty' leaves it null and reports how many out of how "
@@ -247,9 +247,9 @@ class Unpivot:
                 "everything the flow did not name.",
             ),
             field_help={
-                "index": "What stays as it is and repeats. Everything else is melted.",
-                "into": "The new column holding the melted column's name, always text.",
-                "values": "The new column holding the cell, at the melted columns' type.",
+                "by": "What stays as it is and repeats. Everything else is melted.",
+                "names_to": "The new column holding the melted column's name, always text.",
+                "values_to": "The new column holding the cell, at the melted columns' type.",
                 "values_type": "The type every melted column is read as; without it they must agree.",
                 "on_invalid": "What a value that will not convert does. Only beside 'values_type'.",
                 "exclude_nulls": "Leave out melted cells that are null. Nothing else is left out.",
@@ -259,8 +259,8 @@ class Unpivot:
     def validate_config(self, config: Mapping[str, Any]) -> None:
         """The rules the configuration answers alone: the two new columns are two columns, and new.
 
-        An index column comes through as itself, so a new column taking its name means one of the
-        two is lost and nothing says which. ``into`` and ``values`` colliding with each other is the
+        A 'by' column comes through as itself, so a new column taking its name means one of the
+        two is lost and nothing says which. ``names_to`` and ``values_to`` colliding with each other is the
         same fault written in one field instead of two. Both refusals name the field to change,
         because an author looking at three fields that all name columns has to be told which.
 
@@ -269,19 +269,19 @@ class Unpivot:
         do nothing at all and the run would report success. Both fields are named in the refusal,
         and so is the fix, since either one of the two could be the one that was meant.
         """
-        index = set(_index_columns(config))
-        for field in ("into", "values"):
+        by_columns = set(_by_columns(config))
+        for field in ("names_to", "values_to"):
             column = config[field]
-            if column in index:
+            if column in by_columns:
                 raise ConfigError(
                     f"config field {field!r} names new column {column!r}, which is also in "
-                    f"'index'; the index columns come through as themselves, so one of the two "
+                    f"'by'; the 'by' columns come through as themselves, so one of the two "
                     f"would be lost"
                 )
 
-        if config["into"] == config["values"]:
+        if config["names_to"] == config["values_to"]:
             raise ConfigError(
-                f"config fields 'into' and 'values' both name column {config['into']!r}; they are "
+                f"config fields 'names_to' and 'values_to' both name column {config['names_to']!r}; they are "
                 f"two columns -- the melted column's name and its cell -- and cannot share one name"
             )
 
@@ -301,21 +301,21 @@ class Unpivot:
         whole schema rather than whatever the rows happened to reveal.
         """
         frame = inputs["rows"]
-        index = _index_columns(config)
-        require_columns(frame, index, "index", "rows")
+        by_columns = _by_columns(config)
+        require_columns(frame, by_columns, "by", "rows")
 
-        melted = _melted_columns(frame, index)
+        melted = _melted_columns(frame, by_columns)
         if not melted:
             raise ConfigError(
-                f"config field 'index' names every column on input port 'rows', so nothing is left "
+                f"config field 'by' names every column on input port 'rows', so nothing is left "
                 f"to melt and the step would reshape nothing; the columns present are "
                 f"{', '.join(frame.columns)}"
             )
 
-        # Only the melted names can collide here. An `into` or `values` colliding with an index
+        # Only the melted names can collide here. A `names_to` or `values_to` colliding with a 'by'
         # column was already refused above, and a melted column's name is gone from the output, so
         # this is the collision that would quietly take a name the frame is still using.
-        for field in ("into", "values"):
+        for field in ("names_to", "values_to"):
             column = config[field]
             if column in melted:
                 raise ConfigError(
@@ -332,8 +332,8 @@ class Unpivot:
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
-        index = _index_columns(config)
-        melted = _melted_columns(frame, index)
+        by_columns = _by_columns(config)
+        melted = _melted_columns(frame, by_columns)
 
         if config["values_type"] is None:
             # Cast rather than take each column as it is: an all-null column takes the others' type
@@ -352,7 +352,7 @@ class Unpivot:
 
         # One frame per melted column, stacked in the frame's own column order. That is the
         # column-major ruling expressed directly rather than produced and then re-ordered: there is
-        # no intermediate order for a later change to leak through. The index columns are selected
+        # no intermediate order for a later change to leak through. The 'by' columns are selected
         # in the order they were configured, which is the order the output carries them in.
         #
         # With 'exclude_nulls', each column's null cells are dropped before its rows are built, so
@@ -371,7 +371,7 @@ class Unpivot:
         parts: list[pl.DataFrame] = []
         kept_blocks: list[pl.DataFrame] = []
         for column, block in zip(melted, column_blocks, strict=True):
-            part = frame.select(*(pl.col(name) for name in index))
+            part = frame.select(*(pl.col(name) for name in by_columns))
             value = values[column]
             if config["exclude_nulls"]:
                 keep = frame[column].is_not_null()
@@ -381,8 +381,8 @@ class Unpivot:
                     block = block.filter(keep)
             parts.append(
                 part.with_columns(
-                    pl.lit(column, dtype=pl.String).alias(config["into"]),
-                    value.alias(config["values"]),
+                    pl.lit(column, dtype=pl.String).alias(config["names_to"]),
+                    value.alias(config["values_to"]),
                 )
             )
             if block is not None:
@@ -394,18 +394,18 @@ class Unpivot:
         )
 
 
-def _index_columns(config: Mapping[str, Any]) -> list[str]:
-    """The index, a column named twice counted once, in the order it was written."""
-    return list(dict.fromkeys(config["index"]))
+def _by_columns(config: Mapping[str, Any]) -> list[str]:
+    """The 'by' columns, a column named twice counted once, in the order it was written."""
+    return list(dict.fromkeys(config["by"]))
 
 
-def _melted_columns(frame: pl.DataFrame, index: Sequence[str]) -> list[str]:
-    """Everything the index does not keep, in the frame's own column order.
+def _melted_columns(frame: pl.DataFrame, by_columns: Sequence[str]) -> list[str]:
+    """Everything outside 'by', in the frame's own column order.
 
     Read off ``frame.columns`` rather than off the rows, which is what makes a frame with no rows
-    hand back the whole schema instead of the index columns and nothing else.
+    hand back the whole schema instead of the 'by' columns and nothing else.
     """
-    kept = set(index)
+    kept = set(by_columns)
     return [name for name in frame.columns if name not in kept]
 
 
@@ -429,7 +429,7 @@ def _settled_dtype(frame: pl.DataFrame, melted: Sequence[str]) -> pl.DataType:
                 f"the columns about to be melted give different types, so one of them would be "
                 f"rewritten into the other on the way through: {first_name} is {settled} and "
                 f"{name} is {dtype}; cast one of them in the step before this one, or name it in "
-                f"'index' so it is not melted at all"
+                f"'by' so it is not melted at all"
             )
     return settled
 
@@ -538,11 +538,11 @@ def _periods_become_rows() -> WorkedExample:
     )
     return WorkedExample(
         scenario="a column per period becomes a row per period, so a period can be filtered on",
-        configuration={"index": ["code"], "into": "period", "values": "amount"},
+        configuration={"by": ["code"], "names_to": "period", "values_to": "amount"},
         explanation="Both melted columns come back whole and in the frame's own order: all of p1, "
         "then all of p2. B's p2 cell was empty and arrives as a row holding nothing rather than as "
         "no row, because the row existed and the cell was blank and both are facts. Nothing names "
-        "p1 and p2 in the configuration -- every column outside 'index' is melted.",
+        "p1 and p2 in the configuration -- every column outside 'by' is melted.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -577,11 +577,11 @@ def _some_columns_stay_put() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="keep a descriptive column out of the reshape by naming it in the index",
-        configuration={"index": ["code", "site"], "into": "measure", "values": "amount"},
+        scenario="keep a descriptive column out of the reshape by naming it in 'by'",
+        configuration={"by": ["code", "site"], "names_to": "measure", "values_to": "amount"},
         explanation="'site' is text and would be melted with the two figures -- and refused for "
-        "disagreeing with them on type -- if it were not named in 'index'. Naming it there is the "
-        "only way to keep a column out of the melt, which is why an index that names every column "
+        "disagreeing with them on type -- if it were not named in 'by'. Naming it there is the "
+        "only way to keep a column out of the melt, which is why a 'by' that names every column "
         "is a configuration somebody stopped editing halfway.",
         inputs=inputs,
         outputs=outputs,
@@ -618,13 +618,13 @@ def _a_stated_type_melts_a_mixed_block() -> WorkedExample:
     return WorkedExample(
         scenario="melt a block whose columns disagree on type by stating the type they are read as",
         configuration={
-            "index": ["code"],
-            "into": "period",
-            "values": "amount",
+            "by": ["code"],
+            "names_to": "period",
+            "values_to": "amount",
             "values_type": "Float64",
             "on_invalid": "empty",
         },
-        explanation="'comment' is text and cannot be named in 'index', because the number of "
+        explanation="'comment' is text and cannot be named in 'by', because the number of "
         "columns in front of it changes from one load to the next and nothing written down can say "
         "where it will be. Stating 'values_type' melts the lot as figures; 'on_invalid: empty' "
         "leaves the text holding nothing and reports how many values that was, out of how many, so "
@@ -663,7 +663,7 @@ def _null_cells_are_left_out() -> WorkedExample:
     )
     return WorkedExample(
         scenario="melt a sparse sheet and leave out the cells that hold nothing",
-        configuration={"index": ["record_id"], "into": "column", "values": "value", "exclude_nulls": True},
+        configuration={"by": ["record_id"], "names_to": "column", "values_to": "value", "exclude_nulls": True},
         explanation="The two null cells are left out: record 2's c1 and record 1's c2. Record 3's "
         "c1 holds an empty string, which is a value, so it comes through. Only null is left out. "
         "The rows that are left keep the order the full melt gives them: all of c1, then all of c2.",

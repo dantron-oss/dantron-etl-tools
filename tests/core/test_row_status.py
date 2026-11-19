@@ -630,7 +630,7 @@ class TestCastColumnsMarksTheRowsItEmptied:
 
 
 def _unpivot(frame: pl.DataFrame, **changes: Any) -> Ports:
-    config: dict[str, Any] = {"index": ["record_id"], "into": "period", "values": "amount"}
+    config: dict[str, Any] = {"by": ["record_id"], "names_to": "period", "values_to": "amount"}
     config.update(changes)
     return run_tool(Unpivot(), Ports({"rows": frame}), config)
 

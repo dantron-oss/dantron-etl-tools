@@ -893,7 +893,7 @@ class TestGroupByTemplate:
         """
         assert "join_text" in AGGREGATE_FUNCTIONS
 
-        aggregate_field = CrossTab().config_template()["aggregate"]
+        aggregate_field = CrossTab().config_template()["function"]
         assert tuple(aggregate_field.enum or ()) == tuple(sorted(AGGREGATE_FUNCTIONS))
         check_tool(CrossTab())
 

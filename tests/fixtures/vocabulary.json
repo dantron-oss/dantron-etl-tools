@@ -330,7 +330,24 @@
     "cross_tab": {
       "category": "transform",
       "config": {
-        "aggregate": {
+        "by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "function": {
           "default": null,
           "enum": [
             "count",
@@ -348,7 +365,7 @@
           "required": true,
           "type": "string"
         },
-        "columns_from": {
+        "names_from": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -357,24 +374,7 @@
           "required": true,
           "type": "string"
         },
-        "index": {
-          "default": null,
-          "enum": null,
-          "fields": null,
-          "items": {
-            "default": null,
-            "enum": null,
-            "fields": null,
-            "items": null,
-            "non_empty": false,
-            "required": false,
-            "type": "string"
-          },
-          "non_empty": true,
-          "required": true,
-          "type": "array"
-        },
-        "values": {
+        "values_from": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1568,16 +1568,7 @@
     "unpivot": {
       "category": "transform",
       "config": {
-        "exclude_nulls": {
-          "default": false,
-          "enum": null,
-          "fields": null,
-          "items": null,
-          "non_empty": false,
-          "required": false,
-          "type": "boolean"
-        },
-        "index": {
+        "by": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1594,7 +1585,16 @@
           "required": true,
           "type": "array"
         },
-        "into": {
+        "exclude_nulls": {
+          "default": false,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "boolean"
+        },
+        "names_to": {
           "default": null,
           "enum": null,
           "fields": null,
@@ -1615,7 +1615,7 @@
           "required": false,
           "type": "string"
         },
-        "values": {
+        "values_to": {
           "default": null,
           "enum": null,
           "fields": null,

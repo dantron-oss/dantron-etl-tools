@@ -1,7 +1,7 @@
 """Tests for the Unpivot tool: a wide frame turned long, and the exact inverse of a cross tab.
 
 Unpivot takes one input port, ``rows``, and produces one, ``rows``. Every column is either named in
-``index``, in which case it stays as it is and repeats on every output row, or it is melted: its
+``by``, in which case it stays as it is and repeats on every output row, or it is melted: its
 name goes into a new column and its cell goes into another. There is no third category.
 
 The library already turns long into wide. Having no way back is the asymmetry this closes: a frame
@@ -9,19 +9,19 @@ arriving one column per period cannot be filtered by period, joined on period, o
 because a period is not a value anywhere in it. Eleven decisions are pinned here.
 
 **There is deliberately no field listing which columns to melt.** Every column is either in
-``index`` or melted, so a list of the rest would be redundant -- and would be the one place two
+``by`` or melted, so a list of the rest would be redundant -- and would be the one place two
 configurations could disagree with each other about the same frame. It matters more than tidiness:
 the obvious name for such a field is ``on``, and a definition file that says ``on: [p1, p2]`` is
 read by YAML as the boolean ``True`` standing where a name should be. That trap has already cost
 this project twice, and the cheapest way not to meet it a third time is to have no field it could
 name.
 
-**``index`` is required and cannot be empty.** An unpivot with no identifier hands back a column of
+**``by`` is required and cannot be empty.** An unpivot with no identifier hands back a column of
 names and a column of values with nothing to say which row each came from, and nobody can join it
 back to anything. A flow that genuinely wants that writes a ``record_id`` in front, which is one
 step and leaves the identifier visible.
 
-**``into`` and ``values`` are required and have no default.** The two new columns are the whole
+**``names_to`` and ``values_to`` are required and have no default.** The two new columns are the whole
 point of the reshape. A default would publish a column called something nobody chose, in the frame
 every later step and every report reads from.
 
@@ -37,7 +37,7 @@ unpopulated column is an ordinary frame rather than a mistake.
 names the type every melted column is read as, in the same spelling ``cast_columns`` uses, and while
 it is given the disagreement is no longer refused. The case is a block that arrives one column per
 period with unrelated text columns beside it: the block gains a column each period, so the text
-columns shift position and cannot be named in ``index``, and the only way to tell them apart is to
+columns shift position and cannot be named in ``by``, and the only way to tell them apart is to
 read what each column's heading says -- which needs the melt to have happened first. Stating the
 type is what makes the numbers survive as numbers. Melted as text they come back as whatever a
 renderer shortens them to, and a figure that arrives a hair under a half-cent comes back a hair over
@@ -62,12 +62,12 @@ tool that sorted the melted columns behind the author's back would otherwise pas
 identically, so each refusal case below runs twice. An unpivot whose configuration only fails once
 a row is seen is an unpivot that reports success on the day a filter upstream matched nothing.
 
-**An ``index`` that covers every column is refused.** There is nothing left to melt, so the step
+**An ``by`` that covers every column is refused.** There is nothing left to melt, so the step
 reshapes nothing. That is the reading ``cast_columns`` already gives a cast to the type a column
 already holds: a configuration edited halfway, and saying so beats agreeing.
 
 **A frame with no rows gives a frame with no rows and the full schema** -- the index columns as
-they were, ``into`` as text, ``values`` at the melted type -- so a later step still has something to
+they were, ``names_to`` as text, ``values_to`` at the melted type -- so a later step still has something to
 compile against.
 
 **A null in a melted cell survives as a null.** It is data: the row existed and the cell was empty.
@@ -110,7 +110,7 @@ from dantron_etl.tools.unpivot import Unpivot
 # may be called any of them, which is the whole reason it has no field naming the columns to melt.
 YAML_REWRITES = frozenset({"on", "off", "yes", "no", "true", "false", "null", "y", "n"})
 
-BASE: dict[str, Any] = {"index": ["code", "site", "label"], "into": "period", "values": "amount"}
+BASE: dict[str, Any] = {"by": ["code", "site", "label"], "names_to": "period", "values_to": "amount"}
 
 
 def _rows() -> pl.DataFrame:
@@ -178,7 +178,7 @@ def _long_cases() -> list[Any]:
             id="three_index_columns_and_three_melted_ones",
         ),
         pytest.param(
-            {"index": ["code", "site", "p2", "p1", "p10"], "into": "field", "values": "text"},
+            {"by": ["code", "site", "p2", "p1", "p10"], "names_to": "field", "values_to": "text"},
             pl.DataFrame(
                 {
                     "code": ["a", "b", "c", "d", "e", "f", "g"],
@@ -215,7 +215,7 @@ class TestUnpivotTurnsColumnsIntoRows:
     ) -> None:
         """One comparison covers the lot: which columns, in which order, typed how, holding what.
 
-        The index columns come first, as they were, then ``into``, then ``values``. Row order is
+        The index columns come first, as they were, then ``names_to``, then ``values_to``. Row order is
         compared too, and that is the point rather than an accident of the comparison: the order is
         a published ruling, so it is pinned here and again on its own below.
         """
@@ -236,7 +236,7 @@ class TestUnpivotTurnsColumnsIntoRows:
         after a sort picks a different row.
         """
         frame = _rows()
-        melted = [name for name in frame.columns if name not in set(BASE["index"])]
+        melted = [name for name in frame.columns if name not in set(BASE["by"])]
         assert melted == ["p2", "p1", "p10"], "the melted columns must be in the fixture's own order"
         assert melted != sorted(melted), "sorted order has to disagree, or this test checks nothing"
 
@@ -248,7 +248,7 @@ class TestUnpivotTurnsColumnsIntoRows:
     def test_the_index_columns_come_back_in_the_order_they_were_configured(self) -> None:
         """The configuration decides the output's column order, not the order the frame arrived in.
 
-        A pipeline file is read to find out what a step produces, and ``index`` is the author's own
+        A pipeline file is read to find out what a step produces, and ``by`` is the author's own
         written statement of the output's shape. Taking the frame's order instead would make the
         output depend on something that appears nowhere in the file -- an upstream select, or the
         column order of whatever file was read that morning -- so a reader could not tell what this
@@ -263,7 +263,7 @@ class TestUnpivotTurnsColumnsIntoRows:
             "the frame's order must disagree with the configured order, or this test checks nothing"
         )
 
-        result = run_tool(Unpivot(), Ports({"rows": frame}), {**BASE, "index": index})
+        result = run_tool(Unpivot(), Ports({"rows": frame}), {**BASE, "by": index})
 
         assert result["rows"].columns == ["label", "site", "code", "period", "amount"]
 
@@ -280,7 +280,7 @@ class TestUnpivotTurnsColumnsIntoRows:
         So the whole frame is compared under a reversed index, which pins each column's contents to
         its own name rather than to its position.
         """
-        result = run_tool(Unpivot(), Ports({"rows": _rows()}), {**BASE, "index": ["label", "site", "code"]})
+        result = run_tool(Unpivot(), Ports({"rows": _rows()}), {**BASE, "by": ["label", "site", "code"]})
 
         expected = pl.DataFrame(
             {
@@ -336,7 +336,7 @@ class TestUnpivotTurnsColumnsIntoRows:
         result = run_tool(
             Unpivot(),
             Ports({"rows": frame}),
-            {"index": ["code"], "into": "period", "values": "amount"},
+            {"by": ["code"], "names_to": "period", "values_to": "amount"},
         )
 
         expected = pl.DataFrame(
@@ -352,7 +352,7 @@ class TestUnpivotTurnsColumnsIntoRows:
     def test_naming_the_same_index_column_twice_counts_it_once(self) -> None:
         """What the template publishes about a duplicate, held to by something that runs.
 
-        ``index`` is a list of names and nothing stops an author writing one of them twice -- a
+        ``by`` is a list of names and nothing stops an author writing one of them twice -- a
         merge of two edits to the same file does it without anybody deciding to. The template says
         the second mention counts for nothing, and ``cross_tab`` publishes that same sentence about
         its own index, so the two have to keep agreeing. Left unenforced, a duplicate reaches the
@@ -366,7 +366,7 @@ class TestUnpivotTurnsColumnsIntoRows:
         duplicated = run_tool(
             Unpivot(),
             Ports({"rows": _rows()}),
-            {**BASE, "index": ["code", "code", "site", "label"]},
+            {**BASE, "by": ["code", "code", "site", "label"]},
         )
 
         assert_frame_equal(duplicated["rows"], plain["rows"], check_row_order=True)
@@ -374,7 +374,7 @@ class TestUnpivotTurnsColumnsIntoRows:
     def test_the_name_column_is_text_and_the_value_column_takes_the_melted_type(self) -> None:
         """A column name is text, whatever the cells under it held.
 
-        ``values`` is the other half and is not fixed: it takes the type of the columns that were
+        ``values_to`` is the other half and is not fixed: it takes the type of the columns that were
         melted, so an unpivot of money hands back money and an unpivot of text hands back text. A
         tool that reached for a common type -- text, being the one everything casts to -- would turn
         every figure in the frame into a string, and the report built on it would still fill.
@@ -387,7 +387,7 @@ class TestUnpivotTurnsColumnsIntoRows:
         text = run_tool(
             Unpivot(),
             Ports({"rows": _rows()}),
-            {"index": ["code", "site", "p2", "p1", "p10"], "into": "field", "values": "text"},
+            {"by": ["code", "site", "p2", "p1", "p10"], "names_to": "field", "values_to": "text"},
         )
 
         assert text["rows"].schema["field"] == pl.String
@@ -459,7 +459,7 @@ class TestAColumnOfNothingTakesTheOthersType:
         result = run_tool(
             Unpivot(),
             Ports({"rows": _one_null_column()}),
-            {"index": ["code"], "into": "measure", "values": "amount"},
+            {"by": ["code"], "names_to": "measure", "values_to": "amount"},
         )
 
         expected = pl.DataFrame(
@@ -487,7 +487,7 @@ class TestAColumnOfNothingTakesTheOthersType:
         result = run_tool(
             Unpivot(),
             Ports({"rows": frame}),
-            {"index": ["code"], "into": "measure", "values": "amount"},
+            {"by": ["code"], "names_to": "measure", "values_to": "amount"},
         )
 
         assert result["rows"].height == 4
@@ -516,7 +516,7 @@ class TestMeltedColumnsMustAgreeOnType:
             run_tool(
                 Unpivot(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "into": "measure", "values": "value"},
+                {"by": ["code"], "names_to": "measure", "values_to": "value"},
             )
 
         message = str(caught.value)
@@ -531,9 +531,9 @@ A_HAIR_UNDER_HALF_A_CENT: float = 1302.0249999999999
 
 #: Melt everything outside ``code`` as a figure, and let the text that is not one go empty.
 TYPED: dict[str, Any] = {
-    "index": ["code"],
-    "into": "period",
-    "values": "amount",
+    "by": ["code"],
+    "names_to": "period",
+    "values_to": "amount",
     "values_type": "Float64",
     "on_invalid": "empty",
 }
@@ -544,7 +544,7 @@ def _mixed_block() -> pl.DataFrame:
 
     This is the shape the stated type exists for. A block arrives one column per period and gains
     another one every period, with unrelated text beside it whose position therefore shifts. The
-    text cannot be named in ``index``, because nothing in the configuration can know where it will
+    text cannot be named in ``by``, because nothing in the configuration can know where it will
     be next time; it is told apart from a period by reading what its heading says, which is only
     possible once the melt has put the heading in a column.
 
@@ -648,7 +648,7 @@ class TestAMeltGivenTheTypeItsValuesAre:
         result = run_tool(
             Unpivot(),
             Ports({"rows": _one_null_column()}),
-            {"index": ["code"], "into": "measure", "values": "amount", "values_type": "Float64"},
+            {"by": ["code"], "names_to": "measure", "values_to": "amount", "values_type": "Float64"},
         )
 
         expected = pl.DataFrame(
@@ -674,7 +674,7 @@ class TestAMeltGivenTheTypeItsValuesAre:
         stated = run_tool(
             Unpivot(),
             Ports({"rows": nothing_at_all}),
-            {"index": ["code"], "into": "measure", "values": "amount", "values_type": "Float64"},
+            {"by": ["code"], "names_to": "measure", "values_to": "amount", "values_type": "Float64"},
         )
 
         assert stated["rows"].height == 4
@@ -683,7 +683,7 @@ class TestAMeltGivenTheTypeItsValuesAre:
         assert stated.notes == ()
 
     def test_the_name_column_stays_text_whatever_the_values_are_read_as(self) -> None:
-        """``into`` holds a column heading, and a heading is text however the cells under it are read.
+        """``names_to`` holds a column heading, and a heading is text however the cells under it are read.
 
         Worth pinning because the two new columns are created together, and a tool that reached for
         one type for both would pass every test that only looks at the values. Checked at both ends:
@@ -721,7 +721,7 @@ class TestWhatWillNotConvert:
             run_tool(
                 Unpivot(),
                 Ports({"rows": _mixed_block()}),
-                {"index": ["code"], "into": "period", "values": "amount", "values_type": "Float64"},
+                {"by": ["code"], "names_to": "period", "values_to": "amount", "values_type": "Float64"},
             )
 
         message = str(caught.value)
@@ -744,9 +744,9 @@ class TestWhatWillNotConvert:
         a template default nobody exercises.
         """
         stated: dict[str, Any] = {
-            "index": ["code"],
-            "into": "period",
-            "values": "amount",
+            "by": ["code"],
+            "names_to": "period",
+            "values_to": "amount",
             "values_type": "Float64",
             "on_invalid": "error",
         }
@@ -783,7 +783,7 @@ class TestWhatWillNotConvert:
             run_tool(
                 Unpivot(),
                 Ports({"rows": _mixed_block()}),
-                {"index": ["code"], "into": "period", "values": "amount", "values_type": "Float64"},
+                {"by": ["code"], "names_to": "period", "values_to": "amount", "values_type": "Float64"},
             )
 
         assert caught.value.offending_rows == 3, "the blank was always blank and never failed to convert"
@@ -948,7 +948,7 @@ class TestAStatedMeltRefusals:
             run_tool(
                 Unpivot(),
                 Ports({"rows": frame}),
-                {"index": ["code"], "into": "period", "values": "amount"},
+                {"by": ["code"], "names_to": "period", "values_to": "amount"},
             )
 
         message = str(caught.value)
@@ -976,7 +976,7 @@ class TestTheStatedMeltIsDeclaredAndDocumented:
         """
         template = Unpivot().config_template()
 
-        assert set(template) == {"index", "into", "values", "values_type", "on_invalid", "exclude_nulls"}
+        assert set(template) == {"by", "names_to", "values_to", "values_type", "on_invalid", "exclude_nulls"}
         assert not set(template) & YAML_REWRITES, "a field a definition file rewrites is not a field"
         assert expression_fields(template) == (), "every field here names a column or a type; none computes one"
 
@@ -1010,11 +1010,11 @@ class TestTheStatedMeltIsDeclaredAndDocumented:
         assert stated, "the field a flow reaches for needs an example a flow can copy"
 
         example = stated[0]
-        index = set(example.configuration["index"])
+        index = set(example.configuration["by"])
         melted = {dtype for name, dtype in example.inputs["rows"].schema.items() if name not in index}
         assert len(melted) > 1, "an example whose columns already agree shows nothing about this field"
         assert (
-            example.outputs["rows"].schema[str(example.configuration["values"])]
+            example.outputs["rows"].schema[str(example.configuration["values_to"])]
             == DECLARED_DTYPE[str(example.configuration["values_type"])]
         ), "the documented output must carry the type the example says it states"
 
@@ -1071,31 +1071,31 @@ class TestAFrameWithNoRows:
 def _refusal_cases() -> list[Any]:
     """(config, the text its refusal must quote) for each way an unpivot can be configured wrong."""
     return [
-        pytest.param({**BASE, "index": []}, "config field 'index' must not be empty", id="an_index_of_nothing"),
-        pytest.param({**BASE, "index": None}, "required config field 'index'", id="an_index_with_no_value"),
-        pytest.param({**BASE, "into": None}, "into", id="an_into_with_no_value"),
-        pytest.param({**BASE, "values": None}, "values", id="a_values_with_no_value"),
-        pytest.param({**BASE, "into": ""}, "into", id="an_into_that_is_blank"),
-        pytest.param({**BASE, "values": ""}, "values", id="a_values_that_is_blank"),
-        pytest.param({**BASE, "index": ["branch"]}, "branch", id="an_index_column_that_is_not_there"),
+        pytest.param({**BASE, "by": []}, "config field 'by' must not be empty", id="an_index_of_nothing"),
+        pytest.param({**BASE, "by": None}, "required config field 'by'", id="an_index_with_no_value"),
+        pytest.param({**BASE, "names_to": None}, "names_to", id="an_into_with_no_value"),
+        pytest.param({**BASE, "values_to": None}, "values_to", id="a_values_with_no_value"),
+        pytest.param({**BASE, "names_to": ""}, "names_to", id="an_into_that_is_blank"),
+        pytest.param({**BASE, "values_to": ""}, "values_to", id="a_values_that_is_blank"),
+        pytest.param({**BASE, "by": ["branch"]}, "branch", id="an_index_column_that_is_not_there"),
         pytest.param(
-            {**BASE, "index": ["code", "Site", "label"]},
+            {**BASE, "by": ["code", "Site", "label"]},
             "Site",
             id="an_index_column_whose_case_is_wrong",
         ),
-        pytest.param({**BASE, "into": "code"}, "code", id="an_into_that_takes_an_index_columns_name"),
-        pytest.param({**BASE, "values": "site"}, "site", id="a_values_that_takes_an_index_columns_name"),
-        pytest.param({**BASE, "values": "period"}, "period", id="an_into_and_a_values_with_the_same_name"),
-        pytest.param({**BASE, "into": "p1"}, "p1", id="an_into_that_takes_a_melted_columns_name"),
-        pytest.param({**BASE, "values": "p2"}, "p2", id="a_values_that_takes_a_melted_columns_name"),
+        pytest.param({**BASE, "names_to": "code"}, "code", id="an_into_that_takes_an_index_columns_name"),
+        pytest.param({**BASE, "values_to": "site"}, "site", id="a_values_that_takes_an_index_columns_name"),
+        pytest.param({**BASE, "values_to": "period"}, "period", id="an_into_and_a_values_with_the_same_name"),
+        pytest.param({**BASE, "names_to": "p1"}, "p1", id="an_into_that_takes_a_melted_columns_name"),
+        pytest.param({**BASE, "values_to": "p2"}, "p2", id="a_values_that_takes_a_melted_columns_name"),
         pytest.param(
-            {**BASE, "index": ["code", "site", "label", "p2", "p1", "p10"]},
-            "index",
+            {**BASE, "by": ["code", "site", "label", "p2", "p1", "p10"]},
+            "by",
             id="an_index_that_covers_every_column_so_nothing_is_left_to_melt",
         ),
-        pytest.param({**BASE, "index": "code"}, "index", id="an_index_written_as_one_bare_name"),
-        pytest.param({**BASE, "index": [7]}, "index[0]", id="an_index_entry_that_is_not_text"),
-        pytest.param({**BASE, "into": ["period"]}, "into", id="an_into_written_as_a_list"),
+        pytest.param({**BASE, "by": "code"}, "by", id="an_index_written_as_one_bare_name"),
+        pytest.param({**BASE, "by": [7]}, "by[0]", id="an_index_entry_that_is_not_text"),
+        pytest.param({**BASE, "names_to": ["period"]}, "names_to", id="an_into_written_as_a_list"),
         pytest.param({**BASE, "columns": ["p1"]}, "unknown config field", id="a_field_nobody_declared"),
     ]
 
@@ -1146,22 +1146,22 @@ class TestUnpivotRefusals:
             run_tool(
                 Unpivot(),
                 Ports({"rows": frame}),
-                {**BASE, "index": ["code", "site", "label", "p2", "p1", "p10"]},
+                {**BASE, "by": ["code", "site", "label", "p2", "p1", "p10"]},
             )
 
         message = str(caught.value)
-        assert "index" in message, f"refusal should name the field to change: {message}"
+        assert "by" in message, f"refusal should name the field to change: {message}"
 
     def test_the_template_names_three_columns_and_no_list_of_columns_to_melt(self) -> None:
         """Three fields name a column, and the absence of one naming the melted ones matters most.
 
         A field naming the columns to melt would be a one-line addition with a plausible reason
-        behind it. It is redundant -- every column not in ``index`` is melted, so the list says
-        nothing new and can contradict ``index`` -- and the obvious name for it is ``on``, which a
+        behind it. It is redundant -- every column not in ``by`` is melted, so the list says
+        nothing new and can contradict ``by`` -- and the obvious name for it is ``on``, which a
         definition file turns into the boolean ``True`` where a name should be. Both reasons live in
         prose that nobody reads while adding a field, so they are pinned here instead.
 
-        ``into`` and ``values`` carry no default on purpose. A default publishes a column name
+        ``names_to`` and ``values_to`` carry no default on purpose. A default publishes a column name
         nobody chose into the frame every later step reads.
 
         The exact set of fields is pinned in ``TestTheStatedMeltIsDeclaredAndDocumented``, alongside
@@ -1170,21 +1170,21 @@ class TestUnpivotRefusals:
         """
         template = Unpivot().config_template()
 
-        assert {"index", "into", "values"} <= set(template)
+        assert {"by", "names_to", "values_to"} <= set(template)
         assert not set(template) & {"on", "on_columns", "columns", "melt", "melt_columns", "value_columns"}, (
-            "every column outside 'index' is melted, and a second list of them is a second truth"
+            "every column outside 'by' is melted, and a second list of them is a second truth"
         )
         assert expression_fields(template) == (), "every field here names a column; none computes one"
         assert not set(template) & YAML_REWRITES, "a field a definition file rewrites is not a field"
 
-        assert template["index"].type == "array"
-        assert template["index"].required is True
-        assert template["index"].non_empty is True, "an empty list is a value, so 'required' alone accepts it"
-        element = template["index"].items
+        assert template["by"].type == "array"
+        assert template["by"].required is True
+        assert template["by"].non_empty is True, "an empty list is a value, so 'required' alone accepts it"
+        element = template["by"].items
         assert element is not None, "an array with no declared element type checks nothing"
         assert element.type == "string"
 
-        for name in ("into", "values"):
+        for name in ("names_to", "values_to"):
             assert template[name].type == "string", f"{name} names one new column"
             assert template[name].required is True
             assert template[name].non_empty is True, f"a blank {name} is not a column name"
@@ -1223,14 +1223,14 @@ class TestUnpivotAndCrossTabAreInverses:
         wide = run_tool(
             CrossTab(),
             Ports({"rows": original}),
-            {"index": ["code"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["code"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )
         assert wide["rows"].columns == ["code", "p1", "p2"], "the middle of the round trip has to be wide"
 
         back = run_tool(
             Unpivot(),
             Ports({"rows": wide["rows"]}),
-            {"index": ["code"], "into": "period", "values": "amount"},
+            {"by": ["code"], "names_to": "period", "values_to": "amount"},
         )
 
         assert_frame_equal(back["rows"].sort("code", "period"), original.sort("code", "period"))
@@ -1260,7 +1260,7 @@ class TestUnpivotInTheCatalog:
         examples = tool.help().examples
         assert examples, "a tool nobody can copy from is a tool nobody uses"
         assert any(
-            example.check_row_order and example.outputs["rows"][str(example.configuration["into"])].n_unique() > 1
+            example.check_row_order and example.outputs["rows"][str(example.configuration["names_to"])].n_unique() > 1
             for example in examples
         ), "an example must melt more than one column and pin the order they come back in"
 
@@ -1276,7 +1276,7 @@ class TestUnpivotInTheCatalog:
 
 #: Melt every column outside ``record_id`` into a name and a value. This is the shape a flow uses
 #: to find columns by their heading in a sheet whose heading row moves from tab to tab.
-CELLS: dict[str, Any] = {"index": ["record_id"], "into": "column", "values": "value"}
+CELLS: dict[str, Any] = {"by": ["record_id"], "names_to": "column", "values_to": "value"}
 
 #: The same melt with the option switched on.
 CELLS_EXCLUDING_NULLS: dict[str, Any] = {**CELLS, "exclude_nulls": True}
@@ -1418,8 +1418,8 @@ class TestExcludeNullsLeavesOutCellsHoldingNothing:
     def test_the_column_types_are_the_ones_the_full_melt_gives(self) -> None:
         """Leaving rows out changes no type: not the index, not the name column, not the values."""
         for frame in (_sheet_as_text(), _figures(), _rows()):
-            index = ["record_id"] if "record_id" in frame.columns else BASE["index"]
-            config = {**CELLS, "index": index}
+            index = ["record_id"] if "record_id" in frame.columns else BASE["by"]
+            config = {**CELLS, "by": index}
             full = _melt(frame, config)["rows"]
             excluded = _melt(frame, {**config, "exclude_nulls": True})["rows"]
 
@@ -1433,7 +1433,7 @@ class TestExcludeNullsLeavesOutCellsHoldingNothing:
         """
         result = _melt(
             _one_null_column(),
-            {"index": ["code"], "into": "measure", "values": "amount", "exclude_nulls": True},
+            {"by": ["code"], "names_to": "measure", "values_to": "amount", "exclude_nulls": True},
         )
 
         expected = pl.DataFrame(
@@ -1577,7 +1577,7 @@ _PEAK_MEMORY_SCRIPT = textwrap.dedent(
         pl.when((pl.int_range(pl.len()) + i) % 50 == 0).then(pl.lit(f"v{i}")).otherwise(None).alias(f"c{i}")
         for i in range(columns)
     )
-    config = {"index": ["record_id"], "into": "column", "values": "value", "exclude_nulls": sys.argv[1] == "on"}
+    config = {"by": ["record_id"], "names_to": "column", "values_to": "value", "exclude_nulls": sys.argv[1] == "on"}
 
     # Warm up on a few rows, so loading code and starting threads is not counted.
     run_tool(Unpivot(), Ports({"rows": frame.head(50)}), config)
@@ -1716,10 +1716,10 @@ class TestExcludeNullsIsDeclaredAndDocumented:
         example = excluding[0]
         assert example.check_row_order, "the order of the survivors is part of the contract"
 
-        index = set(example.configuration["index"])
+        index = set(example.configuration["by"])
         frame = example.inputs["rows"]
         melted = [name for name in frame.columns if name not in index]
-        values = str(example.configuration["values"])
+        values = str(example.configuration["values_to"])
         output = example.outputs["rows"]
 
         nulls_in = sum(frame[name].null_count() for name in melted)

@@ -177,11 +177,11 @@ def test_unpivot_then_cross_tab_gives_back_the_wide_frame() -> None:
             schema={"k": pl.String, **dict.fromkeys(periods, pl.Float64)},
         )
 
-        long = run_tool(Unpivot(), Ports({"rows": wide}), {"index": ["k"], "into": "period", "values": "amount"})
+        long = run_tool(Unpivot(), Ports({"rows": wide}), {"by": ["k"], "names_to": "period", "values_to": "amount"})
         back = run_tool(
             CrossTab(),
             Ports({"rows": long["rows"]}),
-            {"index": ["k"], "columns_from": "period", "values": "amount", "aggregate": "sum"},
+            {"by": ["k"], "names_from": "period", "values_from": "amount", "function": "sum"},
         )["rows"]
 
         assert long["rows"].height == height * width, _show(wide=wide)
