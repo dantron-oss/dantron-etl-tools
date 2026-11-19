@@ -21,6 +21,7 @@ from .errors import (
     RegistryError,
     ToolError,
 )
+from .expr.dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
 from .frame_checks import (
     REPLACE_FIELD,
@@ -61,6 +62,12 @@ __all__ = [
     "compiled_dtype",
     "require_columns",
     "require_not_blank",
+    # counting between dates and building them, shared with the expression functions
+    "MAX_YEAR",
+    "MIN_YEAR",
+    "count_between",
+    "date_or_null",
+    "days_in_month",
     # per-row status
     "STATUS_LEVELS",
     "STATUS_REASON",

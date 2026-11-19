@@ -459,6 +459,13 @@ class _Compiler:
                 self._require(typed, param.family, f"{name}() {param.requirement}")
             if param.whole is not None:
                 self._require_whole(typed, f"{name}() {param.whole}")
+            if param.no_time_zone and isinstance(typed.dtype, pl.Datetime) and typed.dtype.time_zone is not None:
+                raise error(
+                    self._text,
+                    f"{self._describe(typed)}, a timestamp in time zone {typed.dtype.time_zone!r}, but {name}() works "
+                    f"on dates, and which day such a timestamp falls on depends on the zone. Cast it to Date "
+                    f"first with the cast_columns tool, so the day is the one you choose",
+                )
             return typed
         return param.read(name, self._spelling.literal(node), POSITIONS[position])
 

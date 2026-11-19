@@ -31,6 +31,7 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
+    count_between,
     require_not_blank,
 )
 
@@ -127,32 +128,8 @@ class DateDiff:
 
         staged = frame.lazy().with_columns(start_expr.alias("__start"), end_expr.alias("__end")).collect()
 
-        start_col = pl.col("__start")
-        end_col = pl.col("__end")
-        null_mask = start_col.is_null() | end_col.is_null()
-
-        # Always measured from the earlier date to the later one, so the arithmetic itself never
-        # divides by a range collapsed to nothing: the sign is decided separately, afterwards.
-        earlier = pl.min_horizontal(start_col, end_col)
-        later = pl.max_horizontal(start_col, end_col)
-
-        if config["unit"] == "month":
-            magnitude = (
-                (later.dt.year() - earlier.dt.year()) * 12
-                + (later.dt.month() - earlier.dt.month())
-                + 1
-                - pl.when(later.dt.day() < earlier.dt.day()).then(1).otherwise(0)
-            )
-        else:
-            magnitude = (later - earlier).dt.total_days() + 1
-
-        if config["counting"] == "elapsed":
-            magnitude = magnitude - 1
-
-        # The null case is tested first: a comparison against a null date is itself null, and would
-        # otherwise fall to the backwards arm below and be counted as though it were a real range.
-        forward = end_col >= start_col
-        signed = pl.when(null_mask).then(None).when(forward).then(magnitude).otherwise(-magnitude)
+        # The same count months_between() and days_between() give, from the one shared function.
+        signed = count_between(pl.col("__start"), pl.col("__end"), config["unit"], config["counting"])
 
         result = staged.with_columns(signed.cast(pl.Int64).alias(config["output"])).select(
             [*frame.columns, config["output"]]

@@ -220,9 +220,20 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
-Available functions: `coalesce`, `round`, `year`, `add_months`, `abs`, `lower`, `upper`, `trim`,
-`len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`,
-`concat`, `format_number`, `uuid5`.
+Available functions: `coalesce`, `round`, `year`, `add_months`, `months_between`, `days_between`,
+`make_date`, `month_end`, `abs`, `lower`, `upper`, `trim`, `len`, `starts_with`, `ends_with`,
+`contains`, `regex_extract`, `regex_replace`, `regex_match`, `concat`, `format_number`, `uuid5`.
+
+**Dates.** `months_between(start, end, counting)` and `days_between(start, end, counting)` count
+whole months or days between two dates, signed, with `counting` either `'inclusive'` (both ends
+count, so the same day is 1) or `'elapsed'` (completed units only). They give exactly what the
+`date_diff` tool gives, from the same code. `make_date(year, month, day)` builds a date from three
+whole numbers and gives null when they name no date, such as 30 February; it is `assemble_date`
+with `on_invalid: set_null`. `month_end(date)` is the last day of that date's month. All four take
+dates; a timestamp in a time zone is refused, so cast it to `Date` first and choose the day. Use
+these instead of casting dates to whole numbers to subtract them: `days_between([from], [to],
+'elapsed')` says what it counts, and a date cast to a number is a count of days since 1970 that a
+reader has to know to trust.
 
 `trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
 inside the text alone.

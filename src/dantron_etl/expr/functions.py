@@ -15,6 +15,7 @@ import polars as pl
 from .arguments import (
     REWRITE_REASON,
     SEPARATOR_REASON,
+    Choice,
     Namespace,
     Param,
     Pattern,
@@ -23,6 +24,7 @@ from .arguments import (
     WholeNumber,
     probe_pattern,
 )
+from .dates import count_between, date_or_null, days_in_month
 from .errors import Refusal
 from .families import Family
 from .formatting import written_as_text
@@ -103,6 +105,29 @@ def _add_months(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
     """
     offset = pl.concat_str([count.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
     return subject.dt.offset_by(offset)
+
+
+def _months_between(start: pl.Expr, end: pl.Expr, counting: str) -> pl.Expr:
+    """Whole months from start to end: the date_diff tool's count, from the same shared function."""
+    return count_between(start.cast(pl.Date), end.cast(pl.Date), "month", counting)  # type: ignore[arg-type]
+
+
+def _days_between(start: pl.Expr, end: pl.Expr, counting: str) -> pl.Expr:
+    """Days from start to end: the date_diff tool's count, from the same shared function."""
+    return count_between(start.cast(pl.Date), end.cast(pl.Date), "day", counting)  # type: ignore[arg-type]
+
+
+def _make_date(year: pl.Expr, month: pl.Expr, day: pl.Expr) -> pl.Expr:
+    """The date three whole numbers name, or null: the assemble_date tool's build, shared."""
+    return date_or_null(year.cast(pl.Int64), month.cast(pl.Int64), day.cast(pl.Int64))
+
+
+def _month_end(subject: pl.Expr) -> pl.Expr:
+    """The last day of the month a date falls in, built the way assemble_date's clamp builds it."""
+    day = subject.cast(pl.Date)
+    year = day.dt.year().cast(pl.Int64)
+    month = day.dt.month().cast(pl.Int64)
+    return date_or_null(year, month, days_in_month(year, month))
 
 
 def _format_number(subject: pl.Expr, decimals: int, thousands: str, point: str) -> pl.Expr:
@@ -250,6 +275,10 @@ def _regex_replace(subject: pl.Expr, pattern: str, replacement: str) -> pl.Expr:
 
 _ON_TEXT: Final[Value] = Value(Family.TEXT, "works on text")
 
+_COUNTING: Final[Choice] = Choice(("inclusive", "elapsed"))
+
+_WHOLE_PART: Final[Value] = Value(Family.NUMBER, "builds a date from numbers", whole="builds a date from whole numbers")
+
 _ON_NUMBERS: Final[Value] = Value(Family.NUMBER, "works on numbers")
 
 _AGAINST_TEXT: Final[Value] = Value(Family.TEXT, "compares text against text")
@@ -298,6 +327,50 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_add_months,
         summary="A date moved by a whole number of months, kept inside a month that is too short.",
         example="add_months([starts_on], [months] - 1)",
+    ),
+    Function(
+        "months_between",
+        params=(
+            Value(Family.DATE, "counts between dates", no_time_zone=True),
+            Value(Family.DATE, "counts between dates", no_time_zone=True),
+            _COUNTING,
+        ),
+        result=Family.NUMBER,
+        result_dtype=pl.Int64(),
+        to_polars=_months_between,
+        summary="Whole months from the first date to the second, signed; 'inclusive' or 'elapsed', as date_diff counts.",
+        example="months_between([starts_on], [ends_on], 'inclusive')",
+    ),
+    Function(
+        "days_between",
+        params=(
+            Value(Family.DATE, "counts between dates", no_time_zone=True),
+            Value(Family.DATE, "counts between dates", no_time_zone=True),
+            _COUNTING,
+        ),
+        result=Family.NUMBER,
+        result_dtype=pl.Int64(),
+        to_polars=_days_between,
+        summary="Days from the first date to the second, signed; 'inclusive' or 'elapsed', as date_diff counts.",
+        example="days_between([ordered_on], [paid_on], 'elapsed')",
+    ),
+    Function(
+        "make_date",
+        params=(_WHOLE_PART, _WHOLE_PART, _WHOLE_PART),
+        result=Family.DATE,
+        result_dtype=pl.Date(),
+        to_polars=_make_date,
+        summary="The date a year, a month and a day name, or null when they name no date (30 February).",
+        example="make_date([year], [month], 1)",
+    ),
+    Function(
+        "month_end",
+        params=(Value(Family.DATE, "finds the end of a date's month", no_time_zone=True),),
+        result=Family.DATE,
+        result_dtype=pl.Date(),
+        to_polars=_month_end,
+        summary="The last day of the month a date falls in.",
+        example="month_end([ordered_on])",
     ),
     Function(
         "abs",

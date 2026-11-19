@@ -20,8 +20,8 @@ from dantron_etl.loader import load_pipeline
 TOOLS_DIR = Path(dantron_etl.__file__).parent / "tools"
 
 # The modules that hold the tool contract, one job each.
-CORE_MODULES = ("boundary", "config", "conformance", "contract", "errors", "example_world", "frame_checks",
-                "ports", "registry", "status")
+CORE_MODULES = ("boundary", "config", "conformance", "contract", "errors", "example_world", "expr.dates",
+                "frame_checks", "ports", "registry", "status")
 
 # Where each name the package root exports is defined.
 ROOT_HOMES = {

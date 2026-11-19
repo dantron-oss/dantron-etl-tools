@@ -712,6 +712,10 @@ class TestSecurity:
         natural key is three columns of text -- and nothing else on this list can turn several
         values into one stable id. It is the standard library's version 5, not an invention, so
         the id a flow writes is the id anything else computing it the same way would write.
+
+        ``months_between``, ``days_between``, ``make_date`` and ``month_end`` came together: flows
+        were casting dates to whole numbers to subtract them. Each answers what a tool already does
+        (``date_diff``, ``assemble_date``), from the same shared code.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
@@ -719,6 +723,10 @@ class TestSecurity:
             "round",
             "year",
             "add_months",
+            "months_between",
+            "days_between",
+            "make_date",
+            "month_end",
             "abs",
             "lower",
             "upper",
