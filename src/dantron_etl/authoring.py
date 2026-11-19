@@ -22,6 +22,7 @@ from .errors import (
     ToolError,
 )
 from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
+from .expr import references
 from .frame_checks import (
     REPLACE_FIELD,
     check_output_column,
@@ -59,6 +60,7 @@ __all__ = [
     "compile_for",
     "compile_predicate_for",
     "compiled_dtype",
+    "references",
     "require_columns",
     "require_not_blank",
     # per-row status

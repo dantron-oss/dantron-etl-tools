@@ -77,6 +77,7 @@ from ..authoring import (
     WorkedExample,
     compile_for,
     compiled_dtype,
+    references,
     require_columns,
 )
 
@@ -190,6 +191,9 @@ class GroupBy:
                 "strings produces the empty string, while adding no numbers produces a total nobody "
                 "measured. What is joined has to be text, and a separator beside any other "
                 "aggregate is refused rather than ignored.",
+                "A 'value' that reads no column, such as '1', is refused. A fixed value is worked "
+                "out once per group, not once per row, so 'sum' of 1 would not count the rows. Use "
+                "'count' for that.",
             ),
             field_help={
                 "by": "The group key; repeating a column counts it once and does not duplicate it on the output.",
@@ -236,6 +240,15 @@ class GroupBy:
                     )
             elif value is None:
                 raise ConfigError(f"aggregation {name!r} declares function {function!r} but no 'value' to aggregate")
+            elif not references(value):
+                # polars aggregates a fixed value once per group, not once per row, so sum of 1
+                # would give 1 for every group instead of its row count.
+                raise ConfigError(
+                    f"config field 'aggregations[{index}].value' holds `{value}`, which reads no column; "
+                    f"{function!r} of a fixed value is worked out once per group, not once per row. To "
+                    f"count rows use 'count'. To add up a fixed amount per row, write it as a column in "
+                    f"a formula step before this one and aggregate that column"
+                )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """The columns this configuration names, checked against the frame that actually arrived.
