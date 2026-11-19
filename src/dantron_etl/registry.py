@@ -15,11 +15,11 @@ __all__ = ["REGISTRY", "ToolRegistry", "get_tool"]
 
 
 class ToolRegistry:
-    """A catalog of tools resolved by name.
+    """A catalog of tools looked up by name.
 
-    A repeat name is refused rather than left to overwrite whatever registered first, because a
-    second tool silently taking over a name is a defect a caller would only find by noticing the
-    wrong tool ran.
+    ``register(tool)`` adds one and refuses a second tool with the same name, or an object that
+    is not a :class:`Tool`. ``get(name)`` returns one, or raises :class:`RegistryError` listing
+    what there is. Iterating gives the names in sorted order.
     """
 
     def __init__(self) -> None:
@@ -40,11 +40,11 @@ class ToolRegistry:
             raise RegistryError(f"no tool named {name!r} is registered; registered tools are: {available}") from None
 
     def names(self) -> tuple[str, ...]:
-        """Registered names, sorted -- so a rendered catalog does not reshuffle as tools are added."""
+        """Return the registered names, sorted, so the catalog keeps a stable order."""
         return tuple(sorted(self._tools))
 
     def tools(self) -> tuple[Tool, ...]:
-        """Registered tools, in :meth:`names` order."""
+        """Return the registered tools, in :meth:`names` order."""
         return tuple(self._tools[name] for name in self.names())
 
     def __len__(self) -> int:
@@ -57,11 +57,10 @@ class ToolRegistry:
         return iter(self.names())
 
 
-# The shipped catalog. Each module under ``tools/`` registers its tool here when it is imported,
-# and importing the package imports every one of them.
+# The shipped catalog. Each module under ``tools/`` registers its tool here when imported.
 REGISTRY: Final[ToolRegistry] = ToolRegistry()
 
 
 def get_tool(name: str) -> Tool:
-    """The shipped tool called ``name``. Short for ``REGISTRY.get(name)``, with the same refusal."""
+    """Return the shipped tool called ``name``. Short for ``REGISTRY.get(name)``."""
     return REGISTRY.get(name)
