@@ -19,6 +19,7 @@ from typing import Any
 
 __all__ = [
     "MIGRATE_COMMAND",
+    "NEEDS_THE_DATA",
     "RENAME_NOTES",
     "STATED_NOW",
     "as_written",
@@ -106,6 +107,14 @@ FUNCTION_RENAMES: dict[str, str] = {"strip": "trim"}
 
 # The old single-sheet workbook writer: this tool with this config key. It cannot be migrated.
 SINGLE_SHEET_TOOL: tuple[str, str] = ("write_excel", "sheet")
+
+# Settings now required that the file alone cannot show are needed. The migration prints these as
+# guidance, because only the data's types can say which steps need them.
+NEEDS_THE_DATA: tuple[str, ...] = (
+    "A cast to Date, date_diff and expand_date_range now need 'in_zone' when they read a timestamp "
+    "that carries a time zone, which a pipeline file does not show. Such a step stops when it runs, "
+    "naming itself; write in_zone: UTC there to keep the dates it gave before.",
+)
 
 # Python names. Code cannot be rewritten by the migration, so these are printed as guidance.
 PYTHON_RENAMES: tuple[tuple[str, str], ...] = (

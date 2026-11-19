@@ -55,7 +55,10 @@ from ..authoring import (
     Ports,
     ToolHelp,
     WorkedExample,
+    as_calendar_date,
+    check_zone_name,
     require_columns,
+    require_stated_zone,
     row_status,
     unreadable_report,
 )
@@ -98,6 +101,12 @@ class CastColumns:
                             required=True,
                             enum=DECLARED_TYPES,
                         ),
+                        "in_zone": ConfigField(
+                            type="string",
+                            description="For a timestamp that carries a time zone, read as a 'Date': "
+                            "the zone whose calendar decides the day, such as UTC. Required then, "
+                            "refused anywhere else; no default.",
+                        ),
                     },
                 ),
             ),
@@ -134,6 +143,9 @@ class CastColumns:
                 "A decimal becomes a whole number only when it already is one. 12.0 reads as 12, "
                 "but 1.99 does not read as Int64: it stops the run, naming the column and the "
                 "values, or is emptied and counted under 'set_null'. Round it first.",
+                "A timestamp that carries a time zone becomes a Date only with 'in_zone' beside "
+                "it, because which day it falls on depends on the zone: 23:30 on 31 January in "
+                "Toronto is 1 February in UTC. 'in_zone: UTC' reads the UTC date. There is no default.",
                 "A date cast to a number gives the days since 1 January 1970. A timestamp cast to "
                 "Int64 gives a count in the column's own time unit: microseconds for a timestamp "
                 "this library typed, but a source may hand over nanoseconds or milliseconds. To "
@@ -149,6 +161,14 @@ class CastColumns:
         named: set[str] = set()
         for index, entry in enumerate(config["columns"]):
             column = entry["column"]
+            zone = entry.get("in_zone")
+            if zone is not None:
+                check_zone_name(zone, f"columns[{index}].in_zone")
+                if entry["type"] != "Date":
+                    raise ConfigError(
+                        f"config field 'columns[{index}].in_zone' is set for {column!r}, which is read as "
+                        f"{entry['type']}; a zone only decides the day a timestamp is read as a Date, so remove it"
+                    )
             if column in named:
                 raise ConfigError(
                     f"config field 'columns' states a type for {column!r} twice, the second at entry "
@@ -171,6 +191,17 @@ class CastColumns:
                 f"that changes nothing is a configuration edited halfway"
             )
 
+        for index, entry in enumerate(config["columns"]):
+            column, zone, dtype = entry["column"], entry.get("in_zone"), frame.schema[entry["column"]]
+            field = f"columns[{index}].in_zone"
+            if entry["type"] == "Date":
+                require_stated_zone(dtype, zone, field.rpartition(".")[2], reading=f"column {column!r}")
+            if zone is not None and not (isinstance(dtype, pl.Datetime) and dtype.time_zone is not None):
+                raise ConfigError(
+                    f"config field {field!r} is set for {column!r}, which holds {dtype} and carries no time "
+                    f"zone; there is no zone to read it in, so remove it"
+                )
+
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         lenient = config["on_invalid"] == "set_null"
@@ -182,6 +213,10 @@ class CastColumns:
 
         for entry in config["columns"]:
             column, declared = entry["column"], entry["type"]
+            if declared == "Date" and entry.get("in_zone") is not None:
+                # A timestamp in a zone, read as the date it falls on in the zone the author stated.
+                frame = frame.with_columns(as_calendar_date(pl.col(column), frame.schema[column], entry["in_zone"]))
+                continue
             if lenient:
                 # Taken before the values are replaced, because afterwards the evidence is gone:
                 # a null that failed to convert and a null that was always there look identical, and

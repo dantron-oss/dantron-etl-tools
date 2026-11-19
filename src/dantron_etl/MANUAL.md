@@ -230,7 +230,8 @@ count, so the same day is 1) or `'elapsed'` (completed units only). They give ex
 `date_diff` tool gives, from the same code. `make_date(year, month, day)` builds a date from three
 whole numbers and gives null when they name no date, such as 30 February; it is `assemble_date`
 with `on_invalid: set_null`. `month_end(date)` is the last day of that date's month. All four take
-dates; a timestamp in a time zone is refused, so cast it to `Date` first and choose the day. Use
+dates; a timestamp in a time zone is refused, so cast it to `Date` first with `cast_columns` and
+its `in_zone`, which chooses the day. Use
 these instead of casting dates to whole numbers to subtract them: `days_between([from], [to],
 'elapsed')` says what it counts, and a date cast to a number is a count of days since 1970 that a
 reader has to know to trust.
@@ -556,9 +557,14 @@ Every one of these was measured, most of them the hard way.
 - **A format rule for `Int64` reaches every whole-number column**, including the `Int32` column an
   integer literal gives. A rule for `Float64` does not reach a `Float32` column: cast it to
   `Float64`, or name the column in the rule.
+- **Which day a timestamp in a time zone falls on depends on the zone, so you state it.** 23:30 on
+  31 January in Toronto is 1 February in UTC. `cast_columns` to `Date`, `date_diff` and
+  `expand_date_range` refuse such a timestamp unless `in_zone` says which zone's calendar to use:
+  `in_zone: UTC` reads the UTC date, which is what they read before the rule. There is no default,
+  and `in_zone` where no timestamp carries a zone is refused too.
 - **A spreadsheet cell cannot record a time zone**, so `write_excel` refuses a
-  zone-aware timestamp. `cast_columns` it to `Date` first, deliberately, rather than letting a
-  writer drop the zone quietly.
+  zone-aware timestamp. `cast_columns` it to `Date` first, with `in_zone`, deliberately, rather
+  than letting a writer drop the zone quietly.
 - **A text file states no types at all.** `read_csv` infers, reading the *whole* column before it
   casts. Declare `column_types` as `String` for any column that is an identifier or a name: a
   customer literally called `3600` inferred as a number stops matching the same name everywhere

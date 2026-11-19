@@ -236,6 +236,15 @@
                 "required": true,
                 "type": "string"
               },
+              "in_zone": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "string"
+              },
               "type": {
                 "default": null,
                 "enum": [
@@ -371,6 +380,15 @@
           "required": true,
           "type": "expression"
         },
+        "in_zone": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        },
         "output": {
           "default": null,
           "enum": null,
@@ -420,6 +438,15 @@
           "non_empty": false,
           "required": true,
           "type": "expression"
+        },
+        "in_zone": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
         },
         "period_column": {
           "default": "period_start",

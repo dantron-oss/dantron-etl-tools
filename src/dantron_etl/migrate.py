@@ -22,6 +22,7 @@ from typing import Any
 
 from .renames import (
     FUNCTION_RENAMES,
+    NEEDS_THE_DATA,
     as_written,
     MIGRATE_COMMAND,
     PYTHON_RENAMES,
@@ -500,6 +501,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.port_map:
         Path(arguments.port_map).write_text(json.dumps(port_map(), indent=2) + "\n", encoding="utf8")
+
+    print("\nWhat a pipeline file cannot show, so check by hand:")
+    for sentence in NEEDS_THE_DATA:
+        print(f"  {sentence}")
 
     print("\nPython code is not rewritten. Rename these by hand:")
     for old, new in PYTHON_RENAMES:

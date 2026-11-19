@@ -1630,3 +1630,23 @@ class TestCommandLineWithManualItems:
         assert code == 1
         assert "tab_out" in printed
         assert path.read_bytes() == OLD_SINGLE_SHEET.encode("utf8")
+
+
+class TestWhatTheFileCannotShow:
+    def test_the_time_zone_setting_is_printed_as_guidance_because_only_the_data_shows_where_it_is_needed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = tmp_path / "flow.yaml"
+        path.write_text(_flow("""\
+          - id: dated
+            tool: cast_columns
+            config:
+              columns: [{column: paid_at, type: Date}]
+            inputs: {rows: src.rows}
+        """), encoding="utf8")
+
+        main([str(path)])
+        printed = capsys.readouterr().out
+
+        assert "in_zone: UTC" in printed and "date_diff" in printed
+        assert path.read_text(encoding="utf8").count("in_zone") == 0, "the migration cannot know, so it writes nothing"

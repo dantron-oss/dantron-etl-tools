@@ -26,12 +26,16 @@ from .example_world import SCRATCH_TOKEN, example_database, scratch_path, tempor
 from .expr import references
 from .frame_checks import (
     REPLACE_FIELD,
+    ZONE_FIELD,
+    as_calendar_date,
     check_output_column,
+    check_zone_name,
     compile_for,
     compile_predicate_for,
     compiled_dtype,
     refuse_division_by_zero,
     require_columns,
+    require_stated_zone,
 )
 from .ports import Ports
 from .registry import REGISTRY, ToolRegistry
@@ -58,7 +62,10 @@ __all__ = [
     "WorkedExample",
     # checking a configuration against the frames a tool was given
     "REPLACE_FIELD",
+    "ZONE_FIELD",
+    "as_calendar_date",
     "check_output_column",
+    "check_zone_name",
     "compile_for",
     "compile_predicate_for",
     "compiled_dtype",
@@ -66,6 +73,7 @@ __all__ = [
     "references",
     "require_columns",
     "require_not_blank",
+    "require_stated_zone",
     # counting between dates and building them, shared with the expression functions
     "MAX_YEAR",
     "MIN_YEAR",

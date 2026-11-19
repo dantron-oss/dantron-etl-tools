@@ -34,6 +34,10 @@ from ..authoring import (
     count_between,
     refuse_division_by_zero,
     require_not_blank,
+    ZONE_FIELD,
+    as_calendar_date,
+    check_zone_name,
+    require_stated_zone,
 )
 
 _UNIT_ENUM: Final[tuple[str, ...]] = ("month", "day")
@@ -81,6 +85,7 @@ class DateDiff:
                 required=True,
                 non_empty=True,
             ),
+            "in_zone": ZONE_FIELD,
         }
 
     def help(self) -> ToolHelp:
@@ -101,6 +106,9 @@ class DateDiff:
                 "exactly one less, in either direction, like SQL's DATEDIFF.",
                 "A backwards range counts negative and keeps its size, because which end was "
                 "mistyped is a judgement for a repair step and not this tool's to make.",
+                "A timestamp is read as the date it falls on. When it carries a time zone, 'in_zone' "
+                "must say in which zone, because 23:30 on 31 January in Toronto is 1 February in "
+                "UTC; 'in_zone: UTC' reads the UTC date. There is no default.",
             ),
         )
 
@@ -108,6 +116,8 @@ class DateDiff:
         if config["counting"] is None:
             raise ConfigError("config field 'counting' was given with no value; write 'inclusive' or 'elapsed'")
         require_not_blank(config["output"], "output")
+        if config["in_zone"] is not None:
+            check_zone_name(config["in_zone"], "in_zone")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Refuse a side that is not a date, off the schema alone."""
@@ -119,6 +129,7 @@ class DateDiff:
                     f"config field {side!r} must give a date, but column {column!r} holds {dtype}, "
                     f"in expression: `{config[side]}`"
                 )
+        _require_zone_where_needed(frame, config)
         check_output_column(frame, config["output"], "output", replace=None)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -126,8 +137,10 @@ class DateDiff:
 
         for side in ("start", "end"):
             refuse_division_by_zero(frame, config[side], side)
-        start_expr = compile_for(frame, config["start"], "start").cast(pl.Date)
-        end_expr = compile_for(frame, config["end"], "end").cast(pl.Date)
+        start_expr, end_expr = (
+            as_calendar_date(compile_for(frame, config[side], side), compiled_dtype(frame, config[side], side)[1], config["in_zone"])
+            for side in ("start", "end")
+        )
 
         staged = frame.lazy().with_columns(start_expr.alias("__start"), end_expr.alias("__end")).collect()
 
@@ -138,6 +151,20 @@ class DateDiff:
             [*frame.columns, config["output"]]
         )
         return Ports({"rows": result})
+
+
+def _require_zone_where_needed(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
+    """'in_zone' is needed when a side is a timestamp in a zone, and refused when neither side is."""
+    zoned = False
+    for side in ("start", "end"):
+        column, dtype = compiled_dtype(frame, config[side], side)
+        require_stated_zone(dtype, config["in_zone"], "in_zone", reading=f"config field {side!r} (column {column!r})")
+        zoned = zoned or (isinstance(dtype, pl.Datetime) and dtype.time_zone is not None)
+    if config["in_zone"] is not None and not zoned:
+        raise ConfigError(
+            "config field 'in_zone' is set, but neither 'start' nor 'end' is a timestamp that carries a "
+            "time zone; there is no zone to read them in, so remove it"
+        )
 
 
 def _plain_example() -> WorkedExample:

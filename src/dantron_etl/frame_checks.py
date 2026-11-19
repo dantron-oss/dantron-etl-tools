@@ -25,8 +25,12 @@ __all__ = [
     "check_output_column",
     "compile_for",
     "compile_predicate_for",
+    "ZONE_FIELD",
+    "as_calendar_date",
+    "check_zone_name",
     "compiled_dtype",
     "refuse_division_by_zero",
+    "require_stated_zone",
     "require_columns",
 ]
 
@@ -245,3 +249,45 @@ def check_output_column(frame: pl.DataFrame, name: str, field: str, *, replace: 
             f"config field {field!r} names output column {name!r}, which the input already carries; "
             f"say replace: true to overwrite it deliberately, or write to a name nothing uses"
         )
+
+
+# The setting a step uses to say in which time zone a timestamp is read as a date. Shared so the
+# wording is the same on every catalog page. No default: which day a timestamp falls on depends on
+# the zone, so the author states it.
+ZONE_FIELD: Final[ConfigField] = ConfigField(
+    type="string",
+    description="The time zone in which a timestamp that carries a zone is read as a date, such as "
+    "UTC or America/Toronto. Required when one does, refused when none does; no default.",
+)
+
+
+def check_zone_name(zone: str, field: str) -> None:
+    """Refuse a time zone name the engine does not know, naming the field and the name."""
+    try:
+        pl.Series([None], dtype=pl.Datetime("us")).dt.replace_time_zone(zone)
+    except pl.exceptions.PolarsError:
+        raise ConfigError(
+            f"config field {field!r} names the time zone {zone!r}, which is not one the engine knows; "
+            f"write an IANA name such as UTC or America/Toronto"
+        ) from None
+
+
+def require_stated_zone(dtype: pl.DataType, zone: str | None, field: str, *, reading: str) -> None:
+    """Refuse a timestamp in a zone read as a date with no zone stated, and a zone stated for nothing.
+
+    ``reading`` says what is being read, for the refusal: a column, or a side of a range.
+    """
+    carried = dtype.time_zone if isinstance(dtype, pl.Datetime) else None
+    if carried is not None and zone is None:
+        raise ConfigError(
+            f"{reading} is a timestamp in time zone {carried!r}, read here as a date, and which day it "
+            f"falls on depends on the zone; write {field}: UTC to read it as the UTC date, as before, "
+            f"or the zone whose calendar the dates belong to"
+        )
+
+
+def as_calendar_date(expression: pl.Expr, dtype: pl.DataType, zone: str | None) -> pl.Expr:
+    """A date, or a timestamp read as the date it falls on: in ``zone`` when it carries a zone."""
+    if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None and zone is not None:
+        return expression.dt.convert_time_zone(zone).dt.date()
+    return expression.cast(pl.Date)

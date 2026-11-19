@@ -18,7 +18,8 @@ declaration in this library.
 Vocabulary is generic: the library carries no caller's nouns.
 """
 
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 from decimal import Decimal
 
 import polars as pl
@@ -321,3 +322,69 @@ class TestADecimalBecomesAWholeNumberOnlyWhenItIsOne:
         frame = pl.DataFrame({"a": ["12", "-3"], "b": pl.Series([1, 2], dtype=pl.Int32)})
         result = _cast(frame, ("a", "Int64"), ("b", "Int64"))
         assert result["a"].to_list() == [12, -3] and result["b"].to_list() == [1, 2]
+
+
+def _late_in_toronto() -> pl.DataFrame:
+    """23:30 on 31 January in Toronto, which is 04:30 on 1 February in UTC, and a zone-less twin."""
+    moment = datetime(2026, 2, 1, 4, 30)
+    return pl.DataFrame({"paid_at": [moment, None], "noted_at": [moment, None]}).with_columns(
+        pl.col("paid_at").dt.replace_time_zone("UTC").dt.convert_time_zone("America/Toronto")
+    )
+
+
+class TestATimestampInAZoneIsReadAsADateInAStatedZone:
+    """Which day a timestamp falls on depends on the zone, so the author states it (the owner's ruling).
+
+    No default: a cast to Date of a zone-aware timestamp without 'in_zone' is refused by name, on
+    the schema, before any row is read. 'in_zone: UTC' gives the UTC date, which is what the cast
+    gave before. 'in_zone' anywhere it would do nothing is refused too.
+    """
+
+    def _cast_paid(self, **entry: Any) -> pl.DataFrame:
+        config = {"columns": [{"column": "paid_at", "type": "Date", **entry}]}
+        return run_tool(CastColumns(), Ports({"rows": _late_in_toronto()}), config)["rows"]
+
+    @pytest.mark.parametrize("height", [2, 0])
+    def test_without_a_zone_it_is_refused_naming_the_column_its_zone_and_the_setting(self, height: int) -> None:
+        config = {"columns": [{"column": "paid_at", "type": "Date"}]}
+        with pytest.raises(ConfigError) as caught:
+            run_tool(CastColumns(), Ports({"rows": _late_in_toronto().head(height)}), config)
+        message = str(caught.value)
+        for word in ("paid_at", "America/Toronto", "in_zone", "UTC"):
+            assert word in message, message
+
+    def test_utc_gives_the_date_the_cast_gave_before(self) -> None:
+        assert self._cast_paid(in_zone="UTC")["paid_at"].to_list() == [date(2026, 2, 1), None]
+
+    def test_the_stated_zone_decides_the_day(self) -> None:
+        assert self._cast_paid(in_zone="America/Toronto")["paid_at"].to_list() == [date(2026, 1, 31), None]
+
+    def test_a_timestamp_with_no_zone_needs_none_and_refuses_one(self) -> None:
+        plain = {"columns": [{"column": "noted_at", "type": "Date"}]}
+        assert run_tool(CastColumns(), Ports({"rows": _late_in_toronto()}), plain)["rows"]["noted_at"].to_list() == [
+            date(2026, 2, 1),
+            None,
+        ]
+        with pytest.raises(ConfigError) as caught:
+            run_tool(
+                CastColumns(),
+                Ports({"rows": _late_in_toronto()}),
+                {"columns": [{"column": "noted_at", "type": "Date", "in_zone": "UTC"}]},
+            )
+        assert "in_zone" in str(caught.value) and "noted_at" in str(caught.value)
+
+    def test_a_zone_beside_a_type_other_than_date_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            run_tool(
+                CastColumns(),
+                Ports({"rows": _late_in_toronto()}),
+                {"columns": [{"column": "paid_at", "type": "String", "in_zone": "UTC"}]},
+            )
+        assert "in_zone" in str(caught.value)
+
+    def test_a_zone_nobody_has_heard_of_is_refused_before_any_frame(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            CastColumns().validate_config(
+                {"columns": [{"column": "paid_at", "type": "Date", "in_zone": "Mars/Olympus"}], "on_invalid": "error"}
+            )
+        assert "Mars/Olympus" in str(caught.value)
