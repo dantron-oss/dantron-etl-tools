@@ -1,25 +1,9 @@
-"""WriteCsv: one frame becomes one delimited text file, and the same rows pass through.
+"""WriteCsv: write one frame to one delimited text file, and pass the same rows on.
 
-A file sink, and the sibling of ``write_excel`` rather than a format switch on it: a text file has no row limit, no cell holding a double, and no tab-naming rules, so none of the
-workbook sink's refusals apply here -- and this format has hazards of its own that a cell does not,
-which is the other half of why the two are separate tools.
+UTF-8, line feeds, a header row. A null and empty text are both written as an empty field. An empty
+frame stops the run unless `allow_empty`. A file already at `path` needs `overwrite`.
 
-**A whole number is written digit for digit**, and so is a ``Decimal``, because a line of text has
-no notion of a double to round either into: the workbook sink refuses both for exactly the reason
-this one does not need to.
-
-**A value carrying the delimiter, a quote or a line ending is quoted**, and only that value: the
-format's own convention -- wrapped in ``"``, an inner quote doubled -- is what the paired reader
-assumes, so it is not configurable here.
-
-**The bytes are UTF-8 with no byte order mark, and the line ending is a line feed**, neither
-configurable, because a sink is choosing rather than discovering a fact about somebody else's file --
-the deliberate asymmetry with the paired reader's ``encoding`` field.
-
-**A null and an empty string are both written as an empty field**, and the reader hands both back as
-nothing; the loss is one-way and is stated here rather than only assumed. **A frame with no rows stops the run unless
-``allow_empty`` says otherwise**, as on the table sinks, because a file that is empty for a reason
-upstream looks exactly like a quiet month. Allowed, it is written as a header-only file.
+Why: docs/design/tools.md#write_csv
 """
 
 from collections.abc import Iterator, Mapping
@@ -48,10 +32,10 @@ _OVERWRITE_PATH: Final[str] = f"{SCRATCH_TOKEN}/overwrite.csv"
 
 
 class WriteCsv:
-    """Write ``rows`` to one delimited text file, and hand the same rows on."""
+    """Write `rows` to one delimited text file, and pass the same rows on."""
 
     name = "write_csv"
-    description = "Write `rows` to a delimited text file, and hand the same rows on."
+    description = "Write a table to a CSV file."
     category = "output"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -60,27 +44,25 @@ class WriteCsv:
         return {
             "path": ConfigField(
                 type="string",
-                description="Where the file is written; must end in .csv or .tsv.",
+                description="The file to write. It must end in .csv or .tsv.",
                 required=True,
                 non_empty=True,
                 file_path=True,
             ),
             "delimiter": ConfigField(
                 type="string",
-                description="The one character separating fields.",
+                description="The character between fields. Left out, a comma.",
                 default=",",
                 non_empty=True,
             ),
             "overwrite": ConfigField(
                 type="boolean",
-                description="Whether a file already at 'path' may be overwritten; leave it out and "
-                "an existing file is refused.",
+                description="Set true to allow replacing a file already at 'path'.",
                 default=False,
             ),
             "allow_empty": ConfigField(
                 type="boolean",
-                description="Whether a frame with no rows is written, as a header-only file, instead "
-                "of stopping the run.",
+                description="Set true to write a table with no rows as a file with only the header.",
                 default=False,
             ),
         }
@@ -88,42 +70,39 @@ class WriteCsv:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "'rows' is written to 'path' as a delimited text file with a header row and every "
-                "row of data below it; the same rows leave on the output port unchanged. An "
-                "existing file is never overwritten unless 'overwrite' says so in writing, though "
-                "writing true when nothing occupies the path is accepted rather than refused. A "
-                "null and an empty string both arrive on the page as an empty field, and the loss is "
-                "one-way: the paired reader hands both back as nothing."
+                "Use write_csv to deliver a table as a CSV file: a header row, then every row of data. "
+                "The same rows also pass on through `rows`, so the flow can continue after it."
             ),
             examples=(_plain_write_example(), _overwrite_example()),
             notes=(
-                "The bytes are UTF-8 with no byte order mark, and the line ending is a line feed; "
-                "neither is configurable, because a sink is choosing rather than discovering.",
-                "A whole number is written digit for digit, and so is a Decimal: a line of text has "
-                "no cell to round either one into, which is the reason this is a separate tool from "
-                "the workbook sink rather than a format switch on it.",
-                "A List, a Struct or a Duration is refused rather than stringified: each has a "
-                "plausible-looking wrong answer as a line of text, and none of them is the value it "
-                "started as.",
-                "A frame with no rows stops the run unless 'allow_empty' says otherwise, as on the "
-                "table sinks: a file that is empty because something upstream failed looks exactly "
-                "like a quiet month. Allowed, it is written as a header-only file, so whoever opens "
-                "it can see the delivery was empty rather than missing.",
+                "A file already at 'path' is refused unless 'overwrite' is true. 'overwrite: true' with "
+                "no file there is fine.",
+                "The file is UTF-8 with no byte order mark, and lines end with a line feed. Neither can "
+                "be changed: unlike reading, writing chooses rather than discovers.",
+                "A null and empty text are both written as an empty field, and read_csv reads both back "
+                "as null. That difference is lost.",
+                "A value containing the delimiter, a quote or a line break is wrapped in quotes, with "
+                "inner quotes doubled. Other values are not quoted.",
+                "Whole numbers and Decimal values are written digit for digit; text has no limit to "
+                "round them to.",
+                "A List, Struct or Duration column is refused rather than turned into text.",
+                "A table with no rows stops the run unless 'allow_empty' is true, because an empty file "
+                "caused by a failure upstream looks like a quiet month.",
+                "Allowed, an empty table is written as a header-only file, so the delivery is visibly "
+                "empty, not missing.",
+                "The folder must already exist. All checks happen before the file is opened, so a "
+                "refusal leaves no half-written file.",
             ),
             field_help={
-                "allow_empty": "Defaults to false: an empty frame stops the run until a flow says "
-                "in writing that this file may be empty.",
-                "overwrite": "Defaults to false: a path already occupied is refused until an author "
-                "says in writing that overwriting it is intended.",
+                "path": "For example 'output/orders.csv'.",
+                "allow_empty": "Set it when a file may legitimately be empty, such as no refunds this month.",
+                "overwrite": "Set it to true for a flow that runs again and again: without it, the "
+                "second run is refused because the file is already there.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse the wrong format, an unusable delimiter, a missing folder, or an overwrite nobody authorised.
-
-        All four are answerable from the configuration alone, before a file is ever opened, so each
-        is refused here rather than partway through a write that would otherwise have to be undone.
-        """
+        """Refuse the wrong extension, a bad delimiter, a missing folder, and an overwrite not allowed."""
         path = config["path"]
         if not path.lower().endswith(_ACCEPTED_EXTENSIONS):
             raise ConfigError(f"write_csv only writes {' or '.join(_ACCEPTED_EXTENSIONS)} files; got path '{path}'")
@@ -134,11 +113,7 @@ class WriteCsv:
         refuse_to_overwrite("write_csv", path, "overwrite", config["overwrite"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a column a line of text cannot carry honestly, before a byte is written.
-
-        Answerable from the schema alone, so it happens before the file is opened -- a refused write
-        must not leave a half-written file behind.
-        """
+        """Refuse an empty frame without `allow_empty`, and a column text cannot hold, before writing."""
         frame = inputs["rows"]
         if frame.height == 0 and not config["allow_empty"]:
             raise DataError(
@@ -163,13 +138,10 @@ class WriteCsv:
 
 
 def _write_csv(frame: pl.DataFrame, path: str, delimiter: str) -> None:
-    """Write ``frame`` to ``path``, an empty string indistinguishable from null on the way out.
+    """Write `frame` to `path`, with empty text written exactly like a null.
 
-    Polars' own writer quotes an empty string to tell it apart from a null in the same column, which
-    is precisely the distinction this format is not entitled to keep -- a text column blanked out by
-    an upstream step and one this reader's own paired file never carried a value for must read back
-    identically. A null-mapped copy is written instead of the frame that arrived, so the input
-    itself is never touched.
+    polars quotes an empty string to tell it from a null; this format does not keep that difference, so a
+    copy with empty text turned to null is written. The input frame is not touched.
     """
     string_columns = [name for name, dtype in frame.schema.items() if dtype == pl.String]
     to_write = frame
@@ -181,7 +153,7 @@ def _write_csv(frame: pl.DataFrame, path: str, delimiter: str) -> None:
 
 
 def _unsupported_dtype_reason(dtype: pl.DataType) -> str | None:
-    """Why ``dtype`` cannot land in a line of text honestly, or ``None`` if it can."""
+    """Why a column of `dtype` cannot be written as text faithfully, or None if it can."""
     if isinstance(dtype, pl.List):
         return "a line of text holds one value, not a list; it would arrive as punctuation"
     if isinstance(dtype, pl.Struct):
@@ -193,12 +165,7 @@ def _unsupported_dtype_reason(dtype: pl.DataType) -> str | None:
 
 @contextmanager
 def _overwrite_setup() -> Iterator[None]:
-    """A file already occupying the path, standing in for last month's extract.
-
-    Planted with :func:`scratch_path`, which resolves the same ``{scratch}`` token the example's own
-    configuration holds, into the directory :func:`check_tool` opens for the run. Nothing here tears
-    the file back down: the directory is the checker's, and it takes whatever a setup left inside it.
-    """
+    """Put a file at the example's path, standing in for last month's extract."""
     target = scratch_path(_OVERWRITE_PATH)
     target.write_bytes(b"last month's extract")
     yield
@@ -207,25 +174,23 @@ def _overwrite_setup() -> Iterator[None]:
 def _plain_write_example() -> WorkedExample:
     frame = pl.DataFrame({"key": ["r1", "r2"], "amount": [10.25, -5.5]})
     return WorkedExample(
-        scenario="write a new file where nothing exists yet",
+        scenario="write a table to a new CSV file",
         configuration={"path": _PLAIN_PATH},
-        explanation="'overwrite' is left out, and the path is empty, so no permission is needed; the "
-        "same two rows leave on the output port unchanged.",
+        explanation="No file is at the path yet, so 'overwrite' is not needed. The same two rows pass on through "
+        "'rows'.",
         inputs=Ports({"rows": frame}),
         outputs=Ports({"rows": frame}),
         check_row_order=True,
-        # Nothing to plant: the directory the checker opens for this run is empty by construction.
     )
 
 
 def _overwrite_example() -> WorkedExample:
     frame = pl.DataFrame({"key": ["r1", "r2"], "amount": [10.25, -5.5]})
     return WorkedExample(
-        scenario="overwrite a file that is already there, on purpose",
+        scenario="replace a file that is already there",
         configuration={"path": _OVERWRITE_PATH, "overwrite": True},
-        explanation="A file already occupies the path; 'overwrite: true' says in writing that "
-        "overwriting it is intended, and the same two rows leave on the output port unchanged "
-        "either way.",
+        explanation="A file is already at the path, so 'overwrite: true' is needed to replace it. The same two "
+        "rows pass on through 'rows'.",
         inputs=Ports({"rows": frame}),
         outputs=Ports({"rows": frame}),
         check_row_order=True,

@@ -783,3 +783,30 @@ time-only cell reads as that time on 1899-12-31. A test pins each case.
 **Lazy import.** fastexcel and xlsxwriter (for the examples) are imported inside the functions that use
 them, so importing the package does not load them (findings G-17 / B-21). A missing fastexcel is refused
 with the name of the package to install. A test imports the package in a fresh interpreter and checks.
+
+## write_csv
+
+**A sibling of write_excel, not a format switch.** A text file has no row limit, no cell holding a
+double, and no tab-name rules, so none of the workbook's refusals apply; and text has hazards of its
+own. Whole numbers and Decimals are written digit for digit.
+
+**Quoting follows the format's own convention.** Only a value holding the delimiter, a quote or a line
+break is quoted, wrapped in `"` with inner quotes doubled. read_csv assumes this, so it is not a setting.
+
+**UTF-8 without a byte order mark, line feeds.** Not settings: a writer chooses, while a reader
+discovers a fact about someone else's file. Hence read_csv has `encoding` and this tool does not.
+
+**Null and empty text are the same on the page.** polars would quote an empty string to keep them apart;
+that is a distinction this format is not entitled to keep, so empty text is written as null. read_csv
+reads both back as null. The loss is one-way and stated.
+
+**An empty frame stops the run unless `allow_empty`,** as on the table writers: an empty file from an
+upstream failure looks like a quiet month. Allowed, a header-only file is written, so the delivery is
+visibly empty rather than missing.
+
+**List, Struct and Duration are refused,** each having a plausible wrong spelling as text. Every check
+runs before the file is opened.
+
+**`overwrite`.** A file at `path` is refused at load unless `overwrite: true`. A flow that runs nightly
+needs it from its first night, or its second run will not load. Saying true when nothing is there is
+accepted.
