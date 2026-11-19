@@ -104,3 +104,102 @@ integer types already sum into Int64.
 **Every aggregate has its own branch, and an unknown name raises.** A dispatcher that ended by
 returning one aggregate once computed cross_tab's `first` as `max`, a plausible number under the
 wrong name.
+
+## write_excel
+
+**One step writes many tabs, and its input ports come from `sheets`.** Each sheet entry names a port,
+so the step reads exactly the ports its configuration lists (owner's approval, 2026-09-11: "I like
+that it declares its own number of inputs"). The alternatives lost: a fixed set of ports
+(`sheet_1` to `sheet_20`) caps the count and reads badly; one stacked input with a column naming the
+tab needs every tab to share columns, and a real pack's tabs ran from 1 column to 49. The tool
+implements `input_ports_for` and leaves `input_ports` empty; a tool does one or the other.
+
+**One load and one save.** Measured on a real pack of 12 tabs (0.56 MB):
+
+| approach | time | keeps the template |
+|---|---|---|
+| polars into one open xlsxwriter workbook | 1.46 s | no, cannot start from a template |
+| openpyxl, one load and one save | 2.68 s | yes |
+| openpyxl, one separate write per tab | 34.44 s | yes |
+
+openpyxl with one load and one save is the only fast option that keeps a template. That is also why
+the one refusal that needs the workbook open (a template tab named without `overwrite`) is made in
+`execute`, before the save: asking earlier would load a file of several megabytes twice.
+
+**No output port.** Handing the frames back out would invent a fan-out, and a receipt frame would be
+shape without information. A flow ends here.
+
+**The template is a curated workbook.** A delivered pack is usually built by hand: charts, formats,
+notes. That workbook is the template, and only the tabs whose figures change each run are written.
+The template is read and never written; a `path` equal to the template is refused, because a
+template overwritten by its first run leaves the next run nothing to start from. Sameness is checked
+twice: resolved paths first (catches `..`, relative paths, symlinks, and works when `path` does not
+exist yet), then `samefile` when both exist (catches hard links). A link made between the check and
+the save is not seen, and a mount that gives every file the same identity can cause a false refusal.
+
+**Rewritten, not copied.** openpyxl reads the template into memory and writes a new file. Measured
+coming through: tabs, formats, formulas, charts, pivot tables and the cached values behind a pivot's
+filter dropdowns. Lost: each formula's stored result (the file recalculates when a spreadsheet opens
+it, but a program reading it before then sees blanks), and a pivot cache's extension block, which
+holds newer pivot features such as a slicer link. A test records that loss.
+
+**The file at `path` is never read.** A tab the flow stopped writing once lingered in the pack because
+the writer wrote into the file already there. Each run now builds from the template or from nothing,
+so the result is the same whatever an earlier run left. `overwrite` is the single permission to
+replace what is there: the file at `path` (refused at load) and a template tab a sheet entry names
+(refused when the template is opened). A replaced tab is remade in its old position, because a tab
+that moves to the end gets reported as missing.
+
+**An empty port stops the run unless `allow_empty`.** An empty tab caused by an upstream failure
+looks like a quiet month. Owner's ruling (2026-09-11): when allowed, a port with no rows writes a tab
+with its headings, never no tab. A missing tab reads as a broken report; an empty one reads as
+"nothing this month". No placeholder phrase such as "(no rows)" is written, because a reader's
+formula expects a heading there.
+
+**Formats are stated, never guessed.** A date column gets a date format, because without one a cell
+shows a count of days since 1899. Nothing else is formatted unless a rule says so. Deciding that a
+decimal column is money is wrong the first time someone puts a reference number in one; deciding from
+the heading is wrong the first time it is renamed.
+
+**A rule names a type or one column.** A type rule reaches columns the configuration could not name,
+such as the one-per-month columns of a cross_tab; naming them one by one means editing the flow every
+month, and the forgotten month is the one unformatted column. A column rule beats a type rule
+whatever the order, so the general rule can be written first and the exception under it. A repeated
+type or column is refused: picking the first or the last is a guess. An Int64 rule also reaches Int32,
+because a formula makes a whole-number literal 32-bit.
+
+**Format codes are passed through unchecked.** The library cannot know what a future spreadsheet
+accepts; a code wrongly rejected would block a pack for nothing, and a wrong code shows visibly in the
+file instead of changing a figure. A rule about Time is accepted and does nothing, since a Time column
+is refused anyway; refusing the rule would tie two lists together for no gain.
+
+**Formats go on data cells, not whole columns.** A column-wide format would run to the bottom of the
+tab and format a figure typed in below the data. Headings never get a number format. An empty cell
+is formatted like its column, so typing into a gap does not reveal a chequerboard.
+
+**What a cell cannot hold is refused, not converted.** Rules shared by every workbook writer live in
+`_spreadsheet.py`. A whole number past 2**53 - 1 (the largest a double holds exactly, with its
+neighbour still distinct) is refused, not rounded; cast it upstream where the next reader can see it.
+Time, Duration, Decimal, lists, arrays, binary, nested records and zone-aware timestamps are refused:
+each has a plausible-looking wrong answer in a cell. Text over 32,767 characters would be cut short;
+more than 1,048,575 data rows would be truncated, the worst outcome for a delivered total.
+Not-a-number and infinity would show as a blank, as if no figure were there. Every frame is checked
+before the workbook opens, so a refusal about the last tab leaves no half-written pack.
+
+**Text starting with `=` stays text.** openpyxl stores it as a formula, so `=HYPERLINK(...)` in free
+text would run on the reader's machine. The cell is forced back to text with a quote prefix.
+
+**Layout never touches a figure.** `widths`, `fit_widths`, `wrap`, `table` and `header` run after the
+cells are written and only set fonts, widths, alignment and tables; a test fails if any of them
+changes a value or a number format. `fit_widths` measures a value as shown (1234567.0 under
+`#,##0.00` is `1,234,567.00`), because a column fitted to the stored digits shows `####`. A fitted
+column is capped at 60 characters so a paragraph does not make a column hundreds wide; a stated width
+goes past it. Headings are measured at their font size, plus room for a table's filter button.
+
+**Tables.** A table's name is the one given, or the tab name with unusable characters turned into
+underscores. Two tables of one name are refused ignoring case, as a spreadsheet compares them, and so
+is a name the template already uses on a tab this step leaves alone. A port with no rows gets a
+table over its headings and one empty row, the smallest a spreadsheet accepts.
+
+**Tab names are refused, not repaired.** People write dates with slashes and headings with colons
+into tab names. Renaming quietly delivers a tab nobody can find under the name the flow uses.

@@ -1,10 +1,7 @@
-"""What a spreadsheet cell and tab can hold. Shared by the tools that write a workbook.
+"""What a spreadsheet cell and tab can hold, shared by the tools that write a workbook.
 
-These are the destination's rules, not any one tool's. Every tool that writes a workbook reads this
-one copy, so two tools cannot drift into two different rules.
-
-The leading underscore keeps this module out of the tool catalog: ``tools/__init__.py`` imports
-every module in this folder except the ones whose name starts with ``_``.
+These are the spreadsheet's limits, kept in one place so two tools cannot disagree about them.
+A module whose name starts with `_` is a helper, not a tool, and is left out of the catalog.
 """
 
 from typing import Final
@@ -13,22 +10,17 @@ import polars as pl
 
 from ..authoring import ConfigError
 
-# A worksheet's own row limit, published so a refusal about it can be checked against a number
-# rather than taken on faith, and so a caller building a definition file can read it too.
+# A worksheet's row limit.
 MAX_SHEET_ROWS: Final[int] = 1_048_576
 # One row of the sheet is always the header, so this many are left for data.
 MAX_DATA_ROWS: Final[int] = MAX_SHEET_ROWS - 1
-# The largest whole number a double can still tell apart from its neighbour. 2**53 itself is
-# representable; its successor collapses onto it, which is why this is the boundary rather than
-# 2**53 or some rounder-looking number nearby.
+# The largest whole number a cell (a double) holds exactly, with its neighbour still distinct.
 MAX_EXACT_INTEGER: Final[int] = 2**53 - 1
 
 # The most characters one cell holds. A longer text would be cut to this length without a word.
 MAX_CELL_TEXT: Final[int] = 32_767
 
-# What a workbook lets a tab be called. Published alongside the limits above, and for the same
-# reason. These are the destination's rules rather than this tool's, and every tool in the catalog
-# that writes a workbook reads this one copy. Two copies would eventually be two different rules.
+# What a tab may be called.
 FORBIDDEN_SHEET_CHARACTERS: Final[str] = "[]:*?/\\"
 MAX_SHEET_NAME_LENGTH: Final[int] = 31
 
@@ -40,15 +32,7 @@ def require_xlsx_path(tool: str, path: str) -> None:
 
 
 def unsupported_dtype_reason(dtype: pl.DataType) -> str | None:
-    """Why ``dtype`` cannot land in a cell honestly, or ``None`` if it can.
-
-    Each of these has a plausible-looking wrong answer available -- which is exactly why none of
-    them is allowed through silently.
-
-    Public because the answer is a property of the destination rather than of this tool. Every tool
-    in the catalog that writes a workbook is bound by it and reads this one copy. Two copies of the
-    answer would eventually be two different answers.
-    """
+    """Why a column of `dtype` cannot be written to a cell faithfully, or None if it can."""
     if isinstance(dtype, pl.Decimal):
         return "a Decimal column's whole purpose is an exactness a cell does not keep"
     if isinstance(dtype, pl.Time):
@@ -58,8 +42,7 @@ def unsupported_dtype_reason(dtype: pl.DataType) -> str | None:
     if isinstance(dtype, pl.List):
         return "a cell holds one value, not a list; it would arrive as a line of punctuation"
     if isinstance(dtype, pl.Array):
-        # An Array is a list of a fixed length. Polars does not make it a kind of List, so it has to
-        # be named here as well, or a fixed-size list column walks past this check.
+        # A fixed-length list. polars does not treat it as a List, so it is named separately.
         return "a cell holds one value, not a list; it would arrive as a line of punctuation"
     if isinstance(dtype, pl.Binary):
         return (
