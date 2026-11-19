@@ -549,7 +549,9 @@ Every one of these was measured, most of them the hard way.
 ### Paths
 
 - **A relative `path:` resolves against the working directory of the process running the pipeline**,
-  not against the pipeline file. Run from a consistent place, or use absolute paths.
+  not against the pipeline file. Run from a consistent place, use absolute paths, or pass
+  `run_pipeline(spec, base_dir=project_folder)`: then a relative path is read from that folder,
+  whatever the working directory is.
 - **Config names an environment variable, never a secret.** `connection: DATABASE_URL` is the name
   of the variable; the value is read from the environment. No credential may enter a pipeline file,
   so that a definition is safe to commit and safe to hand to someone else as a template.

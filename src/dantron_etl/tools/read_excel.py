@@ -69,6 +69,7 @@ class ReadExcel:
                 description="The workbook to read; must end in .xlsx.",
                 required=True,
                 non_empty=True,
+                file_path=True,
             ),
             "sheet": ConfigField(
                 type="string",

@@ -51,6 +51,7 @@ import logging
 import time
 from collections.abc import Callable, Collection, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Protocol
 
@@ -59,7 +60,8 @@ import polars as pl
 # The runner calls the boundary through this module's own name, run_tool. A caller may replace
 # runner.run_tool to watch every step's output as the run goes; keep the call a bare run_tool(...).
 from .boundary import run_tool
-from .contract import Tool, input_ports_for
+from .config import with_base_dir
+from .contract import Tool, call_tool_code, input_ports_for
 from .errors import RunError, ToolError
 from .ports import Ports
 from .registry import REGISTRY, ToolRegistry
@@ -132,6 +134,7 @@ def run_pipeline(
     keep: Collection[PortRef | str] = (),
     sink: Callable[[StepEvent], None] | None = None,
     run_id: str | None = None,
+    base_dir: str | Path | None = None,
 ) -> PipelineTrace:
     """Run ``spec`` in dependency order -- whole, or as far as ``until`` -- reporting what each step did.
 
@@ -203,6 +206,11 @@ def run_pipeline(
     ports; a name the pipeline does not have is refused before anything runs. Under ``retain="all"``
     every port is kept anyway.
 
+    ``base_dir`` is where a relative file path in the flow is read from: each tool's path fields
+    (a field its template marks ``file_path``) are joined onto it, so a flow whose paths are
+    relative to its project folder runs from any working directory. Left out, a relative path is
+    read from the working directory, as it always was. An absolute path is never changed.
+
     A step that raises is reported -- its error event is emitted before the exception leaves this
     function, so a crashed run still has a log of everything up to it -- and then raises
     :class:`StepFailedError`, carrying the partial trace. A sink that raises is reported once, on
@@ -236,6 +244,9 @@ def run_pipeline(
     column_refs = spec.column_references()
 
     kept = resolve_keep(spec, tools_by_step, keep)
+    folder = Path(base_dir).resolve() if base_dir is not None else None
+    if folder is not None and not folder.is_dir():
+        raise RunError(f"base_dir {str(base_dir)!r} is not a folder that exists")
     schedule = release_schedule(spec, tools_by_step, order, kept) if retain == "live" else {}
 
     frames: dict[PortRef, pl.DataFrame] = {}
@@ -336,7 +347,10 @@ def run_pipeline(
         else:
             origin = "ran"
             try:
-                result = run_tool(tool, Ports(input_frames), dict(step.config))
+                config = dict(step.config)
+                if folder is not None:
+                    config = with_base_dir(call_tool_code(tool, "config_template", tool.config_template), config, folder)
+                result = run_tool(tool, Ports(input_frames), config)
             except ToolError as failure:
                 message = f"step {step_id!r} ({tool.name}) failed: {failure}"
                 event = StepEvent(
