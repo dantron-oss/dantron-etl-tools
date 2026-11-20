@@ -473,7 +473,10 @@ class _Compiler:
         if function.divides_by is not None:
             divisor = function.divides_by
             self._record_division(node.args[divisor], arguments[divisor], f"{name}()")
-        typed = {"dtype": operands[0].dtype} if function.typed else {}
+        typed = {}
+        if function.typed:
+            common = function.result_dtype == "common"
+            typed["dtype"] = combined_dtype([operand.dtype for operand in operands]) if common else operands[0].dtype
         given = [self._built(param, argument) for param, argument in zip(params, arguments)]
         built = function.to_polars(*given, **typed)
         if function.no_answer is not None:

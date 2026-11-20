@@ -171,13 +171,30 @@ def _mod(dividend: pl.Expr, divisor: pl.Expr) -> pl.Expr:
     return _without_negative_zero(pl.when(too_large).then(moved).otherwise(on_sizes))
 
 
-def _least(*parts: pl.Expr) -> pl.Expr:
+def _least(*parts: pl.Expr, dtype: pl.DataType | None = None) -> pl.Expr:
     # Nulls are skipped, as PostgreSQL's LEAST skips them; only all nulls give null.
-    return pl.min_horizontal(list(parts))
+    if dtype is None or not dtype.is_float():
+        return pl.min_horizontal(list(parts))
+    # Not-a-number is larger than every number, so it is the least only when nothing else is there.
+    numbers = pl.min_horizontal([part.cast(dtype).fill_nan(None) for part in parts])
+    lone = numbers.is_null() & _any_not_a_number(parts, dtype)
+    return pl.when(lone).then(_NOT_A_NUMBER).otherwise(numbers).cast(dtype)
 
 
-def _greatest(*parts: pl.Expr) -> pl.Expr:
-    return pl.max_horizontal(list(parts))
+def _greatest(*parts: pl.Expr, dtype: pl.DataType | None = None) -> pl.Expr:
+    if dtype is None or not dtype.is_float():
+        return pl.max_horizontal(list(parts))
+    numbers = pl.max_horizontal([part.cast(dtype).fill_nan(None) for part in parts])
+    return pl.when(_any_not_a_number(parts, dtype)).then(_NOT_A_NUMBER).otherwise(numbers).cast(dtype)
+
+
+# least() and greatest() place not-a-number themselves, above every number as PostgreSQL orders it.
+# The engine's own answer differs between its versions and with the order of the arguments.
+_NOT_A_NUMBER: Final[pl.Expr] = pl.lit(float("nan"))
+
+
+def _any_not_a_number(parts: tuple[pl.Expr, ...], dtype: pl.DataType) -> pl.Expr:
+    return pl.any_horizontal([part.cast(dtype).is_nan().fill_null(False) for part in parts])
 
 
 def _nullif(subject: pl.Expr, other: pl.Expr) -> pl.Expr:
@@ -705,6 +722,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result="common",
         result_dtype="common",
         to_polars=_least,
+        typed=True,
         meets="ordered",
         summary="The smallest of the values; nulls are skipped, and only all nulls give null.",
         example="least([due_on], [paid_on])",
@@ -716,6 +734,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result="common",
         result_dtype="common",
         to_polars=_greatest,
+        typed=True,
         meets="ordered",
         summary="The largest of the values; nulls are skipped, and only all nulls give null.",
         example="greatest([amount], 0)",

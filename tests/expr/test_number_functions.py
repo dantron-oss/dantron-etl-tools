@@ -185,6 +185,34 @@ class TestLeastAndGreatest:
         assert _values(frame, "least([a], [b])") == [1.0]
         assert math.isnan(_values(frame, "greatest([a], [b])")[0])
 
+    @pytest.mark.parametrize("order", ["[a], [b]", "[b], [a]"])
+    def test_not_a_number_is_the_largest_whichever_side_it_is_written_on(self, order: str) -> None:
+        # The engine's own answer for greatest() changed between its versions, so both sides are pinned.
+        frame = pl.DataFrame({"a": [float("nan"), 2.0], "b": [1.0, 1.0]})
+        assert _values(frame, f"least({order})") == [1.0, 1.0]
+        largest = _values(frame, f"greatest({order})")
+        assert math.isnan(largest[0])
+        assert largest[1] == 2.0
+
+    def test_not_a_number_is_the_largest_beside_a_whole_number_and_a_null(self) -> None:
+        frame = pl.DataFrame(
+            {"a": [float("nan"), float("nan"), None], "n": [7, None, None], "m": [None, None, None]},
+            schema={"a": pl.Float64, "n": pl.Int64, "m": pl.Float64},
+        )
+        largest = _values(frame, "greatest([n], [a], [m])")
+        assert math.isnan(largest[0])
+        assert math.isnan(largest[1])
+        assert largest[2] is None
+        least = _values(frame, "least([n], [a], [m])")
+        assert least[0] == 7.0
+        assert math.isnan(least[1])
+        assert least[2] is None
+
+    def test_a_single_precision_column_keeps_its_type_with_not_a_number_in_it(self) -> None:
+        frame = pl.DataFrame({"a": [float("nan")], "b": [1.0]}, schema={"a": pl.Float32, "b": pl.Float32})
+        assert _dtype(frame, "greatest([a], [b])") == pl.Float32
+        assert _dtype(frame, "least([a], [b])") == pl.Float32
+
     @pytest.mark.parametrize("function", ["least", "greatest"])
     def test_values_of_two_kinds_are_refused(self, function: str) -> None:
         assert f"{function}()" in _refusal(NUMBERS, f"{function}([x], [code])")

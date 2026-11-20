@@ -365,8 +365,9 @@ def _evaluated(data: pl.DataFrame, expression: pl.Expr) -> dict[str, str]:
             warnings.simplefilter("ignore")
             out = data.select(expression.alias("out"))["out"]
     except Exception as error:  # noqa: BLE001 -- an engine error is behaviour too, and is recorded
-        # Only the kind of error: its wording is the engine's own and changes between its versions.
-        return {"error": type(error).__name__}
+        # Only that the engine refused: its wording, and which of its own error classes it raises,
+        # are the engine's and change between its versions.
+        return {"error": "PolarsError" if isinstance(error, pl.exceptions.PolarsError) else type(error).__name__}
     return {"dtype": str(out.dtype), "values": repr(out.to_list())}
 
 
