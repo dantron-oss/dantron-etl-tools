@@ -1,5 +1,6 @@
-# For every push and pull request: lint, the whole test suite on Linux and Windows, and the package
-# a user would install, built and tried from a clean environment.
+# For every push and pull request: lint, the whole test suite on Linux and Windows and on the lowest
+# polars the package allows, and the package a user would install, built and tried from a clean
+# environment.
 #
 # Linux runs the tests that need Postgres against a throwaway server, like the one in compose.yaml.
 # Windows runs the rest: GitHub's Windows machines cannot start a database container.
@@ -71,6 +72,39 @@ jobs:
       - run: uv sync --locked --extra dev --python ${{ matrix.python }}
       - run: uv run --no-sync python --version
       - run: uv run --no-sync pytest tests/ -q
+
+  # The lowest polars the package allows, the `polars>=` bound in pyproject.toml. The lock pins a
+  # newer one, and the two differ in places, most of all for exact decimals. A project may run
+  # either, so the suite must pass on both. Everything else stays as the lock has it.
+  test-lowest-polars:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: etl_test
+          POSTGRES_PASSWORD: etl_test
+          POSTGRES_DB: etl_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U etl_test -d etl_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DANTRON_TEST_POSTGRES: postgresql://etl_test:etl_test@localhost:5434/etl_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra dev --extra postgres
+      - name: Put polars at the lowest version pyproject.toml allows
+        run: |
+          requirement=$(uv run --no-sync python -c "import re, tomllib; print(next(d for d in tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies'] if re.match(r'polars\s*[<>=~!]', d)))")
+          echo "installing the lowest $requirement"
+          uv pip install --resolution lowest --upgrade-package polars "$requirement"
+      - run: uv run --no-sync python -c "import polars; print('polars', polars.__version__)"
+      - run: uv run --no-sync pytest tests/ -q -rs
 
   test-windows:
     runs-on: windows-latest
