@@ -46,12 +46,18 @@ _NAMESPACE_REASON: Final[str] = (
 _UUID_EXAMPLE: Final[str] = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 
 
+#: Newer polars versions add this note, naming its own internal expression, to an error. It means
+#: nothing to the author of a pipeline, so it is cut from what they are told.
+_ENGINE_NOTE: Final[str] = "\n\nThis error occurred in the following expression:"
+
+
 def probe_pattern(name: str, pattern: str, build: Callable[[pl.Expr], pl.Expr]) -> None:
     """Ask polars whether it accepts a pattern, both ways, since polars and Python's `re` disagree on some."""
     try:
         pl.select(build(pl.lit("", dtype=pl.String)))
     except Exception as failure:
-        raise Refusal(f"{name}() was given a pattern the engine cannot compile: '{pattern}' ({failure})") from None
+        said = str(failure).split(_ENGINE_NOTE, 1)[0]
+        raise Refusal(f"{name}() was given a pattern the engine cannot compile: '{pattern}' ({said})") from None
 
 
 @dataclass(frozen=True)

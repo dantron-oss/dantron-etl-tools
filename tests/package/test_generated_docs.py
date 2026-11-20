@@ -40,11 +40,21 @@ def pages(generator: ModuleType) -> dict[Path, str]:
     return generator.render()
 
 
+def _words(text: str) -> list[str]:
+    """The page's words, in order, without the spaces and line breaks between them.
+
+    The command help is laid out by Python's argparse, which pads and wraps its columns a little
+    differently from one Python version to the next. A page differing only in that layout is not out
+    of date; a page with a word changed, added or missing is.
+    """
+    return text.split()
+
+
 def test_every_generated_page_is_up_to_date(pages: dict[Path, str]) -> None:
     stale = sorted(
         str(path.relative_to(ROOT))
         for path, text in pages.items()
-        if not path.is_file() or path.read_text(encoding="utf8") != text
+        if not path.is_file() or _words(path.read_text(encoding="utf8")) != _words(text)
     )
     assert not stale, f"out of date: {stale}; {FIX}"
 

@@ -58,6 +58,20 @@ jobs:
       - run: uv sync --locked --extra dev --extra postgres
       - run: uv run --no-sync pytest tests/ -q -rs
 
+  # The oldest Pythons the package supports. The jobs above use .python-version, the newest.
+  test-older-python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra dev --python ${{ matrix.python }}
+      - run: uv run --no-sync python --version
+      - run: uv run --no-sync pytest tests/ -q
+
   test-windows:
     runs-on: windows-latest
     steps:

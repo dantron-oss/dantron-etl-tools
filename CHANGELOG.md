@@ -7,6 +7,12 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Changed
+
+- **Python 3.11 and 3.12 are supported**, not only 3.13. CI runs the tests on all three.
+- An engine error inside a refusal no longer carries the engine's own note about its internal
+  expression, which newer polars versions add.
+
 ### Added
 
 - **Show file, in the viewer.** Each setting that names a file (`path` on the read and write tools,
