@@ -177,6 +177,25 @@ pipeline computes says so plainly.
 
 Work happens on a `feature/<name>` branch and merges into `develop`.
 
+## Releasing a version
+
+A release is a tag on `main`, named `v` and the version, such as `v0.2.0`. Projects install a tag,
+so the code under a tag never changes once it is pushed. A fix goes out as a new version.
+
+1. Merge everything for the release into `develop`, and check the suite passes.
+2. Set `__version__` in `src/dantron_etl/__init__.py` to the new version. `pyproject.toml` reads it
+   from there. Before 1.0, raise the middle number (0.2 to 0.3) when pipeline files or results
+   change, and the last number (0.2.0 to 0.2.1) for a fix that changes neither.
+3. In `CHANGELOG.md`, rename the `[Unreleased]` heading to the version and today's date, start a new
+   empty `[Unreleased]` above it, and update the comparison links at the bottom.
+4. Commit, merge `develop` into `main`, and push both.
+5. Tag `main` and push the tag:
+
+   ```bash
+   git tag -a v0.3.0 -m "Version 0.3.0"
+   git push origin v0.3.0
+   ```
+
 ## Licence
 
 The library is under the Apache License 2.0. By contributing you agree that your work is offered
