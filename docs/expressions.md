@@ -228,7 +228,9 @@ their own `case_when` case first. A format must read a year, a month and a day, 
 refused: write `parse_date(concat([period], '-01'), '%Y-%m-%d')`.
 
 `add_days` stops the step on a count of more than 106,751 days (about 292 years). The engine cannot
-move a date that far exactly, and such a count is usually the wrong column.
+move a date that far exactly, and such a count is usually the wrong column. `add_months` stops the
+step on a count that takes a date past the year 262142, or before -262143, and a timestamp kept to
+the nanosecond past 2262 or before 1677.
 
 ## Adding a function
 

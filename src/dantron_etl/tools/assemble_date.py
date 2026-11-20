@@ -26,7 +26,7 @@ from ..authoring import (
     compile_for,
     compiled_dtype,
     date_or_null,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
     require_not_blank,
     row_status,
     value_caption,
@@ -138,7 +138,7 @@ class AssembleDate:
         policy = config["on_invalid"]
 
         for part in ("year", "month", "day"):
-            refuse_division_by_zero(frame, config[part], part)
+            refuse_rows_without_an_answer(frame, config[part], part)
         year_expr = compile_for(frame, config["year"], "year")
         month_expr = compile_for(frame, config["month"], "month")
         day_expr = compile_for(frame, config["day"], "day")

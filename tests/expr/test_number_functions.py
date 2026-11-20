@@ -143,6 +143,23 @@ class TestMod:
     def test_text_is_refused(self) -> None:
         assert "mod()" in _refusal(NUMBERS, "mod([code], 2)")
 
+    def test_the_most_negative_whole_number_keeps_its_own_sign_like_its_neighbour(self) -> None:
+        """Its size does not fit its own type, so the engine's abs() wraps; the answer must not."""
+        least = -(2**63)
+        frame = pl.DataFrame(
+            {
+                "a": [least, least + 1, least, least, least, 5, -5, least],
+                "b": [3, 3, -3, -1, 1, least, least, least],
+            }
+        )
+        assert _values(frame, "mod([a], [b])") == [-2, -1, -2, 0, 0, 5, -5, 0]
+
+    def test_the_most_negative_32_bit_whole_number_too(self) -> None:
+        least = -(2**31)
+        frame = pl.DataFrame({"a": [least, least + 1, least], "b": [3, 3, -1]}, schema={"a": pl.Int32, "b": pl.Int32})
+        assert _values(frame, "mod([a], [b])") == [-2, -1, 0]
+        assert _dtype(frame, "mod([a], [b])") == pl.Int32
+
 
 class TestLeastAndGreatest:
     def test_nulls_are_skipped_and_only_all_nulls_give_null(self) -> None:

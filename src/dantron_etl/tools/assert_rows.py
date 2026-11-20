@@ -20,7 +20,7 @@ from ..authoring import (
     ToolHelp,
     WorkedExample,
     compile_predicate_for,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
 )
 
 # How many failing rows a message shows; the same cap the boundary uses.
@@ -89,7 +89,7 @@ class AssertRows:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         predicate = compile_predicate_for(frame, config["predicate"], "predicate")
-        refuse_division_by_zero(frame, config["predicate"], "predicate")
+        refuse_rows_without_an_answer(frame, config["predicate"], "predicate")
         heading = _heading(config)
 
         if frame.height == 0:

@@ -47,6 +47,30 @@ things; each such release says how to upgrade.
 
 - The package's **Documentation** and **Changelog** links, and the README's Postgres install line,
   point at `main`, the latest release, instead of the working branch.
+- **For tool authors: `refuse_division_by_zero` is now `refuse_rows_without_an_answer`**, in
+  `dantron_etl.authoring`, since it stops a step on any row an expression has no answer for. There
+  is no alias; a tool of your own that called the old name must call the new one. Pipeline files
+  are not affected.
+
+### Fixed
+
+- **`add_months` stops the step on a count that takes a date past what the engine can hold**, and
+  names the count and the rows, instead of crashing the engine. Dates run from the year -262143 to
+  262142; a timestamp kept to the nanosecond runs from 1677 to 2262, and moved past that it used to
+  give a wrong date without a word. A count written in the file that no date from the year 1 to
+  9999 can take (beyond 3,145,703 forward or 3,265,715 back) is refused when the file loads. Every
+  other count gives the date it gave before.
+- **`add_days` stops the step on a timestamp kept to the nanosecond moved past 1677 to 2262**,
+  where it gave a wrong date without a word, and refuses a count written in the file beyond 106,751
+  days when the file loads.
+- **`mod` of the most negative whole number** (-9223372036854775808, or a 32-bit column's
+  -2147483648) now gives the right remainder, with the sign of the first number: `mod` of it by 3 is
+  -2, where it gave -1.
+- **A null with no type gives a null answer** in `year`, `month`, `day`, `quarter`, `day_of_week`,
+  `add_months`, `add_days` and `abs`, instead of an engine error. That is the literal `null`, or a
+  column whose every value is missing and which was read with no type. `year` and the other parts
+  of a date give a null whole number (Int32); `abs`, `add_months` and `add_days` give a null with no
+  type, as `round` already did, since their answer takes the type of what went in.
 
 ## [0.2.0] - 2026-11-20
 

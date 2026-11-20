@@ -24,7 +24,7 @@ __all__ = [
     "as_calendar_date",
     "check_zone_name",
     "compiled_dtype",
-    "refuse_division_by_zero",
+    "refuse_rows_without_an_answer",
     "require_stated_zone",
     "require_columns",
 ]
@@ -45,7 +45,7 @@ def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
         raise ConfigError(f"config field {field!r} does not compile: {error}") from error
 
 
-def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
+def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
     """Stop the step on a row of ``frame`` that ``text`` has no answer for.
 
     That is a ``/`` whose divisor is zero, and a function call with no answer on that row, such as
