@@ -272,6 +272,36 @@ class TestAddDays:
             compile_expr("add_days([label], 1)", frame.schema)
         assert "add_days()" in str(raised.value)
 
+    @pytest.mark.parametrize(
+        ("start", "last", "first_refused"),
+        [(datetime(2000, 1, 1), 95_794, 95_795), (datetime(1800, 1, 1), -44_660, -44_661)],
+        ids=["forward", "back"],
+    )
+    def test_a_timestamp_kept_to_the_nanosecond_stops_where_it_would_wrap_round(
+        self, start: datetime, last: int, first_refused: int
+    ) -> None:
+        """It holds 1677-09-21 to 2262-04-11; moved past either end it used to come back wrong."""
+        frame = pl.DataFrame({"d": pl.Series([start]).cast(pl.Datetime("ns")), "n": [last]})
+        assert _formula(frame, "add_days([d], [n])") == [start + timedelta(days=last)]
+        start = frame["d"]
+        with pytest.raises(DataError) as raised:
+            _formula(pl.DataFrame({"d": start, "n": [first_refused]}), "add_days([d], [n])")
+        assert f"{first_refused}" in str(raised.value)
+
+    @pytest.mark.parametrize(
+        ("count", "loads"), [(106_751, True), (106_752, False), (-106_751, True), (-106_752, False)]
+    )
+    def test_a_count_written_in_the_file_beyond_the_limit_is_refused_when_it_loads(
+        self, count: int, loads: bool
+    ) -> None:
+        text = f"add_days([d], {count})"
+        if loads:
+            compile_expr(text, {"d": pl.Date})
+            return
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr(text, {"d": pl.Date})
+        assert "add_days()" in str(raised.value) and "106,751" in str(raised.value)
+
     def test_a_count_too_large_to_move_by_exactly_stops_the_step(self) -> None:
         """The engine counts a move in nanoseconds, and past 106,751 days it wraps to a wrong date."""
         frame = pl.DataFrame({"d": [date(2000, 1, 1)] * 3, "n": [106_751, -106_751, 106_752]})

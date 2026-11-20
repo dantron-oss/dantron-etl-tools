@@ -224,7 +224,8 @@ def _add_days(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = N
 
 def _too_many_days(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
     # A null date moves nowhere, so no count is too large for it.
-    return subject.is_not_null() & ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
+    outside = ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
+    return subject.is_not_null() & _past_nanoseconds(subject, count, "d", outside, dtype)
 
 
 def _month_start(subject: pl.Expr) -> pl.Expr:
@@ -270,12 +271,20 @@ def _months_out_of_reach(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType
     # In Float64, so no count is large enough to wrap round in the sum.
     month = subject.dt.year().cast(pl.Float64) * 12 + subject.dt.month().cast(pl.Float64) - 1 + count.cast(pl.Float64)
     outside = ~month.is_between(_FIRST_MONTH, _LAST_MONTH)
-    if isinstance(dtype, pl.Datetime) and dtype.time_unit == "ns":
-        within = pl.when(outside).then(0).otherwise(count)
-        offset = pl.concat_str([within.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
-        moved = subject.dt.cast_time_unit("us").dt.offset_by(offset).dt.epoch("us")
-        outside = outside | ~moved.is_between(*_NANOSECOND_REACH)
-    return subject.is_not_null() & outside
+    return subject.is_not_null() & _past_nanoseconds(subject, count, "mo", outside, dtype)
+
+
+def _past_nanoseconds(subject: pl.Expr, count: pl.Expr, unit: str, outside: pl.Expr, dtype: pl.DataType | None) -> pl.Expr:
+    """``outside``, and for a timestamp kept to the nanosecond, also where the move lands past 1677 to 2262.
+
+    The move is made in microseconds, which hold it, and only for the counts not already outside.
+    """
+    if not (isinstance(dtype, pl.Datetime) and dtype.time_unit == "ns"):
+        return outside
+    within = pl.when(outside).then(0).otherwise(count)
+    offset = pl.concat_str([within.cast(pl.String), pl.lit(unit)], ignore_nulls=False)
+    moved = subject.dt.cast_time_unit("us").dt.offset_by(offset).dt.epoch("us")
+    return outside | ~moved.is_between(*_NANOSECOND_REACH)
 
 
 def _months_between(start: pl.Expr, end: pl.Expr, counting: str) -> pl.Expr:
@@ -555,11 +564,16 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         no_answer=NoAnswer(
             when=_too_many_days,
             problem=(
-                f"moves a date with add_days() by more than {_MOST_DAYS:,} days (about 292 years), further than "
-                "the engine can count exactly: {1} holds {found}"
+                f"moves a date with add_days() further than the engine can move it exactly, by more than "
+                f"{_MOST_DAYS:,} days (about 292 years) or past what the date can hold: "
+                "{1} holds {found}"
             ),
             shows=1,
-            remedy="The step stops rather than write a wrong date. Check that {1} is the count of days you meant",
+            remedy=(
+                "A timestamp kept to the nanosecond also holds only 1677 to 2262. The step stops rather than "
+                "write a wrong date. Check that {1} is the count of days you meant"
+            ),
+            written=(-_MOST_DAYS, _MOST_DAYS),
         ),
     ),
     Function(

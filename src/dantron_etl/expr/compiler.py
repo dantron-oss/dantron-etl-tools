@@ -643,8 +643,8 @@ class _Compiler:
         if isinstance(value, int) and not isinstance(value, bool) and not low <= value <= high:
             raise error(
                 self._text,
-                f"{name}() was given {value} as its {POSITIONS[position]} argument, which takes every date from "
-                f"the year 1 to 9999 past what the engine can hold; write a number from {low:,} to {high:,}",
+                f"{name}() was given {value} as its {POSITIONS[position]} argument, further than the engine can "
+                f"move any date from the year 1 to 9999; write a number from {low:,} to {high:,}",
             )
 
     def _check_whole_number(self, value: int | float) -> None:

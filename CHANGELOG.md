@@ -31,6 +31,9 @@ things; each such release says how to upgrade.
   give a wrong date without a word. A count written in the file that no date from the year 1 to
   9999 can take (beyond 3,145,703 forward or 3,265,715 back) is refused when the file loads. Every
   other count gives the date it gave before.
+- **`add_days` stops the step on a timestamp kept to the nanosecond moved past 1677 to 2262**,
+  where it gave a wrong date without a word, and refuses a count written in the file beyond 106,751
+  days when the file loads.
 - **`mod` of the most negative whole number** (-9223372036854775808, or a 32-bit column's
   -2147483648) now gives the right remainder, with the sign of the first number: `mod` of it by 3 is
   -2, where it gave -1.
