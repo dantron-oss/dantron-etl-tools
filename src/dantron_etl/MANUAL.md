@@ -584,6 +584,12 @@ Each of these has caught a real pipeline.
 - **A workbook column takes its type from its first 100 rows.** `read_excel` stops when a cell
   holds something the column's type would turn into null: text far down a column of figures, or a
   word such as `n/a` or `#N/A` anywhere in one. Set `as_text: true` and convert with `cast_columns`.
+  A cell holding an error value that a formula left behind (`#N/A`, `#DIV/0!`) is the exception: it
+  reads as null and is not refused. Check for nulls with `assert_rows` where that matters.
+- **`read_excel` reads `.xlsx` and `.xls`**, Excel's older format, by the same rules: the same
+  cells give the same rows, the same types and the same refusals, whichever day an `.xls` counts its
+  dates from. A file with an `.xls` name that holds a web page or delimited text is refused, saying
+  so; read delimited text with `read_csv`.
 
 ### How a figure is shown
 
@@ -784,6 +790,23 @@ taken.** Throw one away whenever the sources are reloaded, and take a fresh one.
 The fingerprint does not cover the library either: a cache taken before you upgrade the library, or
 edit it in place, still matches afterwards even when a tool now computes something different. Take
 a fresh cache after changing the library.
+
+### What the viewer keeps of a run
+
+The viewer and `dantron-etl run` save the rows at every port of each run in the project's runs
+folder (`runs_folder` in `etl-project.yaml`, by default `output_files/runs`), so the page can show
+them. Those rows can be personal or financial data.
+
+- On Linux and macOS, each folder a run makes is for its owner only (`0700`), and so is each file
+  in it (`0600`), whatever the umask. Folders that were already there keep their permissions, and so
+  do older runs and the files your output steps write.
+- On Windows, and on a drive that refuses the change, the permissions are not changed. The run is
+  still saved, and its files are as private as the folder they sit in. Keep the runs folder
+  somewhere only you can read.
+- `save_rows: false` in `etl-project.yaml`, at the top or under one pipeline, keeps no rows at all:
+  the run keeps its steps, timings, row counts and the columns and types at every port, and the
+  viewer says where rows would be that they are not saved. A failed step's message is kept, since it
+  says why the run stopped, and can name one value; the example rows it lists are left out.
 
 ---
 

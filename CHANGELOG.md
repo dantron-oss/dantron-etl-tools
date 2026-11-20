@@ -7,6 +7,34 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`read_excel` reads `.xls`**, Excel's older format, as well as `.xlsx`. The same cells give the
+  same rows, types and refusals in both, whichever day an `.xls` counts its dates from. A file named
+  `.xls` that holds a web page or delimited text is refused, saying so. The viewer's **Show file**
+  previews an `.xls` as a workbook.
+- **The confirmation before a real run names the database.** For each table it lists the host, the
+  port when one is stated, and the database name the connection points at now, in the viewer and in
+  `dantron-etl run --write`. It never shows the user or the password. If the connection points at
+  another database by the time you confirm, the run is refused.
+- **`save_rows`** in `etl-project.yaml`, at the top or under one pipeline. With `save_rows: false` a
+  run keeps its steps, timings, row counts, columns and types, and what it wrote, but no row of data.
+  The viewer still shows the flow, the settings, the counts and the columns, and says where rows
+  would be that they are not saved. A failed step's message is kept without the example rows it
+  lists.
+
+### Security
+
+- **Saved runs are readable by their owner only** on Linux and macOS. Each folder a run makes is
+  `0700` and each file in it `0600`, whatever the umask. Folders you made, older runs and the files
+  your output steps write are left as they are. On Windows, and on a drive that refuses the change,
+  the run is saved without it.
+
+### Changed
+
+- The package's **Documentation** and **Changelog** links, and the README's Postgres install line,
+  point at `main`, the latest release, instead of the working branch.
+
 ## [0.2.0] - 2026-11-20
 
 This release makes the library easier to start with and to read. It adds a command and a viewer

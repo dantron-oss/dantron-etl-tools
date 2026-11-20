@@ -515,6 +515,51 @@ class TestPreviewRun:
 
 
 # ---------------------------------------------------------------------------
+# A pipeline that keeps no rows: save_rows: false
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="class")
+def rowless(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Served]:
+    root = make_project(tmp_path_factory.mktemp("rowless") / "project", ruled=("orders",))
+    settings = yaml.safe_load((root / "etl-project.yaml").read_text(encoding="utf8"))
+    (root / "etl-project.yaml").write_text(yaml.safe_dump({"save_rows": False, **settings}), encoding="utf8")
+    for served in serve(root):
+        served.notes["progress"] = run_preview(served.server, "orders")
+        yield served
+
+
+class TestAPipelineThatKeepsNoRows:
+    def test_the_run_finishes_and_every_port_still_has_its_count_and_columns(self, rowless: Served) -> None:
+        assert rowless.notes["progress"]["state"] == "finished"
+        ports = get_json(rowless.server, "/orders/api/ports")["ports"]
+        assert ports["read.rows"]["rows"] == 3 * len(PARTIES)
+        assert ports["totals.rows"]["columns"] == ["party", "total", "lines"]
+
+    def test_asking_for_rows_is_refused_in_words_that_name_the_setting(self, rowless: Served) -> None:
+        answer = get(rowless.server, "/orders/api/rows?port=read.rows")
+
+        assert answer.status == 409, answer.text
+        assert "save_rows" in answer.json()["error"] and "etl-project.yaml" in answer.json()["error"]
+        assert not any(party in answer.text for party in PARTIES)
+
+    def test_following_one_party_says_why_it_cannot(self, rowless: Served) -> None:
+        found = entities(rowless.server, "orders")
+
+        assert found["values"] == [] and "save_rows" in found["reason"]
+        page = get(rowless.server, "/orders/good/").text
+        assert 'class="pick"' not in page and "save_rows" in page
+
+    def test_each_port_shows_its_columns_and_the_reason_and_no_grid_that_would_fetch_rows(self, rowless: Served) -> None:
+        panel = get(rowless.server, "/orders/api/panel?step=totals")
+
+        assert panel.status == 200
+        assert "save_rows" in panel.text and "<th>total<em>" in panel.text
+        assert "data-lazy" not in panel.text and "data-port" not in panel.text
+        assert not any(party in panel.text for party in PARTIES)
+
+
+# ---------------------------------------------------------------------------
 # A failing run after a good one
 # ---------------------------------------------------------------------------
 

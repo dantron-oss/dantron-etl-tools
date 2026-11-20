@@ -37,6 +37,16 @@ changed since, the digests differ and the run is refused with "what this pipelin
 since it was shown. Look again.", and the new plan is returned. A run is refused before anything runs
 or is saved.
 
+**A table write names its database, and the digest covers it.** The words for a table write say which
+database the connection's environment variable points at when the list is made: host, port when
+stated, and database name (`describe_connection` in `db.py`, used by both the page and the command).
+They are part of what the digest covers, so pointing the variable at another database between looking
+and confirming refuses the run. A change of password alone leaves the digest as it was: the target is
+the same. The user and password are never shown. An address is read the way the Postgres driver reads
+it, and if that reading would put any part of the password into the host, port or database name (an
+`@` or `/` not written as `%40` or `%2F`, or a password that is also the database name), nothing of
+the address is shown and the words say why.
+
 **A run never loses the last good one.** A run is written into a hidden folder first and then renamed
 into place. A run that fails or is refused goes into `<name>.failed`, leaving `<name>` (the last good
 run) as it was. A later good run deletes the stale failed one. A lock is held while slot folders are
@@ -44,6 +54,27 @@ swapped, and a swap interrupted half way is recovered on the next read. A pipeli
 refused a second start.
 
 `save_run` lets a project's own script save a run it made, so the viewer lists it like its own.
+
+**A saved run is for its owner only.** The hidden folder a run is written into is made `0700` before
+anything goes in, so no other user can open a file in it while it fills; every folder and file in it
+is then set to `0700` and `0600` before it is renamed into place, and the runs folder and any folder
+above it that the run had to make are `0700` too. `chmod` is used, so the umask cannot loosen it.
+Folders that already existed, older runs and the files a pipeline's output steps write are not
+touched. A system that refuses the change (Windows keeps only a read-only flag; some mounted drives
+refuse) does not fail the run.
+
+**`save_rows: false` keeps the shape of a run, not its rows.** Requested by a second project whose
+data must not be copied to disk. The run is the same in memory; what is saved changes. `ports.json`
+still lists every port's row count, columns and types, with `file` set to null, and no Parquet or
+status file is written; `entities.json` is not written; each panel shows a port's columns and the
+reason in place of a grid that would fetch rows; the page has no picker; `run.json` says
+`rows_saved: false`, and the server answers a request for rows or entities with the same sentence.
+A failure's message is kept, because a run that stopped needs to say why, but the example rows a
+`DataError` appends are cut out (`examples_text` is the exact text it appended). A refusal's own
+sentence can still name a value; that is the line drawn, and the docs say so. Nothing in the viewer
+feeds saved rows back into a run (`cached=` is only ever passed by a caller), so the setting needs
+no rule about reuse. **Show file** reads the file a step names, live, and keeps nothing, so it is
+unchanged.
 
 ## A local-only server with a token
 

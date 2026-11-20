@@ -2,7 +2,9 @@
 
 import contextlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +282,185 @@ class TestExecuteReal:
         assert (project_root / TARGET).is_file()
         written = json.loads((project.runs_folder / NAME / RUN_FILE).read_text(encoding="utf8"))
         assert written["kind"] == "real"
+
+
+# ---------------------------------------------------------------------------
+# A saved run is for its owner only
+# ---------------------------------------------------------------------------
+
+POSIX = pytest.mark.skipif(os.name != "posix", reason="permission bits are a POSIX idea")
+
+
+def mode(path: Path) -> int:
+    return stat.S_IMODE(path.lstat().st_mode)
+
+
+@pytest.fixture
+def open_umask() -> Any:
+    """A process umask that takes nothing away, so a file is readable by everyone unless the run says otherwise."""
+    before = os.umask(0)
+    try:
+        yield
+    finally:
+        os.umask(before)
+
+
+def made_by(paths: set[Path], before: set[Path]) -> tuple[list[Path], list[Path]]:
+    created = sorted(paths - before)
+    return [p for p in created if p.is_dir()], [p for p in created if p.is_file()]
+
+
+@POSIX
+@pytest.mark.usefixtures("open_umask")
+class TestSavedRunsAreForTheirOwnerOnly:
+    @pytest.mark.parametrize("how", ["preview", "failed", "refused"])
+    def test_every_folder_a_run_makes_is_0700_and_every_file_0600(self, project_root: Path, how: str) -> None:
+        if how == "failed":
+            (project_root / DATA).write_text("party,qty\n1,2\n", encoding="utf8")
+        elif how == "refused":
+            (project_root / "pipelines" / f"{NAME}.yaml").write_text("name: x\nsteps: []\nnot_a_key: 1\n", encoding="utf8")
+        before = every_path(project_root)
+
+        record = run(project_root)
+
+        assert record.outcome == ("finished" if how == "preview" else how)
+        folders, files = made_by(every_path(project_root), before)
+        assert runs_folder(project_root).parent in folders, "the run made the runs folder and the folder above it"
+        assert files, "the run saved something"
+        assert {str(p): oct(mode(p)) for p in folders if mode(p) != 0o700} == {}
+        assert {str(p): oct(mode(p)) for p in files if mode(p) != 0o600} == {}
+
+    def test_folders_made_by_someone_else_and_older_runs_keep_their_permissions(self, project_root: Path) -> None:
+        project_root.chmod(0o755)
+        folder = runs_folder(project_root)
+        folder.mkdir(parents=True)
+        folder.chmod(0o755)
+        older = folder / "another" / MANIFEST
+        older.parent.mkdir(mode=0o755)
+        older.write_text("{}", encoding="utf8")
+        older.chmod(0o644)
+
+        run(project_root)
+
+        assert (mode(project_root), mode(folder), mode(older.parent), mode(older)) == (0o755, 0o755, 0o755, 0o644)
+        assert mode(folder / NAME) == 0o700
+
+    def test_the_file_a_real_run_delivers_keeps_the_permissions_it_was_written_with(self, project_root: Path) -> None:
+        project = load_project(project_root)
+        entry = project.pipelines[NAME]
+        digest = writes_digest(writes(load_entry(project, entry), project.root))
+
+        execute(project, entry, "real", confirm_digest=digest)
+
+        assert mode(project_root / TARGET) == 0o666, "a deliverable is the user's; the umask decides, not the run"
+        assert mode(project.runs_folder / NAME / RUN_FILE) == 0o600
+
+    def test_a_filesystem_that_refuses_the_change_still_saves_the_run(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(*_: Any, **__: Any) -> None:
+            raise PermissionError("this filesystem does not keep permissions")
+
+        monkeypatch.setattr(os, "chmod", refuse)
+
+        record = run(project_root)
+
+        assert record.outcome == "finished"
+        assert (runs_folder(project_root) / NAME / MANIFEST).is_file()
+
+
+# ---------------------------------------------------------------------------
+# save_rows: false keeps everything about a run except its rows
+# ---------------------------------------------------------------------------
+
+#: Values that appear in the data and nowhere else, so finding one in a saved file means a row was kept.
+SECRET_PARTIES = ("Quillfeather-Oriole", "Marrowgate-Kestrel")
+
+
+def private_project(root: Path, *, save_rows: str | None = "false", check: bool = False) -> Path:
+    """read_csv -> filter -> write_csv, focused on party, whose parties are SECRET_PARTIES.
+
+    With ``check``, an assert_rows step after the read fails on the negative amounts, naming rows.
+    """
+    top = f"save_rows: {save_rows}\n" if save_rows is not None else ""
+    (root / "etl-project.yaml").write_text(f"{top}pipelines:\n  {NAME}:\n    focus: party\n", encoding="utf8")
+    (root / "pipelines" / NAME).mkdir(parents=True)
+    text = pipeline_text()
+    if check:
+        text = text.replace(
+            "  - id: keep\n    tool: filter\n",
+            "  - id: check\n    tool: assert_rows\n    config: {predicate: '[amount] > 0', label: positive}\n"
+            "    inputs: {rows: read.rows}\n  - id: keep\n    tool: filter\n",
+        ).replace("inputs: {rows: read.rows}\n  - id: save", "inputs: {rows: check.rows}\n  - id: save")
+    (root / "pipelines" / f"{NAME}.yaml").write_text(text, encoding="utf8")
+    rows = ["party,amount", *(f"{party},{amount}" for party in SECRET_PARTIES for amount in (12, -3, 7))]
+    (root / DATA).write_text("\n".join(rows) + "\n", encoding="utf8")
+    return root
+
+
+def saved_text(folder: Path) -> str:
+    """Every file under ``folder``, as text, so a value can be looked for anywhere in it."""
+    return "\n".join(path.read_bytes().decode("utf8", errors="replace") for path in folder.rglob("*") if path.is_file())
+
+
+class TestARunThatKeepsNoRows:
+    def test_no_row_from_any_port_is_saved_but_the_steps_counts_and_columns_are(self, tmp_path: Path) -> None:
+        root = private_project(tmp_path)
+
+        record = run(root)
+
+        saved = runs_folder(root) / NAME
+        assert record.outcome == "finished" and record.rows_saved is False
+        assert not [path.name for path in saved.rglob("*.parquet")]
+        assert not (saved / "entities.json").exists()
+        text = saved_text(runs_folder(root))
+        assert not [party for party in SECRET_PARTIES if party in text]
+        ports = json.loads((saved / MANIFEST).read_text(encoding="utf8"))
+        assert ports["read.rows"]["rows"] == 6 and ports["keep.true"]["rows"] == 4
+        assert ports["read.rows"]["columns"] == ["party", "amount"]
+        assert ports["read.rows"]["dtypes"] == ["String", "Int64"]
+        written = json.loads((saved / RUN_FILE).read_text(encoding="utf8"))
+        assert (written["steps_ran"], written["rows_saved"]) == (2, False)
+        assert (saved / PAGE_NAME).is_file()
+
+    def test_the_mirror_a_run_that_keeps_rows_still_keeps_them(self, tmp_path: Path) -> None:
+        root = private_project(tmp_path, save_rows=None)
+
+        record = run(root)
+
+        saved = runs_folder(root) / NAME
+        assert record.rows_saved is True
+        assert [path.name for path in saved.glob("*.parquet")]
+        assert all(party in (saved / "entities.json").read_text(encoding="utf8") for party in SECRET_PARTIES)
+
+    @pytest.mark.parametrize("save_rows", ["false", None], ids=["rows_not_saved", "rows_saved"])
+    def test_a_failure_keeps_its_sentence_and_drops_the_rows_it_lists_only_when_rows_are_not_saved(
+        self, tmp_path: Path, save_rows: str | None
+    ) -> None:
+        root = private_project(tmp_path, save_rows=save_rows, check=True)
+
+        record = run(root)
+
+        assert (record.outcome, record.failed_step) == ("failed", "check")
+        assert "positive" in record.message and "2 of 6 row(s)" in record.message, record.message
+        listed = [party for party in SECRET_PARTIES if party in record.message]
+        kept = saved_text(runs_folder(root))
+        if save_rows == "false":
+            assert listed == [] and not [party for party in SECRET_PARTIES if party in kept]
+        else:
+            assert listed, "with rows saved, the failure still lists the rows it refused"
+
+    def test_a_script_saving_its_own_run_follows_the_setting_too(self, tmp_path: Path) -> None:
+        root = private_project(tmp_path)
+        project = load_project(root)
+        spec = load_entry(project, project.pipelines[NAME])
+        with contextlib.chdir(root):
+            trace = __import__("dantron_etl").run_pipeline(spec, until=("keep",))
+
+        record = save_run(project, NAME, spec, trace, kind="preview")
+
+        assert record.rows_saved is False
+        assert not [party for party in SECRET_PARTIES if party in saved_text(record.directory)]
 
 
 # ---------------------------------------------------------------------------

@@ -105,12 +105,14 @@ class DataError(ToolError):
             # No rows were examined one by one; "0 of N" would wrongly say no row was at fault.
             self.offending_rows: int | None = None
             self.examples: tuple[dict[str, Any], ...] = ()
+            self.examples_text = ""
             super().__init__(f"{refusal}: {total} row(s), not examined one by one")
             return
         self.offending_rows = offending.height
         self.examples = tuple(offending.head(MAX_REPORTED_ROWS).to_dicts())
-        shown = f", starting with {'; '.join(str(row) for row in self.examples)}" if self.examples else ""
-        super().__init__(f"{refusal}: {self.offending_rows} of {self.total_rows} row(s) offend{shown}")
+        #: The part of the message that lists the example rows, so a caller keeping no rows can leave it out.
+        self.examples_text = f", starting with {'; '.join(str(row) for row in self.examples)}" if self.examples else ""
+        super().__init__(f"{refusal}: {self.offending_rows} of {self.total_rows} row(s) offend{self.examples_text}")
 
 
 class PipelineError(ToolError):

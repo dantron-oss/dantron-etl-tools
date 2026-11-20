@@ -769,6 +769,18 @@ names (`key_1`, `__UNNAMED__1`) would leak into column names the moment a later 
 **No cell range.** `skip_rows` reaches a header below a title block; narrowing columns or rows is
 select_columns or filter after this step.
 
+**`.xls` is read by the same rules, and that is measured.** An .xls file stores dates as days from 1900
+or 1904 (its header says which), text in a table of its own, and errors and merged cells in records of
+their own. fastexcel reads both formats through calamine, and the test builds an .xlsx from the same
+cells as two committed .xls fixtures (one per date system, made with xlwt; the script beside them says
+how) and requires the same frame or the same refusal for every sheet, typed and `as_text`. They agree on
+every case measured. Two cases agree but are worth knowing: an error value (`#N/A` from a formula) reads
+as null in both formats and is not refused, and a time-only cell in a 1904 workbook reads on 1904-01-01
+with `as_text`. Refusing error values would stop flows that read such cells today, so it waits for a
+release that says so. calamine picks its reader by the file's ending, so a web page or text file named
+.xls (a common export) fails inside the engine; the first bytes are checked to say what the file holds.
+`.xlsm`, `.xlsb` and `.ods` stay refused until someone measures them the same way.
+
 **`sheets_matching` stacks by name.** Not one read step per tab, which has to be edited each time the
 workbook gains a tab. Each sheet is read as if named alone. Stacking lines columns up by name; whole and
 decimal become decimal; an empty column takes the others' type; any other difference is refused.
