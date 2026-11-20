@@ -126,6 +126,7 @@ why, and what was rejected. The code links here where a choice would otherwise s
 - [What the owner asked for](viewer.md#what-the-owner-asked-for)
 - [Preview runs and real runs](viewer.md#preview-runs-and-real-runs)
 - [A local-only server with a token](viewer.md#a-local-only-server-with-a-token)
+- [Looking at a file a step names](viewer.md#looking-at-a-file-a-step-names)
 - [Why the page is plain files](viewer.md#why-the-page-is-plain-files)
 - [Keeping the page small](viewer.md#keeping-the-page-small)
 - [The canvas](viewer.md#the-canvas)

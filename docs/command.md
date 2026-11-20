@@ -33,6 +33,8 @@ Windows or `Open ETL viewer.command` on macOS. In VS Code, run the task **Open E
 
 The viewer listens on `127.0.0.1`, so only your computer can reach it. It refuses a request whose
 address is not this computer, and a run can only be started from a page the viewer itself served.
+The same goes for **Open location**, which shows a file a step names in your file manager: the page
+says which step and setting, never a path, so the viewer opens only files your pipelines name.
 `--host 0.0.0.0` opens it to your network, and then anyone who can reach it can read every row.
 Inside a dev container, leave the host alone: VS Code forwards the port for you.
 

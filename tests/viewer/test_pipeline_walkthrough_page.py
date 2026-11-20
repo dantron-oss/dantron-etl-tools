@@ -1560,3 +1560,21 @@ class TestTheLayoutHoldsAtTheDensityARealFlowHas:
         assert len(_node_boxes(canvas)) == 672, (
             f"{len(_node_boxes(canvas))} steps are drawn once the flow is boxed, not 672"
         )
+
+
+def test_each_setting_that_names_a_file_is_marked_for_the_page_and_no_other(page: str) -> None:
+    """A file setting carries ``data-file`` so the page can offer to show the file; nothing else does."""
+    from dantron_etl.viewer.files import file_settings
+
+    spec = read_pipeline(PROJECT_ROOT / "pipelines" / "fixture.yaml", rules={"revenue_type": "REVENUE"})
+    sections = dict(re.findall(r'<section class="detail[^"]*" data-step="([^"]+)"[^>]*>(.*?)</section>', page, re.S))
+    assert set(sections) == {step.id for step in spec.steps}
+    marked_somewhere = False
+    for step in spec.steps:
+        wanted = [name for name in file_settings(REGISTRY.get(step.tool).config_template()) if name in step.config]
+        marked = re.findall(r'<div class="cfg" data-file="([^"]+)"><span class="ck">([^<]+)</span>', sections[step.id])
+        assert [setting for setting, _ in marked] == wanted, step.id
+        assert all(setting == key for setting, key in marked)
+        assert sections[step.id].count("data-file=") == len(wanted)
+        marked_somewhere = marked_somewhere or bool(wanted)
+    assert marked_somewhere
