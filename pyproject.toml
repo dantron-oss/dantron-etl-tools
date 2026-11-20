@@ -6,6 +6,8 @@ description = "Data pipelines written as YAML files, built from a fixed set of t
 requires-python = ">=3.13"
 readme = "README.md"
 authors = [{ name = "DanTron Inc" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 keywords = ["etl", "data pipeline", "yaml", "polars", "data transformation", "data lineage", "excel"]
 # No licence classifier yet: the licence is still to be chosen.
 classifiers = [
@@ -79,6 +81,8 @@ only-include = [
     "pipelines/fixture",
     "docs",
     "README.md",
+    "LICENSE",
+    "NOTICE",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",

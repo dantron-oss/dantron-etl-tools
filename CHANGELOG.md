@@ -16,6 +16,7 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 ### Added
 
+- The library is released under the Apache License 2.0 (`LICENSE`, `NOTICE`).
 - **The `dantron-etl` command.** `new` makes a project with a working example. `view` opens the
   viewer in your browser. `run` runs a preview, or a real run with `--write`. `check` checks a file
   without running it. `tools`, `help <tool>` and `functions` describe the library in the terminal.
