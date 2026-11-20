@@ -72,32 +72,20 @@ window.etlFiles = (() => {
     where.replaceChildren(...parts);
   }
 
-  async function copy(path, field, said) {
-    try {
-      await navigator.clipboard.writeText(path);
-      said.textContent = 'Copied the path.';
-    } catch (err) {
-      field.focus();
-      field.select();
-      said.textContent = 'The path is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.';
-    }
-  }
-
-  // One file, from the facts the server sent: the path, what is known, and the three buttons.
+  // One file, from the facts the server sent: the full path as plain text, what is known, and the
+  // buttons. "Open location" appears only where this machine has a file manager to open.
   function box(pipeline, info) {
     const root = el('div', 'filebox');
     if (info.error) { root.append(el('p', 'bad', info.error)); return root; }
-    const field = el('input', 'fpath');
-    field.readOnly = true;
-    field.value = info.path || info.written;
-    field.setAttribute('aria-label', 'the full path of the file');
+    const field = el('p', 'fpath', info.path || info.written);
+    field.title = 'the full path of the file';
     const facts = el('ul', 'ffacts');
     for (const line of info.said) facts.append(el('li', '', line));
     const open = button('Open location', info.can_open);
     const look = button('Preview', info.can_preview);
-    const copying = button('Copy path', Boolean(info.path));
     const buttons = el('p', 'fbuttons');
-    buttons.append(open, look, copying);
+    if (info.can_open) buttons.append(open);
+    buttons.append(look);
     const said = el('p', 'fanswer');
     const shown = el('div', 'fpreview');
     const which = { pipeline: pipeline, step: info.step, setting: info.setting };
@@ -120,7 +108,6 @@ window.etlFiles = (() => {
       showPreview(shown, await ask(api(pipeline, 'file-preview', query), { headers: { 'X-Run-Token': token } }), load);
     };
     look.addEventListener('click', () => load());
-    copying.addEventListener('click', () => copy(info.path, field, said));
     root.append(field, facts, buttons, said, shown);
     return root;
   }

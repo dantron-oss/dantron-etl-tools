@@ -39,7 +39,7 @@ from .assets import page, page_data
 from .files import FileRefused, NamedFile, facts, named_file, named_files, preview
 from .focus_rows import focus_match
 from .project import PipelineEntry, Project, ProjectError, load_entry, load_project, pipeline_rules
-from .reveal import Opened, Target, open_location
+from .reveal import Opened, Target, has_file_manager, open_location, this_machine
 from .runs import (
     ENTITIES_FILE,
     KINDS,
@@ -103,9 +103,11 @@ def start_server(
     """Serve ``project`` on ``host``:``port`` from a background thread and return at once.
 
     Port 0 lets the system pick a free port; ``ViewerServer.port`` says which. ``reveal`` shows a file
-    in the file manager; left out, it is this machine's.
+    in the file manager; left out, it is this machine's, and the page offers "Open location" only when
+    this machine has a file manager to open.
     """
-    state = _State(project.root, secrets.token_urlsafe(32), _is_loopback(host), reveal or open_location)
+    opens = True if reveal is not None else has_file_manager(this_machine())
+    state = _State(project.root, secrets.token_urlsafe(32), _is_loopback(host), reveal or open_location, opens)
 
     class Server(ThreadingHTTPServer):
         address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
@@ -151,11 +153,12 @@ def _progress(state: str, kind: str | None, total: int) -> dict[str, Any]:
 class _State:
     """What the server holds between requests: the project root, the token, and runs in progress."""
 
-    def __init__(self, root: Path, token: str, loopback: bool, reveal: Reveal) -> None:
+    def __init__(self, root: Path, token: str, loopback: bool, reveal: Reveal, opens: bool = True) -> None:
         self.root = root
         self.token = token
         self.loopback = loopback
         self.reveal = reveal
+        self.opens = opens
         self.lock = threading.Lock()
         self.progress: dict[str, dict[str, Any]] = {}
 
@@ -231,7 +234,7 @@ def _preview_total(project: Project, entry: PipelineEntry) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _plan(project: Project, entry: PipelineEntry) -> dict[str, Any]:
+def _plan(project: Project, entry: PipelineEntry, opens: bool = True) -> dict[str, Any]:
     """What a preview runs and what a real run writes. Loading the pipeline may run project code."""
     import yaml
 
@@ -247,7 +250,11 @@ def _plan(project: Project, entry: PipelineEntry) -> dict[str, Any]:
     shown = [
         {
             **asdict(one),
-            "files": [facts(named, project.root) for named in files if named.step == one.step and one.kind == "file"],
+            "files": [
+                facts(named, project.root, opens=opens)
+                for named in files
+                if named.step == one.step and one.kind == "file"
+            ],
         }
         for one in found
     ]
@@ -654,7 +661,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 return
             if rest == ["api", "plan"]:
                 self._require_token()
-                self._json(200, _plan(project, entry))
+                self._json(200, _plan(project, entry, state.opens))
                 return
             if rest == ["api", "progress"]:
                 self._json(200, state.snapshot(name, entry.steps))
@@ -706,7 +713,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             """A file's facts, or its first rows. The query names a step and a setting, never a path."""
             named = _named(project, entry, _one(query, "step"), _one(query, "setting"))
             if what == "file":
-                self._json(200, facts(named, project.root))
+                self._json(200, facts(named, project.root, opens=state.opens))
                 return
             sheet = query.get("sheet")
             try:
@@ -784,7 +791,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                     raise _Refused(400, f"type the pipeline name, {entry.name}, to confirm a real run")
                 if not isinstance(digest, str):
                     raise _Refused(400, "a real run needs the digest of the writes that were confirmed")
-                plan = _plan(project, entry)
+                plan = _plan(project, entry, state.opens)
                 if plan["problem"] is not None:
                     raise _Refused(409, plan["problem"], plan=plan)
                 if digest != plan["digest"]:

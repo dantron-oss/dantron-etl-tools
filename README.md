@@ -85,9 +85,10 @@ asks you to type `example` to go ahead, and writes `output/paid_by_customer.csv`
 **Real run…** does the same.
 
 To see exactly which file a step reads or writes, open the step in the viewer and press **Show file**
-beside its `path`. You get the full path, whether the file is there, and buttons to preview its first
-rows, copy the path, or open its folder in your file manager (Explorer, Finder, or VS Code when the
-viewer was started from a VS Code terminal).
+beside its `path`. You get the full path, whether the file is there, and a button to preview its first
+rows. Where the viewer can reach a file manager (Explorer on Windows, Finder on a Mac, or a Linux
+desktop's), there is also a button to open the file's location. Inside a container there is none, so
+that button does not appear.
 
 Press ctrl-c in the first terminal to stop the viewer.
 

@@ -14,7 +14,18 @@ from pathlib import Path
 
 import pytest
 
-from dantron_etl.viewer.reveal import Launch, Machine, NoLaunch, Ran, Target, carry_out, how_to_open, open_location, spawn
+from dantron_etl.viewer.reveal import (
+    Launch,
+    Machine,
+    NoLaunch,
+    Ran,
+    Target,
+    carry_out,
+    has_file_manager,
+    how_to_open,
+    open_location,
+    spawn,
+)
 
 FILE = "/work/project/output/totals.csv"
 FOLDER = "/work/project/output"
@@ -88,7 +99,7 @@ class TestWsl:
         assert found.windows_path == ("/bin/wslpath", "-w", FOLDER)
         assert found.argv == ("/bin/explorer.exe",)
 
-    def test_wsl_comes_before_vs_code(self) -> None:
+    def test_wsl_opens_explorer_even_from_a_vs_code_terminal(self) -> None:
         facts = machine("linux", {**WSL_ENV, **CODE_ENV}, "explorer.exe", "wslpath", "code", kernel=WSL_KERNEL)
         found = how_to_open(there(), facts)
         assert isinstance(found, Launch)
@@ -112,37 +123,72 @@ class TestWsl:
         assert isinstance(found, NoLaunch)
 
 
-class TestVsCode:
-    def test_the_remote_cli_opens_the_file_in_the_window_already_open(self) -> None:
-        found = how_to_open(there(), machine("linux", CODE_ENV, "code"))
-        assert isinstance(found, Launch)
-        assert found.argv == ("/bin/code", "-r", FILE)
+class TestNeverVsCode:
+    """The owner wants a file manager, never an editor. A VS Code terminal changes nothing."""
 
-    def test_it_wins_inside_a_container_on_a_wsl_kernel(self) -> None:
-        facts = machine("linux", {**CODE_ENV, **DESKTOP_ENV}, "code", "xdg-open", kernel=WSL_KERNEL)
+    def test_a_container_with_vs_code_opens_nothing_and_says_why(self) -> None:
+        found = how_to_open(there(), machine("linux", CODE_ENV, "code", kernel=WSL_KERNEL))
+        assert isinstance(found, NoLaunch)
+        assert "container" in found.reason
+        assert "Preview" in found.reason
+
+    def test_code_is_not_even_looked_for(self) -> None:
+        from dantron_etl.viewer.reveal import HELPERS
+
+        assert "code" not in HELPERS
+
+    def test_a_desktop_inside_vs_code_still_gets_its_file_manager(self) -> None:
+        facts = machine("linux", {**CODE_ENV, **DESKTOP_ENV}, "code", "xdg-open")
         found = how_to_open(there(), facts)
         assert isinstance(found, Launch)
-        assert found.argv[0] == "/bin/code"
+        assert found.argv[0] == "/bin/xdg-open"
 
-    def test_a_workbook_is_opened_and_the_reader_is_told_it_cannot_show_as_text(self) -> None:
-        found = how_to_open(there("/work/project/output/pack.xlsx"), machine("linux", CODE_ENV, "code"))
-        assert isinstance(found, Launch)
-        assert found.argv == ("/bin/code", "-r", "/work/project/output/pack.xlsx")
-        assert "cannot show" in found.done
-        assert "cannot show" not in how_to_open(there(), machine("linux", CODE_ENV, "code")).done  # type: ignore[union-attr]
 
-    def test_a_file_not_there_yet_opens_nothing_and_names_the_folder(self) -> None:
-        found = how_to_open(not_yet(), machine("linux", CODE_ENV, "code"))
-        assert isinstance(found, NoLaunch)
-        assert FOLDER in found.reason
+class TestHasFileManager:
+    """Whether the page offers "Open location" at all."""
 
     @pytest.mark.parametrize(
-        ("env", "programs"),
-        [({}, ("code",)), (CODE_ENV, ()), ({"VSCODE_IPC_HOOK_CLI": ""}, ("code",))],
-        ids=["no-hook", "no-code", "empty-hook"],
+        "facts",
+        [
+            machine("win32", {}, "explorer"),
+            machine("darwin", {}, "open"),
+            machine("linux", WSL_ENV, "explorer.exe", "wslpath", kernel=WSL_KERNEL),
+            machine("linux", DESKTOP_ENV, "xdg-open"),
+        ],
+        ids=["windows", "mac", "wsl", "desktop"],
     )
-    def test_it_needs_both_the_cli_and_the_terminal_hook(self, env: dict[str, str], programs: tuple[str, ...]) -> None:
-        assert isinstance(how_to_open(there(), machine("linux", env, *programs)), NoLaunch)
+    def test_a_machine_with_a_file_manager_offers_it(self, facts: Machine) -> None:
+        assert has_file_manager(facts)
+
+    @pytest.mark.parametrize(
+        "facts",
+        [
+            machine("linux", CODE_ENV, "code", "gdbus", kernel=WSL_KERNEL),  # a dev container
+            machine("linux", {}, "xdg-open"),  # no desktop to show it on
+            machine("linux", DESKTOP_ENV),  # a desktop with no opener
+            machine("win32", {}),  # Explorer not found
+            machine("darwin", {}),  # open not found
+        ],
+        ids=["dev-container", "no-desktop", "no-opener", "no-explorer", "no-open"],
+    )
+    def test_a_machine_without_one_does_not(self, facts: Machine) -> None:
+        assert not has_file_manager(facts)
+
+    @pytest.mark.parametrize(
+        "facts",
+        [
+            machine("win32", {}, "explorer"),
+            machine("darwin", {}, "open"),
+            machine("linux", WSL_ENV, "explorer.exe", "wslpath", kernel=WSL_KERNEL),
+            machine("linux", DESKTOP_ENV, "xdg-open"),
+            machine("linux", CODE_ENV, "code", kernel=WSL_KERNEL),
+            machine("linux", {}, "xdg-open"),
+        ],
+        ids=["windows", "mac", "wsl", "desktop", "dev-container", "no-desktop"],
+    )
+    def test_it_agrees_with_what_open_location_would_do(self, facts: Machine) -> None:
+        path = r"C:\work\out\totals.csv" if facts.platform == "win32" else FILE
+        assert has_file_manager(facts) == isinstance(how_to_open(there(path), facts), Launch)
 
 
 class TestLinuxDesktop:
@@ -202,11 +248,10 @@ class TestNoOptionsFromFileNames:
         "facts",
         [
             machine("darwin", {}, "open"),
-            machine("linux", CODE_ENV, "code"),
             machine("linux", DESKTOP_ENV, "xdg-open"),
             machine("linux", WSL_ENV, "explorer.exe", "wslpath", kernel=WSL_KERNEL),
         ],
-        ids=["mac", "vs-code", "desktop", "wsl"],
+        ids=["mac", "desktop", "wsl"],
     )
     def test_a_file_named_like_an_option_is_passed_as_its_full_path(self, facts: Machine) -> None:
         found = how_to_open(there("/work/project/-n.csv"), facts)
