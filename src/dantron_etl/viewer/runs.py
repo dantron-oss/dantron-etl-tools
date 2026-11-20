@@ -46,6 +46,7 @@ __all__ = [
     "last_runs",
     "latest",
     "preview_plan",
+    "run_folder",
     "save_run",
     "writes",
     "writes_digest",
@@ -444,6 +445,15 @@ def _entities(trace: PipelineTrace, focus: FocusSpec) -> dict[str, Any]:
     return found
 
 
+def run_folder(project: Project) -> Path:
+    """The folder a run reads a relative file path from: the project folder.
+
+    The viewer's runs pass it to the runner as ``base_dir``, and the viewer's file lookups use it too,
+    so a path shown on the page is the path the run uses.
+    """
+    return project.root
+
+
 def _refuse(project: Project, entry: PipelineEntry, data: dict[str, Any], message: str) -> RunRecord:
     data.update(outcome="refused", message=message, finished=_now())
     target = _save(project, entry.name, False, lambda into: _write_record(into, data))
@@ -506,7 +516,7 @@ def execute(
         until = plan.runs if plan.held_back else None
 
     try:
-        trace = run_pipeline(spec, until=until, sink=sink, base_dir=project.root)
+        trace = run_pipeline(spec, until=until, sink=sink, base_dir=run_folder(project))
     except StepFailedError as failure:
         return _save_trace(project, spec, trace=failure.trace, data=data, focus=entry.focus, failure=failure)
     return _save_trace(project, spec, trace=trace, data=data, focus=entry.focus, failure=None)
