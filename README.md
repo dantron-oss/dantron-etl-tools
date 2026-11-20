@@ -162,4 +162,4 @@ that matter most.
 
 ## Licence
 
-A licence is to be added before public release.
+Apache License 2.0. See [LICENSE](LICENSE).

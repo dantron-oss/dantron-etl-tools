@@ -176,6 +176,11 @@ pipeline computes says so plainly.
 
 Work happens on a `feature/<name>` branch and merges into `develop`.
 
+## Licence
+
+The library is under the Apache License 2.0. By contributing you agree that your work is offered
+under the same licence.
+
 ## Code of conduct
 
 Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT.md).
