@@ -311,8 +311,10 @@ class TestTheFunctionTable:
             problems.append("is variadic, so it must list exactly one argument for all of them to meet")
         if function.result != "common" and not isinstance(function.result, Family):
             problems.append(f"gives {function.result!r}, which is neither a family nor 'common'")
-        if function.result == "common" and not (function.variadic and function.params[0].family is None):
-            problems.append("gives the family its arguments agree on, so it must take any number of any family")
+        if function.result == "common" and not all(
+            isinstance(param, Value) and param.family is None for param in function.params
+        ):
+            problems.append("gives the family its arguments agree on, so every argument must be of any family")
         if function.result_dtype == "subject" and not isinstance(function.params[0], Value):
             problems.append("hands on its first argument's type, so the first argument must be a value")
         if not callable(function.to_polars):
@@ -716,7 +718,8 @@ class TestSecurity:
         (``date_diff``, ``assemble_date``), from the same shared code.
 
         ``month``, ``day``, ``quarter``, ``day_of_week``, ``add_days``, ``month_start`` and
-        ``parse_date`` were asked for by a second project, and complete the dates.
+        ``parse_date`` were asked for by a second project, and complete the dates; ``floor``,
+        ``ceil``, ``sign``, ``mod``, ``least``, ``greatest`` and ``nullif`` came with them.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
@@ -736,6 +739,13 @@ class TestSecurity:
             "month_start",
             "parse_date",
             "abs",
+            "floor",
+            "ceil",
+            "sign",
+            "mod",
+            "least",
+            "greatest",
+            "nullif",
             "lower",
             "upper",
             "trim",

@@ -12,6 +12,9 @@ things; each such release says how to upgrade.
 - **Date functions** `month`, `day`, `quarter` and `day_of_week` (Monday is 1), `add_days`,
   `month_start`, and `parse_date`, which reads text as a date in a stated format and stops the step
   on text that does not match, instead of leaving the date blank.
+- **Number functions** `floor`, `ceil`, `sign`, `mod`, `least`, `greatest` and `nullif`. `mod`
+  keeps the sign of the first number, as SQL does, and `mod` by zero stops the step, as `/` by zero
+  does.
 
 ## [0.2.0] - 2026-11-20
 

@@ -461,6 +461,12 @@ class _Compiler:
             family = self._one_family(operands, f"{name}() {params[0].requirement}")
         else:
             family = function.result
+        if function.meets is not None:
+            arguments = self._meet(function, arguments)
+            operands = [argument for argument in arguments if isinstance(argument, Typed)]
+        if function.divides_by is not None:
+            divisor = function.divides_by
+            self._record_division(node.args[divisor], arguments[divisor], f"{name}()")
         typed = {"dtype": operands[0].dtype} if function.typed else {}
         given = [self._built(param, argument) for param, argument in zip(params, arguments)]
         built = function.to_polars(*given, **typed)
@@ -475,6 +481,38 @@ class _Compiler:
             dtype = function.result_dtype
         holds = f"gives {family.value}" if family not in WILDCARD_FAMILIES else "holds an unknown type"
         return Typed(built, family, node, holds, dtype)
+
+    def _meet(self, function: Function, arguments: list[Any]) -> list[Any]:
+        """Check how a function's value arguments meet each other, as its `meets` says; see Function."""
+        operands = [argument for argument in arguments if isinstance(argument, Typed)]
+        if function.meets == "arithmetic":
+            for operand in operands:
+                if isinstance(operand.dtype, pl.Decimal):
+                    raise error(
+                        self._text,
+                        f"{self._describe(operand)}, and the engine has no {function.name}() for an exact "
+                        f"Decimal; cast the column to Float64 first, with the cast_columns tool",
+                    )
+            return [_widened(argument) if isinstance(argument, Typed) else argument for argument in arguments]
+        self._refuse_two_clocks(function.name, operands)
+        if function.meets == "compared":
+            self._refuse_timestamp_against_date(operands[0], operands[1], None)
+        return arguments
+
+    def _refuse_two_clocks(self, name: str, operands: Sequence[Typed]) -> None:
+        """Refuse timestamps in different time zones, or one in a zone beside a date: no one order fits both."""
+
+        def zone(typed: Typed) -> str | None:
+            return typed.dtype.time_zone if isinstance(typed.dtype, pl.Datetime) else None
+
+        clocked = [operand for operand in operands if operand.family is Family.DATE and operand.dtype is not None]
+        for other in clocked[1:]:
+            if zone(other) != zone(clocked[0]):
+                raise error(
+                    self._text,
+                    f"{self._describe(clocked[0])} and {self._describe(other)}, but {name}() compares timestamps "
+                    f"only on one clock; cast them to the same time zone first, with the cast_columns tool",
+                )
 
     def _argument(self, name: str, param: Param, node: ast.expr, position: int) -> Any:
         """One argument of a fixed-arity function: a checked operand, or a value read from the file."""
@@ -571,11 +609,13 @@ class _Compiler:
 
     # -- helpers -----------------------------------------------------------
 
-    def _record_division(self, node: ast.expr, divisor: Typed) -> None:
+    def _record_division(self, node: ast.expr, divisor: Typed, operation: str = "'/'") -> None:
         """Note a divisor for the tool to check row by row, or refuse one written as zero."""
         written = self._spelling.literal(node)
         if isinstance(written, (int, float)) and not isinstance(written, bool) and written == 0:
-            raise error(self._text, f"'/' divides by {self._spelling.render(node)}, which is zero, so it has no answer")
+            raise error(
+                self._text, f"{operation} divides by {self._spelling.render(node)}, which is zero, so it has no answer"
+            )
         self.divisions.append(Division(self._spelling.render(node), divisor.expr))
 
     def _record_row_check(self, function: Function, node: ast.Call, given: list[Any]) -> None:
@@ -593,6 +633,13 @@ class _Compiler:
                 f"the whole number {value} is outside the range this language holds, which is {_WHOLE_NUMBER_MIN} to "
                 f"{_WHOLE_NUMBER_MAX}",
             )
+
+
+def _widened(typed: Typed) -> Typed:
+    """An operand as arithmetic meets it: unsigned widened as by :func:`_signed`, a typeless null as Int64."""
+    if typed.dtype == pl.Null:
+        return typed._replace(expr=typed.expr.cast(pl.Int64), dtype=pl.Int64())
+    return _signed(typed)
 
 
 def _signed(typed: Typed) -> Typed:

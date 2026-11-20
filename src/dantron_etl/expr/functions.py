@@ -55,8 +55,8 @@ class Function:
     family the arguments agree on). `result_dtype` is the exact type where known ("subject": the first
     argument's; "common": worked out from all). `to_polars` builds the column from a polars expression
     per value argument and the Python value per literal argument. `typed` passes the first argument's
-    dtype as `dtype=` (None without a schema), for round() and format_number(). `no_answer` names the
-    rows the function has no answer for; a tool stops the step on them.
+    dtype as `dtype=` (None without a schema), for round(), format_number(), floor(), ceil() and
+    sign(). `no_answer` names the rows the function has no answer for; a tool stops the step on them.
     """
 
     name: str
@@ -69,6 +69,13 @@ class Function:
     result_dtype: pl.DataType | Literal["subject", "common"] | None = None
     typed: bool = False
     no_answer: NoAnswer | None = None
+    #: How the value arguments meet each other, beyond sharing a family. "compared": tested for
+    #: equality, so a timestamp against a date is refused as '=' refuses it. "ordered": put in order,
+    #: so timestamps on different clocks are refused. "arithmetic": worked out as the operators work,
+    #: so an unsigned whole number is widened to Int64 and an exact Decimal is refused.
+    meets: Literal["compared", "ordered", "arithmetic"] | None = None
+    #: The argument that divides: a zero there stops the step, as a '/' by zero does.
+    divides_by: int | None = None
 
 
 def _coalesce(*parts: pl.Expr) -> pl.Expr:
@@ -120,6 +127,46 @@ def _rounded_series(series: pl.Series, digits: int) -> pl.Series:
 
 def _abs(subject: pl.Expr) -> pl.Expr:
     return subject.abs()
+
+
+def _without_negative_zero(value: pl.Expr) -> pl.Expr:
+    """-0.0 as 0.0, every other value as it is: a minus sign on a zero reads as a debit in a written file."""
+    return pl.when(value == 0).then(value.abs()).otherwise(value)
+
+
+def _floor(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    # A whole number comes back as it is; a Decimal keeps its places; a null of no type stays null.
+    return subject if dtype == pl.Null else _without_negative_zero(subject.floor())
+
+
+def _ceil(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject if dtype == pl.Null else _without_negative_zero(subject.ceil())
+
+
+def _sign(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject if dtype == pl.Null else _without_negative_zero(subject.sign())
+
+
+def _mod(dividend: pl.Expr, divisor: pl.Expr) -> pl.Expr:
+    """The remainder with the sign of the dividend, as SQL's MOD: mod(-7, 3) is -1.
+
+    The engine's own % takes the divisor's sign (-7 % 3 is 2), so the remainder is worked out on the
+    two sizes and given the dividend's sign, which is exact for numbers with a fraction too.
+    """
+    return _without_negative_zero(dividend.sign() * (dividend.abs() % divisor.abs()))
+
+
+def _least(*parts: pl.Expr) -> pl.Expr:
+    # Nulls are skipped, as PostgreSQL's LEAST skips them; only all nulls give null.
+    return pl.min_horizontal(list(parts))
+
+
+def _greatest(*parts: pl.Expr) -> pl.Expr:
+    return pl.max_horizontal(list(parts))
+
+
+def _nullif(subject: pl.Expr, other: pl.Expr) -> pl.Expr:
+    return pl.when(subject == other).then(None).otherwise(subject)
 
 
 def _year(subject: pl.Expr) -> pl.Expr:
@@ -497,6 +544,82 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_abs,
         summary="A number without its sign.",
         example="abs([amount])",
+    ),
+    Function(
+        "floor",
+        params=(_ON_NUMBERS,),
+        result=Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_floor,
+        typed=True,
+        summary="A number taken down to the whole number at or below it, in the number's own type: -2.5 gives -3.",
+        example="floor([hours])",
+    ),
+    Function(
+        "ceil",
+        params=(_ON_NUMBERS,),
+        result=Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_ceil,
+        typed=True,
+        summary="A number taken up to the whole number at or above it, in the number's own type: 2.1 gives 3.",
+        example="ceil([hours])",
+    ),
+    Function(
+        "sign",
+        params=(_ON_NUMBERS,),
+        result=Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_sign,
+        typed=True,
+        summary="-1 for a number below zero, 0 for zero, 1 above zero.",
+        example="sign([balance])",
+    ),
+    Function(
+        "mod",
+        params=(_ON_NUMBERS, _ON_NUMBERS),
+        result=Family.NUMBER,
+        result_dtype="common",
+        to_polars=_mod,
+        meets="arithmetic",
+        divides_by=1,
+        summary="The remainder of the first number divided by the second, with the first one's sign: mod(-7, 3) is -1.",
+        example="mod([month_number], 3)",
+    ),
+    Function(
+        "least",
+        params=(Value(None, "needs every value it compares in the same type family"),),
+        variadic=True,
+        result="common",
+        result_dtype="common",
+        to_polars=_least,
+        meets="ordered",
+        summary="The smallest of the values; nulls are skipped, and only all nulls give null.",
+        example="least([due_on], [paid_on])",
+    ),
+    Function(
+        "greatest",
+        params=(Value(None, "needs every value it compares in the same type family"),),
+        variadic=True,
+        result="common",
+        result_dtype="common",
+        to_polars=_greatest,
+        meets="ordered",
+        summary="The largest of the values; nulls are skipped, and only all nulls give null.",
+        example="greatest([amount], 0)",
+    ),
+    Function(
+        "nullif",
+        params=(
+            Value(None, "needs both values in the same type family"),
+            Value(None, "needs both values in the same type family"),
+        ),
+        result="common",
+        result_dtype="subject",
+        to_polars=_nullif,
+        meets="compared",
+        summary="Null where the first value equals the second, otherwise the first: nullif([code], '') blanks empty text.",
+        example="nullif([discount], 0)",
     ),
     Function(
         "lower",

@@ -240,8 +240,9 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 
 Available functions: `coalesce`, `round`, `year`, `month`, `day`, `quarter`, `day_of_week`,
 `add_months`, `add_days`, `months_between`, `days_between`, `make_date`, `month_end`, `month_start`,
-`parse_date`, `abs`, `lower`, `upper`, `trim`, `len`, `starts_with`, `ends_with`, `contains`,
-`regex_extract`, `regex_replace`, `regex_match`, `concat`, `format_number`, `uuid5`.
+`parse_date`, `abs`, `floor`, `ceil`, `sign`, `mod`, `least`, `greatest`, `nullif`, `lower`,
+`upper`, `trim`, `len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`,
+`regex_match`, `concat`, `format_number`, `uuid5`.
 
 **Dates.** `months_between(start, end, counting)` and `days_between(start, end, counting)` count
 whole months or days between two dates, signed, with `counting` either `'inclusive'` (both ends
@@ -263,6 +264,14 @@ the month. `parse_date(text, format)` reads text as a date in a format written i
 `'%d/%m/%Y'`. A null stays null. Text that does not match the format, or names no real date, stops
 the step and names the values: it never becomes a blank date. A format without a day, such as
 `'%Y-%m'`, is refused when the file loads; write `parse_date(concat([period], '-01'), '%Y-%m-%d')`.
+
+**Numbers.** `floor` and `ceil` go down or up to a whole number and keep the number's type, so a
+`Decimal` stays a `Decimal`. `sign` gives -1, 0 or 1. `mod(a, b)` is the remainder with the sign of
+`a`, as SQL's `MOD` and Alteryx's `Mod`: `mod(-7, 3)` is -1, where the engine's own `%` would give 2.
+`mod` by zero stops the step, as `/` by zero does, and a `Decimal` is refused: cast it to `Float64`
+first. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
+only all nulls give null. `nullif(a, b)` is null where `a` equals `b`, otherwise `a`;
+`nullif([code], '')` turns empty text into a null.
 
 `trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
 inside the text alone.
