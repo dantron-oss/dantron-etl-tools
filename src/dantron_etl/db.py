@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Final
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .errors import ConfigError
 
@@ -29,6 +29,7 @@ __all__ = [
     "RowLoader",
     "TableRules",
     "declared_type_of",
+    "describe_connection",
     "driver_for",
     "open_connection",
     "probe_columns",
@@ -220,6 +221,205 @@ def _connect_sqlite_file_uri(uri: str) -> sqlite3.Connection:
     raise ConfigError(f"could not open the sqlite database the file: URI names ({failure}); a missing file is not created")
 
 
+@dataclass(frozen=True)
+class _Where:
+    """The parts of a Postgres address that say which database it is. Never the user or the password."""
+
+    host: str | None
+    port: str | None
+    database: str | None
+
+
+class _Unreadable(ValueError):
+    """An address that cannot be read without risking showing part of its password."""
+
+
+class _PasswordInPlace(_Unreadable):
+    """An address whose password is also written in its host, port or database name."""
+
+
+_POSTGRES_PREFIXES: Final[tuple[str, ...]] = ("postgresql://", "postgres://")
+_PORT: Final[re.Pattern[str]] = re.compile(r"[0-9]+(,[0-9]*)*")
+
+
+def _decoded(text: str) -> str:
+    """``text`` with its %xx codes read, refusing a broken one as the Postgres driver does."""
+    if re.search(r"%(?![0-9A-Fa-f]{2})", text):
+        raise _Unreadable(text)
+    return unquote(text, errors="strict")
+
+
+def _uri_where(uri: str) -> tuple[_Where, str | None, str | None]:
+    """Read a ``postgresql://`` address the way the Postgres driver reads it: the place, and the password.
+
+    The password comes back as written and as decoded, so a caller can check it shows nowhere. An
+    address is refused when an @ is left after the one before the host: written that way, the driver
+    reads part of the password as the host or the database name.
+    """
+    rest = uri.split("://", 1)[1]
+    password: str | None = None
+    stop = next((at for at, char in enumerate(rest) if char in "@/"), len(rest))
+    if stop < len(rest) and rest[stop] == "@":
+        userinfo, rest = rest[:stop], rest[stop + 1 :]
+        password = userinfo.partition(":")[2] or None
+    if "@" in rest:
+        raise _Unreadable(uri)
+    end = next((at for at, char in enumerate(rest) if char in "/?"), len(rest))
+    hosts, rest = rest[:end], rest[end:]
+    path, _, query = rest.partition("?")
+    found: dict[str, str] = {}
+    for item in query.split("&") if query else ():
+        key, equals, value = item.partition("=")
+        if not equals:
+            raise _Unreadable(uri)
+        found[_decoded(key)] = value
+    names, ports = [], []
+    for one in hosts.split(",") if hosts else ():
+        if one.startswith("["):  # an IPv6 address, such as [::1]:5432
+            name, _, port = one.partition("]")
+            name, port = f"{name}]", port.removeprefix(":")
+        else:
+            name, _, port = one.partition(":")
+        names.append(_decoded(name))
+        ports.append(port)
+    host = _decoded(found["host"]) if "host" in found else ",".join(names) or None
+    port = _decoded(found["port"]) if "port" in found else ",".join(ports).strip(",") or None
+    database = _decoded(found["dbname"]) if "dbname" in found else (_decoded(path[1:]) if path[1:] else None)
+    if "password" in found:
+        password = found["password"]
+    return _Where(host, port, database), password, _decoded(password) if password else None
+
+
+def _key_value_where(text: str) -> tuple[_Where, str | None, str | None]:
+    """Read ``host=... dbname=...`` pairs the way the Postgres driver reads them: the place, and the password.
+
+    A value is a word, or text in single quotes; a backslash keeps the next character as it is.
+    """
+    found: dict[str, str] = {}
+    at, size = 0, len(text)
+    while True:
+        while at < size and text[at].isspace():
+            at += 1
+        if at == size:
+            break
+        start = at
+        while at < size and text[at] != "=" and not text[at].isspace():
+            at += 1
+        key = text[start:at]
+        while at < size and text[at].isspace():
+            at += 1
+        if not key or at == size or text[at] != "=":
+            raise _Unreadable(text)
+        at += 1
+        while at < size and text[at].isspace():
+            at += 1
+        value: list[str] = []
+        quoted = at < size and text[at] == "'"
+        at += 1 if quoted else 0
+        while at < size:
+            char = text[at]
+            if char == "\\" and at + 1 < size:
+                value.append(text[at + 1])
+                at += 2
+                continue
+            if (quoted and char == "'") or (not quoted and char.isspace()):
+                break
+            value.append(char)
+            at += 1
+        if quoted:
+            if at == size:
+                raise _Unreadable(text)
+            at += 1
+        found[key] = "".join(value)
+    database = found.get("dbname")
+    if database and ("=" in database or database.lower().startswith(_POSTGRES_PREFIXES)):
+        # The driver opens such a name as an address of its own, which may hold a password.
+        raise _Unreadable(text)
+    where = _Where(found.get("host") or found.get("hostaddr"), found.get("port"), database)
+    password = found.get("password")
+    return where, password, password
+
+
+def _postgres_where(value: str) -> _Where:
+    """Where a Postgres address points, or _Unreadable when that cannot be said without risking the password.
+
+    The last check is blunt on purpose: if the password, as written or decoded, appears in anything
+    that would be shown, nothing is shown.
+    """
+    try:
+        if value.lower().startswith(_POSTGRES_PREFIXES):
+            where, written, decoded = _uri_where(value)
+        else:
+            where, written, decoded = _key_value_where(value)
+    except (ValueError, IndexError, UnicodeDecodeError) as error:
+        raise _Unreadable(value) from error
+    if where.port is not None and not _PORT.fullmatch(where.port):
+        raise _Unreadable(value)
+    shown = " ".join(part for part in (where.host, where.port, where.database) if part)
+    if any(secret and secret in shown for secret in (written, decoded)):
+        raise _PasswordInPlace(value)
+    return where
+
+
+def _place(where: _Where) -> str:
+    """``database 'x' on host y, port z``, leaving out what the address does not state."""
+    parts = [f"database {where.database!r}" if where.database else "the default database"]
+    parts.append(f"on host {where.host}" if where.host else "on the default host")
+    text = " ".join(parts)
+    return f"{text}, port {where.port}" if where.port else text
+
+
+def describe_connection(name: Any) -> str:
+    """Which database the environment variable ``name`` points at now, in words a person can check.
+
+    For a Postgres address: the database, the host, and the port when one is stated. For SQLite: the
+    file. Never the user or the password, and it never raises: a variable that is not set, or an
+    address that cannot be read safely, is said in words. The confirmation before a real run uses it.
+    """
+    if not isinstance(name, str) or not _ENV_NAME.fullmatch(name):
+        return (
+            "a database the step's connection setting cannot name, because the setting is not the name "
+            "of an environment variable; a run refuses it"
+        )
+    value = os.environ.get(name)
+    source = f"environment variable {name}"
+    if value is None:
+        return f"the database named by {source}, which is not set, so which database it is cannot be shown"
+    lowered = value.strip().lower()
+    if lowered.startswith(_SQLITE_PREFIX):
+        return f"the SQLite file {value.strip()[len(_SQLITE_PREFIX) :]} (from {source})"
+    if lowered.startswith("file:"):
+        location = value.strip()[len("file:") :].partition("?")[0]
+        if "mode=memory" in lowered:
+            return f"an in-memory SQLite database (from {source})"
+        return f"the SQLite file {location} (from {source})"
+    is_address = lowered.startswith(_POSTGRES_PREFIXES)
+    if "://" in lowered and not is_address:
+        return (
+            f"the database named by {source}, whose value is not an address a run opens (it opens "
+            f"sqlite:///, file: and postgresql:// addresses), so which database it is cannot be shown"
+        )
+    try:
+        where = _postgres_where(value.strip())
+    except _PasswordInPlace:
+        return (
+            f"the database named by {source}, whose password is also written in its host, port or "
+            f"database name, so which database it is cannot be shown without showing the password"
+        )
+    except _Unreadable:
+        return (
+            f"the database named by {source}, whose value cannot be read safely, so which database it "
+            f"is cannot be shown. In a postgresql:// address, write an @ or / in the password as %40 "
+            f"or %2F"
+        )
+    if is_address:
+        return f"{_place(where)} (from {source})"
+    return (
+        f"{_place(where)} (from {source}), written as key=value pairs, which a run cannot open; "
+        f"write it as postgresql://host:port/database"
+    )
+
+
 def _could_not_connect(uri: str, failure: str) -> str:
     """Build the message for a failed Postgres connection.
 
@@ -227,10 +427,9 @@ def _could_not_connect(uri: str, failure: str) -> str:
     message, which can contain the password.
     """
     try:
-        parsed = urlparse(uri)
-        host, database = parsed.hostname, parsed.path.lstrip("/")
-        port = parsed.port
-    except ValueError:
+        place = _postgres_where(uri)
+        host, database, port = place.host, place.database, place.port
+    except _Unreadable:
         host = database = port = None
     where = ", ".join(
         part

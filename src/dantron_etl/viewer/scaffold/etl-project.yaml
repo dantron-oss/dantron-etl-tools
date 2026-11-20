@@ -9,6 +9,11 @@ pipeline_folders: [pipelines]
 # Nothing in here is precious: delete the folder and the runs are simply gone.
 runs_folder: output_files/runs
 
+# Whether a run keeps the rows at every step for the viewer. Set it to false for data that must not
+# be copied to disk: the viewer then shows the steps, counts and columns but no rows. It can also be
+# set under one pipeline below.
+# save_rows: true
+
 # Settings for each pipeline, under its name.
 pipelines:
   example:

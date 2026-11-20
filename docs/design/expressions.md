@@ -55,16 +55,24 @@ each must hold, the family and exact type of its result, the builder, a one-line
 example. `ALLOWED_FUNCTIONS`, the arity check and the result types are all read from the entry, and a
 test refuses an entry with a part missing. The manual's list (section 4.2) is checked against it.
 
-- **No default arguments.** One spelling per call keeps a file reviewable; a reviewer should not need
-  to know a default to know what a line does.
+- **No default arguments, with one exception.** One spelling per call keeps a file reviewable; a
+  reviewer should not need to know a default to know what a line does. `substr()`'s length may be
+  left out (an entry's `optional`), because "to the end" is the only reading, and the one SQL gives.
 - **The result family is declared,** so nesting is checked: without it `upper(len([label]))` would
   compile and fail in polars.
 - **The exact result type is declared where known** (`year()` and `len()` give whole numbers), so a
   count of months built from them is known to be whole.
 - **Literal-only arguments.** A regex pattern, a group number, `round()`'s places, `format_number()`'s
   places and separators, `regex_replace()`'s replacement and `uuid5()`'s namespace must be written in
-  the file. A decision a reviewer reads in the line cannot vary by row, and a literal can be checked
-  before the run.
+  the file. So must the counts of `left()`, `right()`, `substr()`, `split_part()`, `pad_left()` and
+  `pad_right()`, the delimiter, the fill character and `parse_date()`'s format: like `round()`'s
+  places, they say how text is laid out. A decision a reviewer reads in the line cannot vary by row,
+  and a literal can be checked before the run. `add_months()` and `add_days()` are the other way:
+  their count is a quantity, and comes from the data.
+- **A row with no answer stops the step.** An entry's `no_answer` names the rows a function cannot
+  answer (text `parse_date()` cannot read; a count `add_days()` cannot move by exactly), and
+  `divides_by` names `mod()`'s divisor. Each tool already checks these with the division check, so
+  such a row stops the step with the values quoted, instead of becoming a null nobody asked for.
 - **A pattern is checked by polars, both ways,** because polars and Python's `re` disagree (look-behind
   is legal in `re` and not in polars; a Unicode script class is the reverse). Checking with the wrong
   engine either passes a pattern that fails at run time or refuses one that works.
@@ -132,7 +140,7 @@ the rows that reach a report. Details in `formatting.py`:
 Owner's ruling (2026-11-18, finding C-02): **a division whose divisor is zero stops the run.** Left to
 polars it gives infinity, or not-a-number for 0/0, and a later filter reads not-a-number as larger than
 every number. The compiler records every `/` with its divisor (`divisions()`), and each tool calls
-`refuse_division_by_zero` before running, which names the field, the expression, the divisor and up to
+`refuse_rows_without_an_answer` before running, which names the field, the expression, the divisor and up to
 five rows. Zero means 0, 0.0 or -0.0. A null divisor is not zero: the division gives null. A divisor
 written in the file as zero is refused at compile time, since it would stop every row. case_when checks
 each division only on the rows that reach it, as SQL's CASE does, so an earlier case can guard it.

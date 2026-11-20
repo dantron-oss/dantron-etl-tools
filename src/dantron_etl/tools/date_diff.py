@@ -23,7 +23,7 @@ from ..authoring import (
     compile_for,
     compiled_dtype,
     count_between,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
     require_not_blank,
     ZONE_FIELD,
     as_calendar_date,
@@ -135,7 +135,7 @@ class DateDiff:
         frame = inputs["rows"]
 
         for side in ("start", "end"):
-            refuse_division_by_zero(frame, config[side], side)
+            refuse_rows_without_an_answer(frame, config[side], side)
         start_expr, end_expr = (
             as_calendar_date(compile_for(frame, config[side], side), compiled_dtype(frame, config[side], side)[1], config["in_zone"])
             for side in ("start", "end")

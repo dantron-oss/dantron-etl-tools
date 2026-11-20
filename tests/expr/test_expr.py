@@ -309,10 +309,14 @@ class TestTheFunctionTable:
             problems.append("lists no arguments")
         if function.variadic and len(function.params) != 1:
             problems.append("is variadic, so it must list exactly one argument for all of them to meet")
+        if function.optional and (function.variadic or function.optional >= len(function.params)):
+            problems.append("leaves out more arguments than it has, or is variadic, so cannot say which")
         if function.result != "common" and not isinstance(function.result, Family):
             problems.append(f"gives {function.result!r}, which is neither a family nor 'common'")
-        if function.result == "common" and not (function.variadic and function.params[0].family is None):
-            problems.append("gives the family its arguments agree on, so it must take any number of any family")
+        if function.result == "common" and not all(
+            isinstance(param, Value) and param.family is None for param in function.params
+        ):
+            problems.append("gives the family its arguments agree on, so every argument must be of any family")
         if function.result_dtype == "subject" and not isinstance(function.params[0], Value):
             problems.append("hands on its first argument's type, so the first argument must be a value")
         if not callable(function.to_polars):
@@ -346,6 +350,7 @@ class TestTheFunctionTable:
             ({"result": "text"}, "neither a family"),
             ({"result": "common"}, "agree on"),
             ({"to_polars": None}, "build"),
+            ({"optional": 1}, "leaves out more"),
         ],
     )
     def test_the_check_refuses_an_entry_with_a_part_missing(self, change: dict[str, Any], expected: str) -> None:
@@ -690,9 +695,7 @@ class TestSecurity:
         ``year`` is the newest, and the first that reads a *part* of a value rather than
         transforming the whole of it. It arrived with a consumer: repairing a term whose end year
         was mistyped means comparing against the year after the one it starts in, and no
-        combination of the names above can produce that number. ``month`` and ``day`` are its
-        obvious siblings and are deliberately absent until something needs them -- a function with
-        no caller is checked only against whatever its author imagined.
+        combination of the names above can produce that number.
 
         ``add_months`` is newer still. It moves a date forward by a whole number of months and
         hands back a date. It arrived with a caller too: spreading one billed amount across the
@@ -716,18 +719,38 @@ class TestSecurity:
         ``months_between``, ``days_between``, ``make_date`` and ``month_end`` came together: flows
         were casting dates to whole numbers to subtract them. Each answers what a tool already does
         (``date_diff``, ``assemble_date``), from the same shared code.
+
+        ``month``, ``day``, ``quarter``, ``day_of_week``, ``add_days``, ``month_start`` and
+        ``parse_date`` were asked for by a second project, and complete the dates; ``floor``,
+        ``ceil``, ``sign``, ``mod``, ``least``, ``greatest`` and ``nullif`` came with them, and
+        ``left``, ``right``, ``substr``, ``split_part``, ``pad_left`` and ``pad_right`` for text.
+        ``substr`` is the first function whose last argument may be left out.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
             "coalesce",
             "round",
             "year",
+            "month",
+            "day",
+            "quarter",
+            "day_of_week",
             "add_months",
+            "add_days",
             "months_between",
             "days_between",
             "make_date",
             "month_end",
+            "month_start",
+            "parse_date",
             "abs",
+            "floor",
+            "ceil",
+            "sign",
+            "mod",
+            "least",
+            "greatest",
+            "nullif",
             "lower",
             "upper",
             "trim",
@@ -735,6 +758,12 @@ class TestSecurity:
             "starts_with",
             "ends_with",
             "contains",
+            "left",
+            "right",
+            "substr",
+            "split_part",
+            "pad_left",
+            "pad_right",
             "regex_extract",
             "regex_replace",
             "regex_match",

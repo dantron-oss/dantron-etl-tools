@@ -77,6 +77,8 @@ KEY_MEANINGS: dict[str, dict[str, str]] = {
 PROJECT_MEANINGS: dict[str, str] = {
     "pipeline_folders": "Folders holding pipeline files. Default `[pipelines]`.",
     "runs_folder": "Where runs are saved for the viewer. Default `output_files/runs`.",
+    "save_rows": "At the top, or under a pipeline to override the top: `false` saves no rows of a run, only its "
+    "steps, counts and columns. Default `true`.",
     "pipelines": "Settings for each pipeline, under its name (the file name without `.yaml`).",
     "rules": "Under a pipeline: the values its `${rules.name}` references take.",
     "rules_file": "Under a pipeline: a YAML file of rule values, relative to the project folder.",
@@ -222,7 +224,13 @@ def _argument(parameter: Any) -> str:
         family = parameter.family.value if parameter.family is not None else "any value"
         return f"a whole number ({family})" if parameter.whole else family
     if kind == "WholeNumber":
-        return "a whole number written in the file"
+        if parameter.least < 0:
+            return "a whole number written in the file; below 0 counts from the other end" + (
+                ", never 0" if parameter.nonzero else ""
+            )
+        return "a whole number written in the file" + (f", from {parameter.least}" if parameter.least else "")
+    if kind == "Characters":
+        return "one character, quoted" if parameter.exactly_one else "quoted text written in the file, not empty"
     if kind == "Choice":
         return " or ".join(f"'{option}'" for option in parameter.options)
     if kind == "Pattern":
@@ -231,6 +239,8 @@ def _argument(parameter: Any) -> str:
         return "quoted text written in the file"
     if kind == "Namespace":
         return "a quoted UUID"
+    if kind == "DateFormat":
+        return "a quoted date format, such as '%d/%m/%Y'"
     return kind
 
 
@@ -240,6 +250,8 @@ def functions_table() -> str:
     rows = []
     for definition in DEFINITIONS:
         arguments = [_argument(parameter) for parameter in definition.params]
+        for index in range(len(arguments) - definition.optional, len(arguments)):
+            arguments[index] += " (may be left out)"
         if definition.variadic:
             arguments = [f"two or more, each {arguments[0]}"]
         rows.append([f"`{definition.name}`", "; ".join(arguments), definition.summary, f"`{definition.example}`"])
@@ -296,7 +308,7 @@ def pipeline_keys() -> str:
 def project_keys() -> str:
     from dantron_etl.viewer import project
 
-    keys = [*project._TOP_KEYS, *project._ENTRY_KEYS]
+    keys = list(dict.fromkeys([*project._TOP_KEYS, *project._ENTRY_KEYS]))
     missing = [key for key in keys if key not in PROJECT_MEANINGS]
     if missing:
         raise SystemExit(f"docs/_build/generate.py: say what project key(s) {missing} mean in PROJECT_MEANINGS")

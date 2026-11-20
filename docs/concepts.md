@@ -136,6 +136,12 @@ A **real run** runs every step, writers included. `dantron-etl run <pipeline> --
 every file and table it will write, and asks you to type the pipeline's name. The viewer's
 **Real run…** asks the same. `--yes` skips the question, for scheduled jobs.
 
+For a table, the list says which database the step's connection points at as you look: the host,
+the port when the address states one, and the database name, so you can tell the test database from
+the live one. It never shows the password or the user. If the environment variable is not set, or
+its address cannot be read without risking the password, the list says so instead. If the
+connection points somewhere else by the time you confirm, the run is refused and you look again.
+
 ## A run is evidence
 
 Every run leaves behind the rows on every port, one event per step (rows in and out, time taken),
@@ -145,6 +151,38 @@ never runs anything.
 A run is saved in `output_files/runs/<pipeline>/`. A run that fails is saved beside the last good
 one, as `<pipeline>.failed/`, and the viewer shows the failing step and its error. The last good run
 is kept.
+
+A saved run holds real rows, which can be personal or financial data. On Linux and macOS, each
+folder a run makes is readable by its owner only (`0700`), and so is each file in it (`0600`),
+whatever the umask. A folder that was already there, such as the project folder or a runs folder you
+made, keeps its permissions; so do older runs, and the files your pipeline's output steps write. On
+Windows, and on a drive that refuses the change, nothing is changed: the run is still saved, and its
+files are only as private as the folder they are in, so keep the runs folder somewhere only you can
+read.
+
+### A project that must not keep copies of its data
+
+Set `save_rows: false` in `etl-project.yaml`, at the top for every pipeline or under one pipeline
+to override the top:
+
+```yaml fragment
+save_rows: false
+pipelines:
+  sales:
+    save_rows: true
+```
+
+A run still needs its rows in memory while it runs; only what is kept afterwards changes. The saved
+run keeps the steps, whether each ran, the time each took, the row count and the column names and
+types at every port, and what a real run wrote. It keeps no row from any port, and no list of the
+values the viewer could follow. The viewer still draws the flow, the settings, the counts and the
+columns; where it would show rows, or let you follow one customer, it says the rows are not saved
+and names the setting.
+
+A failed step's message is kept, because it is what says why the run stopped, and its sentence can
+name a value, such as the cell that stopped a read or a key that matched nothing. The example rows a
+refusal lists after it are left out. The viewer never reuses a saved run's rows for a later run, so
+nothing else changes.
 
 From Python, `run_pipeline` returns the same evidence as a **trace**:
 

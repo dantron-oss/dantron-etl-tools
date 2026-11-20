@@ -219,6 +219,7 @@ YAML is forgiving in ways that change what you wrote. These are the ones that bi
 |---|---|
 | `pipeline_folders` | Folders holding pipeline files. Default `[pipelines]`. |
 | `runs_folder` | Where runs are saved for the viewer. Default `output_files/runs`. |
+| `save_rows` | At the top, or under a pipeline to override the top: `false` saves no rows of a run, only its steps, counts and columns. Default `true`. |
 | `pipelines` | Settings for each pipeline, under its name (the file name without `.yaml`). |
 | `rules` | Under a pipeline: the values its `${rules.name}` references take. |
 | `rules_file` | Under a pipeline: a YAML file of rule values, relative to the project folder. |

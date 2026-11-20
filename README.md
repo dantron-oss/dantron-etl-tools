@@ -165,7 +165,7 @@ print(trace.frame("by_customer.rows"))
 ```
 
 Database tables (`read_table`, `write_table`, `publish_tables`) work with SQLite out of the box. For
-Postgres, install the extra: `uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/DanTron-Inc/dantron-etl-tools"`.
+Postgres, install the extra: `uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/DanTron-Inc/dantron-etl-tools@main"`.
 
 For agents writing pipelines, `src/dantron_etl/MANUAL.md` ships inside the package with the rules
 that matter most.
