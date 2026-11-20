@@ -217,7 +217,7 @@ class TestNoFileNamesAClient:
 
     def test_the_walk_reaches_every_kind_of_file(self) -> None:
         """Guard against the walk quietly finding nothing, or only the package."""
-        found = {str(path.relative_to(PROJECT_ROOT)) for path in tracked_files()}
+        found = {path.relative_to(PROJECT_ROOT).as_posix() for path in tracked_files()}
         for expected in ("README.md", "pyproject.toml", "src/dantron_etl/MANUAL.md", "tests/package/test_boundary.py"):
             assert expected in found, f"{expected} was not scanned"
         if (PROJECT_ROOT / ".git").exists():

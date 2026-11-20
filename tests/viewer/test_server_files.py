@@ -160,7 +160,7 @@ class TestFacts:
     def test_a_file_a_step_reads_is_given_with_the_full_path_the_run_uses(self, served: Served) -> None:
         found = ask(served, "file", step="read", setting="path").json()
         assert found["path"] == str(served.root / "pipelines" / "orders.csv")
-        assert found["exists"] and found["size"] == len(ORDERS)
+        assert found["exists"] and found["size"] == (served.root / "pipelines" / "orders.csv").stat().st_size > 0
         assert not found["outside_project"]
 
     def test_a_file_not_written_yet_is_given_as_missing(self, served: Served) -> None:
