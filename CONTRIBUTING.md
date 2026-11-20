@@ -179,8 +179,10 @@ Work happens on a `feature/<name>` branch and merges into `develop`.
 
 ## Releasing a version
 
-A release is a tag on `main`, named `v` and the version, such as `v0.2.0`. Projects install a tag,
-so the code under a tag never changes once it is pushed. A fix goes out as a new version.
+Work merges into `develop`. `main` holds the latest released version and moves only when a version
+is released, because projects install `@main` to get the latest release. Each release is also a tag
+on `main`, named `v` and the version, such as `v0.2.0`, so a project can stay on one version. The
+code under a tag never changes once it is pushed; a fix goes out as a new version.
 
 1. Merge everything for the release into `develop`, and check the suite passes.
 2. Set `__version__` in `src/dantron_etl/__init__.py` to the new version. `pyproject.toml` reads it
