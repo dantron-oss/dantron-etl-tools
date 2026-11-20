@@ -260,7 +260,8 @@ reader has to know to trust.
 `month`, `day`, `quarter` and `day_of_week` read a part of a date, as `year` does, and give a whole
 number. `day_of_week` counts the ISO way: Monday is 1 and Sunday is 7. `add_days(date, count)` moves a
 date by whole days, as `add_months` moves it by months; a count of more than 106,751 days stops the
-step, because the engine cannot move a date that far exactly. `month_start(date)` is the first day of
+step, because the engine cannot move a date that far exactly. A count that takes a date past what
+the engine can hold stops `add_months` the same way. `month_start(date)` is the first day of
 the month. `parse_date(text, format)` reads text as a date in a format written in the file, such as
 `'%d/%m/%Y'`. A null stays null. Text that does not match the format, or names no real date, stops
 the step and names the values: it never becomes a blank date. A format without a day, such as

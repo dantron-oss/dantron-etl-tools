@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 from dantron_etl.authoring import DataError, Ports, run_tool
 from dantron_etl.expr import ExpressionError, compile_expr
@@ -376,3 +377,82 @@ class TestParseDate:
         with pytest.raises(ExpressionError) as raised:
             compile_expr("parse_date([n], '%Y%m%d')", frame.schema)
         assert "parse_date()" in str(raised.value)
+
+
+class TestAddMonthsAtTheEdgeOfTheCalendar:
+    """A count that takes a date past what the engine can hold stops the step; every other count is as before.
+
+    Measured on polars 1.38.1: the engine's calendar runs from January of the year -262143 to December
+    of 262142, and a date moved past either end made it panic. A timestamp kept to the nanosecond runs
+    only from 1677 to 2262, and past that the engine wrapped round to a wrong date without a word.
+    """
+
+    @staticmethod
+    def _moved(frame: pl.DataFrame) -> pl.DataFrame:
+        out = _formula_frame(frame, "add_months([d], [n])")
+        return out.select(pl.col("out").dt.year().alias("year"), pl.col("out").dt.month().alias("month"))
+
+    @pytest.mark.parametrize("dtype", [pl.Date, pl.Datetime("us"), pl.Datetime("ms")])
+    @pytest.mark.parametrize(
+        ("last", "first_refused", "reached"),
+        [(3_121_715, 3_121_716, (262_142, 12)), (-3_169_716, -3_169_717, (-262_143, 1))],
+        ids=["forward", "back"],
+    )
+    def test_the_last_count_that_works_and_the_first_that_stops(
+        self, dtype: pl.DataType, last: int, first_refused: int, reached: tuple[int, int]
+    ) -> None:
+        start = pl.Series([date(2000, 1, 1)]).cast(dtype)
+        works = pl.DataFrame({"d": start, "n": [last]})
+        assert self._moved(works).row(0) == reached
+        stops = pl.DataFrame({"key": ["a", "b"], "d": pl.concat([start, start]), "n": [1, first_refused]})
+        with pytest.raises(DataError) as raised:
+            _formula(stops, "add_months([d], [n])")
+        said = str(raised.value)
+        assert "columns[0].value" in said and "add_months([d], [n])" in said and f"{first_refused}" in said
+        assert "1 of 2 row(s)" in said and "'key': 'b'" in said
+
+    @pytest.mark.parametrize(
+        ("last", "first_refused", "reached"),
+        [(3_147, 3_148, datetime(2262, 4, 1)), (-3_867, -3_868, datetime(1677, 10, 1))],
+        ids=["forward", "back"],
+    )
+    def test_a_timestamp_kept_to_the_nanosecond_stops_where_it_would_wrap_round(
+        self, last: int, first_refused: int, reached: datetime
+    ) -> None:
+        start = pl.Series([datetime(2000, 1, 1)]).cast(pl.Datetime("ns"))
+        assert _formula(pl.DataFrame({"d": start, "n": [last]}), "add_months([d], [n])") == [reached]
+        with pytest.raises(DataError) as raised:
+            _formula(pl.DataFrame({"d": start, "n": [first_refused]}), "add_months([d], [n])")
+        assert f"{first_refused}" in str(raised.value)
+
+    def test_every_count_that_worked_gives_the_date_it_gave(self) -> None:
+        """Compared with the engine's own move, row by row, over counts up to the edge."""
+        starts = [date(1, 1, 1), date(2000, 1, 31), date(2024, 2, 29), date(9999, 12, 31)]
+        counts = [0, 1, -1, 11, -13, 1_200, -1_200, 99_999, -23_988, 3_025_716, -3_145_728]
+        frame = pl.DataFrame({"d": [d for d in starts for _ in counts], "n": counts * len(starts)})
+        engine = frame.select(pl.col("d").dt.offset_by(pl.format("{}mo", pl.col("n"))).alias("out"))
+        assert_frame_equal(_formula_frame(frame, "add_months([d], [n])").select("out"), engine)
+
+    @pytest.mark.parametrize(
+        ("count", "loads"), [(3_145_703, True), (3_145_704, False), (-3_265_715, True), (-3_265_716, False)]
+    )
+    def test_a_count_written_in_the_file_that_no_date_can_take_is_refused_when_it_loads(
+        self, count: int, loads: bool
+    ) -> None:
+        """No date from the year 1 to 9999 can be moved past 3,145,703 months forward or 3,265,715 back."""
+        text = f"add_months([d], {count})"
+        if loads:
+            compile_expr(text, {"d": pl.Date})
+            return
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr(text, {"d": pl.Date})
+        assert "add_months()" in str(raised.value) and f"{count}" in str(raised.value)
+
+    def test_a_null_date_is_not_stopped_by_any_count(self) -> None:
+        frame = pl.DataFrame({"d": [None], "n": [9_000_000]}, schema={"d": pl.Date, "n": pl.Int64})
+        assert _formula(frame, "add_months([d], [n])") == [None]
+
+
+def _formula_frame(frame: pl.DataFrame, value: str) -> pl.DataFrame:
+    config = {"columns": [{"name": "out", "value": value}]}
+    return run_tool(REGISTRY.get("formula"), Ports({"rows": frame}), config)["rows"]

@@ -39,13 +39,16 @@ class NoAnswer:
 
     `when` is given what the builder is given and is true on such a row. `problem` says what is wrong:
     {0}, {1} ... stand for the arguments as the author wrote them, and {found} for the values found
-    in argument number `shows`. `remedy` says what to do.
+    in argument number `shows`. `remedy` says what to do. `written`, where set, is the range a number
+    written in the file as that argument must lie in: outside it, no row could have an answer, so it
+    is refused when the file loads.
     """
 
     when: Callable[..., pl.Expr]
     problem: str
     shows: int
     remedy: str
+    written: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -219,7 +222,7 @@ def _add_days(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = N
     return subject.dt.offset_by(offset)
 
 
-def _too_many_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+def _too_many_days(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
     # A null date moves nowhere, so no count is too large for it.
     return subject.is_not_null() & ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
 
@@ -248,6 +251,31 @@ def _add_months(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None =
         return subject
     offset = pl.concat_str([count.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
     return subject.dt.offset_by(offset)
+
+
+# The engine's calendar, measured on polars 1.38.1: from January of the year -262143 to December of
+# 262142, counted as year * 12 + month - 1. A date moved past either end made the engine panic.
+_FIRST_MONTH: Final[int] = -262_143 * 12
+_LAST_MONTH: Final[int] = 262_142 * 12 + 11
+
+# A timestamp kept to the nanosecond holds 1677 to 2262; moved past that, the engine wraps round.
+# The limits in microseconds, the unit the check moves such a timestamp in.
+_NANOSECOND_REACH: Final[tuple[int, int]] = (-(2**63) // 1000 + 1, (2**63 - 1) // 1000)
+
+
+def _months_out_of_reach(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    """True where add_months() would take a date past what the engine can hold. Worked out without moving it."""
+    if dtype == pl.Null:
+        return pl.lit(False)
+    # In Float64, so no count is large enough to wrap round in the sum.
+    month = subject.dt.year().cast(pl.Float64) * 12 + subject.dt.month().cast(pl.Float64) - 1 + count.cast(pl.Float64)
+    outside = ~month.is_between(_FIRST_MONTH, _LAST_MONTH)
+    if isinstance(dtype, pl.Datetime) and dtype.time_unit == "ns":
+        within = pl.when(outside).then(0).otherwise(count)
+        offset = pl.concat_str([within.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
+        moved = subject.dt.cast_time_unit("us").dt.offset_by(offset).dt.epoch("us")
+        outside = outside | ~moved.is_between(*_NANOSECOND_REACH)
+    return subject.is_not_null() & outside
 
 
 def _months_between(start: pl.Expr, end: pl.Expr, counting: str) -> pl.Expr:
@@ -499,6 +527,18 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A date moved by whole months; 31 January plus one month is 28 February.",
         example="add_months([starts_on], [months] - 1)",
+        no_answer=NoAnswer(
+            when=_months_out_of_reach,
+            problem="moves a date with add_months() further than the engine can hold a date: {1} holds {found}",
+            shows=1,
+            remedy=(
+                "Dates run from the year -262143 to 262142, and a timestamp kept to the nanosecond from 1677 to "
+                "2262. The step stops rather than fail or write a wrong date. Check that {1} is the count of "
+                "months you meant"
+            ),
+            # The most any date from the year 1 to 9999 can be moved by, back and forward.
+            written=(_FIRST_MONTH - (MAX_YEAR * 12 + 11), _LAST_MONTH - MIN_YEAR * 12),
+        ),
     ),
     Function(
         "add_days",

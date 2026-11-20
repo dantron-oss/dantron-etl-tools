@@ -477,7 +477,7 @@ class _Compiler:
         given = [self._built(param, argument) for param, argument in zip(params, arguments)]
         built = function.to_polars(*given, **typed)
         if function.no_answer is not None:
-            self._record_row_check(function, node, given)
+            self._record_row_check(function, node, given, typed.get("dtype"))
 
         if function.result_dtype == "common":
             dtype = combined_dtype([operand.dtype for operand in operands])
@@ -624,12 +624,28 @@ class _Compiler:
             )
         self.divisions.append(Division(self._spelling.render(node), divisor.expr))
 
-    def _record_row_check(self, function: Function, node: ast.Call, given: list[Any]) -> None:
+    def _record_row_check(
+        self, function: Function, node: ast.Call, given: list[Any], dtype: pl.DataType | None
+    ) -> None:
         """Note the rows a function call has no answer for, with its arguments spelled as written."""
         rule = function.no_answer
         assert rule is not None
+        if rule.written is not None:
+            self._refuse_written_out_of_range(function.name, node.args[rule.shows], rule.shows, rule.written)
         written = tuple(self._spelling.render(argument) for argument in node.args)
-        self.row_checks.append(RowCheck(rule.when(*given), given[rule.shows], rule.problem, rule.remedy, written))
+        when = rule.when(*given, dtype=dtype) if function.typed else rule.when(*given)
+        self.row_checks.append(RowCheck(when, given[rule.shows], rule.problem, rule.remedy, written))
+
+    def _refuse_written_out_of_range(self, name: str, node: ast.expr, position: int, bounds: tuple[int, int]) -> None:
+        """Refuse a number written in the file that no row could have an answer for."""
+        value = self._spelling.literal(node)
+        low, high = bounds
+        if isinstance(value, int) and not isinstance(value, bool) and not low <= value <= high:
+            raise error(
+                self._text,
+                f"{name}() was given {value} as its {POSITIONS[position]} argument, which takes every date from "
+                f"the year 1 to 9999 past what the engine can hold; write a number from {low:,} to {high:,}",
+            )
 
     def _check_whole_number(self, value: int | float) -> None:
         """Refuse a whole number no column could hold, measured on the value as written."""

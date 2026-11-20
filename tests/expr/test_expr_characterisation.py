@@ -282,6 +282,8 @@ EDGE_CASES: tuple[str, ...] = (
     "add_months([nothing], 1)",
     "add_days([nothing], 1)",
     "add_days(null, 200000)",
+    "add_months([seen], 3145704)",
+    "add_months([seen], -3265716)",
     # which of two refusals comes first
     "concat(1, upper(2))",
     "concat(upper(1), 2)",

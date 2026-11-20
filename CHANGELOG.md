@@ -25,6 +25,12 @@ things; each such release says how to upgrade.
 
 ### Fixed
 
+- **`add_months` stops the step on a count that takes a date past what the engine can hold**, and
+  names the count and the rows, instead of crashing the engine. Dates run from the year -262143 to
+  262142; a timestamp kept to the nanosecond runs from 1677 to 2262, and moved past that it used to
+  give a wrong date without a word. A count written in the file that no date from the year 1 to
+  9999 can take (beyond 3,145,703 forward or 3,265,715 back) is refused when the file loads. Every
+  other count gives the date it gave before.
 - **`mod` of the most negative whole number** (-9223372036854775808, or a 32-bit column's
   -2147483648) now gives the right remainder, with the sign of the first number: `mod` of it by 3 is
   -2, where it gave -1.
