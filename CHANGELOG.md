@@ -7,6 +7,11 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Changed
+
+- The package's **Documentation** and **Changelog** links, and the README's Postgres install line,
+  point at `main`, the latest release, instead of the working branch.
+
 ## [0.2.0] - 2026-11-20
 
 This release makes the library easier to start with and to read. It adds a command and a viewer
