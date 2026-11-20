@@ -9,7 +9,7 @@ shows the rows that went in and came out, and can be checked by someone who does
 
 ## Quick start (5 minutes)
 
-You need Python 3.13 and [uv](https://docs.astral.sh/uv/) (or pip).
+You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) (or pip).
 
 **1. Install** into a virtual environment, and activate it:
 

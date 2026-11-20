@@ -8,7 +8,8 @@ easier to agree on the shape of a change before the code exists.
 
 ## Set up
 
-You need Python 3.13 and [uv](https://docs.astral.sh/uv/).
+You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/). Development uses 3.13, the
+version in `.python-version`, and CI also tests 3.11 and 3.12.
 
 ```bash
 git clone https://github.com/DanTron-Inc/dantron-etl-tools

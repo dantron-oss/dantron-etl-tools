@@ -3,7 +3,7 @@ name = "dantron-etl-tools"
 # The version is written once, as __version__ in src/dantron_etl/__init__.py (see [tool.hatch.version]).
 dynamic = ["version"]
 description = "Data pipelines written as YAML files, built from a fixed set of tools, with every step's rows open to inspection."
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 readme = "README.md"
 authors = [{ name = "DanTron Inc" }]
 license = "Apache-2.0"
@@ -17,6 +17,8 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Database",
     "Topic :: Office/Business :: Financial :: Spreadsheet",
@@ -108,7 +110,7 @@ exclude = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
