@@ -7,6 +7,12 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
+This release adds to the library and changes no result a pipeline gives today. It reads Excel's
+older format, says which database a real run will write to, keeps saved runs private, and adds
+date, number and text functions and more aggregates. Pipeline files written for 0.2 need no change.
+
 ### Added
 
 - **`read_excel` reads `.xls`**, Excel's older format, as well as `.xlsx`. The same cells give the
@@ -156,6 +162,7 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 
-[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DanTron-Inc/dantron-etl-tools/releases/tag/v0.1.0
