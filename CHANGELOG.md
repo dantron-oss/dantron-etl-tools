@@ -7,23 +7,7 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
-### Changed
-
-- **Python 3.11 and 3.12 are supported**, not only 3.13. CI runs the tests on all three.
-- An engine error inside a refusal no longer carries the engine's own note about its internal
-  expression, which newer polars versions add.
-
-### Added
-
-- **Show file, in the viewer.** Each setting that names a file (`path` on the read and write tools,
-  `template` on `write_excel`) has a **Show file** button. It shows the full path the run uses,
-  whether the file is there, its size and when it last changed, and offers **Preview** (the first
-  rows of a CSV or a sheet of a workbook) and, where the viewer can reach a file manager, **Open
-  location** (Explorer, Finder, Explorer from WSL, or a Linux desktop's file manager). The real-run
-  confirmation shows the same for each file it is about to write. A tool whose setting is marked as
-  a file path gets this without any change to the viewer.
-
-## [0.2.0]
+## [0.2.0] - 2026-11-20
 
 This release makes the library easier to start with and to read. It adds a command and a viewer
 you can open from any project, renames the tools and settings whose names said less than they
@@ -53,6 +37,13 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 - **Documentation for people** under `docs/`: a first-pipeline walk-through, concepts, the pipeline
   file, expressions, a page per tool, a cookbook, checking your figures, the command and upgrading.
 - `py.typed`, so type checkers read the library's annotations.
+- **Show file, in the viewer.** Each setting that names a file (`path` on the read and write tools,
+  `template` on `write_excel`) has a **Show file** button. It shows the full path the run uses,
+  whether the file is there, its size and when it last changed, and offers **Preview** (the first
+  rows of a CSV or a sheet of a workbook) and, where the viewer can reach a file manager, **Open
+  location** (Explorer, Finder, Explorer from WSL, or a Linux desktop's file manager). The real-run
+  confirmation shows the same for each file it is about to write. A tool whose setting is marked as
+  a file path gets this without any change to the viewer.
 
 ### Changed
 
@@ -78,6 +69,9 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 - `date_diff`'s `counting` is now required, and time units are spelled in the singular.
 - The test suite runs in about a minute and a half instead of four.
 - The version is written in one place, and `dantron-etl --version` prints it.
+- **Python 3.11 and 3.12 are supported**, not only 3.13. CI runs the tests on all three.
+- An engine error inside a refusal no longer carries the engine's own note about its internal
+  expression, which newer polars versions add.
 
 ### Removed
 
@@ -93,7 +87,7 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
   serves only the files a run refers to.
 - The source package lists what goes into it, so a local `.env`, key or data file cannot ship.
 
-## [0.1.0]
+## [0.1.0] - 2026-11-10
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 

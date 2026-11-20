@@ -16,11 +16,15 @@ You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) (or pip).
 ```bash
 uv venv
 source .venv/bin/activate          # on Windows: .venv\Scripts\activate
-uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools
+uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools@v0.2.0
 ```
 
+`@v0.2.0` picks a released version, which is what a project should depend on so it does not
+change underneath you. The versions are listed under the repository's tags, and what each one
+changed is in [CHANGELOG.md](CHANGELOG.md). Leave `@...` off to get the latest code on `main`.
+
 With pip instead of uv: `python -m venv .venv`, activate it the same way, then
-`pip install git+https://github.com/DanTron-Inc/dantron-etl-tools`.
+`pip install git+https://github.com/DanTron-Inc/dantron-etl-tools@v0.2.0`.
 
 Check it worked:
 
