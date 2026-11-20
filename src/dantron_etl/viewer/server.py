@@ -7,12 +7,16 @@ the next reload.
 It answers only this machine. A request whose ``Host`` is not a loopback name is refused, a run
 needs the token the server put in the page, and a pipeline or run name is looked up in what was
 found on disk. A name is never joined onto a path.
+
+It also shows a file a step names: its facts, its first rows, and its place in this machine's file
+manager. The page names the pipeline, the step and the setting; the server looks the path up.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import secrets
 import socket
 import threading
@@ -32,9 +36,22 @@ from ..preview import FILTER_PREFIX, PAGE_NAME, PortStore, PreviewError
 from ..trace import StepEvent
 from .assets import escape as _e
 from .assets import page, page_data
+from .files import FileRefused, NamedFile, facts, named_file, named_files, preview
 from .focus_rows import focus_match
 from .project import PipelineEntry, Project, ProjectError, load_entry, load_project, pipeline_rules
-from .runs import ENTITIES_FILE, KINDS, RunRecord, execute, last_runs, latest, preview_plan, writes, writes_digest
+from .reveal import Opened, Target, open_location
+from .runs import (
+    ENTITIES_FILE,
+    KINDS,
+    RunRecord,
+    execute,
+    last_runs,
+    latest,
+    preview_plan,
+    run_folder,
+    writes,
+    writes_digest,
+)
 
 __all__ = ["MAX_BODY", "ViewerServer", "start_server"]
 
@@ -48,6 +65,11 @@ DONE = ("finished", "failed", "refused")
 DEFAULT_ENTITY_LIMIT = 50
 MAX_ENTITY_LIMIT = 500
 EMPTY_TOKEN = '<meta name="run-token" content="">'
+FILE_APIS = frozenset({"file", "file-preview"})
+OPEN_LOCATION = "/api/open-location"
+
+#: Shows a file in this machine's file manager. Tests hand the server a fake.
+Reveal = Callable[[Target], Opened]
 EMPTY_RUNBAR = '<div class="runbar"></div>'
 
 
@@ -75,12 +97,15 @@ class ViewerServer:
         self._thread.join(timeout=5)
 
 
-def start_server(project: Project, *, host: str = "127.0.0.1", port: int = 8899) -> ViewerServer:
+def start_server(
+    project: Project, *, host: str = "127.0.0.1", port: int = 8899, reveal: Reveal | None = None
+) -> ViewerServer:
     """Serve ``project`` on ``host``:``port`` from a background thread and return at once.
 
-    Port 0 lets the system pick a free port; ``ViewerServer.port`` says which.
+    Port 0 lets the system pick a free port; ``ViewerServer.port`` says which. ``reveal`` shows a file
+    in the file manager; left out, it is this machine's.
     """
-    state = _State(project.root, secrets.token_urlsafe(32), _is_loopback(host))
+    state = _State(project.root, secrets.token_urlsafe(32), _is_loopback(host), reveal or open_location)
 
     class Server(ThreadingHTTPServer):
         address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
@@ -126,10 +151,11 @@ def _progress(state: str, kind: str | None, total: int) -> dict[str, Any]:
 class _State:
     """What the server holds between requests: the project root, the token, and runs in progress."""
 
-    def __init__(self, root: Path, token: str, loopback: bool) -> None:
+    def __init__(self, root: Path, token: str, loopback: bool, reveal: Reveal) -> None:
         self.root = root
         self.token = token
         self.loopback = loopback
+        self.reveal = reveal
         self.lock = threading.Lock()
         self.progress: dict[str, dict[str, Any]] = {}
 
@@ -215,10 +241,20 @@ def _plan(project: Project, entry: PipelineEntry) -> dict[str, Any]:
         return {"steps": entry.steps, "preview": None, "writes": [], "digest": None, "problem": str(refusal)}
     plan = preview_plan(spec)
     found = writes(spec, project.root)
+    # A file write is named by its step's 'path'. Its facts go beside it, outside the digest: a file
+    # appearing or changing is not a change to what the run writes.
+    files = [one for one in named_files(spec, run_folder(project)) if one.setting == "path"]
+    shown = [
+        {
+            **asdict(one),
+            "files": [facts(named, project.root) for named in files if named.step == one.step and one.kind == "file"],
+        }
+        for one in found
+    ]
     return {
         "steps": len(spec.steps),
         "preview": {"runs": list(plan.runs), "held_back": list(plan.held_back)},
-        "writes": [asdict(one) for one in found],
+        "writes": shown,
         "digest": writes_digest(found),
         "problem": None,
     }
@@ -329,6 +365,38 @@ def _whole(query: Mapping[str, list[str]], key: str, default: int) -> int:
         return int(text)
     except ValueError as bad:
         raise PreviewError(f"{key} must be a whole number; got {text!r}") from bad
+
+
+# ---------------------------------------------------------------------------
+# A file a step names
+# ---------------------------------------------------------------------------
+
+
+def _named(project: Project, entry: PipelineEntry, step: Any, setting: Any) -> NamedFile:
+    """The file ``step`` names in ``setting``, looked up in the pipeline loaded as a run loads it.
+
+    Loading may run project code (a rules loader), so every caller has checked the run token.
+    """
+    import yaml
+
+    if not isinstance(step, str) or not isinstance(setting, str) or not step or not setting:
+        raise _Refused(404, "name the step and the setting that holds the file")
+    try:
+        spec = load_entry(project, entry)
+    except (ToolError, ExpressionError, yaml.YAMLError, OSError) as refusal:
+        raise _Refused(409, str(refusal)) from refusal
+    try:
+        return named_file(spec, run_folder(project), step, setting)
+    except FileRefused as refusal:
+        raise _Refused(404, str(refusal)) from refusal
+
+
+def _target(named: NamedFile) -> Target:
+    """Where the file really is, through any link, and whether it and its folder are there."""
+    if named.path is None:
+        raise _Refused(409, "the viewer cannot work out where this file is, so it cannot show it")
+    real = os.path.realpath(named.path)
+    return Target(real, os.path.exists(real), os.path.isdir(os.path.dirname(real)))
 
 
 # ---------------------------------------------------------------------------
@@ -482,9 +550,10 @@ def _catalog_page() -> bytes:
 
 
 class _Refused(Exception):
-    def __init__(self, status: int, message: str, **extra: Any) -> None:
+    def __init__(self, status: int, message: str, headers: Mapping[str, str] | None = None, **extra: Any) -> None:
         super().__init__(message)
         self.status = status
+        self.headers = dict(headers or {})
         self.payload = {"error": message, **extra}
 
 
@@ -503,15 +572,18 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
 
         # -- answers ---------------------------------------------------------------------------
 
-        def _send(self, status: int, body: bytes, kind: str) -> None:
+        def _send(self, status: int, body: bytes, kind: str, headers: Mapping[str, str] | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, status: int, payload: Any) -> None:
-            self._send(status, json.dumps(payload, default=str).encode("utf8"), "application/json; charset=utf-8")
+        def _json(self, status: int, payload: Any, headers: Mapping[str, str] | None = None) -> None:
+            body = json.dumps(payload, default=str).encode("utf8")
+            self._send(status, body, "application/json; charset=utf-8", headers)
 
         def _html(self, body: bytes) -> None:
             self._send(200, body, "text/html; charset=utf-8")
@@ -535,7 +607,7 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             try:
                 answer()
             except _Refused as refusal:
-                self._json(refusal.status, refusal.payload)
+                self._json(refusal.status, refusal.payload, refusal.headers)
             except (PreviewError, FocusError) as refusal:
                 self._json(400, {"error": str(refusal)})
             except ToolError as refusal:
@@ -564,6 +636,8 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 self._html(_catalog_page())
             elif path == "/catalog":
                 self._redirect("/catalog/")
+            elif path == OPEN_LOCATION:
+                raise _Refused(405, "opening a file's location is an action: send it as a POST", {"Allow": "POST"})
             elif not path.startswith("/"):
                 raise _Refused(404, "no such page")
             else:
@@ -584,6 +658,10 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 return
             if rest == ["api", "progress"]:
                 self._json(200, state.snapshot(name, entry.steps))
+                return
+            if len(rest) == 2 and rest[0] == "api" and rest[1] in FILE_APIS:
+                self._require_token()
+                self._file_api(rest[1], project, entry, query)
                 return
             slot = None
             if rest[0] in SLOTS:
@@ -624,6 +702,18 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
             runbar = _runbar(entry.name, running, kept)
             self._html(_served(saved.read_text(encoding="utf-8"), state.token, runbar))
 
+        def _file_api(self, what: str, project: Project, entry: PipelineEntry, query: Mapping[str, list[str]]) -> None:
+            """A file's facts, or its first rows. The query names a step and a setting, never a path."""
+            named = _named(project, entry, _one(query, "step"), _one(query, "setting"))
+            if what == "file":
+                self._json(200, facts(named, project.root))
+                return
+            sheet = query.get("sheet")
+            try:
+                self._json(200, preview(named, sheet[0] if sheet else None))
+            except FileRefused as refusal:
+                raise _Refused(404, str(refusal)) from refusal
+
         def _slot_api(self, what: str, record: RunRecord, entry: PipelineEntry, query: Mapping[str, list[str]]) -> None:
             directory = record.directory
             if what == "entities":
@@ -644,18 +734,20 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
         # -- POST ------------------------------------------------------------------------------
 
         def _post(self) -> None:
-            if urlsplit(self.path).path != "/api/run":
-                raise _Refused(404, "the only thing this viewer takes a POST for is /api/run")
+            actions = {"/api/run": self._start, OPEN_LOCATION: self._open}
+            act = actions.get(urlsplit(self.path).path)
+            if act is None:
+                raise _Refused(404, f"this viewer takes a POST only for {' and '.join(actions)}")
             origin = self.headers.get("Origin")
             if origin is not None:
                 allowed = set(LOOPBACK_NAMES)
                 if not state.loopback:
                     allowed.add(_hostname(self.headers.get("Host")) or "")
                 if _hostname(origin) not in allowed:
-                    raise _Refused(403, "a run may only be started from this viewer's own pages")
+                    raise _Refused(403, "this viewer acts only on requests from its own pages")
             self._require_token()
             body = self._body()
-            self._start(body)
+            act(body)
 
         def _body(self) -> dict[str, Any]:
             try:
@@ -703,5 +795,24 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 raise _Refused(409, f"pipeline '{entry.name}' is already running")
             _run_in_background(state, project, entry, kind, digest)
             self._json(202, {"started": True})
+
+        def _open(self, body: Mapping[str, Any]) -> None:
+            """Show a file a step names in this machine's file manager, and say what was done."""
+            project = state.project()
+            name = body.get("pipeline")
+            entry = project.pipelines.get(name) if isinstance(name, str) else None
+            if entry is None:
+                raise _Refused(404, f"no pipeline {name!r} in this project")
+            target = _target(_named(project, entry, body.get("step"), body.get("setting")))
+            opened = state.reveal(target)
+            self._json(
+                200,
+                {
+                    "opened": opened.opened,
+                    "message": opened.message,
+                    "path": target.path,
+                    "command": list(opened.command or ()),
+                },
+            )
 
     return Handler
