@@ -1185,7 +1185,7 @@ class TestRefusalsAboutTheFrames:
         """A cell holds a double, so this value cannot come back as itself, and neither alternative is honest.
 
         123456789012345678 reads back 123456789012345696, and an identifier whose last digits
-        changed matches nothing, joins to nothing and reconciles to nothing, with no error anywhere.
+        changed matches nothing, joins to nothing and adds up to nothing, with no error anywhere.
         Writing it as text instead changes the column's type without being asked. Letting it through
         is the corruption itself. So it is refused, the rows are named, and the fix is one explicit
         cast upstream where the next reader can see the decision.

@@ -27,6 +27,7 @@ PLANTED = (
     "tests/.env.test",
     "output_files/run.parquet",
     "notes.txt",
+    ".forbidden-terms",
 )
 
 
@@ -95,7 +96,9 @@ def _ignored_by_git(name: str) -> bool:
     return asked.returncode == 0
 
 
-@pytest.mark.parametrize("name", [".env", ".env.local", "src/dantron_etl/.env", "id_rsa", "server.pem", "run.parquet"])
+@pytest.mark.parametrize(
+    "name", [".env", ".env.local", "src/dantron_etl/.env", "id_rsa", "server.pem", "run.parquet", ".forbidden-terms"]
+)
 def test_git_ignores_a_local_secret_or_data_file(name: str) -> None:
     assert _ignored_by_git(name)
 

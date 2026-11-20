@@ -42,6 +42,10 @@ id_ed25519*
 .netrc
 .pypirc
 
+# Words that identify your clients or their systems, for the boundary test. They must never be
+# committed: the list itself would name the clients. See CONTRIBUTING.md.
+.forbidden-terms
+
 # Editors
 .vscode/
 .idea/

@@ -14,12 +14,12 @@ from dantron_etl.spec import PortRef
 LINES = pl.DataFrame(
     {
         "party": ["P1", "P2", "P1", "P3", "P2", "P1"],
-        "invoice": ["I1", "I2", "I3", "I4", "I5", "I1"],
+        "bill": ["I1", "I2", "I3", "I4", "I5", "I1"],
         "amount": [10, 20, 30, 40, 20, 60],
         "day": [date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 5), date(2026, 2, 1), date(2026, 2, 2), date(2026, 3, 3)],
     }
 )
-INVOICES = pl.DataFrame({"invoice": ["I1", "I2", "I3", "I4", "I5"], "total": [70, 20, 30, 40, 20]})
+BILLS = pl.DataFrame({"bill": ["I1", "I2", "I3", "I4", "I5"], "total": [70, 20, 30, 40, 20]})
 SUMMARY = pl.DataFrame({"month": ["2026-01", "2026-02"], "total": [60, 60]})
 NUMBERED = pl.DataFrame({"party_id": [101, 102, 101], "amount": [1, 2, 3]})
 
@@ -27,7 +27,7 @@ NUMBERED = pl.DataFrame({"party_id": [101, 102, 101], "amount": [1, 2, 3]})
 @pytest.fixture
 def store(tmp_path: Path) -> PortStore:
     persist_ports(
-        {"lines.rows": LINES, "invoices.rows": INVOICES, "summary.rows": SUMMARY, "numbered.rows": NUMBERED},
+        {"lines.rows": LINES, "bills.rows": BILLS, "summary.rows": SUMMARY, "numbered.rows": NUMBERED},
         tmp_path,
     )
     return PortStore(tmp_path)
@@ -47,8 +47,8 @@ class TestWindowMatch:
         assert {row[0] for row in found.rows} == {"P1", "P3"}
 
     def test_numeric_and_date_columns_match_on_their_text(self, store: PortStore) -> None:
-        assert column(store, "lines.rows", "invoice", match={"amount": ["20"]}) == ["I2", "I5"]
-        assert column(store, "lines.rows", "invoice", match={"day": ["2026-01-05"]}) == ["I1", "I3"]
+        assert column(store, "lines.rows", "bill", match={"amount": ["20"]}) == ["I2", "I5"]
+        assert column(store, "lines.rows", "bill", match={"day": ["2026-01-05"]}) == ["I1", "I3"]
 
     def test_match_is_exact_not_a_substring(self, store: PortStore) -> None:
         assert store.window("lines.rows", match={"party": ["P"]}).matched == 0
@@ -82,7 +82,7 @@ class TestFocusMatch:
         kind, match = focus_match(store, focus, "lines.rows", "P1")
         assert kind == "match"
         assert {name: list(values) for name, values in match.items()} == {"party": ["P1"]}
-        assert column(store, "lines.rows", "invoice", match=match) == ["I1", "I3", "I1"]
+        assert column(store, "lines.rows", "bill", match=match) == ["I1", "I3", "I1"]
 
     def test_the_first_identity_column_the_port_carries_is_used(self, store: PortStore) -> None:
         focus = FocusSpec(label="party", identity=("party_id", "party"))
@@ -102,24 +102,24 @@ class TestFocusMatch:
         focus = FocusSpec(
             label="party",
             identity=("party",),
-            via={PortRef("invoices", "rows"): RelatedKey(PortRef("lines", "rows"), "invoice")},
+            via={PortRef("bills", "rows"): RelatedKey(PortRef("lines", "rows"), "bill")},
         )
-        kind, match = focus_match(store, focus, "invoices.rows", "P1")
+        kind, match = focus_match(store, focus, "bills.rows", "P1")
         assert kind == "match"
-        assert set(match) == {"invoice"}
-        assert sorted(match["invoice"]) == ["I1", "I3"]
-        assert column(store, "invoices.rows", "total", match=match) == ["70", "30"]
+        assert set(match) == {"bill"}
+        assert sorted(match["bill"]) == ["I1", "I3"]
+        assert column(store, "bills.rows", "total", match=match) == ["70", "30"]
 
     def test_a_value_held_nowhere_matches_zero_rows_without_an_error(self, store: PortStore) -> None:
         focus = FocusSpec(
             label="party",
             identity=("party",),
-            via={PortRef("invoices", "rows"): RelatedKey(PortRef("lines", "rows"), "invoice")},
+            via={PortRef("bills", "rows"): RelatedKey(PortRef("lines", "rows"), "bill")},
         )
         kind, match = focus_match(store, focus, "lines.rows", "nobody")
         assert kind == "match"
         assert store.window("lines.rows", match=match).matched == 0
 
-        kind, learned = focus_match(store, focus, "invoices.rows", "nobody")
+        kind, learned = focus_match(store, focus, "bills.rows", "nobody")
         assert kind == "match"
-        assert store.window("invoices.rows", match=learned).matched == 0
+        assert store.window("bills.rows", match=learned).matched == 0
