@@ -7,6 +7,16 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **Show file, in the viewer.** Each setting that names a file (`path` on the read and write tools,
+  `template` on `write_excel`) has a **Show file** button. It shows the full path the run uses,
+  whether the file is there, its size and when it last changed, and offers **Preview** (the first
+  rows of a CSV or a sheet of a workbook), **Copy path** and **Open location** (Explorer, Finder,
+  Explorer from WSL, VS Code from its own terminal, or a Linux desktop's file manager). The real-run
+  confirmation shows the same for each file it is about to write. A tool whose setting is marked as
+  a file path gets this without any change to the viewer.
+
 ## [0.2.0]
 
 This release makes the library easier to start with and to read. It adds a command and a viewer

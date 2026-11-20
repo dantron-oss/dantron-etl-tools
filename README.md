@@ -84,6 +84,11 @@ Reload the page in your browser: `by_customer` now has a `largest_order` column.
 asks you to type `example` to go ahead, and writes `output/paid_by_customer.csv`. In the viewer,
 **Real run…** does the same.
 
+To see exactly which file a step reads or writes, open the step in the viewer and press **Show file**
+beside its `path`. You get the full path, whether the file is there, and buttons to preview its first
+rows, copy the path, or open its folder in your file manager (Explorer, Finder, or VS Code when the
+viewer was started from a VS Code terminal).
+
 Press ctrl-c in the first terminal to stop the viewer.
 
 If you would rather click than type: the new project has `Open ETL viewer.cmd` (Windows) and

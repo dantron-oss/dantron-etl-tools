@@ -66,6 +66,47 @@ the Host check is off and the server's own host is accepted as an origin; the to
 The project is read from disk again on every request, so a new pipeline file appears on the next reload.
 Reading a project reads YAML only; project code (a rules loader) runs only when a pipeline is run.
 
+## Looking at a file a step names
+
+Owner's request, 2026-11-19: "click a file and it will open, because then I can see exactly what file
+is being brought in", and "like click to open the file location", as a browser's downloads list does.
+
+**Which settings are files.** A setting is a file path when its tool's template marks it
+`file_path=True` (the marker the runner's `base_dir` already reads). The viewer reads the marker, not a
+list of tool names, so a new tool that reads or writes a file gets **Show file** with no change here.
+Only top-level settings are looked at, because only those are joined onto `base_dir` by the runner.
+
+**The path is the run's path.** The pipeline is loaded as a run loads it (rules filled in), then the
+runner's own `with_base_dir` is applied from `run_folder(project)`, the folder the viewer's runs pass
+as `base_dir`. A path still holding a `{...}` placeholder cannot be worked out and is shown as such.
+
+**The browser never sends a path.** It sends the pipeline, the step and the setting, and the server looks
+the path up. So the only files the viewer can preview or open are files a pipeline names, and a
+crafted request has nothing to name a different one with. A file outside the project is allowed when
+a step names it, since that is the pipeline author's choice, and the page says it is outside. A link
+is followed, because the run follows it, and the page names the file it leads to. Looking a path up
+loads the pipeline, which may run a project's rules code, so the GETs need the run token, as the plan
+does.
+
+**The server opens the location, not the page.** A browser page cannot open a folder on the computer.
+The local server can, so "Open location" is a POST with the run token, like starting a run. The
+command is chosen by one pure function from plain facts (the platform, the environment, which programs
+are on `PATH`), so every case is tested without a desktop, in this order:
+
+| machine | command |
+|---|---|
+| Windows | `explorer /select, <file>` (Explorer's exit code means nothing, so it is ignored) |
+| macOS | `open -R <file>` |
+| WSL (a WSL kernel, a WSL session, `explorer.exe` and `wslpath`) | `explorer.exe /select, <wslpath -w file>` |
+| A VS Code terminal (`code` on `PATH` and `VSCODE_IPC_HOOK_CLI` set), including a dev container | `code -r <file>`: the file opens in the editor and the file panel shows where it is. A workbook opens as a "cannot show as text" tab, and the reader is told to use Preview. |
+| A Linux desktop (`DISPLAY` or `WAYLAND_DISPLAY`, and `xdg-open`) | asks the file manager over D-Bus to select the file, falling back to `xdg-open <folder>` |
+| none of these | nothing; the page says so and leaves the path and Preview |
+
+A file not written yet has its folder opened instead, and the reader is told. VS Code is the exception:
+its command line can open a folder only by switching the window to it or adding it to the workspace, so
+nothing is opened and the folder is named. Commands are argument lists, never a shell, every path is
+absolute so a file named `-n.csv` cannot read as an option, and the server waits at most five seconds.
+
 ## Why the page is plain files
 
 A run's page is a template (`templates/*.html`) with markers such as `@@canvas@@`, plus a stylesheet
