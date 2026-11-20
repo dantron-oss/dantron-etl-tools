@@ -1,7 +1,7 @@
-"""Tests for the ReadExcel tool: one named tab of one XLSX workbook becomes one frame.
+"""Tests for the ReadExcel tool: one named tab of one Excel workbook becomes one frame.
 
 ReadExcel declares **no input ports** -- the contract constrains only ``output_ports``, so a source
-is expressible -- and one output port, ``rows``. It handles XLSX and nothing else: a spreadsheet has
+is expressible -- and one output port, ``rows``. It handles .xlsx and .xls and nothing else: a spreadsheet has
 sheets and typed cells, a plain text file has neither, and the hazards are not the same hazards. A
 delimited-text source is therefore a different tool, and this one's refusals name the format so a
 reader who arrived at the wrong tool is told which one they are holding.
@@ -42,6 +42,9 @@ nouns.
 """
 
 import datetime as dt
+import importlib.util
+import re
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -487,7 +490,10 @@ class TestRefusalsAnAuthorCanActOn:
         "name",
         [
             pytest.param("extract.csv", id="a_delimited_text_file_is_a_different_tool"),
-            pytest.param("extract.xls", id="the_older_spreadsheet_format_is_not_this_one"),
+            pytest.param("extract.xlsm", id="a_workbook_with_macros_is_not_read"),
+            pytest.param("extract.xlsb", id="nor_a_binary_workbook"),
+            pytest.param("extract.ods", id="nor_another_programs_spreadsheet"),
+            pytest.param("extract.xls.csv", id="the_last_extension_is_the_one_that_counts"),
             pytest.param("extract", id="no_extension_at_all"),
         ],
     )
@@ -510,7 +516,9 @@ class TestRefusalsAnAuthorCanActOn:
         with pytest.raises(ConfigError) as caught:
             _read({"path": str(target), "sheet": "Figures"})
 
-        assert ".xlsx" in str(caught.value), "the refusal names the format this tool handles"
+        message = str(caught.value)
+        assert re.search(r"\.xlsx\b", message) and re.search(r"\.xls\b", message), f"names the formats read: {message}"
+        assert name in message
 
 
 # ---------------------------------------------------------------------------
@@ -1603,3 +1611,233 @@ class TestAsTextInTheTemplateAndTheCatalog:
         assert frame.height >= 1
         assert all(dtype == pl.String for dtype in frame.schema.values()), "the example's output is all text"
         assert AS_TEXT in help_.field_help, "the field has its own help line"
+
+
+# ---------------------------------------------------------------------------
+# Old-format .xls workbooks
+#
+# An .xls file stores its cells differently from an .xlsx file: dates as days counted from 1900 or
+# from 1904, whichever the workbook's header says, text in a table of its own, and errors and
+# merged cells in records of their own. The rule here is that none of that shows. The two fixture
+# workbooks were made once with xlwt (tests/fixtures/make_xls_workbooks.py says how). Each test
+# builds an .xlsx from the same cells and requires every sheet to read the same way from both:
+# the same frame, or the same refusal.
+# ---------------------------------------------------------------------------
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+
+
+def _xls_content() -> Any:
+    """The fixture script, imported by path, for the cells both workbooks were made from."""
+    name = "make_xls_workbooks"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, FIXTURES / f"{name}.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+XLS = _xls_content()
+DATE_SYSTEMS = [pytest.param(False, id="days_from_1900"), pytest.param(True, id="days_from_1904")]
+_ERROR_FORMULAS = {"#N/A": "=NA()", "#DIV/0!": "=1/0", "#VALUE!": '="a"+1'}
+
+
+def _xls(dates_1904: bool) -> Path:
+    return XLS.TARGETS[dates_1904]
+
+
+def _xlsx_twin(path: Path, dates_1904: bool) -> Path:
+    """An .xlsx holding the same cells as the .xls fixture, in the same date system."""
+    with xlsxwriter.Workbook(str(path), {"date_1904": dates_1904}) as workbook:
+        formats: dict[Any, Any] = {}
+
+        def shown_as(num_format: str) -> Any:
+            # Excel's own short date format is format number 14 in both file formats.
+            key = 14 if num_format == XLS.BUILT_IN_DATE_FORMAT else num_format
+            return formats.setdefault(key, workbook.add_format({"num_format": key}))
+
+        for name, rows in XLS.SHEETS.items():
+            sheet = workbook.add_worksheet(name)
+            for row_index, row in enumerate(rows):
+                for column_index, cell in enumerate(row):
+                    value, num_format = (cell.value, cell.num_format) if isinstance(cell, XLS.Shown) else (cell, None)
+                    if isinstance(value, XLS.ErrorValue):
+                        sheet.write_formula(row_index, column_index, _ERROR_FORMULAS[value.code], None, value.code)
+                    elif isinstance(value, XLS.Merged):
+                        last = column_index + value.width - 1
+                        sheet.merge_range(row_index, column_index, row_index, last, value.text)
+                    elif value is None:
+                        continue
+                    elif isinstance(value, dt.datetime):
+                        sheet.write_datetime(row_index, column_index, value, shown_as(num_format or XLS.STAMP_FORMAT))
+                    elif isinstance(value, dt.date):
+                        sheet.write_datetime(row_index, column_index, value, shown_as(num_format or XLS.DATE_FORMAT))
+                    elif isinstance(value, dt.time):
+                        sheet.write_datetime(row_index, column_index, value, shown_as(num_format or XLS.TIME_FORMAT))
+                    elif isinstance(value, str):
+                        sheet.write_string(row_index, column_index, value)
+                    elif isinstance(value, bool):
+                        sheet.write_boolean(row_index, column_index, value)
+                    else:
+                        sheet.write_number(row_index, column_index, value, shown_as(num_format) if num_format else None)
+    return path
+
+
+def _outcome(config: Mapping[str, Any]) -> pl.DataFrame | tuple[str, str]:
+    """The frame read, or the refusal's kind and message with the workbook's path taken out."""
+    try:
+        return _read(config)
+    except (ConfigError, DataError) as error:
+        return type(error).__name__, str(error).replace(str(config["path"]), "<workbook>")
+
+
+def _same(xls: pl.DataFrame | tuple[str, str], xlsx: pl.DataFrame | tuple[str, str]) -> None:
+    if isinstance(xlsx, pl.DataFrame):
+        assert isinstance(xls, pl.DataFrame), f"the .xlsx reads, but the .xls is refused: {xls}"
+        assert_frame_equal(xls, xlsx, check_row_order=True)
+    else:
+        assert xls == xlsx
+
+
+class TestOldFormatWorkbooks:
+    """An .xls workbook reads exactly as an .xlsx holding the same cells."""
+
+    @pytest.mark.parametrize("sheet", list(XLS.SHEETS))
+    @pytest.mark.parametrize("as_text", [False, True], ids=["typed", "as_text"])
+    @pytest.mark.parametrize("dates_1904", DATE_SYSTEMS)
+    def test_each_sheet_reads_from_xls_exactly_as_from_xlsx(
+        self, tmp_path: Path, sheet: str, as_text: bool, dates_1904: bool
+    ) -> None:
+        """The same frame, or the same refusal in the same words, for every sheet both ways."""
+        xlsx = _xlsx_twin(tmp_path / "twin.xlsx", dates_1904)
+        skip = 2 if sheet == "Titled" else 0
+        config = {"sheet": sheet, AS_TEXT: as_text, "skip_rows": skip}
+
+        _same(_outcome({"path": str(_xls(dates_1904)), **config}), _outcome({"path": str(xlsx), **config}))
+
+    @pytest.mark.parametrize("as_text", [False, True], ids=["typed", "as_text"])
+    @pytest.mark.parametrize("dates_1904", DATE_SYSTEMS)
+    def test_sheets_found_by_a_pattern_stack_the_same_from_both(
+        self, tmp_path: Path, as_text: bool, dates_1904: bool
+    ) -> None:
+        xlsx = _xlsx_twin(tmp_path / "twin.xlsx", dates_1904)
+
+        from_xls = _matching(_xls(dates_1904), **{AS_TEXT: as_text})
+        from_xlsx = _matching(xlsx, **{AS_TEXT: as_text})
+
+        assert_frame_equal(from_xls, from_xlsx, check_row_order=True)
+        assert from_xls["tab"].to_list() == ["Jan 2026", "Jan 2026", "Feb 2026"], "workbook order, no cover sheet"
+
+    @pytest.mark.parametrize("dates_1904", DATE_SYSTEMS)
+    def test_dates_are_the_days_written_whichever_day_the_workbook_counts_from(self, dates_1904: bool) -> None:
+        """Pinned by value, so the comparison above cannot pass with both formats wrong.
+
+        Excel's own short date format, the one a file saved by Excel uses most, reads as a date too.
+        """
+        rows = _read({"path": str(_xls(dates_1904)), "sheet": "Typed"})
+
+        assert rows.schema == pl.Schema(
+            {
+                "figure": pl.Float64,
+                "whole": pl.Int64,
+                "on": pl.Date,
+                "shown": pl.Date,
+                "at": pl.Datetime("ms"),
+                "flag": pl.Boolean,
+                "text": pl.String,
+            }
+        )
+        assert rows.rows() == [
+            (10.25, 10, dt.date(2026, 1, 31), dt.date(2026, 1, 31), dt.datetime(2026, 1, 31, 14, 5, 9), True, "007"),
+            (-5.5, 20, dt.date(1999, 12, 31), dt.date(1999, 12, 31), dt.datetime(2026, 2, 1, 9, 30), False, "a"),
+        ], "the blank row between them is layout and is dropped"
+
+    @pytest.mark.parametrize(
+        ("dates_1904", "time_alone"),
+        [
+            pytest.param(False, "1899-12-31T14:05:00", id="days_from_1900"),
+            pytest.param(True, "1904-01-01T14:05:00", id="days_from_1904"),
+        ],
+    )
+    def test_each_cell_reads_as_the_text_of_what_it_stores(self, dates_1904: bool, time_alone: str) -> None:
+        """A time alone is the one cell whose text depends on the date system, in both formats."""
+        rows = _read({"path": str(_xls(dates_1904)), "sheet": "Cells", AS_TEXT: True})
+
+        assert rows["value"].to_list() == [
+            "12",
+            "12",
+            "-40",
+            "123456789012345",
+            "0.1",
+            "10.25",
+            "99999999999.99",
+            "0.3333333333333333",
+            "1e+20",
+            "2.5e-10",
+            "true",
+            "false",
+            "2026-01-31",
+            "2026-01-31T14:05:09",
+            "2026-01-31",
+            time_alone,
+            "2026-02-28",
+            "7",
+            "007",
+            "3600",
+            "12.50",
+            None,
+            "n/a",
+            "café €",
+            "   ",
+        ]
+
+    @pytest.mark.parametrize("as_text", [False, True], ids=["typed", "as_text"])
+    def test_an_error_value_reads_as_null_as_it_does_in_an_xlsx(self, as_text: bool) -> None:
+        """A cell holding #N/A or #DIV/0! is not refused in either format; it arrives as null.
+
+        Pinned so the help's note stays true. Refusing it would stop flows that read such cells
+        today, so that is a decision for a release that says so.
+        """
+        rows = _read({"path": str(_xls(False)), "sheet": "Errors", AS_TEXT: as_text})
+
+        assert rows["value"].to_list() == [None, None, None]
+        assert rows["key"].to_list() == ["r1", "r2", "r3"]
+
+    def test_an_upper_case_extension_is_read(self, tmp_path: Path) -> None:
+        target = tmp_path / "ORDERS.XLS"
+        target.write_bytes(_xls(False).read_bytes())
+
+        rows = _read({"path": str(target), "sheet": "Headings"})
+
+        assert rows.columns == ["key", "2026", "1.5"]
+
+    @pytest.mark.parametrize(
+        ("name", "content", "said"),
+        [
+            pytest.param("orders.xls", b"<html><table><tr><td>key</td></tr></table></html>", "text", id="a_web_page"),
+            pytest.param("orders.xls", b"key\tamount\no1\t10.25\n", "text", id="a_delimited_file"),
+            pytest.param("orders.xls", "xlsx", ".xlsx workbook", id="an_xlsx_renamed_xls"),
+            pytest.param("orders.xlsx", "xls", ".xls workbook", id="and_the_mirror_an_xls_renamed_xlsx"),
+        ],
+    )
+    def test_a_file_whose_name_does_not_match_what_it_holds_is_refused_saying_what_it_holds(
+        self, tmp_path: Path, name: str, content: Any, said: str
+    ) -> None:
+        """Many systems export a web page or a delimited file and name it .xls. The refusal says so."""
+        target = tmp_path / name
+        if content == "xlsx":
+            _workbook(target.with_suffix(".tmp.xlsx"), {"Figures": [["key"], ["o1"]]}).rename(target)
+        elif content == "xls":
+            target.write_bytes(_xls(False).read_bytes())
+        else:
+            target.write_bytes(content)
+
+        with pytest.raises(ConfigError) as caught:
+            _read({"path": str(target), "sheet": "Figures"})
+
+        message = str(caught.value)
+        assert str(target) in message
+        assert said in message, message
+        assert "calamine" not in message.lower() and "OLE" not in message, f"the engine's words stay out: {message}"

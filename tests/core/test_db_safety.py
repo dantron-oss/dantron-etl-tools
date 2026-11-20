@@ -172,3 +172,225 @@ class TestSmallerConnectionRules:
                 pass
         for scheme in ("sqlite", "file", "postgresql", "postgres"):
             assert scheme in str(raised.value)
+
+
+# A password nobody would type by accident, in pieces, so a test can ask that no piece of it shows.
+_PIECES = ("Kw7qZ", "Rv3xT", "Lp9mJ")
+
+
+def _no_piece_of_the_password(text: str) -> None:
+    for piece in _PIECES:
+        assert piece not in text, f"part of the password shows: {text}"
+
+
+class TestWhereAConnectionPoints:
+    """describe_connection: the database an environment variable names, in plain words, never the password."""
+
+    @pytest.fixture(autouse=True)
+    def _unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(_VARIABLE, raising=False)
+
+    def _described(self, monkeypatch: pytest.MonkeyPatch, value: str) -> str:
+        monkeypatch.setenv(_VARIABLE, value)
+        return db.describe_connection(_VARIABLE)
+
+    @pytest.mark.parametrize(
+        ("password", "written"),
+        [
+            pytest.param(f"{_PIECES[0]}{_PIECES[1]}", f"{_PIECES[0]}{_PIECES[1]}", id="plain"),
+            pytest.param(f"{_PIECES[0]}:{_PIECES[1]}", f"{_PIECES[0]}:{_PIECES[1]}", id="holding_a_colon"),
+            pytest.param(f"{_PIECES[0]}@{_PIECES[1]}", f"{_PIECES[0]}%40{_PIECES[1]}", id="an_at_sign_percent_encoded"),
+            pytest.param(f"{_PIECES[0]}/{_PIECES[1]}", f"{_PIECES[0]}%2F{_PIECES[1]}", id="a_slash_percent_encoded"),
+            pytest.param(f"{_PIECES[0]}?{_PIECES[1]}", f"{_PIECES[0]}?{_PIECES[1]}", id="holding_a_question_mark"),
+        ],
+    )
+    def test_an_address_names_host_port_and_database_and_never_the_password(
+        self, monkeypatch: pytest.MonkeyPatch, password: str, written: str
+    ) -> None:
+        described = self._described(monkeypatch, f"postgresql://etl_user:{written}@db.example.internal:5433/orders")
+
+        assert "'orders'" in described and "db.example.internal" in described and "5433" in described, described
+        assert _VARIABLE in described, "names the variable it read"
+        _no_piece_of_the_password(described)
+        assert written not in described and password not in described
+
+    def test_a_port_not_stated_is_not_shown_and_the_short_scheme_reads_the_same(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        described = self._described(monkeypatch, f"postgres://etl_user:{_PIECES[0]}@db.example.internal/orders")
+
+        assert "'orders'" in described and "db.example.internal" in described
+        assert "port" not in described
+        _no_piece_of_the_password(described)
+
+    def test_a_password_given_after_the_address_is_not_shown_either(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        value = f"postgresql://db.example.internal:5433/orders?sslmode=require&password={_PIECES[0]}"
+
+        described = self._described(monkeypatch, value)
+
+        assert "'orders'" in described and "db.example.internal" in described
+        _no_piece_of_the_password(described)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}@{_PIECES[1]}@db.example.internal/orders", id="an_at_sign_not_encoded"),
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}/{_PIECES[1]}@db.example.internal/orders", id="a_slash_not_encoded"),
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}@{_PIECES[1]}?a=b@host/orders", id="an_at_sign_then_a_query"),
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}@host:{_PIECES[1]}/orders", id="a_port_that_is_not_a_number"),
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}%ZZ@host/orders", id="a_broken_percent_code"),
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}@host/orders?{_PIECES[1]}", id="a_query_with_no_equals"),
+        ],
+    )
+    def test_an_address_that_cannot_be_read_safely_says_so_and_shows_none_of_it(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """Read the way the Postgres driver reads it, each of these puts part of the password in the host or the name."""
+        described = self._described(monkeypatch, value)
+
+        assert "cannot be read" in described, described
+        assert _VARIABLE in described
+        _no_piece_of_the_password(described)
+        assert "etl_user" not in described and "orders" not in described
+
+    def test_key_value_form_names_host_port_and_database_and_says_a_run_cannot_open_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        value = f"host=db.example.internal port=5433 dbname=orders user=etl_user password='{_PIECES[0]} \\' {_PIECES[1]}'"
+
+        described = self._described(monkeypatch, value)
+
+        assert "'orders'" in described and "db.example.internal" in described and "5433" in described, described
+        assert "postgresql://" in described, "says how to write it so a run can open it"
+        _no_piece_of_the_password(described)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(f"host=db.example.internal dbname=orders password='{_PIECES[0]} {_PIECES[1]}", id="a_quote_never_closed"),
+            pytest.param(f"host=db.example.internal dbname orders password={_PIECES[0]}", id="a_key_with_no_equals"),
+        ],
+    )
+    def test_key_value_form_that_cannot_be_read_says_so_and_shows_none_of_it(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        described = self._described(monkeypatch, value)
+
+        assert "cannot be read" in described, described
+        _no_piece_of_the_password(described)
+
+    def test_a_sqlite_address_names_the_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        described = self._described(monkeypatch, f"sqlite:///{tmp_path / 'store.db'}")
+
+        assert str(tmp_path / "store.db") in described and "SQLite" in described
+
+    def test_an_address_of_another_kind_is_not_echoed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        described = self._described(monkeypatch, f"mysql://etl_user:{_PIECES[0]}@db.example.internal/orders")
+
+        assert "postgresql://" in described, "says which addresses a run opens"
+        _no_piece_of_the_password(described)
+        assert "db.example.internal" not in described
+
+    def test_a_variable_that_is_not_set_says_so_instead_of_failing(self) -> None:
+        described = db.describe_connection(_VARIABLE)
+
+        assert _VARIABLE in described and "not set" in described
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param(f"postgresql://etl_user:{_PIECES[0]}@db.example.internal/orders", id="the_address_itself"),
+            pytest.param(None, id="nothing"),
+        ],
+    )
+    def test_a_setting_that_is_not_a_variable_name_is_not_echoed(self, name: Any) -> None:
+        described = db.describe_connection(name)
+
+        assert "environment variable" in described, described
+        _no_piece_of_the_password(described)
+        assert "db.example.internal" not in described
+
+    @pytest.mark.parametrize("value", [f"postgresql://etl:{_PIECES[0]}@{_PIECES[0]}.example/orders", f"postgresql://etl:{_PIECES[0]}@host/{_PIECES[0]}"])
+    def test_a_password_also_written_as_the_host_or_database_shows_neither(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """A test server often uses one word for user, password and database. Naming the database would name the password."""
+        described = self._described(monkeypatch, value)
+
+        assert "password is also written" in described, described
+        _no_piece_of_the_password(described)
+
+
+_READ_AS_THE_DRIVER_READS = [
+    "postgresql://etl:pw@db.example:5433/orders",
+    "postgresql://etl:pw@db.example/orders",
+    "postgresql://etl@db.example/orders",
+    "postgresql://db.example/orders",
+    "postgresql://db.example",
+    "postgresql:///orders",
+    "postgres://etl:pw@db.example:1/orders?sslmode=require",
+    "postgresql://etl:p%40w@db.example:5433/orders",
+    "postgresql://etl:p%2Fw%3Ax@db.example/orders",
+    "postgresql://etl:pw@one.example:1,two.example:2/orders",
+    "postgresql://etl:pw@db.example/orders?host=other.example&port=9",
+    "postgresql:///orders?host=/var/run/postgresql",
+    "postgresql://etl:pw@db.example/my%20orders",
+    "postgresql://etl:pw@db.example/orders?dbname=archive",
+    "postgresql://etl:pw@db.example:5433/orders?password=zz",
+    "postgresql://etl:pw@:5433/orders",
+    "postgresql://etl:pw@db.example/",
+    "postgresql://etl:pw#x@db.example/orders",
+    "postgresql://etl:pw?x@db.example/orders",
+    "host=db.example port=5 dbname=orders user=etl password=pw",
+    "host=db.example dbname=orders",
+    "dbname=orders",
+    "host = db.example   dbname = 'my orders' password='a b'",
+    "host=db.example password='it\\'s' dbname=orders",
+    "hostaddr=10.0.0.1 dbname=orders",
+    "host=db.example hostaddr=10.0.0.1 dbname=orders",
+    "host=one.example,two.example port=1,2 dbname=orders",
+]
+
+
+class TestAnAddressIsReadAsTheDriverReadsIt:
+    """The confirmation must name the database the run will really open, so the driver is the judge."""
+
+    @pytest.mark.parametrize("address", _READ_AS_THE_DRIVER_READS)
+    def test_the_host_port_and_database_are_the_driver_s(self, address: str) -> None:
+        conninfo = pytest.importorskip("psycopg.conninfo")
+        driver = conninfo.conninfo_to_dict(address)
+
+        where = db._postgres_where(address)  # type: ignore[attr-defined]
+
+        assert (where.host, where.port, where.database) == (
+            driver.get("host") or driver.get("hostaddr"),
+            driver.get("port"),
+            driver.get("dbname"),
+        )
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "postgresql://etl:pa@ss@db.example/orders",
+            "postgresql://etl:pa/ss@db.example/orders",
+            "postgresql://etl:1/x?application_name=ss@db.example/orders",
+        ],
+    )
+    def test_a_password_the_driver_would_read_as_the_place_is_refused(self, address: str) -> None:
+        # The driver reads part of each password as the host, the port or the database name.
+        with pytest.raises(db._Unreadable):  # type: ignore[attr-defined]
+            db._postgres_where(address)  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize(
+        "name",
+        ["postgresql://etl:pw@db.example/orders", "postgres://db.example/orders", "'host=other.example password=pw'"],
+    )
+    def test_a_database_name_that_is_itself_an_address_is_refused(self, name: str) -> None:
+        # The driver opens such a name as an address, so showing it would show its password.
+        with pytest.raises(db._Unreadable):  # type: ignore[attr-defined]
+            db._postgres_where(f"host=db.example dbname={name}")  # type: ignore[attr-defined]
+
+    def test_an_ordinary_database_name_beside_it_is_still_read(self) -> None:
+        where = db._postgres_where("host=db.example dbname=orders_archive")  # type: ignore[attr-defined]
+
+        assert where.database == "orders_archive"

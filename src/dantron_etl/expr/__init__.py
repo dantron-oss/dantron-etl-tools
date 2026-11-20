@@ -16,8 +16,9 @@ from collections.abc import Collection, Mapping
 
 import polars as pl
 
-from .compiler import Division, build
+from .compiler import Division, RowCheck, build
 from .compiler import divisions as _divisions
+from .compiler import row_checks as _row_checks
 from .errors import ExpressionError
 from .functions import ALLOWED_FUNCTIONS
 from .parse import ALLOWED_NODES, MAX_DEPTH, MAX_NODES, MAX_TEXT_LENGTH
@@ -31,11 +32,13 @@ __all__ = [
     "MAX_TEXT_LENGTH",
     "Division",
     "ExpressionError",
+    "RowCheck",
     "compile_expr",
     "divisions",
     "escape_text",
     "quote_text",
     "references",
+    "row_checks",
 ]
 
 
@@ -56,10 +59,19 @@ def compile_expr(text: str, columns: Mapping[str, pl.DataType] | Collection[str]
 def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None = None) -> tuple[Division, ...]:
     """Every '/' in `text`, in order: the divisor as written, and its column.
 
-    Tools use this to stop on a row whose divisor is zero (`refuse_division_by_zero`). The text is checked
+    Tools use this to stop on a row whose divisor is zero (`refuse_rows_without_an_answer`). The text is checked
     exactly as `compile_expr` checks it.
     """
     return _divisions(text, columns)
+
+
+def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None = None) -> tuple[RowCheck, ...]:
+    """Every function call in `text` with rows it has no answer for, such as text parse_date() cannot read.
+
+    Tools use this to stop on such a row (`refuse_rows_without_an_answer`). The text is checked
+    exactly as `compile_expr` checks it.
+    """
+    return _row_checks(text, columns)
 
 
 def references(text: str) -> frozenset[str]:

@@ -127,8 +127,9 @@ It needs:
 
 A function is one entry in the function table, `DEFINITIONS` in `src/dantron_etl/expr/functions.py`:
 the name, the arguments in order, the type of the result, the code that builds the column, a
-one-line summary and an example. Add its tests, list it in `MANUAL.md` section 4.2, and rewrite the
-generated pages. A function never adds syntax to the language: no new operators, no variables, no
+one-line summary and an example. If a function has no answer for some rows, such as text it cannot
+read, say which in the entry's `no_answer`: every tool then stops the step on those rows instead of
+writing a null. Add its tests, list it in `MANUAL.md` section 4.2, and rewrite the generated pages. A function never adds syntax to the language: no new operators, no variables, no
 functions defined in a pipeline.
 
 ### Renaming something
@@ -179,8 +180,10 @@ Work happens on a `feature/<name>` branch and merges into `develop`.
 
 ## Releasing a version
 
-A release is a tag on `main`, named `v` and the version, such as `v0.2.0`. Projects install a tag,
-so the code under a tag never changes once it is pushed. A fix goes out as a new version.
+Work merges into `develop`. `main` holds the latest released version and moves only when a version
+is released, because projects install `@main` to get the latest release. Each release is also a tag
+on `main`, named `v` and the version, such as `v0.2.0`, so a project can stay on one version. The
+code under a tag never changes once it is pushed; a fix goes out as a new version.
 
 1. Merge everything for the release into `develop`, and check the suite passes.
 2. Set `__version__` in `src/dantron_etl/__init__.py` to the new version. `pyproject.toml` reads it

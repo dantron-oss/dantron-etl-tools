@@ -77,6 +77,7 @@ def test_a_local_file_lying_in_the_checkout_is_left_out(sdist_names: set[str], n
         "src/dantron_etl/MANUAL.md",
         "tests/package/test_sdist.py",
         "tests/fixtures/workbook_with_pivot.xlsx",
+        "tests/fixtures/read_excel_1900.xls",
         "src/dantron_etl/viewer/templates/walkthrough.html",
         "src/dantron_etl/viewer/scaffold/pipelines/example.yaml",
         "pipelines/fixture.yaml",
@@ -97,12 +98,30 @@ def _ignored_by_git(name: str) -> bool:
 
 
 @pytest.mark.parametrize(
-    "name", [".env", ".env.local", "src/dantron_etl/.env", "id_rsa", "server.pem", "run.parquet", ".forbidden-terms"]
+    "name",
+    [
+        ".env",
+        ".env.local",
+        "src/dantron_etl/.env",
+        "id_rsa",
+        "server.pem",
+        "run.parquet",
+        "orders.xls",
+        ".forbidden-terms",
+    ],
 )
 def test_git_ignores_a_local_secret_or_data_file(name: str) -> None:
     assert _ignored_by_git(name)
 
 
-@pytest.mark.parametrize("name", [".env.example", "pipelines/fixture.yaml", "tests/fixtures/workbook_with_pivot.xlsx"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".env.example",
+        "pipelines/fixture.yaml",
+        "tests/fixtures/workbook_with_pivot.xlsx",
+        "tests/fixtures/read_excel_1900.xls",
+    ],
+)
 def test_git_still_sees_a_template_and_the_example_flow(name: str) -> None:
     assert not _ignored_by_git(name)

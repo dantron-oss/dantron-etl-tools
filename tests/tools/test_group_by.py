@@ -112,6 +112,7 @@ def _aggregation(
     value: str | None = None,
     *,
     separator: str | None = None,
+    fraction: float | None = None,
 ) -> dict[str, Any]:
     """One element of the ``aggregations`` array, with ``value`` and ``separator`` left out where there is none.
 
@@ -125,6 +126,8 @@ def _aggregation(
         element["value"] = value
     if separator is not None:
         element["separator"] = separator
+    if fraction is not None:
+        element["fraction"] = fraction
     return element
 
 
@@ -564,6 +567,10 @@ def _one_group_frame() -> pl.DataFrame:
     in an order that is not their sorted order, and the row whose amount is missing has no note
     either, so a join that sorted behind the author's back or joined a blank in as a gap would come
     back visibly wrong too.
+
+    ``size`` is for the four statistics: 11, 3, 15, 7 and 14 with two blanks, whose mean is 10,
+    median 11, sample standard deviation exactly 5 and 0.375 quantile exactly 9. ``late`` ends on a
+    blank, so ``last`` and ``last_non_null`` disagree. ``shipped`` holds true and false.
     """
     return pl.DataFrame(
         {
@@ -571,8 +578,17 @@ def _one_group_frame() -> pl.DataFrame:
             "amount": [8.0, None, 2.0, 13.0, 8.0, 8.0, 3.0],
             "note": ["beta", None, "alpha", "gamma", "beta", "delta", "epsilon"],
             "late": [None, 6.5, 1.0, 20.0, None, None, None],
+            "size": [11.0, None, 3.0, 15.0, 7.0, None, 14.0],
+            "shipped": [True, None, False, True, None, True, False],
         },
-        schema={"code": pl.String, "amount": pl.Float64, "note": pl.String, "late": pl.Float64},
+        schema={
+            "code": pl.String,
+            "amount": pl.Float64,
+            "note": pl.String,
+            "late": pl.Float64,
+            "size": pl.Float64,
+            "shipped": pl.Boolean,
+        },
     )
 
 
@@ -586,9 +602,17 @@ def _value_for(aggregate: str) -> str | None:
     """
     if aggregate == "count":
         return None
-    if aggregate == "first_non_null":
-        return "[late]"  # its first row is blank, so first_non_null and first disagree
+    if aggregate in ("first_non_null", "last", "last_non_null"):
+        return "[late]"  # it starts and ends blank, so each of these disagrees with its sibling
+    if aggregate in ("mean", "median", "std", "quantile"):
+        return "[size]"
+    if aggregate in ("any_true", "all_true"):
+        return "[shipped]"
     return "[note]" if aggregate == "join_text" else "[amount]"
+
+
+# The fraction a quantile is asked for wherever a test asks every aggregate the same question.
+QUANTILE_FRACTION = 0.375
 
 
 def _group_answers() -> dict[str, Any]:
@@ -608,6 +632,14 @@ def _group_answers() -> dict[str, Any]:
         "first": 8.0,
         "first_non_null": 6.5,
         "join_text": "beta, alpha, gamma, beta, delta, epsilon",
+        "mean": 10.0,
+        "median": 11.0,
+        "std": 5.0,
+        "quantile": 9.0,
+        "last": None,
+        "last_non_null": 20.0,
+        "any_true": True,
+        "all_true": False,
     }
 
 
@@ -663,7 +695,11 @@ class TestEveryPublishedAggregateIsReallyComputed:
         answers = _group_answers()
         assert aggregate in answers, f"no answer written down for {aggregate!r}"
 
-        config = {"by": ["code"], "aggregations": [_aggregation("answer", aggregate, _value_for(aggregate))]}
+        fraction = QUANTILE_FRACTION if aggregate == "quantile" else None
+        config = {
+            "by": ["code"],
+            "aggregations": [_aggregation("answer", aggregate, _value_for(aggregate), fraction=fraction)],
+        }
 
         result = _grouped(_one_group_frame(), config)
 
@@ -711,8 +747,8 @@ def _refusal_cases() -> list[Any]:
             id="a_sum_over_text",
         ),
         pytest.param(
-            {"by": ["code"], "aggregations": [_aggregation("average", "mean", "[amount]")]},
-            ("mean",),
+            {"by": ["code"], "aggregations": [_aggregation("common", "mode", "[amount]")]},
+            ("mode",),
             id="an_aggregate_that_does_not_ship",
         ),
     ]
@@ -733,8 +769,8 @@ class TestGroupByRefusals:
 
         Running each against a frame with no rows at all is what shows the refusal is read off the
         schema rather than off the data -- and a sum over text is the case that needs it, because a
-        frame with no rows would otherwise sum nothing and raise nothing. ``mean`` is refused because
-        no aggregate ships without a consumer, and the template's enum is what refuses it.
+        frame with no rows would otherwise sum nothing and raise nothing. ``mode`` is refused because
+        it does not ship, and the template's enum is what refuses it.
         """
         frame = _rows().head(height)
 
@@ -875,8 +911,7 @@ class TestGroupByTemplate:
         The set is pinned exactly, in both directions. ``sum`` is a per-group total; ``count`` and
         ``count_non_null`` are the two counts; ``count_distinct`` decides whether a group covers a single
         coherent period; ``min``, ``max`` and ``first`` are the ways to carry forward a column that
-        is constant within a group, since every other column disappears. ``mean`` is absent because
-        no step wants it, and an aggregate with no consumer is an arm nobody has ever run.
+        is constant within a group, since every other column disappears.
 
         ``first`` is the newest and the only one that reads the order rows arrived in -- so it is the
         only one that can answer twice for the same data. It arrived with a consumer that needed
@@ -894,7 +929,25 @@ class TestGroupByTemplate:
         """
         assert isinstance(AGGREGATE_FUNCTIONS, frozenset)
         assert AGGREGATE_FUNCTIONS == frozenset(
-            {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "first_non_null", "join_text"}
+            {
+                "sum",
+                "count",
+                "count_non_null",
+                "count_distinct",
+                "min",
+                "max",
+                "first",
+                "first_non_null",
+                "join_text",
+                "mean",
+                "median",
+                "std",
+                "quantile",
+                "last",
+                "last_non_null",
+                "any_true",
+                "all_true",
+            }
         )
 
         function_field = GroupBy().config_template()["aggregations"].items.fields["function"]
@@ -934,7 +987,9 @@ class TestGroupByTemplate:
 
         element = template["aggregations"].items
         assert element is not None and element.type == "object"
-        assert element.fields is not None and set(element.fields) == {"name", "function", "value", "separator"}
+        assert element.fields is not None
+        assert set(element.fields) == {"name", "function", "value", "separator", "fraction"}
+        assert (element.fields["fraction"].type, element.fields["fraction"].required) == ("number", False)
         assert element.fields["name"].required is True
         assert element.fields["function"].required is True
         assert element.fields["value"].required is False, "a row count has nothing to aggregate"
@@ -1184,3 +1239,137 @@ def test_a_blank_aggregation_name_is_refused_when_the_pipeline_loads(blank: str)
         GroupBy().validate_config(config)
     with pytest.raises(ConfigError, match=r"'aggregations\[1\]\.name' must not be blank"):
         run_tool(GroupBy(), Ports({"rows": _rows()}), config)
+
+
+class TestTheStatistics:
+    """mean, median, std and quantile skip nulls, as SQL's AVG, PERCENTILE_CONT and STDDEV do."""
+
+    ROWS = pl.DataFrame(
+        {
+            "code": ["A", "A", "A", "A", "A", "B", "B", "C", "D"],
+            "x": [1.0, 2.0, None, 3.0, 4.0, None, None, 6.0, 5.0],
+            "n": [1, 2, None, 3, 4, None, None, 6, 5],
+        }
+    )
+
+    def _one(self, function: str, value: str = "[x]", fraction: float | None = None) -> list[Any]:
+        config = {"by": ["code"], "aggregations": [_aggregation("out", function, value, fraction=fraction)]}
+        return _grouped(self.ROWS, config)["out"].to_list()
+
+    def test_each_skips_nulls_and_a_group_of_only_nulls_gives_null(self) -> None:
+        assert self._one("mean") == [2.5, None, 6.0, 5.0]
+        assert self._one("median") == [2.5, None, 6.0, 5.0]
+        assert self._one("quantile", fraction=0.5) == [2.5, None, 6.0, 5.0]
+        assert self._one("std")[1:] == [None, None, None], "one value has no sample standard deviation"
+        assert self._one("std")[0] == pytest.approx(1.2909944487358056)
+
+    def test_whole_numbers_give_a_decimal_answer(self) -> None:
+        assert self._one("mean", "[n]")[0] == 2.5
+        config = {"by": ["code"], "aggregations": [_aggregation("out", "median", "[n]")]}
+        assert _grouped(self.ROWS, config).schema["out"] == pl.Float64
+
+    @pytest.mark.parametrize(("fraction", "expected"), [(0.0, 1.0), (0.25, 1.75), (0.9, 3.7), (1.0, 4.0)])
+    def test_quantile_interpolates_between_neighbours_and_its_ends_are_min_and_max(
+        self, fraction: float, expected: float
+    ) -> None:
+        """As PERCENTILE_CONT and Excel's PERCENTILE.INC: 0.25 of 1, 2, 3, 4 is 1.75."""
+        assert self._one("quantile", fraction=fraction)[0] == pytest.approx(expected)
+
+
+class TestLastAndLastNonNull:
+    """The mirrors of first and first_non_null: the last row as it arrives, and the last value there is."""
+
+    def test_last_keeps_a_blank_last_row_and_last_non_null_skips_it(self) -> None:
+        rows = pl.DataFrame({"code": ["a", "a", "b", "b", "c"], "amount": [7.0, None, None, 3.0, None]})
+        config = {
+            "by": ["code"],
+            "aggregations": [
+                _aggregation("first", "first", "[amount]"),
+                _aggregation("last", "last", "[amount]"),
+                _aggregation("last_value", "last_non_null", "[amount]"),
+            ],
+        }
+        result = _grouped(rows, config)
+        assert result["last"].to_list() == [None, 3.0, None]
+        assert result["last_value"].to_list() == [7.0, 3.0, None]
+        assert result["first"].to_list() == [7.0, None, None]
+
+
+class TestAnyTrueAndAllTrue:
+    """SQL's BOOL_OR and BOOL_AND: nulls are skipped, and a group of only nulls gives null."""
+
+    def test_each_kind_of_group(self) -> None:
+        rows = pl.DataFrame(
+            {
+                "code": ["both", "both", "true", "true", "false", "false", "none", "none"],
+                "flag": [True, False, True, None, False, None, None, None],
+            },
+            schema={"code": pl.String, "flag": pl.Boolean},
+        )
+        config = {
+            "by": ["code"],
+            "aggregations": [_aggregation("any", "any_true", "[flag]"), _aggregation("all", "all_true", "[flag]")],
+        }
+        result = _grouped(rows, config)
+        assert result["any"].to_list() == [True, True, False, None]
+        assert result["all"].to_list() == [False, True, False, None]
+
+
+class TestTheNewAggregatesRefuse:
+    @pytest.mark.parametrize(
+        ("aggregation", "named"),
+        [
+            pytest.param(_aggregation("q", "quantile", "[amount]"), ("aggregations[0]", "fraction"), id="no_fraction"),
+            pytest.param(
+                _aggregation("m", "mean", "[amount]", fraction=0.5),
+                ("aggregations[0].fraction", "mean", "quantile"),
+                id="a_fraction_beside_another_aggregate",
+            ),
+            pytest.param(_aggregation("q", "quantile", "[amount]", fraction=1.5), ("fraction", "1.5"), id="above_1"),
+            pytest.param(_aggregation("q", "quantile", "[amount]", fraction=-0.1), ("fraction", "-0.1"), id="below_0"),
+        ],
+    )
+    def test_a_fraction_that_is_missing_misplaced_or_outside_0_to_1_is_refused_when_the_pipeline_loads(
+        self, aggregation: dict[str, Any], named: tuple[str, ...]
+    ) -> None:
+        with pytest.raises(ConfigError) as caught:
+            GroupBy().validate_config({"by": ["code"], "aggregations": [aggregation]})
+        for word in named:
+            assert word in str(caught.value), str(caught.value)
+
+    @pytest.mark.parametrize(
+        ("function", "value", "named"),
+        [
+            pytest.param("mean", "[term]", ("term", "String", "not a number"), id="a_mean_of_text"),
+            pytest.param("std", "[flag]", ("flag", "Boolean", "not a number"), id="a_deviation_of_true_and_false"),
+            pytest.param("median", "[money]", ("money", "Decimal", "Float64", "cast_columns"), id="an_exact_decimal"),
+            pytest.param("quantile", "[money]", ("money", "Float64"), id="a_quantile_of_an_exact_decimal"),
+            pytest.param("any_true", "[qty]", ("qty", "Int64", "true/false"), id="any_true_of_a_number"),
+            pytest.param("all_true", "[term]", ("term", "true/false"), id="all_true_of_text"),
+        ],
+    )
+    @pytest.mark.parametrize("height", [3, 0], ids=["a_frame_with_rows", "a_frame_with_no_rows"])
+    def test_a_column_of_the_wrong_kind_is_refused_on_the_schema(
+        self, function: str, value: str, named: tuple[str, ...], height: int
+    ) -> None:
+        rows = pl.DataFrame(
+            {
+                "code": ["A", "A", "B"],
+                "term": ["12", "6", "12"],
+                "flag": [True, False, None],
+                "qty": [1, 2, 3],
+                "money": pl.Series(["1.25", "2.50", "0.20"]).cast(pl.Decimal(10, 2)),
+            }
+        ).head(height)
+        fraction = 0.5 if function == "quantile" else None
+        config = {"by": ["code"], "aggregations": [_aggregation("out", function, value, fraction=fraction)]}
+        with pytest.raises(ConfigError) as caught:
+            run_tool(GroupBy(), Ports({"rows": rows}), config)
+        for word in (*named, function):
+            assert word in str(caught.value), str(caught.value)
+
+    def test_a_fraction_of_0_or_1_is_accepted(self) -> None:
+        for fraction in (0, 1):
+            GroupBy().validate_config(
+                {"by": ["code"], "aggregations": [_aggregation("q", "quantile", "[x]", fraction=fraction)]}
+            )

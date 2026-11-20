@@ -39,6 +39,8 @@ __all__ = [
     "DEFAULT_RUNS_FOLDER",
     "PIPELINE_NAME",
     "RESERVED_NAMES",
+    "ROWS_NOT_SAVED",
+    "SAVE_ROWS",
     "SETTINGS_FILE",
     "PipelineEntry",
     "Project",
@@ -59,8 +61,14 @@ RESERVED_NAMES = frozenset({"api", "catalog"})
 #: The older settings file, kept beside a pipeline's inputs: ``<folder>/<name>/settings.yaml``.
 OLD_SETTINGS_FILE = "settings.yaml"
 
-_TOP_KEYS = ("pipeline_folders", "runs_folder", "pipelines")
-_ENTRY_KEYS = ("rules", "rules_file", "rules_loader", "focus")
+SAVE_ROWS = "save_rows"
+#: What the viewer says wherever it would show rows of a pipeline that keeps none.
+ROWS_NOT_SAVED = (
+    f"Rows are not saved for this pipeline: {SAVE_ROWS} is false in {SETTINGS_FILE}. "
+    "Its steps, row counts and columns are."
+)
+_TOP_KEYS = ("pipeline_folders", "runs_folder", SAVE_ROWS, "pipelines")
+_ENTRY_KEYS = ("rules", "rules_file", "rules_loader", "focus", SAVE_ROWS)
 _RULES_KEYS = ("rules", "rules_file", "rules_loader")
 _OLD_KEYS = ("rules", "focus")
 _RULE_REFERENCE = re.compile(r"\$\{rules\.([^}]*)\}")
@@ -85,6 +93,8 @@ class PipelineEntry:
     focus: FocusSpec | None
     settings: Mapping[str, Any]
     problem: str | None
+    #: Whether a run keeps the rows at every port. False keeps the steps, counts and columns only.
+    save_rows: bool = True
 
 
 @dataclass(frozen=True)
@@ -117,11 +127,14 @@ def load_project(root: Path) -> Project:
     settings = _read_settings(settings_path)
     folders = tuple(root / folder for folder in _text_list(settings, "pipeline_folders", settings_path))
     runs = _text(settings, "runs_folder", DEFAULT_RUNS_FOLDER, settings_path)
+    save_rows = _save_rows(settings.get(SAVE_ROWS, True), f"'{SAVE_ROWS}' in {settings_path}")
     configured = _configured_pipelines(settings, settings_path)
 
     problems: list[str] = []
     found = _discover(root, folders, problems)
-    entries = {name: _entry(root, name, path, configured.get(name)) for name, path in sorted(found.items())}
+    entries = {
+        name: _entry(root, name, path, configured.get(name), save_rows) for name, path in sorted(found.items())
+    }
     for name in configured:
         if name not in entries:
             problems.append(
@@ -210,6 +223,16 @@ def _text(settings: Mapping[str, Any], key: str, default: str, path: Path | None
     return value
 
 
+def _save_rows(value: Any, where: str) -> bool:
+    """The save_rows setting, refused unless it is true or false."""
+    if not isinstance(value, bool):
+        raise ProjectError(
+            f"{where} is {value!r}. Write {SAVE_ROWS}: true to keep each run's rows for the viewer, or "
+            f"{SAVE_ROWS}: false to keep only the steps, counts and columns."
+        )
+    return value
+
+
 def _configured_pipelines(settings: Mapping[str, Any], path: Path | None) -> dict[str, Any]:
     """The ``pipelines:`` section, by name. Each value is checked later, on its own entry."""
     section = settings.get("pipelines") or {}
@@ -279,8 +302,11 @@ def _is_pipeline_or_unreadable(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _entry(root: Path, name: str, path: Path, configured: Any) -> PipelineEntry:
-    """The entry for one pipeline file. A problem is kept on the entry, never raised."""
+def _entry(root: Path, name: str, path: Path, configured: Any, save_rows: bool = True) -> PipelineEntry:
+    """The entry for one pipeline file. A problem is kept on the entry, never raised.
+
+    ``save_rows`` is the project's setting; the pipeline's own entry overrides it.
+    """
     try:
         text = path.read_text(encoding="utf8")
         document = read_yaml(path)
@@ -298,6 +324,8 @@ def _entry(root: Path, name: str, path: Path, configured: Any) -> PipelineEntry:
     try:
         settings, source = _entry_settings(root, name, path, configured)
         focus = parse_focus(settings.get("focus"), name, source)
+        if SAVE_ROWS in settings:
+            save_rows = _save_rows(settings[SAVE_ROWS], f"'{SAVE_ROWS}' for {source}")
     except ProjectError as error:
         return PipelineEntry(**base, rules_source=None, focus=None, settings=MappingProxyType({}), problem=str(error))
     return PipelineEntry(
@@ -306,6 +334,7 @@ def _entry(root: Path, name: str, path: Path, configured: Any) -> PipelineEntry:
         focus=focus,
         settings=MappingProxyType(dict(settings)),
         problem=None,
+        save_rows=save_rows,
     )
 
 

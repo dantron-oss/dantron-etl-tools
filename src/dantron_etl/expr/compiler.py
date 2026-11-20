@@ -7,6 +7,7 @@ refusal names the part of the expression at fault.
 
 import ast
 import operator
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any, Final, NamedTuple
 
@@ -30,7 +31,7 @@ from .families import (
 from .functions import ALLOWED_FUNCTIONS, FUNCTIONS, Function
 from .parse import front_door, node_refusal
 from .scan import COLUMN_FN, LITERAL_FN, Scanned
-from .spelling import KEYWORD_LITERALS, MISSING, OPERATOR_SYMBOLS, Spelling
+from .spelling import KEYWORD_LITERALS, MISSING, OPERATOR_SYMBOLS, Spelling, render_value
 
 
 _BINARY_OPERATORS: Final[dict[type[ast.AST], Callable[[Any, Any], Any]]] = {
@@ -62,6 +63,35 @@ class Division(NamedTuple):
     expr: pl.Expr
 
 
+class RowCheck(NamedTuple):
+    """One function call's rule for the rows it has no answer for, ready to run on a frame.
+
+    `failing` is true on such a row; `shown` gives the values a refusal quotes back. `problem` and
+    `remedy` are the function's wording, filled in by :meth:`refusal` with `written`, the arguments as
+    the author wrote them.
+    """
+
+    failing: pl.Expr
+    shown: pl.Expr
+    problem: str
+    remedy: str
+    written: tuple[str, ...]
+
+    def refusal(self, found: Sequence[Any]) -> tuple[str, str]:
+        """What is wrong, quoting back the values found, and what to do."""
+        listed = ", ".join(render_value(value) for value in found)
+
+        def fill(match: re.Match[str]) -> str:
+            return listed if match[1] == "found" else self.written[int(match[1])]
+
+        return _PLACEHOLDER.sub(fill, self.problem), _PLACEHOLDER.sub(fill, self.remedy)
+
+
+# {0}, {1} ... and {found} in a function's wording; filled in one pass, so an argument that happens to
+# be spelled like a placeholder stays as written.
+_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\{(\d+|found)\}")
+
+
 def build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[pl.Expr, frozenset[str]]:
     """The front door, then the column expression for what survived it."""
     tree, scanned, schema = front_door(text, columns)
@@ -77,6 +107,14 @@ def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | 
     return tuple(compiler.divisions)
 
 
+def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[RowCheck, ...]:
+    """Every function call in ``text`` that has rows with no answer, in the order written."""
+    tree, scanned, schema = front_door(text, columns)
+    compiler = _Compiler(text, scanned, schema)
+    compiler.compile(tree.body)
+    return tuple(compiler.row_checks)
+
+
 class _Compiler:
     """Translates a checked tree into a polars expression. Every refusal about the language is made here.
 
@@ -84,7 +122,7 @@ class _Compiler:
     on a tree `front_door` has returned.
     """
 
-    __slots__ = ("_schema", "_spelling", "_text", "divisions")
+    __slots__ = ("_schema", "_spelling", "_text", "divisions", "row_checks")
 
     def __init__(
         self,
@@ -97,6 +135,8 @@ class _Compiler:
         self._schema = schema
         #: Every '/' compiled, in the order written, so a tool can stop on a divisor of zero.
         self.divisions: list[Division] = []
+        #: Every function call with rows it has no answer for, so a tool can stop on such a row.
+        self.row_checks: list[RowCheck] = []
 
     def compile(self, node: ast.expr) -> Any:
         """What one node builds to, with its type discarded once it has been checked."""
@@ -383,7 +423,13 @@ class _Compiler:
                     self._text,
                     f"{name}() takes at least 2 arguments, but was given {len(arguments)}",
                 )
-        elif len(arguments) != len(function.params):
+        elif function.optional and not len(function.params) - function.optional <= len(arguments) <= len(
+            function.params
+        ):
+            fewest, most = len(function.params) - function.optional, len(function.params)
+            between = f"{fewest} or {most}" if most == fewest + 1 else f"{fewest} to {most}"
+            raise error(self._text, f"{name}() takes {between} arguments, but was given {len(arguments)}")
+        elif not function.optional and len(arguments) != len(function.params):
             arity = len(function.params)
             raise error(
                 self._text,
@@ -410,7 +456,7 @@ class _Compiler:
                 for argument in arguments:
                     self._require(argument, param.family, f"{name}() {param.requirement}")
         else:
-            params = list(function.params)
+            params = list(function.params[: len(node.args)])
             arguments = [
                 self._argument(name, param, argument, position)
                 for position, (param, argument) in enumerate(zip(params, node.args, strict=True))
@@ -421,8 +467,20 @@ class _Compiler:
             family = self._one_family(operands, f"{name}() {params[0].requirement}")
         else:
             family = function.result
-        typed = {"dtype": operands[0].dtype} if function.typed else {}
-        built = function.to_polars(*(self._built(param, argument) for param, argument in zip(params, arguments)), **typed)
+        if function.meets is not None:
+            arguments = self._meet(function, arguments)
+            operands = [argument for argument in arguments if isinstance(argument, Typed)]
+        if function.divides_by is not None:
+            divisor = function.divides_by
+            self._record_division(node.args[divisor], arguments[divisor], f"{name}()")
+        typed = {}
+        if function.typed:
+            common = function.result_dtype == "common"
+            typed["dtype"] = combined_dtype([operand.dtype for operand in operands]) if common else operands[0].dtype
+        given = [self._built(param, argument) for param, argument in zip(params, arguments)]
+        built = function.to_polars(*given, **typed)
+        if function.no_answer is not None:
+            self._record_row_check(function, node, given, typed.get("dtype"))
 
         if function.result_dtype == "common":
             dtype = combined_dtype([operand.dtype for operand in operands])
@@ -432,6 +490,38 @@ class _Compiler:
             dtype = function.result_dtype
         holds = f"gives {family.value}" if family not in WILDCARD_FAMILIES else "holds an unknown type"
         return Typed(built, family, node, holds, dtype)
+
+    def _meet(self, function: Function, arguments: list[Any]) -> list[Any]:
+        """Check how a function's value arguments meet each other, as its `meets` says; see Function."""
+        operands = [argument for argument in arguments if isinstance(argument, Typed)]
+        if function.meets == "arithmetic":
+            for operand in operands:
+                if isinstance(operand.dtype, pl.Decimal):
+                    raise error(
+                        self._text,
+                        f"{self._describe(operand)}, and the engine has no {function.name}() for an exact "
+                        f"Decimal; cast the column to Float64 first, with the cast_columns tool",
+                    )
+            return [_widened(argument) if isinstance(argument, Typed) else argument for argument in arguments]
+        self._refuse_two_clocks(function.name, operands)
+        if function.meets == "compared":
+            self._refuse_timestamp_against_date(operands[0], operands[1], None)
+        return arguments
+
+    def _refuse_two_clocks(self, name: str, operands: Sequence[Typed]) -> None:
+        """Refuse timestamps in different time zones, or one in a zone beside a date: no one order fits both."""
+
+        def zone(typed: Typed) -> str | None:
+            return typed.dtype.time_zone if isinstance(typed.dtype, pl.Datetime) else None
+
+        clocked = [operand for operand in operands if operand.family is Family.DATE and operand.dtype is not None]
+        for other in clocked[1:]:
+            if zone(other) != zone(clocked[0]):
+                raise error(
+                    self._text,
+                    f"{self._describe(clocked[0])} and {self._describe(other)}, but {name}() compares timestamps "
+                    f"only on one clock; cast them to the same time zone first, with the cast_columns tool",
+                )
 
     def _argument(self, name: str, param: Param, node: ast.expr, position: int) -> Any:
         """One argument of a fixed-arity function: a checked operand, or a value read from the file."""
@@ -528,12 +618,37 @@ class _Compiler:
 
     # -- helpers -----------------------------------------------------------
 
-    def _record_division(self, node: ast.expr, divisor: Typed) -> None:
+    def _record_division(self, node: ast.expr, divisor: Typed, operation: str = "'/'") -> None:
         """Note a divisor for the tool to check row by row, or refuse one written as zero."""
         written = self._spelling.literal(node)
         if isinstance(written, (int, float)) and not isinstance(written, bool) and written == 0:
-            raise error(self._text, f"'/' divides by {self._spelling.render(node)}, which is zero, so it has no answer")
+            raise error(
+                self._text, f"{operation} divides by {self._spelling.render(node)}, which is zero, so it has no answer"
+            )
         self.divisions.append(Division(self._spelling.render(node), divisor.expr))
+
+    def _record_row_check(
+        self, function: Function, node: ast.Call, given: list[Any], dtype: pl.DataType | None
+    ) -> None:
+        """Note the rows a function call has no answer for, with its arguments spelled as written."""
+        rule = function.no_answer
+        assert rule is not None
+        if rule.written is not None:
+            self._refuse_written_out_of_range(function.name, node.args[rule.shows], rule.shows, rule.written)
+        written = tuple(self._spelling.render(argument) for argument in node.args)
+        when = rule.when(*given, dtype=dtype) if function.typed else rule.when(*given)
+        self.row_checks.append(RowCheck(when, given[rule.shows], rule.problem, rule.remedy, written))
+
+    def _refuse_written_out_of_range(self, name: str, node: ast.expr, position: int, bounds: tuple[int, int]) -> None:
+        """Refuse a number written in the file that no row could have an answer for."""
+        value = self._spelling.literal(node)
+        low, high = bounds
+        if isinstance(value, int) and not isinstance(value, bool) and not low <= value <= high:
+            raise error(
+                self._text,
+                f"{name}() was given {value} as its {POSITIONS[position]} argument, further than the engine can "
+                f"move any date from the year 1 to 9999; write a number from {low:,} to {high:,}",
+            )
 
     def _check_whole_number(self, value: int | float) -> None:
         """Refuse a whole number no column could hold, measured on the value as written."""
@@ -543,6 +658,13 @@ class _Compiler:
                 f"the whole number {value} is outside the range this language holds, which is {_WHOLE_NUMBER_MIN} to "
                 f"{_WHOLE_NUMBER_MAX}",
             )
+
+
+def _widened(typed: Typed) -> Typed:
+    """An operand as arithmetic meets it: unsigned widened as by :func:`_signed`, a typeless null as Int64."""
+    if typed.dtype == pl.Null:
+        return typed._replace(expr=typed.expr.cast(pl.Int64), dtype=pl.Int64())
+    return _signed(typed)
 
 
 def _signed(typed: Typed) -> Typed:

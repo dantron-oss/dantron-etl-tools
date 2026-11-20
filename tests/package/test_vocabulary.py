@@ -74,6 +74,15 @@ def _pipeline_file_keys() -> dict[str, list[str]]:
     return {role: sorted(names) for role, names in keys.items()}
 
 
+def _arity(function: Any) -> int | str:
+    """How many arguments a function takes: a number, "two or more", or a range such as "2 or 3"."""
+    if function.variadic:
+        return "two or more"
+    if function.optional:
+        return f"{len(function.params) - function.optional} or {len(function.params)}"
+    return len(function.params)
+
+
 def current_vocabulary() -> dict[str, Any]:
     """Every word a pipeline file can use, read from the live library."""
     import dantron_etl  # noqa: F401 -- importing the package fills the registry
@@ -91,10 +100,7 @@ def current_vocabulary() -> dict[str, Any]:
         }
         for tool in REGISTRY.tools()
     }
-    functions = {
-        name: "two or more" if FUNCTIONS[name].variadic else len(FUNCTIONS[name].params)
-        for name in sorted(ALLOWED_FUNCTIONS)
-    }
+    functions = {name: _arity(FUNCTIONS[name]) for name in sorted(ALLOWED_FUNCTIONS)}
     return {"tools": tools, "expression_functions": functions, "pipeline_file_keys": _pipeline_file_keys()}
 
 

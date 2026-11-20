@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import secrets
 import shutil
 import threading
@@ -23,7 +24,8 @@ from typing import Any
 
 import polars as pl
 
-from ..errors import ToolError
+from ..db import describe_connection
+from ..errors import DataError, ToolError
 from ..expr import ExpressionError
 from ..focus import EntityOption, FocusError, FocusSpec, available_entities
 from ..preview import MANIFEST, PAGE_NAME, persist_panels, persist_trace
@@ -61,6 +63,10 @@ KINDS = ("preview", "real")
 #: Held while a slot folder is moved aside and replaced, so a reader never puts back a folder a
 #: save in this process has only just moved aside.
 _SWAP_LOCK = threading.Lock()
+
+#: A saved run can hold personal or financial rows, so what a run makes is for its owner only.
+_OWNER_ONLY_FOLDER = 0o700
+_OWNER_ONLY_FILE = 0o600
 
 
 # ---------------------------------------------------------------------------
@@ -202,9 +208,9 @@ def _detail(config: Mapping[str, Any], template: Mapping[str, Any], *, file: boo
     parts += _sheets(config)
     parts += _table_mode(config)
     parts += _when_empty(config, template, file=file)
-    connection = config.get("connection")
-    if connection:
-        parts.append(f"in the database named by {connection}")
+    if "connection" in config:
+        # Which database the variable points at now, so a change of target before the run is a change of digest.
+        parts.append(f"in {describe_connection(config['connection'])}")
     return "; ".join(parts)
 
 
@@ -273,6 +279,8 @@ class RunRecord:
     message: str | None
     directory: Path
     focus: FocusSpec | None = None
+    #: False when the pipeline's save_rows setting kept the rows out of this run.
+    rows_saved: bool = True
 
 
 def _focus_data(focus: FocusSpec | None) -> dict[str, Any] | None:
@@ -321,6 +329,7 @@ def _read(directory: Path, name: str) -> RunRecord | None:
                 message=data.get("message"),
                 directory=directory,
                 focus=_saved_focus(data, name),
+                rows_saved=data.get("rows_saved", True) is not False,
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             return _unknown(name, directory, record_file)
@@ -389,16 +398,59 @@ def _clear_incoming(folder: Path, name: str) -> None:
             shutil.rmtree(stale, ignore_errors=True)
 
 
+def _owner_only(path: Path, mode: int) -> None:
+    """Set ``path``'s permissions to ``mode``, or leave them where a system will not change them.
+
+    Windows keeps only a read-only flag, and some shared or mounted drives refuse the change. A run
+    is saved either way; docs/concepts.md says what is and is not done there.
+    """
+    with contextlib.suppress(OSError):
+        os.chmod(path, mode)
+
+
+def _make_folder(folder: Path) -> None:
+    """Make ``folder`` and any folder above it that is missing, each for the owner only.
+
+    A folder that is already there, made by the user or by an earlier run, is left as it is.
+    """
+    missing = []
+    at = folder
+    while not at.exists():
+        missing.append(at)
+        at = at.parent
+    for one in reversed(missing):
+        try:
+            one.mkdir(mode=_OWNER_ONLY_FOLDER)
+        except FileExistsError:
+            continue  # made by another save at the same moment; left as it is
+        _owner_only(one, _OWNER_ONLY_FOLDER)
+
+
+def _keep_for_owner(incoming: Path) -> None:
+    """Make every folder in a run being saved owner-only, and every file in it owner-only too."""
+    for parent, folders, files in os.walk(incoming):
+        for name in folders:
+            _owner_only(Path(parent) / name, _OWNER_ONLY_FOLDER)
+        for name in files:
+            _owner_only(Path(parent) / name, _OWNER_ONLY_FILE)
+
+
 def _save(project: Project, name: str, good: bool, fill: Callable[[Path], None]) -> Path:
-    """Write a run into a hidden folder, then move it into the good or the failed slot."""
+    """Write a run into a hidden folder, then move it into the good or the failed slot.
+
+    The hidden folder is made for the owner only before anything is written into it, so no one else
+    can open a file in it at any point. Everything in it is made owner-only before it moves into place.
+    """
     folder = project.runs_folder
-    folder.mkdir(parents=True, exist_ok=True)
+    _make_folder(folder)
     failed_slot = folder / f"{name}{FAILED_SUFFIX}"
     target = folder / name if good else failed_slot
     incoming = folder / f".{name}.incoming-{secrets.token_hex(6)}"
-    incoming.mkdir()
+    incoming.mkdir(mode=_OWNER_ONLY_FOLDER)
+    _owner_only(incoming, _OWNER_ONLY_FOLDER)
     try:
         fill(incoming)
+        _keep_for_owner(incoming)
         _swap_in(incoming, target)
     except BaseException:
         shutil.rmtree(incoming, ignore_errors=True)
@@ -415,6 +467,7 @@ def _write_record(directory: Path, record: Mapping[str, Any]) -> None:
 
 def _record(directory: Path, data: Mapping[str, Any]) -> RunRecord:
     fields = {**data, "held_back": tuple(data["held_back"]), "directory": directory}
+    fields["rows_saved"] = data.get("rows_saved", True) is not False
     fields["focus"] = _saved_focus(data, str(data["pipeline"]))
     return RunRecord(**fields)
 
@@ -490,6 +543,7 @@ def execute(
         "failed_step": None,
         "message": None,
         "focus": _focus_data(entry.focus),
+        "rows_saved": entry.save_rows,
     }
     try:
         spec = load_entry(project, entry)
@@ -531,17 +585,22 @@ def _save_trace(
     focus: FocusSpec | None,
     failure: StepFailedError | None,
 ) -> RunRecord:
-    """Save a trace with its record, in the good slot if it finished and the failed slot if not."""
+    """Save a trace with its record, in the good slot if it finished and the failed slot if not.
+
+    When the pipeline keeps no rows, only the shape of each port is saved, and a failure's message
+    loses the rows it lists. The sentence itself is kept: it is what says why the run stopped.
+    """
+    rows = data["rows_saved"]
     if failure is not None:
-        data.update(outcome="failed", failed_step=failure.step_id, message=str(failure))
+        data.update(outcome="failed", failed_step=failure.step_id, message=_failure_text(failure, rows))
     data["steps_ran"] = sum(1 for event in trace.events if event.step_id != data["failed_step"])
     data["focus"] = _focus_data(focus)
 
     def fill(into: Path) -> None:
-        persist_trace(trace, into)
-        persist_panels(build_panels(spec, trace, focus), into)
+        persist_trace(trace, into, rows=rows)
+        persist_panels(build_panels(spec, trace, focus, rows_saved=rows), into)
         total = None
-        if focus is not None:
+        if focus is not None and rows:
             listed = _entities(trace, focus)
             total = len(listed["values"])
             (into / ENTITIES_FILE).write_text(json.dumps(listed), encoding="utf8")
@@ -552,6 +611,15 @@ def _save_trace(
 
     target = _save(project, str(data["pipeline"]), data["outcome"] == "finished", fill)
     return _record(target, data)
+
+
+def _failure_text(failure: StepFailedError, rows: bool) -> str:
+    """The failure's message, without the example rows a refusal lists when rows are not kept."""
+    text = str(failure)
+    cause = failure.__cause__
+    if not rows and isinstance(cause, DataError) and cause.examples_text:
+        text = text.replace(cause.examples_text, " (the rows are not shown: this pipeline does not save rows)")
+    return text
 
 
 def save_run(
@@ -591,5 +659,6 @@ def save_run(
         "failed_step": None,
         "message": None,
         "focus": None,
+        "rows_saved": entry.save_rows,
     }
     return _save_trace(project, spec, trace=trace, data=data, focus=focus or entry.focus, failure=failure)

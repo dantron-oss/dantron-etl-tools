@@ -25,8 +25,14 @@ from .group_by import (
     AGGREGATE_FUNCTIONS,
     DEFAULT_SEPARATOR,
     NARROW_SUM_LIMITS,
+    SHARED_AGGREGATES,
+    STATISTICS,
+    TRUTH_AGGREGATES,
+    fraction_problem,
+    shared_aggregate,
     sum_without_wrapping,
     totals_that_do_not_fit,
+    unsuitable,
 )
 
 
@@ -71,6 +77,12 @@ class CrossTab:
                 required=True,
                 enum=tuple(sorted(AGGREGATE_FUNCTIONS)),
             ),
+            "fraction": ConfigField(
+                type="number",
+                description="For 'quantile' only, and required there: the fraction from 0 to 1, such as "
+                "0.5 for the median or 0.9 for the 90th percentile.",
+                required=False,
+            ),
         }
 
     def help(self) -> ToolHelp:
@@ -107,17 +119,25 @@ class CrossTab:
                 "'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that "
                 "type, the run stops instead of giving a wrong number. Cast to Int64 first if totals "
                 "can be that large.",
+                "'quantile' reads 'fraction', from 0 to 1. Leave 'fraction' out for every other "
+                "function; it is refused there, not ignored.",
+                "'mean', 'median', 'std', 'quantile', 'last', 'last_non_null', 'any_true' and "
+                "'all_true' fill a cell as they fill a group in group_by, from the same code.",
             ),
             field_help={
                 "by": "For example ['customer_id']. Each different combination becomes one row.",
                 "names_from": "For example 'month', holding text such as '2026-01'.",
                 "values_from": "For example 'amount'.",
                 "function": "For example 'sum'. The list is the same as group_by's.",
+                "fraction": "For example 0.9, beside function: quantile, for the 90th percentile.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse a column that is both in 'by' and the names_from or values_from column, naming both fields."""
+        """Refuse a 'by' column that is also the names_from or values_from column, and a bad fraction.
+
+        A fraction is bad when 'quantile' has none, another function has one, or it lies outside 0 to 1.
+        """
         by_columns = set(_by_columns(config))
         for name in ("names_from", "values_from"):
             column = config[name]
@@ -127,6 +147,9 @@ class CrossTab:
                     f"'by' columns come through as themselves, so a column cannot be a 'by' "
                     f"column and the {name!r} column at once"
                 )
+        problem = fraction_problem(config["function"], config.get("fraction"), "fraction")
+        if problem is not None:
+            raise ConfigError(problem)
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Check the columns and types against the schema, so an empty frame is refused the same way.
@@ -153,6 +176,12 @@ class CrossTab:
             raise ConfigError(
                 f"config field 'values_from' names column {measure!r}, which holds {measure_dtype}, not "
                 f"a number, and 'function' asks for a sum"
+            )
+        problem = unsuitable(config["function"], measure_dtype)
+        if config["function"] in STATISTICS | TRUTH_AGGREGATES and problem is not None:
+            raise ConfigError(
+                f"config field 'values_from' names column {measure!r}, which holds {measure_dtype}, "
+                f"{problem}, and 'function' asks for {config['function']!r}"
             )
         if config["function"] == "join_text" and measure_dtype != pl.String:
             raise ConfigError(
@@ -237,10 +266,11 @@ def _cell(config: Mapping[str, Any], name: str, measure_dtype: pl.DataType) -> p
     # Do not remove this guard: polars gives 0 for a cell with no rows, and for 'sum' of only
     # nulls. Both must be null. Why: docs/design/tools.md#cross_tab
     measured = measure.is_not_null().any() if aggregate == "sum" else here.any()
-    return pl.when(measured).then(_aggregate(measure, aggregate, measure_dtype)).otherwise(None).alias(name)
+    answer = _aggregate(measure, aggregate, measure_dtype, config.get("fraction"))
+    return pl.when(measured).then(answer).otherwise(None).alias(name)
 
 
-def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> pl.Expr:
+def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType, fraction: float | None) -> pl.Expr:
     """The chosen aggregate over one cell's values; `_cell` makes an empty cell null."""
     if aggregate == "count":
         return measure.len().cast(pl.Int64)
@@ -261,6 +291,8 @@ def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType) -> 
         return measure.str.join(DEFAULT_SEPARATOR)
     if aggregate == "max":
         return measure.max()
+    if aggregate in SHARED_AGGREGATES:
+        return shared_aggregate(measure, aggregate, fraction)
     # Reached only if AGGREGATE_FUNCTIONS grew without a branch here. Never fall through to a default.
     raise AssertionError(f"unreachable aggregate {aggregate!r}")  # pragma: no cover
 

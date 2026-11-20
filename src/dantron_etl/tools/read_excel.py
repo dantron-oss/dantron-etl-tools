@@ -1,4 +1,4 @@
-"""ReadExcel: read one named sheet of an XLSX workbook, or stack the sheets matching a pattern.
+"""ReadExcel: read one named sheet of an Excel workbook (.xlsx or .xls), or stack the sheets matching a pattern.
 
 The sheet is always named, never picked by position. Each column's type comes from its first 100
 rows, and a cell that would read as null is refused. A bad header is refused, not repaired.
@@ -33,6 +33,12 @@ _TEXT_EXAMPLE_PATH: Final[str] = f"{SCRATCH_TOKEN}/mixed.xlsx"
 
 AS_TEXT: Final[str] = "as_text"
 
+#: The endings of the files this tool reads: Excel's workbook and its older format.
+_FORMATS: Final[tuple[str, ...]] = (".xlsx", ".xls")
+#: The first bytes of each kind of workbook: an .xlsx is a zip file, an .xls an OLE file.
+_ZIP_START: Final[bytes] = b"PK\x03\x04"
+_OLE_START: Final[bytes] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
 # Below this, every whole figure a float holds is exact and fits a 64-bit integer, so it can be
 # written without a decimal point. Above it, the shortest round-trip spelling ("1e+20") is used.
 _EXACT_WHOLE_LIMIT: Final[float] = float(2**53)
@@ -51,7 +57,7 @@ class ReadExcel:
         return {
             "path": ConfigField(
                 type="string",
-                description="The workbook to read. It must end in .xlsx.",
+                description="The workbook to read. It must end in .xlsx or .xls.",
                 required=True,
                 non_empty=True,
                 file_path=True,
@@ -108,12 +114,19 @@ class ReadExcel:
             notes=(
                 "A sheet is always named or matched, never picked by position, so a cover sheet added "
                 "in front does not change what is read.",
+                "An .xls workbook, Excel's older format, is read exactly as an .xlsx holding the same "
+                "cells, whichever day its dates are counted from. Other formats, such as .xlsm, .xlsb "
+                "and .ods, are refused: save them as .xlsx.",
+                "Some systems export a web page or a delimited file with an .xls name. It is refused, "
+                "saying it holds text; read a delimited file with read_csv.",
                 "A sheet name not in the workbook is refused, listing the names that are. A name that "
                 "differs only in case or a trailing space is a different name.",
                 "Each column's type is decided from its first 100 rows. A cell that holds something "
                 "but would read as null is refused, naming the column and the row.",
                 "That catches text further down a column of figures, and words read as missing, such "
                 "as n/a, #N/A or null, anywhere in a column. Set as_text to read them.",
+                "A cell holding an error value, such as #N/A or #DIV/0! left by a formula, reads as "
+                "null and is not refused. Only the same words typed as text are.",
                 "A cell of only spaces reads as null.",
                 "The header row is refused, not repaired, if a heading is blank or repeated. The "
                 "number 2026 and the text '2026' count as repeated.",
@@ -136,14 +149,15 @@ class ReadExcel:
                 "its own text.",
                 "Excel stores dates and times as one number, so with as_text a time of exactly midnight "
                 "reads as a date, and a cell holding only a time reads as that time on 31 December 1899 "
-                "(14:05 reads 1899-12-31T14:05:00).",
+                "(14:05 reads 1899-12-31T14:05:00), or on 1 January 1904 in a workbook whose dates are "
+                "counted from 1904.",
                 "as_text reads the sheet four times (as text, figures, true/false and dates) and takes "
                 "each cell from the right reading, so a large sheet takes a few times longer.",
                 "The text reading alone would be quicker, but it rounds figures: 99999999999.99 comes "
                 "back 99999999999.990005493.",
             ),
             field_help={
-                "path": "For example 'data/sales.xlsx'.",
+                "path": "For example 'data/sales.xlsx' or 'data/sales.xls'.",
                 "sheet": "For example 'Sales'. It must match exactly.",
                 "skip_rows": "For example 3, to skip a title block. Not negative.",
                 "sheets_matching": "For example '^[A-Z][a-z]{2} \\d{4}$' for sheets named like 'Jan 2026'.",
@@ -155,10 +169,13 @@ class ReadExcel:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse a non-.xlsx path, a negative skip, and a sheet setting that is missing, doubled or misplaced."""
+        """Refuse a path that is not .xlsx or .xls, a negative skip, and a sheet setting that is missing, doubled or misplaced."""
         path = config["path"]
-        if not path.lower().endswith(".xlsx"):
-            raise ConfigError(f"read_excel only reads .xlsx workbooks; got path '{path}'")
+        if not path.lower().endswith(_FORMATS):
+            raise ConfigError(
+                f"read_excel reads only .xlsx and .xls workbooks; got path '{path}'. Read a delimited "
+                f"text file with read_csv, or save another kind of workbook as .xlsx"
+            )
         if not isinstance(config.get(AS_TEXT, False), bool):
             raise ConfigError(f"config field '{AS_TEXT}' must be true or false, got {config[AS_TEXT]!r}")
         if config["skip_rows"] < 0:
@@ -207,7 +224,9 @@ class ReadExcel:
         try:
             reader = fastexcel.read_excel(path)
         except Exception as error:
-            raise ConfigError(f"read_excel could not open '{path}' as an XLSX workbook: {error}") from error
+            mismatch = _what_the_file_holds(path)
+            reason = mismatch if mismatch is not None else str(error)
+            raise ConfigError(f"read_excel could not open '{path}' as an Excel workbook: {reason}") from error
 
         sheet_names = reader.sheet_names
         if sheet is None:
@@ -230,6 +249,32 @@ def _import_fastexcel() -> Any:
             "install 'fastexcel' to read a workbook"
         ) from error
     return fastexcel
+
+
+def _what_the_file_holds(path: str) -> str | None:
+    """Why a file that would not open is not the workbook its name says, or None if that is not why.
+
+    Many systems export a web page or a delimited file and give it an .xls name. A workbook can
+    also be renamed to the other format's ending. The engine picks its reader by the ending, so
+    both fail to open with a message about the file's internals.
+    """
+    try:
+        with open(path, "rb") as handle:
+            start = handle.read(512)
+    except OSError:
+        return None
+    named_xls = path.lower().endswith(".xls")
+    if start.startswith(_ZIP_START) and named_xls:
+        return "the file is an .xlsx workbook with an .xls name. Rename it to end in .xlsx"
+    if start.startswith(_OLE_START) and not named_xls:
+        return "the file is an .xls workbook with an .xlsx name. Rename it to end in .xls"
+    if start and not start.startswith((_ZIP_START, _OLE_START)) and b"\x00" not in start:
+        return (
+            "the file holds text, not a workbook; some systems save a web page or a delimited file "
+            "with an Excel name. Read a delimited file with read_csv, or open the file in Excel and "
+            "save it as .xlsx"
+        )
+    return None
 
 
 def _xlsxwriter() -> Any:

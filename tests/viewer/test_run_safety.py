@@ -330,6 +330,114 @@ class TestDigestCoversHowAWriteTreatsWhatIsThere:
         assert "updates the rows matching on k and adds the rest" in merged.detail, merged.detail
 
 
+# A password nobody would type by accident, in pieces, so a test can ask that no piece of it shows.
+PASSWORD_PIECES = ("Kw7qZ", "Rv3xT")
+PASSWORD = "%40".join(PASSWORD_PIECES)
+
+
+def address(host: str = "db-test.example", port: str = ":5433", database: str = "orders_db", password: str = PASSWORD) -> str:
+    return f"postgresql://etl_user:{password}@{host}{port}/{database}"
+
+
+def table_writes(tmp_path: Path, tool: str) -> tuple[Write, ...]:
+    _, inputs, config, _ = write_cases(tmp_path)[f"{tool} mode"]
+    return writes(writer_flow(tool, config, inputs), tmp_path)
+
+
+class TestTheConfirmationNamesTheDatabase:
+    """A table write says which database its connection points at now: host, port and name, never the password."""
+
+    @pytest.mark.parametrize("tool", ["write_table", "publish_tables"])
+    def test_a_table_write_names_the_host_port_and_database_and_no_piece_of_the_password(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+    ) -> None:
+        monkeypatch.setenv("TARGET_DB", address())
+
+        (one,) = table_writes(tmp_path, tool)
+
+        assert "'orders_db'" in one.detail and "db-test.example" in one.detail and "5433" in one.detail, one.detail
+        everything = json.dumps([one.__dict__, writes_digest([one])])
+        assert not any(piece in everything for piece in PASSWORD_PIECES), everything
+
+    def test_a_variable_that_is_not_set_is_said_and_listing_the_writes_does_not_fail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TARGET_DB", raising=False)
+
+        (one,) = table_writes(tmp_path, "write_table")
+
+        assert "TARGET_DB" in one.detail and "not set" in one.detail, one.detail
+
+    @pytest.mark.parametrize(
+        ("later", "holds"),
+        [
+            pytest.param(address(host="db-live.example"), False, id="another_host"),
+            pytest.param(address(database="orders_live"), False, id="another_database"),
+            pytest.param(address(port=":5432"), False, id="another_port"),
+            pytest.param(None, False, id="the_variable_unset"),
+            pytest.param(address(), True, id="the_same_address"),
+            pytest.param(address(password="another%2Fpassword"), True, id="only_the_password_changed"),
+        ],
+    )
+    def test_a_confirmation_holds_only_while_the_connection_points_at_the_same_database(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later: str | None, holds: bool
+    ) -> None:
+        monkeypatch.setenv("TARGET_DB", address())
+        confirmed = writes_digest(table_writes(tmp_path, "write_table"))
+
+        if later is None:
+            monkeypatch.delenv("TARGET_DB")
+        else:
+            monkeypatch.setenv("TARGET_DB", later)
+
+        assert (writes_digest(table_writes(tmp_path, "write_table")) == confirmed) is holds
+
+    def test_a_real_run_confirmed_for_one_database_is_refused_once_the_connection_points_at_another(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sqlite3
+        from contextlib import closing
+
+        from dantron_etl.viewer.project import ProjectError
+
+        root = tmp_path / "project"
+        (root / "pipelines").mkdir(parents=True)
+        (root / "pipelines" / "load.yaml").write_text(
+            "name: Load orders\nsteps:\n"
+            "  - {id: read, tool: read_csv, config: {path: orders.csv}}\n"
+            "  - id: load\n    tool: write_table\n"
+            "    config: {connection: TARGET_DB, table: kept, mode: append}\n    inputs: {rows: read.rows}\n",
+            encoding="utf8",
+        )
+        (root / "orders.csv").write_text("party,amount\nP1,10\n", encoding="utf8")
+        stores = {}
+        for name in ("test", "live"):
+            stores[name] = tmp_path / f"{name}.db"
+            with closing(sqlite3.connect(stores[name])) as connection:
+                connection.execute("create table kept (party text, amount integer)")
+                connection.commit()
+
+        def rows(name: str) -> int:
+            with closing(sqlite3.connect(stores[name])) as connection:
+                return connection.execute("select count(*) from kept").fetchone()[0]
+
+        monkeypatch.setenv("TARGET_DB", f"sqlite:///{stores['test']}")
+        project = load_project(root)
+        entry = project.pipelines["load"]
+        (shown,) = writes(load_pipeline(yaml.safe_load((root / "pipelines" / "load.yaml").read_text())), root)
+        assert str(stores["test"]) in shown.detail, shown.detail
+        confirmed = writes_digest((shown,))
+
+        monkeypatch.setenv("TARGET_DB", f"sqlite:///{stores['live']}")
+        with pytest.raises(ProjectError):
+            execute(project, entry, "real", confirm_digest=confirmed)
+        assert rows("test") == 0 and rows("live") == 0, "nothing is written anywhere"
+
+        monkeypatch.setenv("TARGET_DB", f"sqlite:///{stores['test']}")
+        assert execute(project, entry, "real", confirm_digest=confirmed).outcome == "finished"
+        assert rows("test") == 1 and rows("live") == 0
+
+
 # ---------------------------------------------------------------------------
 # 2. A refused or failed attempt still points at the good run it kept
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ from ..authoring import (
     compile_for,
     compile_predicate_for,
     compiled_dtype,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
 )
 
 # The kinds of value a branch may give, named as a refusal states them. Whole and decimal numbers
@@ -154,7 +154,7 @@ class CaseWhen:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         cases = config["cases"]
-        _refuse_division_by_zero_where_used(frame, config)
+        _refuse_rows_without_an_answer_where_used(frame, config)
 
         ladder = pl.when(compile_predicate_for(frame, cases[0]["when"], "cases[0].when")).then(
             compile_for(frame, cases[0]["then"], "cases[0].then")
@@ -169,7 +169,7 @@ class CaseWhen:
         return Ports({"rows": frame.with_columns(ladder.alias(config["output"]))})
 
 
-def _refuse_division_by_zero_where_used(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
+def _refuse_rows_without_an_answer_where_used(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
     """Check each '/' only on the rows that reach it, as SQL's CASE does.
 
     A case's condition is used on the rows no earlier case took, its value on the rows it takes, and
@@ -178,12 +178,12 @@ def _refuse_division_by_zero_where_used(frame: pl.DataFrame, config: Mapping[str
     taken = pl.lit(False)
     for index, case in enumerate(config["cases"]):
         reached = ~taken
-        refuse_division_by_zero(frame, case["when"], f"cases[{index}].when", among=reached)
+        refuse_rows_without_an_answer(frame, case["when"], f"cases[{index}].when", among=reached)
         takes = compile_predicate_for(frame, case["when"], f"cases[{index}].when").fill_null(False)
-        refuse_division_by_zero(frame, case["then"], f"cases[{index}].then", among=reached & takes)
+        refuse_rows_without_an_answer(frame, case["then"], f"cases[{index}].then", among=reached & takes)
         taken = taken | takes
     if config.get("otherwise") is not None:
-        refuse_division_by_zero(frame, config["otherwise"], "otherwise", among=~taken)
+        refuse_rows_without_an_answer(frame, config["otherwise"], "otherwise", among=~taken)
 
 
 def _check_family(

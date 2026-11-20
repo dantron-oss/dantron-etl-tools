@@ -302,6 +302,26 @@ class TestRun:
         assert call(["run", "example", "--write"]) == code
         assert all(target.is_file() is written for target in targets)
 
+    def test_run_write_names_the_database_a_table_goes_to_and_never_its_password(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The words come from the same place as the viewer's, so this checks they reach the command too."""
+        (project / "pipelines" / "load.yaml").write_text(
+            "name: Load orders\nsteps:\n"
+            "  - {id: read, tool: read_csv, config: {path: orders.csv}}\n"
+            "  - id: load\n    tool: write_table\n"
+            "    config: {connection: TARGET_DB, table: kept, mode: append}\n    inputs: {rows: read.rows}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("TARGET_DB", "postgresql://etl_user:Kw7qZ%40Rv3xT@db-live.example:5433/orders_db")
+        monkeypatch.setattr(sys, "stdin", io.StringIO("not the name\n"))
+
+        assert call(["run", "load", "--write"]) == 1
+        output = printed(capsys)
+
+        assert "'orders_db'" in output and "db-live.example" in output and "5433" in output, output
+        assert "Kw7qZ" not in output and "Rv3xT" not in output
+
 
 # ---------------------------------------------------------------------------
 # dantron-etl check, on files the loader refuses

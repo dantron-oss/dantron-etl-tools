@@ -15,7 +15,7 @@ Use read_excel to start a flow from an Excel workbook. Name the sheet in 'sheet'
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `path` | string | required |  | The workbook to read. It must end in .xlsx. |
+| `path` | string | required |  | The workbook to read. It must end in .xlsx or .xls. |
 | `sheet` | string | optional |  | The name of the one sheet to read, such as 'Sales'. Give this or 'sheets_matching'. |
 | `sheets_matching` | string | optional |  | A pattern instead of a name: every sheet whose name matches is read, and the sheets are stacked in workbook order. |
 | `sheet_column` | string | optional |  | With 'sheets_matching': the name of a column saying which sheet each row came from. |
@@ -25,7 +25,7 @@ Use read_excel to start a flow from an Excel workbook. Name the sheet in 'sheet'
 
 More on some settings:
 
-- `path`: For example 'data/sales.xlsx'.
+- `path`: For example 'data/sales.xlsx' or 'data/sales.xls'.
 - `sheet`: For example 'Sales'. It must match exactly.
 - `skip_rows`: For example 3, to skip a title block. Not negative.
 - `sheets_matching`: For example '^[A-Z][a-z]{2} \d{4}$' for sheets named like 'Jan 2026'.
@@ -35,9 +35,12 @@ More on some settings:
 ## Notes
 
 - A sheet is always named or matched, never picked by position, so a cover sheet added in front does not change what is read.
+- An .xls workbook, Excel's older format, is read exactly as an .xlsx holding the same cells, whichever day its dates are counted from. Other formats, such as .xlsm, .xlsb and .ods, are refused: save them as .xlsx.
+- Some systems export a web page or a delimited file with an .xls name. It is refused, saying it holds text; read a delimited file with read_csv.
 - A sheet name not in the workbook is refused, listing the names that are. A name that differs only in case or a trailing space is a different name.
 - Each column's type is decided from its first 100 rows. A cell that holds something but would read as null is refused, naming the column and the row.
 - That catches text further down a column of figures, and words read as missing, such as n/a, #N/A or null, anywhere in a column. Set as_text to read them.
+- A cell holding an error value, such as #N/A or #DIV/0! left by a formula, reads as null and is not refused. Only the same words typed as text are.
 - A cell of only spaces reads as null.
 - The header row is refused, not repaired, if a heading is blank or repeated. The number 2026 and the text '2026' count as repeated.
 - A heading that is a date or true/false is refused, because it cannot name a column.
@@ -48,7 +51,7 @@ More on some settings:
 - When stacking, whole and decimal figures become decimals, and a sheet where a column is empty takes the others' type. Any other difference, such as text on one sheet and figures on another, is refused, naming the column and the sheets.
 - as_text makes every column text, each cell as what it stores, not as Excel displays it: 12, never 12.0; other figures as the shortest text that converts back exactly.
 - With as_text, a date reads YYYY-MM-DD, a date with a time YYYY-MM-DDTHH:MM:SS, true/false as true or false, and a blank as null. In a mixed column, each cell keeps its own text.
-- Excel stores dates and times as one number, so with as_text a time of exactly midnight reads as a date, and a cell holding only a time reads as that time on 31 December 1899 (14:05 reads 1899-12-31T14:05:00).
+- Excel stores dates and times as one number, so with as_text a time of exactly midnight reads as a date, and a cell holding only a time reads as that time on 31 December 1899 (14:05 reads 1899-12-31T14:05:00), or on 1 January 1904 in a workbook whose dates are counted from 1904.
 - as_text reads the sheet four times (as text, figures, true/false and dates) and takes each cell from the right reading, so a large sheet takes a few times longer.
 - The text reading alone would be quicker, but it rounds figures: 99999999999.99 comes back 99999999999.990005493.
 

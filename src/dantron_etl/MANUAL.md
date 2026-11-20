@@ -238,9 +238,12 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
-Available functions: `coalesce`, `round`, `year`, `add_months`, `months_between`, `days_between`,
-`make_date`, `month_end`, `abs`, `lower`, `upper`, `trim`, `len`, `starts_with`, `ends_with`,
-`contains`, `regex_extract`, `regex_replace`, `regex_match`, `concat`, `format_number`, `uuid5`.
+Available functions: `coalesce`, `round`, `year`, `month`, `day`, `quarter`, `day_of_week`,
+`add_months`, `add_days`, `months_between`, `days_between`, `make_date`, `month_end`, `month_start`,
+`parse_date`, `abs`, `floor`, `ceil`, `sign`, `mod`, `least`, `greatest`, `nullif`, `lower`,
+`upper`, `trim`, `len`, `left`, `right`, `substr`, `split_part`, `pad_left`, `pad_right`,
+`starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`, `concat`,
+`format_number`, `uuid5`.
 
 **Dates.** `months_between(start, end, counting)` and `days_between(start, end, counting)` count
 whole months or days between two dates, signed, with `counting` either `'inclusive'` (both ends
@@ -253,6 +256,32 @@ its `in_zone`, which chooses the day. Use
 these instead of casting dates to whole numbers to subtract them: `days_between([from], [to],
 'elapsed')` says what it counts, and a date cast to a number is a count of days since 1970 that a
 reader has to know to trust.
+
+`month`, `day`, `quarter` and `day_of_week` read a part of a date, as `year` does, and give a whole
+number. `day_of_week` counts the ISO way: Monday is 1 and Sunday is 7. `add_days(date, count)` moves a
+date by whole days, as `add_months` moves it by months; a count of more than 106,751 days stops the
+step, because the engine cannot move a date that far exactly. A count that takes a date past what
+the engine can hold stops `add_months` the same way. `month_start(date)` is the first day of
+the month. `parse_date(text, format)` reads text as a date in a format written in the file, such as
+`'%d/%m/%Y'`. A null stays null. Text that does not match the format, or names no real date, stops
+the step and names the values: it never becomes a blank date. A format without a day, such as
+`'%Y-%m'`, is refused when the file loads; write `parse_date(concat([period], '-01'), '%Y-%m-%d')`.
+
+**Numbers.** `floor` and `ceil` go down or up to a whole number and keep the number's type, so a
+`Decimal` stays a `Decimal`. `sign` gives -1, 0 or 1. `mod(a, b)` is the remainder with the sign of
+`a`, as SQL's `MOD` and Alteryx's `Mod`: `mod(-7, 3)` is -1, where the engine's own `%` would give 2.
+`mod` by zero stops the step, as `/` by zero does, and a `Decimal` is refused: cast it to `Float64`
+first. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
+only all nulls give null. `nullif(a, b)` is null where `a` equals `b`, otherwise `a`;
+`nullif([code], '')` turns empty text into a null.
+
+**Text.** `left`, `right`, `substr`, `split_part`, `pad_left` and `pad_right` count characters, so an
+accented letter or an emoji is one. Every count is a whole number written in the file, never a
+column. `left([code], -2)` is all but the last two characters, as in SQL. `substr(text, start,
+length)` counts `start` from 1; leave out `length` to run to the end. `split_part([ref], '-', 2)` is
+the second part; past the last part it gives empty text, and a negative number counts from the
+end. `pad_left([account], 6, '0')` pads to six characters with zeros and never cuts a longer value,
+which is why it is not SQL's `lpad`, which does.
 
 `trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
 inside the text alone.
@@ -584,6 +613,12 @@ Each of these has caught a real pipeline.
 - **A workbook column takes its type from its first 100 rows.** `read_excel` stops when a cell
   holds something the column's type would turn into null: text far down a column of figures, or a
   word such as `n/a` or `#N/A` anywhere in one. Set `as_text: true` and convert with `cast_columns`.
+  A cell holding an error value that a formula left behind (`#N/A`, `#DIV/0!`) is the exception: it
+  reads as null and is not refused. Check for nulls with `assert_rows` where that matters.
+- **`read_excel` reads `.xlsx` and `.xls`**, Excel's older format, by the same rules: the same
+  cells give the same rows, the same types and the same refusals, whichever day an `.xls` counts its
+  dates from. A file with an `.xls` name that holds a web page or delimited text is refused, saying
+  so; read delimited text with `read_csv`.
 
 ### How a figure is shown
 
@@ -615,7 +650,8 @@ Each of these has caught a real pipeline.
 - **`first` means "the first row as it arrives", null or not.** It is only meaningful after a
   `sort`. A `first` with no ordering in front of it is a coin toss that will land the same way in
   testing and differently in production. A group whose first row is blank gives null even when a
-  later row has a value; `first_non_null` gives the first value that is there instead.
+  later row has a value; `first_non_null` gives the first value that is there instead. `last` and
+  `last_non_null` are the same from the other end.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
   and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
@@ -669,6 +705,11 @@ Two more rulings you will meet:
   different figures.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
+- **`mean`, `median`, `std` and `quantile` skip nulls**, as SQL's `AVG` does, so a mean divides by
+  the values that are there. A group with no value gives null. They refuse an exact `Decimal`
+  column, which they would work out in binary floating point; cast it to `Float64` first.
+  `quantile` needs `fraction`, from 0 to 1, beside it. `any_true` and `all_true` skip nulls too, and
+  a group of nulls gives null, as SQL's `BOOL_OR` and `BOOL_AND`.
 - **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a
   group of nulls counts 0. To count a blank as a value too, count `coalesce([v], '(blank)')`. It
   was called `n_unique` and counted a null as one more value; the migration renames it.
@@ -784,6 +825,23 @@ taken.** Throw one away whenever the sources are reloaded, and take a fresh one.
 The fingerprint does not cover the library either: a cache taken before you upgrade the library, or
 edit it in place, still matches afterwards even when a tool now computes something different. Take
 a fresh cache after changing the library.
+
+### What the viewer keeps of a run
+
+The viewer and `dantron-etl run` save the rows at every port of each run in the project's runs
+folder (`runs_folder` in `etl-project.yaml`, by default `output_files/runs`), so the page can show
+them. Those rows can be personal or financial data.
+
+- On Linux and macOS, each folder a run makes is for its owner only (`0700`), and so is each file
+  in it (`0600`), whatever the umask. Folders that were already there keep their permissions, and so
+  do older runs and the files your output steps write.
+- On Windows, and on a drive that refuses the change, the permissions are not changed. The run is
+  still saved, and its files are as private as the folder they sit in. Keep the runs folder
+  somewhere only you can read.
+- `save_rows: false` in `etl-project.yaml`, at the top or under one pipeline, keeps no rows at all:
+  the run keeps its steps, timings, row counts and the columns and types at every port, and the
+  viewer says where rows would be that they are not saved. A failed step's message is kept, since it
+  says why the run stopped, and can name one value; the example rows it lists are left out.
 
 ---
 

@@ -7,6 +7,77 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
+This release adds to the library and changes no result a pipeline gives today. It reads Excel's
+older format, says which database a real run will write to, keeps saved runs private, and adds
+date, number and text functions and more aggregates. Pipeline files written for 0.2 need no change.
+
+### Added
+
+- **`read_excel` reads `.xls`**, Excel's older format, as well as `.xlsx`. The same cells give the
+  same rows, types and refusals in both, whichever day an `.xls` counts its dates from. A file named
+  `.xls` that holds a web page or delimited text is refused, saying so. The viewer's **Show file**
+  previews an `.xls` as a workbook.
+- **The confirmation before a real run names the database.** For each table it lists the host, the
+  port when one is stated, and the database name the connection points at now, in the viewer and in
+  `dantron-etl run --write`. It never shows the user or the password. If the connection points at
+  another database by the time you confirm, the run is refused.
+- **`save_rows`** in `etl-project.yaml`, at the top or under one pipeline. With `save_rows: false` a
+  run keeps its steps, timings, row counts, columns and types, and what it wrote, but no row of data.
+  The viewer still shows the flow, the settings, the counts and the columns, and says where rows
+  would be that they are not saved. A failed step's message is kept without the example rows it
+  lists.
+- **Date functions** `month`, `day`, `quarter` and `day_of_week` (Monday is 1), `add_days`,
+  `month_start`, and `parse_date`, which reads text as a date in a stated format and stops the step
+  on text that does not match, instead of leaving the date blank.
+- **Number functions** `floor`, `ceil`, `sign`, `mod`, `least`, `greatest` and `nullif`. `mod`
+  keeps the sign of the first number, as SQL does, and `mod` by zero stops the step, as `/` by zero
+  does.
+- **Text functions** `left`, `right`, `substr`, `split_part`, `pad_left` and `pad_right`. They count
+  characters, not bytes. `pad_left` and `pad_right` never cut a longer value. `substr`'s length may
+  be left out, the first argument in the language that may be.
+- **Aggregates** for `group_by` and `cross_tab`: `mean`, `median`, `std` (the sample standard
+  deviation), `quantile` with a `fraction` from 0 to 1, `last`, `last_non_null`, `any_true` and
+  `all_true`. They skip nulls, and a group with no value gives null. The statistics refuse an exact
+  `Decimal` column; cast it to `Float64` first.
+
+### Security
+
+- **Saved runs are readable by their owner only** on Linux and macOS. Each folder a run makes is
+  `0700` and each file in it `0600`, whatever the umask. Folders you made, older runs and the files
+  your output steps write are left as they are. On Windows, and on a drive that refuses the change,
+  the run is saved without it.
+
+### Changed
+
+- The package's **Documentation** and **Changelog** links, and the README's Postgres install line,
+  point at `main`, the latest release, instead of the working branch.
+- **For tool authors: `refuse_division_by_zero` is now `refuse_rows_without_an_answer`**, in
+  `dantron_etl.authoring`, since it stops a step on any row an expression has no answer for. There
+  is no alias; a tool of your own that called the old name must call the new one. Pipeline files
+  are not affected.
+
+### Fixed
+
+- **`add_months` stops the step on a count that takes a date past what the engine can hold**, and
+  names the count and the rows, instead of crashing the engine. Dates run from the year -262143 to
+  262142; a timestamp kept to the nanosecond runs from 1677 to 2262, and moved past that it used to
+  give a wrong date without a word. A count written in the file that no date from the year 1 to
+  9999 can take (beyond 3,145,703 forward or 3,265,715 back) is refused when the file loads. Every
+  other count gives the date it gave before.
+- **`add_days` stops the step on a timestamp kept to the nanosecond moved past 1677 to 2262**,
+  where it gave a wrong date without a word, and refuses a count written in the file beyond 106,751
+  days when the file loads.
+- **`mod` of the most negative whole number** (-9223372036854775808, or a 32-bit column's
+  -2147483648) now gives the right remainder, with the sign of the first number: `mod` of it by 3 is
+  -2, where it gave -1.
+- **A null with no type gives a null answer** in `year`, `month`, `day`, `quarter`, `day_of_week`,
+  `add_months`, `add_days` and `abs`, instead of an engine error. That is the literal `null`, or a
+  column whose every value is missing and which was read with no type. `year` and the other parts
+  of a date give a null whole number (Int32); `abs`, `add_months` and `add_days` give a null with no
+  type, as `round` already did, since their answer takes the type of what went in.
+
 ## [0.2.0] - 2026-11-20
 
 This release makes the library easier to start with and to read. It adds a command and a viewer
@@ -91,6 +162,7 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 
-[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DanTron-Inc/dantron-etl-tools/releases/tag/v0.1.0

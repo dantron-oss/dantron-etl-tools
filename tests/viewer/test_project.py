@@ -407,6 +407,65 @@ class TestFocus:
         assert message is not None and "focus" in message
 
 
+class TestSaveRows:
+    """save_rows: whether a run keeps the rows at every port. Top level for every pipeline, an entry for one."""
+
+    def _two_pipelines(self, tmp_path: Path, settings: str) -> Project:
+        root = _project_folder(tmp_path, settings)
+        for name in ("first", "second"):
+            _write(root / "pipelines" / f"{name}.yaml", _PLAIN_FLOW.format(title=name))
+        return load_project(root)
+
+    @pytest.mark.parametrize(
+        ("settings", "first", "second"),
+        [
+            pytest.param("", True, True, id="left_out_rows_are_saved"),
+            pytest.param("save_rows: false\n", False, False, id="false_at_the_top_covers_every_pipeline"),
+            pytest.param("save_rows: true\n", True, True, id="true_at_the_top"),
+            pytest.param(
+                "save_rows: false\npipelines:\n  first:\n    save_rows: true\n",
+                True,
+                False,
+                id="an_entry_overrides_a_false_top",
+            ),
+            pytest.param(
+                "pipelines:\n  first:\n    save_rows: false\n", False, True, id="an_entry_overrides_the_default"
+            ),
+            pytest.param(
+                "save_rows: true\npipelines:\n  second:\n    save_rows: false\n",
+                True,
+                False,
+                id="an_entry_overrides_a_true_top",
+            ),
+        ],
+    )
+    def test_the_top_level_sets_every_pipeline_and_an_entry_overrides_it(
+        self, tmp_path: Path, settings: str, first: bool, second: bool
+    ) -> None:
+        project = self._two_pipelines(tmp_path, settings)
+
+        assert (project.pipelines["first"].save_rows, project.pipelines["second"].save_rows) == (first, second)
+        assert project.pipelines["first"].problem is None
+
+    @pytest.mark.parametrize("value", ["'false'", "0", "1", "null", "[false]", "keep"])
+    def test_anything_but_true_or_false_at_the_top_is_refused_naming_the_setting(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        with pytest.raises(ProjectError) as caught:
+            self._two_pipelines(tmp_path, f"save_rows: {value}\n")
+
+        message = str(caught.value)
+        assert "save_rows" in message and "true" in message and "false" in message, message
+
+    @pytest.mark.parametrize("value", ["'true'", "0", "null"])
+    def test_anything_but_true_or_false_in_an_entry_marks_that_pipeline_only(self, tmp_path: Path, value: str) -> None:
+        project = self._two_pipelines(tmp_path, f"pipelines:\n  first:\n    save_rows: {value}\n")
+
+        problem = project.pipelines["first"].problem
+        assert problem is not None and "save_rows" in problem and "first" in problem, problem
+        assert project.pipelines["second"].problem is None
+
+
 class TestTheOlderPerPipelineSettingsFile:
     def test_its_rules_and_focus_are_still_read_and_the_flow_loads(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

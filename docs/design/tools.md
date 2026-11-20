@@ -56,8 +56,15 @@ dialect a reader has to learn from where a string sits. So group_by has its own 
 `AGGREGATE_FUNCTIONS`, and the `function` setting's allowed values are built from it, so the two
 cannot drift. cross_tab imports the same list, so adding an aggregate adds it to both.
 
-**No `mean`.** No flow has wanted it, and its denominator depends on how nulls are counted, which is
-the kind of question this tool refuses to answer quietly.
+**`mean`, `median`, `std` and `quantile` skip nulls**, as SQL's `AVG`, `PERCENTILE_CONT` and
+`STDDEV` do, so a mean divides by the values that are there, not by the rows. `std` is the sample
+deviation (`STDDEV`, Excel's `STDEV.S`), so one value has none. `quantile` interpolates
+(`PERCENTILE_CONT`, Excel's `PERCENTILE.INC`) and needs `fraction`, placed beside it as `separator`
+sits beside `join_text`. On an exact `Decimal` the engine answers in binary floating point (the
+median of 0.20 and 0.70 comes back as 0.44999999999999996), so a `Decimal` column is refused and the
+cast to `Float64` is written in the pipeline. `any_true` and `all_true` are `BOOL_OR` and `BOOL_AND`:
+the engine answers false and true for a group of nulls, so that case is guarded to give null.
+These eight are worked out by one function, `shared_aggregate`, that cross_tab calls too.
 
 **Groups keep first-appearance order.** A key of several columns has no obvious sort order, and the
 order the input already has is the one a reader knows. polars promises no group order unless asked,
@@ -71,12 +78,12 @@ there. join decides the other way because it follows `=`.
 measured, and nothing later can tell it from a real zero. Nulls are still skipped in a group with
 any value, so all-null is the only case that gives null.
 
-**`first` and `join_text` read arrival order.** `first` exists for a column that is the same on every
+**`first`, `last` and `join_text` read arrival order.** `first` exists for a column that is the same on every
 row of a group (a document number on its lines), where any row's value is all of them. When the
 column does vary, `first` answers with whichever row came first, a fact about order, not data. A
 flow that needs a repeatable answer sorts first, and can add `count_distinct` beside it to check the
 column really is constant. Owner's ruling (2026-11-18): `first` keeps the first row's value even when
-it is null; `first_non_null` was added for the other reading.
+it is null; `first_non_null` was added for the other reading. `last` and `last_non_null` mirror them.
 
 **`count_distinct` skips nulls**, as SQL's `COUNT(DISTINCT v)` does (owner's ruling 2026-11-18). To
 count a blank as a value, count `coalesce([v], '(blank)')`.
@@ -663,7 +670,9 @@ write a configuration the other refuses. Each aggregate has its own branch and a
 ending on `max` is how `first` once filled cells with maxima.
 
 **`join_text`** works as in group_by and uses its default separator; one aggregate fills every cell, so
-a separator setting would be a fifth field on a tool whose four fields are the point. A cell with rows
+a separator setting would be one more field on a tool whose few fields are the point. `quantile` is
+the exception that earns one: without `fraction` it has no answer at all, so `fraction` is a fifth
+field, read by `quantile` only and refused beside anything else. A cell with rows
 but no values is empty text; a cell with no rows stays null, a distinction group_by never has to make.
 
 **`values_from` is always required**, even for `count`, because one aggregate fills every cell.
@@ -768,6 +777,18 @@ names (`key_1`, `__UNNAMED__1`) would leak into column names the moment a later 
 
 **No cell range.** `skip_rows` reaches a header below a title block; narrowing columns or rows is
 select_columns or filter after this step.
+
+**`.xls` is read by the same rules, and that is measured.** An .xls file stores dates as days from 1900
+or 1904 (its header says which), text in a table of its own, and errors and merged cells in records of
+their own. fastexcel reads both formats through calamine, and the test builds an .xlsx from the same
+cells as two committed .xls fixtures (one per date system, made with xlwt; the script beside them says
+how) and requires the same frame or the same refusal for every sheet, typed and `as_text`. They agree on
+every case measured. Two cases agree but are worth knowing: an error value (`#N/A` from a formula) reads
+as null in both formats and is not refused, and a time-only cell in a 1904 workbook reads on 1904-01-01
+with `as_text`. Refusing error values would stop flows that read such cells today, so it waits for a
+release that says so. calamine picks its reader by the file's ending, so a web page or text file named
+.xls (a common export) fails inside the engine; the first bytes are checked to say what the file holds.
+`.xlsm`, `.xlsb` and `.ods` stay refused until someone measures them the same way.
 
 **`sheets_matching` stacks by name.** Not one read step per tab, which has to be edited each time the
 workbook gains a tab. Each sheet is read as if named alone. Stacking lines columns up by name; whole and

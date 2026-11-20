@@ -50,7 +50,7 @@ PREVIEW_BYTES = 1_000_000
 MAX_WORKBOOK_BYTES = 50_000_000
 
 _TABLES = (".csv", ".tsv")
-_WORKBOOKS = (".xlsx", ".xlsm")
+_WORKBOOKS = (".xlsx", ".xlsm", ".xls")
 
 
 class FileRefused(LookupError):

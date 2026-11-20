@@ -8,6 +8,7 @@ UUID namespace. Each of those is read and checked before any row is.
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Final
 
 import polars as pl
@@ -77,13 +78,34 @@ class Value:
     no_time_zone: bool = False
 
 
+@dataclass(frozen=True)
 class WholeNumber:
-    """A whole number written in the file, between 0 and :data:`_SMALL_NUMBER_LIMIT`."""
+    """A whole number written in the file, from `least` to :data:`_SMALL_NUMBER_LIMIT`.
+
+    `least` is 0 unless a function says otherwise: 1 for a position counted from 1, or the negative
+    limit where a negative count means something. `nonzero` refuses 0 as well.
+    """
+
+    least: int = 0
+    nonzero: bool = False
 
     def read(self, name: str, value: Any, position: str) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _SMALL_NUMBER_LIMIT:
-            raise Refusal(f"{name}() needs a whole number between 0 and {_SMALL_NUMBER_LIMIT} as its {position} argument")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not self.least <= value <= _SMALL_NUMBER_LIMIT
+            or (self.nonzero and value == 0)
+        ):
+            other = ", other than 0," if self.nonzero else ""
+            raise Refusal(
+                f"{name}() needs a whole number between {self.least} and {_SMALL_NUMBER_LIMIT}{other} as its "
+                f"{position} argument"
+            )
         return value
+
+
+#: The most a count of characters can be either way, for a function where a negative count means something.
+LARGEST_COUNT: Final[int] = _SMALL_NUMBER_LIMIT
 
 
 @dataclass(frozen=True)
@@ -95,6 +117,33 @@ class QuotedText:
     def read(self, name: str, value: Any, position: str) -> str:
         if not isinstance(value, str):
             raise Refusal(f"{name}() needs quoted text as its {position} argument: {self.reason}")
+        return value
+
+
+@dataclass(frozen=True)
+class Characters:
+    """Text written in the file that a function lays text out with: one character, or at least one.
+
+    `exactly_one` is for a fill character (pad_left); otherwise the text must not be empty (split_part's
+    delimiter, since text split on nothing has no parts).
+    """
+
+    exactly_one: bool = False
+
+    def read(self, name: str, value: Any, position: str) -> str:
+        if self.exactly_one:
+            if not isinstance(value, str) or len(value) != 1:
+                raise Refusal(
+                    f"{name}() needs exactly one character, in quotes, as its {position} argument, such as '0' or ' '"
+                )
+            return value
+        if not isinstance(value, str):
+            raise Refusal(
+                f"{name}() needs quoted text as its {position} argument, such as ',': where text is split is a "
+                f"decision written in the file, the same on every row"
+            )
+        if not value:
+            raise Refusal(f"{name}() was given an empty delimiter as its {position} argument; text split on nothing has no parts")
         return value
 
 
@@ -125,6 +174,38 @@ class Pattern:
         return value
 
 
+class DateFormat:
+    """parse_date()'s format: quoted text in the file, checked by the engine before any row is read.
+
+    The engine writes a known date and time in the format and reads it back. A format it refuses, or
+    one that does not give the same date back, is refused: '%Y-%m' would read every value as the 1st.
+    """
+
+    def read(self, name: str, value: Any, position: str) -> str:
+        if not isinstance(value, str):
+            raise Refusal(
+                f"{name}() needs a quoted format as its {position} argument, as in {name}([shipped], '%d/%m/%Y'): a "
+                f"format is a fixed decision recorded in the file, so it cannot come out of a column"
+            )
+        try:
+            written = pl.select(pl.lit(_FORMAT_PROBE).dt.strftime(value)).item()
+            read_back = pl.select(pl.lit(written).str.strptime(pl.Date, value, strict=False)).item()
+        except Exception as failure:
+            said = str(failure).split(_ENGINE_NOTE, 1)[0]
+            raise Refusal(f"{name}() was given a format the engine cannot use: '{value}' ({said})") from None
+        if read_back != _FORMAT_PROBE.date():
+            raise Refusal(
+                f"{name}() was given the format '{value}', which does not read a whole date: a format needs a year, "
+                f"month and day, as '%d/%m/%Y' does. For text such as '2026-01', add the day first: "
+                f"{name}(concat([period], '-01'), '%Y-%m-%d')"
+            )
+        return value
+
+
+# A date and time whose every part differs, so a format that drops or mixes up a part reads it back wrong.
+_FORMAT_PROBE: Final[datetime] = datetime(2001, 2, 3, 4, 5, 6)
+
+
 class Namespace:
     """uuid5()'s first argument: a UUID in the file, checked with the same `uuid` library that makes the ids."""
 
@@ -139,4 +220,4 @@ class Namespace:
             ) from None
 
 
-Param = Value | WholeNumber | QuotedText | Pattern | Namespace | Choice
+Param = Value | WholeNumber | QuotedText | Characters | Pattern | Namespace | Choice | DateFormat
