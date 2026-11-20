@@ -160,6 +160,30 @@ Windows, and on a drive that refuses the change, nothing is changed: the run is 
 files are only as private as the folder they are in, so keep the runs folder somewhere only you can
 read.
 
+### A project that must not keep copies of its data
+
+Set `save_rows: false` in `etl-project.yaml`, at the top for every pipeline or under one pipeline
+to override the top:
+
+```yaml fragment
+save_rows: false
+pipelines:
+  sales:
+    save_rows: true
+```
+
+A run still needs its rows in memory while it runs; only what is kept afterwards changes. The saved
+run keeps the steps, whether each ran, the time each took, the row count and the column names and
+types at every port, and what a real run wrote. It keeps no row from any port, and no list of the
+values the viewer could follow. The viewer still draws the flow, the settings, the counts and the
+columns; where it would show rows, or let you follow one customer, it says the rows are not saved
+and names the setting.
+
+A failed step's message is kept, because it is what says why the run stopped, and its sentence can
+name a value, such as the cell that stopped a read or a key that matched nothing. The example rows a
+refusal lists after it are left out. The viewer never reuses a saved run's rows for a later run, so
+nothing else changes.
+
 From Python, `run_pipeline` returns the same evidence as a **trace**:
 
 ```python

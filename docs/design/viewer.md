@@ -63,6 +63,19 @@ Folders that already existed, older runs and the files a pipeline's output steps
 touched. A system that refuses the change (Windows keeps only a read-only flag; some mounted drives
 refuse) does not fail the run.
 
+**`save_rows: false` keeps the shape of a run, not its rows.** Requested by a second project whose
+data must not be copied to disk. The run is the same in memory; what is saved changes. `ports.json`
+still lists every port's row count, columns and types, with `file` set to null, and no Parquet or
+status file is written; `entities.json` is not written; each panel shows a port's columns and the
+reason in place of a grid that would fetch rows; the page has no picker; `run.json` says
+`rows_saved: false`, and the server answers a request for rows or entities with the same sentence.
+A failure's message is kept, because a run that stopped needs to say why, but the example rows a
+`DataError` appends are cut out (`examples_text` is the exact text it appended). A refusal's own
+sentence can still name a value; that is the line drawn, and the docs say so. Nothing in the viewer
+feeds saved rows back into a run (`cached=` is only ever passed by a caller), so the setting needs
+no rule about reuse. **Show file** reads the file a step names, live, and keeps nothing, so it is
+unchanged.
+
 ## A local-only server with a token
 
 The server binds 127.0.0.1 by default (finding G-01) and answers only this machine:

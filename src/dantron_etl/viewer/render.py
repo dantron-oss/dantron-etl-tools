@@ -19,6 +19,7 @@ from .assets import escape as _e
 from .assets import page, page_data
 from .files import file_settings
 from .layout import canvas
+from .project import ROWS_NOT_SAVED
 
 # Rows drawn into the page for a slice of one entity, which the service cannot serve.
 MAX_ROWS = 25
@@ -85,6 +86,13 @@ def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -
         f'<thead><tr>{head}</tr><tr class="flts">{boxes}</tr></thead>'
         f'<tbody>{body}</tbody></table></div>{more}<p class="more match" hidden></p>{pager}</div>'
     )
+
+
+def _columns_only(frame: pl.DataFrame) -> str:
+    """A port's column names and types, and why its rows are not here, for a pipeline that keeps none."""
+    head = "".join(f"<th>{_e(c)}<em>{_e(frame.schema[c])}</em></th>" for c in frame.columns)
+    table = f'<div class="scroll"><table class="data"><thead><tr>{head}</tr></thead></table></div>' if head else ""
+    return f'<div class="tbl norows">{table}<p class="more">{_e(ROWS_NOT_SAVED)}</p></div>'
 
 
 def _scalar(value: Any) -> str:
@@ -206,6 +214,7 @@ def _step_data(
     trace: PipelineTrace,
     step_id: str,
     views: dict[str, Any],
+    rows_saved: bool = True,
 ) -> str:
     step = spec.step(step_id)
     event = _event_if_ran(trace, step_id)
@@ -231,14 +240,15 @@ def _step_data(
                     count = "&mdash;"
                 else:
                     frame = trace.frames.get(ref)
-                    body = (
+                    if frame is None:
+                        body = '<p class="more">released &mdash; not retained</p>'
+                    elif not rows_saved:
+                        body = _columns_only(frame)
+                    else:
                         # Keyed off the port rather than off the step being read, so a marked port
                         # drawn as the next step's input carries the same marks it carries as an
                         # output: it is the same port and the same rows.
-                        _table(frame, port=f"{ref.step}.{ref.port}", marked=ref in trace.status)
-                        if frame is not None
-                        else '<p class="more">released &mdash; not retained</p>'
-                    )
+                        body = _table(frame, port=f"{ref.step}.{ref.port}", marked=ref in trace.status)
                     count = "&mdash;" if rows is None else f"{rows:,} rows"
                 # Shut by default, and `details` rather than a script: a closed one is not laid out,
                 # so a page of wide tables costs the browser almost nothing until a port is opened,
@@ -263,13 +273,16 @@ def _step_data(
     return f'<section class="stepdata" data-step="{_e(step_id)}" hidden>{flip}{"".join(sides)}</section>'
 
 
-def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec | None) -> dict[str, str]:
+def build_panels(
+    spec: Pipeline, trace: PipelineTrace, focus: FocusSpec | None, *, rows_saved: bool = True
+) -> dict[str, str]:
     """Every step's data panel, keyed by step, saved beside the run and fetched one at a time.
 
     One panel per step in `spec.order()`, including steps that never ran. Only the all-rows view is drawn;
-    one entity's rows are fetched when asked for. `focus` is not used.
+    one entity's rows are fetched when asked for. `focus` is not used. With `rows_saved` false, each
+    port shows its columns and says its rows were not kept.
     """
-    return {step_id: _step_data(spec, trace, step_id, EVERYONE) for step_id in spec.order()}
+    return {step_id: _step_data(spec, trace, step_id, EVERYONE, rows_saved) for step_id in spec.order()}
 
 
 def _page_data(spec: Pipeline, focus: FocusSpec | None, run: Mapping[str, Any] | None) -> str:
@@ -314,7 +327,8 @@ def build(
     # the same step: named without shipping, the page opens on an empty pane until a fetch answers,
     # and shipped without naming, it carries a panel nothing ever shows.
     opening = order[0] if order else ""
-    panel = _step_data(spec, trace, opening, EVERYONE) if opening else ""
+    rows_saved = (run or {}).get("rows_saved", True) is not False
+    panel = _step_data(spec, trace, opening, EVERYONE, rows_saved) if opening else ""
     summary = (
         f"<b>{len(trace.events)}</b> steps &middot; <b>{len(trace.shapes)}</b> ports &middot; "
         f"<b>{total_in}</b> rows in &middot; <b>{len(published)}</b> ports nothing reads further"
@@ -326,6 +340,12 @@ def build(
         if focus is not None
         else ""
     )
+    if focus is not None and not rows_saved:
+        # Following one entity reads its rows, and there are none to read.
+        picker = (
+            f'<div class="picker"><span class="plabel">{_e(focus.label)}</span>'
+            f'<span class="picknote">Following one {_e(focus.label)} needs the rows. {_e(ROWS_NOT_SAVED)}</span></div>'
+        )
     return page(
         "walkthrough",
         scripts=("files", "runbar", "walkthrough"),

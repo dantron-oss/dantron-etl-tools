@@ -25,7 +25,7 @@ from typing import Any
 import polars as pl
 
 from ..db import describe_connection
-from ..errors import ToolError
+from ..errors import DataError, ToolError
 from ..expr import ExpressionError
 from ..focus import EntityOption, FocusError, FocusSpec, available_entities
 from ..preview import MANIFEST, PAGE_NAME, persist_panels, persist_trace
@@ -279,6 +279,8 @@ class RunRecord:
     message: str | None
     directory: Path
     focus: FocusSpec | None = None
+    #: False when the pipeline's save_rows setting kept the rows out of this run.
+    rows_saved: bool = True
 
 
 def _focus_data(focus: FocusSpec | None) -> dict[str, Any] | None:
@@ -327,6 +329,7 @@ def _read(directory: Path, name: str) -> RunRecord | None:
                 message=data.get("message"),
                 directory=directory,
                 focus=_saved_focus(data, name),
+                rows_saved=data.get("rows_saved", True) is not False,
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             return _unknown(name, directory, record_file)
@@ -464,6 +467,7 @@ def _write_record(directory: Path, record: Mapping[str, Any]) -> None:
 
 def _record(directory: Path, data: Mapping[str, Any]) -> RunRecord:
     fields = {**data, "held_back": tuple(data["held_back"]), "directory": directory}
+    fields["rows_saved"] = data.get("rows_saved", True) is not False
     fields["focus"] = _saved_focus(data, str(data["pipeline"]))
     return RunRecord(**fields)
 
@@ -539,6 +543,7 @@ def execute(
         "failed_step": None,
         "message": None,
         "focus": _focus_data(entry.focus),
+        "rows_saved": entry.save_rows,
     }
     try:
         spec = load_entry(project, entry)
@@ -580,17 +585,22 @@ def _save_trace(
     focus: FocusSpec | None,
     failure: StepFailedError | None,
 ) -> RunRecord:
-    """Save a trace with its record, in the good slot if it finished and the failed slot if not."""
+    """Save a trace with its record, in the good slot if it finished and the failed slot if not.
+
+    When the pipeline keeps no rows, only the shape of each port is saved, and a failure's message
+    loses the rows it lists. The sentence itself is kept: it is what says why the run stopped.
+    """
+    rows = data["rows_saved"]
     if failure is not None:
-        data.update(outcome="failed", failed_step=failure.step_id, message=str(failure))
+        data.update(outcome="failed", failed_step=failure.step_id, message=_failure_text(failure, rows))
     data["steps_ran"] = sum(1 for event in trace.events if event.step_id != data["failed_step"])
     data["focus"] = _focus_data(focus)
 
     def fill(into: Path) -> None:
-        persist_trace(trace, into)
-        persist_panels(build_panels(spec, trace, focus), into)
+        persist_trace(trace, into, rows=rows)
+        persist_panels(build_panels(spec, trace, focus, rows_saved=rows), into)
         total = None
-        if focus is not None:
+        if focus is not None and rows:
             listed = _entities(trace, focus)
             total = len(listed["values"])
             (into / ENTITIES_FILE).write_text(json.dumps(listed), encoding="utf8")
@@ -601,6 +611,15 @@ def _save_trace(
 
     target = _save(project, str(data["pipeline"]), data["outcome"] == "finished", fill)
     return _record(target, data)
+
+
+def _failure_text(failure: StepFailedError, rows: bool) -> str:
+    """The failure's message, without the example rows a refusal lists when rows are not kept."""
+    text = str(failure)
+    cause = failure.__cause__
+    if not rows and isinstance(cause, DataError) and cause.examples_text:
+        text = text.replace(cause.examples_text, " (the rows are not shown: this pipeline does not save rows)")
+    return text
 
 
 def save_run(
@@ -640,5 +659,6 @@ def save_run(
         "failed_step": None,
         "message": None,
         "focus": None,
+        "rows_saved": entry.save_rows,
     }
     return _save_trace(project, spec, trace=trace, data=data, focus=focus or entry.focus, failure=failure)

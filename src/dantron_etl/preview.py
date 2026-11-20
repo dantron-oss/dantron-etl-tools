@@ -101,12 +101,16 @@ def persist_ports(
     directory: Path,
     *,
     status: dict[str, pl.DataFrame] | None = None,
+    rows: bool = True,
 ) -> dict[str, Any]:
     """Write each frame in ``frames`` to Parquet under ``directory``, and return the manifest.
 
     ``frames`` is keyed by ``"step.port"``. ``status``, keyed the same way, is each port's per-row
     status; it goes in a file of its own beside the port. A port with no status gets no status
     file. The manifest (``ports.json``) lists each port's file, row count, columns and types.
+
+    With ``rows=False`` no frame and no status is written: the manifest still lists each port's row
+    count, columns and types, with ``file`` set to null.
 
     Why: docs/design/loading-and-running.md#status-is-saved-beside-the-port
     """
@@ -116,6 +120,14 @@ def persist_ports(
     for key, frame in frames.items():
         stem = key.replace(".", "__")
         name = stem + ".parquet"
+        if not rows:
+            manifest[key] = {
+                "file": None,
+                "rows": frame.height,
+                "columns": list(frame.columns),
+                "dtypes": [str(d) for d in frame.dtypes],
+            }
+            continue
         frame.write_parquet(directory / name)
         manifest[key] = {
             "file": name,
@@ -132,16 +144,17 @@ def persist_ports(
     return manifest
 
 
-def persist_trace(trace: PipelineTrace, directory: Path) -> dict[str, Any]:
+def persist_trace(trace: PipelineTrace, directory: Path, *, rows: bool = True) -> dict[str, Any]:
     """Write a finished run to ``directory``: every port it kept, and the per-row status of each.
 
     Use this rather than :func:`persist_ports`, so the statuses cannot be forgotten. Returns the
-    manifest.
+    manifest. ``rows=False`` writes the manifest alone: counts, columns and types, no rows.
     """
     return persist_ports(
         {f"{ref.step}.{ref.port}": frame for ref, frame in trace.frames.items()},
         directory,
         status={f"{ref.step}.{ref.port}": marks for ref, marks in trace.status.items()},
+        rows=rows,
     )
 
 
@@ -231,6 +244,8 @@ class PortStore:
         entry = self.manifest.get(port)
         if entry is None:
             raise PreviewError(f"no port {port!r} in this run; it has: {', '.join(sorted(self.manifest))}")
+        if entry.get("file") is None:
+            raise PreviewError(f"the rows of port {port!r} were not saved with this run")
         if offset < 0:
             raise PreviewError(f"offset must not be negative; got {offset}")
         if not 1 <= limit <= MAX_WINDOW:

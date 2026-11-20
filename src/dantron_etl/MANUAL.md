@@ -803,6 +803,10 @@ them. Those rows can be personal or financial data.
 - On Windows, and on a drive that refuses the change, the permissions are not changed. The run is
   still saved, and its files are as private as the folder they sit in. Keep the runs folder
   somewhere only you can read.
+- `save_rows: false` in `etl-project.yaml`, at the top or under one pipeline, keeps no rows at all:
+  the run keeps its steps, timings, row counts and the columns and types at every port, and the
+  viewer says where rows would be that they are not saved. A failed step's message is kept, since it
+  says why the run stopped, and can name one value; the example rows it lists are left out.
 
 ---
 

@@ -77,6 +77,8 @@ KEY_MEANINGS: dict[str, dict[str, str]] = {
 PROJECT_MEANINGS: dict[str, str] = {
     "pipeline_folders": "Folders holding pipeline files. Default `[pipelines]`.",
     "runs_folder": "Where runs are saved for the viewer. Default `output_files/runs`.",
+    "save_rows": "At the top, or under a pipeline to override the top: `false` saves no rows of a run, only its "
+    "steps, counts and columns. Default `true`.",
     "pipelines": "Settings for each pipeline, under its name (the file name without `.yaml`).",
     "rules": "Under a pipeline: the values its `${rules.name}` references take.",
     "rules_file": "Under a pipeline: a YAML file of rule values, relative to the project folder.",
@@ -296,7 +298,7 @@ def pipeline_keys() -> str:
 def project_keys() -> str:
     from dantron_etl.viewer import project
 
-    keys = [*project._TOP_KEYS, *project._ENTRY_KEYS]
+    keys = list(dict.fromkeys([*project._TOP_KEYS, *project._ENTRY_KEYS]))
     missing = [key for key in keys if key not in PROJECT_MEANINGS]
     if missing:
         raise SystemExit(f"docs/_build/generate.py: say what project key(s) {missing} mean in PROJECT_MEANINGS")

@@ -38,7 +38,7 @@ from .assets import escape as _e
 from .assets import page, page_data
 from .files import FileRefused, NamedFile, facts, named_file, named_files, preview
 from .focus_rows import focus_match
-from .project import PipelineEntry, Project, ProjectError, load_entry, load_project, pipeline_rules
+from .project import ROWS_NOT_SAVED, PipelineEntry, Project, ProjectError, load_entry, load_project, pipeline_rules
 from .reveal import Opened, Target, has_file_manager, open_location, this_machine
 from .runs import (
     ENTITIES_FILE,
@@ -723,6 +723,11 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
 
         def _slot_api(self, what: str, record: RunRecord, entry: PipelineEntry, query: Mapping[str, list[str]]) -> None:
             directory = record.directory
+            if what == "entities" and not record.rows_saved:
+                self._json(200, {"label": None, "total": 0, "matched": 0, "values": [], "reason": ROWS_NOT_SAVED})
+                return
+            if what == "rows" and not record.rows_saved:
+                raise _Refused(409, ROWS_NOT_SAVED)
             if what == "entities":
                 self._json(200, _entities(directory, query))
                 return

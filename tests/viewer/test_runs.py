@@ -370,6 +370,100 @@ class TestSavedRunsAreForTheirOwnerOnly:
 
 
 # ---------------------------------------------------------------------------
+# save_rows: false keeps everything about a run except its rows
+# ---------------------------------------------------------------------------
+
+#: Values that appear in the data and nowhere else, so finding one in a saved file means a row was kept.
+SECRET_PARTIES = ("Quillfeather-Oriole", "Marrowgate-Kestrel")
+
+
+def private_project(root: Path, *, save_rows: str | None = "false", check: bool = False) -> Path:
+    """read_csv -> filter -> write_csv, focused on party, whose parties are SECRET_PARTIES.
+
+    With ``check``, an assert_rows step after the read fails on the negative amounts, naming rows.
+    """
+    top = f"save_rows: {save_rows}\n" if save_rows is not None else ""
+    (root / "etl-project.yaml").write_text(f"{top}pipelines:\n  {NAME}:\n    focus: party\n", encoding="utf8")
+    (root / "pipelines" / NAME).mkdir(parents=True)
+    text = pipeline_text()
+    if check:
+        text = text.replace(
+            "  - id: keep\n    tool: filter\n",
+            "  - id: check\n    tool: assert_rows\n    config: {predicate: '[amount] > 0', label: positive}\n"
+            "    inputs: {rows: read.rows}\n  - id: keep\n    tool: filter\n",
+        ).replace("inputs: {rows: read.rows}\n  - id: save", "inputs: {rows: check.rows}\n  - id: save")
+    (root / "pipelines" / f"{NAME}.yaml").write_text(text, encoding="utf8")
+    rows = ["party,amount", *(f"{party},{amount}" for party in SECRET_PARTIES for amount in (12, -3, 7))]
+    (root / DATA).write_text("\n".join(rows) + "\n", encoding="utf8")
+    return root
+
+
+def saved_text(folder: Path) -> str:
+    """Every file under ``folder``, as text, so a value can be looked for anywhere in it."""
+    return "\n".join(path.read_bytes().decode("utf8", errors="replace") for path in folder.rglob("*") if path.is_file())
+
+
+class TestARunThatKeepsNoRows:
+    def test_no_row_from_any_port_is_saved_but_the_steps_counts_and_columns_are(self, tmp_path: Path) -> None:
+        root = private_project(tmp_path)
+
+        record = run(root)
+
+        saved = runs_folder(root) / NAME
+        assert record.outcome == "finished" and record.rows_saved is False
+        assert not [path.name for path in saved.rglob("*.parquet")]
+        assert not (saved / "entities.json").exists()
+        text = saved_text(runs_folder(root))
+        assert not [party for party in SECRET_PARTIES if party in text]
+        ports = json.loads((saved / MANIFEST).read_text(encoding="utf8"))
+        assert ports["read.rows"]["rows"] == 6 and ports["keep.true"]["rows"] == 4
+        assert ports["read.rows"]["columns"] == ["party", "amount"]
+        assert ports["read.rows"]["dtypes"] == ["String", "Int64"]
+        written = json.loads((saved / RUN_FILE).read_text(encoding="utf8"))
+        assert (written["steps_ran"], written["rows_saved"]) == (2, False)
+        assert (saved / PAGE_NAME).is_file()
+
+    def test_the_mirror_a_run_that_keeps_rows_still_keeps_them(self, tmp_path: Path) -> None:
+        root = private_project(tmp_path, save_rows=None)
+
+        record = run(root)
+
+        saved = runs_folder(root) / NAME
+        assert record.rows_saved is True
+        assert [path.name for path in saved.glob("*.parquet")]
+        assert all(party in (saved / "entities.json").read_text(encoding="utf8") for party in SECRET_PARTIES)
+
+    @pytest.mark.parametrize("save_rows", ["false", None], ids=["rows_not_saved", "rows_saved"])
+    def test_a_failure_keeps_its_sentence_and_drops_the_rows_it_lists_only_when_rows_are_not_saved(
+        self, tmp_path: Path, save_rows: str | None
+    ) -> None:
+        root = private_project(tmp_path, save_rows=save_rows, check=True)
+
+        record = run(root)
+
+        assert (record.outcome, record.failed_step) == ("failed", "check")
+        assert "positive" in record.message and "2 of 6 row(s)" in record.message, record.message
+        listed = [party for party in SECRET_PARTIES if party in record.message]
+        kept = saved_text(runs_folder(root))
+        if save_rows == "false":
+            assert listed == [] and not [party for party in SECRET_PARTIES if party in kept]
+        else:
+            assert listed, "with rows saved, the failure still lists the rows it refused"
+
+    def test_a_script_saving_its_own_run_follows_the_setting_too(self, tmp_path: Path) -> None:
+        root = private_project(tmp_path)
+        project = load_project(root)
+        spec = load_entry(project, project.pipelines[NAME])
+        with contextlib.chdir(root):
+            trace = __import__("dantron_etl").run_pipeline(spec, until=("keep",))
+
+        record = save_run(project, NAME, spec, trace, kind="preview")
+
+        assert record.rows_saved is False
+        assert not [party for party in SECRET_PARTIES if party in saved_text(record.directory)]
+
+
+# ---------------------------------------------------------------------------
 # Failures and refusals never touch the last good run
 # ---------------------------------------------------------------------------
 

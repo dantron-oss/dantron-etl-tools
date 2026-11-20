@@ -17,6 +17,11 @@ things; each such release says how to upgrade.
   port when one is stated, and the database name the connection points at now, in the viewer and in
   `dantron-etl run --write`. It never shows the user or the password. If the connection points at
   another database by the time you confirm, the run is refused.
+- **`save_rows`** in `etl-project.yaml`, at the top or under one pipeline. With `save_rows: false` a
+  run keeps its steps, timings, row counts, columns and types, and what it wrote, but no row of data.
+  The viewer still shows the flow, the settings, the counts and the columns, and says where rows
+  would be that they are not saved. A failed step's message is kept without the example rows it
+  lists.
 
 ### Security
 
