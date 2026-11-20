@@ -231,6 +231,8 @@ def _argument(parameter: Any) -> str:
         return "quoted text written in the file"
     if kind == "Namespace":
         return "a quoted UUID"
+    if kind == "DateFormat":
+        return "a quoted date format, such as '%d/%m/%Y'"
     return kind
 
 

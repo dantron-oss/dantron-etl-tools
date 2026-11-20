@@ -530,6 +530,12 @@ sends zero rows elsewhere protects the case that divides.
 A null divisor gives null, as everything does with a null, and is allowed. Not-a-number is not zero
 either. The check is one whole-column comparison per `/`, with no row-by-row work.
 
+The same function also stops the step on a row a function has no answer for. A function says which
+rows those are in its entry in the function table (`no_answer`): text `parse_date` cannot read, a
+count `add_days` cannot move by exactly. Every tool that reads an expression already calls this
+function, so a new function with such a rule is checked in every tool, and inside `case_when` only
+on the rows that reach the case. The name stayed `refuse_division_by_zero` so no tool had to change.
+
 ### Writing a column name
 
 `check_output_column` holds three rules for every tool that writes a column.

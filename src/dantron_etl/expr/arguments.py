@@ -8,6 +8,7 @@ UUID namespace. Each of those is read and checked before any row is.
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Final
 
 import polars as pl
@@ -125,6 +126,38 @@ class Pattern:
         return value
 
 
+class DateFormat:
+    """parse_date()'s format: quoted text in the file, checked by the engine before any row is read.
+
+    The engine writes a known date and time in the format and reads it back. A format it refuses, or
+    one that does not give the same date back, is refused: '%Y-%m' would read every value as the 1st.
+    """
+
+    def read(self, name: str, value: Any, position: str) -> str:
+        if not isinstance(value, str):
+            raise Refusal(
+                f"{name}() needs a quoted format as its {position} argument, as in {name}([shipped], '%d/%m/%Y'): a "
+                f"format is a fixed decision recorded in the file, so it cannot come out of a column"
+            )
+        try:
+            written = pl.select(pl.lit(_FORMAT_PROBE).dt.strftime(value)).item()
+            read_back = pl.select(pl.lit(written).str.strptime(pl.Date, value, strict=False)).item()
+        except Exception as failure:
+            said = str(failure).split(_ENGINE_NOTE, 1)[0]
+            raise Refusal(f"{name}() was given a format the engine cannot use: '{value}' ({said})") from None
+        if read_back != _FORMAT_PROBE.date():
+            raise Refusal(
+                f"{name}() was given the format '{value}', which does not read a whole date: a format needs a year, "
+                f"month and day, as '%d/%m/%Y' does. For text such as '2026-01', add the day first: "
+                f"{name}(concat([period], '-01'), '%Y-%m-%d')"
+            )
+        return value
+
+
+# A date and time whose every part differs, so a format that drops or mixes up a part reads it back wrong.
+_FORMAT_PROBE: Final[datetime] = datetime(2001, 2, 3, 4, 5, 6)
+
+
 class Namespace:
     """uuid5()'s first argument: a UUID in the file, checked with the same `uuid` library that makes the ids."""
 
@@ -139,4 +172,4 @@ class Namespace:
             ) from None
 
 
-Param = Value | WholeNumber | QuotedText | Pattern | Namespace | Choice
+Param = Value | WholeNumber | QuotedText | Pattern | Namespace | Choice | DateFormat

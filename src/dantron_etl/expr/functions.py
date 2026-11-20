@@ -16,6 +16,7 @@ from .arguments import (
     REWRITE_REASON,
     SEPARATOR_REASON,
     Choice,
+    DateFormat,
     Namespace,
     Param,
     Pattern,
@@ -24,10 +25,25 @@ from .arguments import (
     WholeNumber,
     probe_pattern,
 )
-from .dates import count_between, date_or_null, days_in_month
+from .dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .errors import Refusal
 from .families import Family
 from .formatting import written_as_text
+
+
+@dataclass(frozen=True)
+class NoAnswer:
+    """The rows a function has no answer for. The step stops on them instead of writing a null.
+
+    `when` is given what the builder is given and is true on such a row. `problem` says what is wrong:
+    {0}, {1} ... stand for the arguments as the author wrote them, and {found} for the values found
+    in argument number `shows`. `remedy` says what to do.
+    """
+
+    when: Callable[..., pl.Expr]
+    problem: str
+    shows: int
+    remedy: str
 
 
 @dataclass(frozen=True)
@@ -39,7 +55,8 @@ class Function:
     family the arguments agree on). `result_dtype` is the exact type where known ("subject": the first
     argument's; "common": worked out from all). `to_polars` builds the column from a polars expression
     per value argument and the Python value per literal argument. `typed` passes the first argument's
-    dtype as `dtype=` (None without a schema), for round() and format_number().
+    dtype as `dtype=` (None without a schema), for round() and format_number(). `no_answer` names the
+    rows the function has no answer for; a tool stops the step on them.
     """
 
     name: str
@@ -51,6 +68,7 @@ class Function:
     variadic: bool = False
     result_dtype: pl.DataType | Literal["subject", "common"] | None = None
     typed: bool = False
+    no_answer: NoAnswer | None = None
 
 
 def _coalesce(*parts: pl.Expr) -> pl.Expr:
@@ -106,6 +124,55 @@ def _abs(subject: pl.Expr) -> pl.Expr:
 
 def _year(subject: pl.Expr) -> pl.Expr:
     return subject.dt.year()
+
+
+# month(), day() and the rest give Int32, as year() does, so month([d]) * 100 cannot wrap round.
+def _month(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.month().cast(pl.Int32)
+
+
+def _day(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.day().cast(pl.Int32)
+
+
+def _quarter(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.quarter().cast(pl.Int32)
+
+
+def _day_of_week(subject: pl.Expr) -> pl.Expr:
+    # The engine counts as ISO does: Monday is 1, Sunday is 7.
+    return subject.dt.weekday().cast(pl.Int32)
+
+
+# The engine counts a move of days in nanoseconds, and a move longer than this wraps round to a wrong date.
+_MOST_DAYS: Final[int] = 106_751
+
+
+def _add_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+    """Move a date by a count of days, built as add_months() builds its offset ('3d').
+
+    A day is a calendar day, so a timestamp keeps its time of day when the clocks change.
+    """
+    offset = pl.concat_str([count.cast(pl.String), pl.lit("d")], ignore_nulls=False)
+    return subject.dt.offset_by(offset)
+
+
+def _too_many_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+    return ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
+
+
+def _month_start(subject: pl.Expr) -> pl.Expr:
+    return subject.cast(pl.Date).dt.month_start()
+
+
+def _parse_date(text: pl.Expr, format_: str) -> pl.Expr:
+    """Text read as a date in the format; null where it does not match or names no date in the years 1 to 9999."""
+    parsed = text.str.strptime(pl.Date, format_, strict=False, exact=True)
+    return pl.when(parsed.dt.year().is_between(MIN_YEAR, MAX_YEAR)).then(parsed)
+
+
+def _unreadable(text: pl.Expr, format_: str) -> pl.Expr:
+    return text.is_not_null() & _parse_date(text, format_).is_null()
 
 
 def _add_months(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
@@ -284,6 +351,42 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         example="year([starts_on])",
     ),
     Function(
+        "month",
+        params=(Value(Family.DATE, "reads the month of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_month,
+        summary="The month of a date, 1 to 12.",
+        example="month([starts_on])",
+    ),
+    Function(
+        "day",
+        params=(Value(Family.DATE, "reads the day of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_day,
+        summary="The day of the month of a date, 1 to 31.",
+        example="day([starts_on])",
+    ),
+    Function(
+        "quarter",
+        params=(Value(Family.DATE, "reads the quarter of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_quarter,
+        summary="The quarter of the year a date falls in, 1 to 4; January to March is 1.",
+        example="quarter([starts_on])",
+    ),
+    Function(
+        "day_of_week",
+        params=(Value(Family.DATE, "reads the day of the week of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_day_of_week,
+        summary="The day of the week of a date, counted the ISO way: Monday is 1 and Sunday is 7.",
+        example="day_of_week([ordered_on])",
+    ),
+    Function(
         "add_months",
         params=(
             Value(Family.DATE, "moves a date"),
@@ -293,6 +396,27 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_add_months,
         summary="A date moved by whole months; 31 January plus one month is 28 February.",
         example="add_months([starts_on], [months] - 1)",
+    ),
+    Function(
+        "add_days",
+        params=(
+            Value(Family.DATE, "moves a date"),
+            Value(Family.NUMBER, "moves a date by a count of days", whole="moves a date by whole days"),
+        ),
+        result=Family.DATE,
+        result_dtype="subject",
+        to_polars=_add_days,
+        summary="A date moved by whole days; a negative count goes back.",
+        example="add_days([ordered_on], 30)",
+        no_answer=NoAnswer(
+            when=_too_many_days,
+            problem=(
+                f"moves a date with add_days() by more than {_MOST_DAYS:,} days (about 292 years), further than "
+                "the engine can count exactly: {1} holds {found}"
+            ),
+            shows=1,
+            remedy="The step stops rather than write a wrong date. Check that {1} is the count of days you meant",
+        ),
     ),
     Function(
         "months_between",
@@ -337,6 +461,33 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_month_end,
         summary="The last day of the month a date falls in.",
         example="month_end([ordered_on])",
+    ),
+    Function(
+        "month_start",
+        params=(Value(Family.DATE, "finds the start of a date's month", no_time_zone=True),),
+        result=Family.DATE,
+        result_dtype=pl.Date(),
+        to_polars=_month_start,
+        summary="The first day of the month a date falls in.",
+        example="month_start([ordered_on])",
+    ),
+    Function(
+        "parse_date",
+        params=(Value(Family.TEXT, "reads text as a date"), DateFormat()),
+        result=Family.DATE,
+        result_dtype=pl.Date(),
+        to_polars=_parse_date,
+        summary="Text read as a date in a stated format; text that does not match stops the step.",
+        example="parse_date([shipped], '%d/%m/%Y')",
+        no_answer=NoAnswer(
+            when=_unreadable,
+            problem="reads text as a date with parse_date(), and {0} holds text that is not a date in the format {1}: {found}",
+            shows=0,
+            remedy=(
+                "The step stops rather than leave those dates blank. Correct the text, or give those rows a "
+                "case_when rung of their own before the rung that reads them"
+            ),
+        ),
     ),
     Function(
         "abs",

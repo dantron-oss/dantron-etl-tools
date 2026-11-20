@@ -238,9 +238,10 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 [placed_on] >= date'2025-01-01'
 ```
 
-Available functions: `coalesce`, `round`, `year`, `add_months`, `months_between`, `days_between`,
-`make_date`, `month_end`, `abs`, `lower`, `upper`, `trim`, `len`, `starts_with`, `ends_with`,
-`contains`, `regex_extract`, `regex_replace`, `regex_match`, `concat`, `format_number`, `uuid5`.
+Available functions: `coalesce`, `round`, `year`, `month`, `day`, `quarter`, `day_of_week`,
+`add_months`, `add_days`, `months_between`, `days_between`, `make_date`, `month_end`, `month_start`,
+`parse_date`, `abs`, `lower`, `upper`, `trim`, `len`, `starts_with`, `ends_with`, `contains`,
+`regex_extract`, `regex_replace`, `regex_match`, `concat`, `format_number`, `uuid5`.
 
 **Dates.** `months_between(start, end, counting)` and `days_between(start, end, counting)` count
 whole months or days between two dates, signed, with `counting` either `'inclusive'` (both ends
@@ -253,6 +254,15 @@ its `in_zone`, which chooses the day. Use
 these instead of casting dates to whole numbers to subtract them: `days_between([from], [to],
 'elapsed')` says what it counts, and a date cast to a number is a count of days since 1970 that a
 reader has to know to trust.
+
+`month`, `day`, `quarter` and `day_of_week` read a part of a date, as `year` does, and give a whole
+number. `day_of_week` counts the ISO way: Monday is 1 and Sunday is 7. `add_days(date, count)` moves a
+date by whole days, as `add_months` moves it by months; a count of more than 106,751 days stops the
+step, because the engine cannot move a date that far exactly. `month_start(date)` is the first day of
+the month. `parse_date(text, format)` reads text as a date in a format written in the file, such as
+`'%d/%m/%Y'`. A null stays null. Text that does not match the format, or names no real date, stops
+the step and names the values: it never becomes a blank date. A format without a day, such as
+`'%Y-%m'`, is refused when the file loads; write `parse_date(concat([period], '-01'), '%Y-%m-%d')`.
 
 `trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
 inside the text alone.

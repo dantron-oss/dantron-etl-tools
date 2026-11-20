@@ -7,6 +7,7 @@ refusal names the part of the expression at fault.
 
 import ast
 import operator
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any, Final, NamedTuple
 
@@ -30,7 +31,7 @@ from .families import (
 from .functions import ALLOWED_FUNCTIONS, FUNCTIONS, Function
 from .parse import front_door, node_refusal
 from .scan import COLUMN_FN, LITERAL_FN, Scanned
-from .spelling import KEYWORD_LITERALS, MISSING, OPERATOR_SYMBOLS, Spelling
+from .spelling import KEYWORD_LITERALS, MISSING, OPERATOR_SYMBOLS, Spelling, render_value
 
 
 _BINARY_OPERATORS: Final[dict[type[ast.AST], Callable[[Any, Any], Any]]] = {
@@ -62,6 +63,35 @@ class Division(NamedTuple):
     expr: pl.Expr
 
 
+class RowCheck(NamedTuple):
+    """One function call's rule for the rows it has no answer for, ready to run on a frame.
+
+    `failing` is true on such a row; `shown` gives the values a refusal quotes back. `problem` and
+    `remedy` are the function's wording, filled in by :meth:`refusal` with `written`, the arguments as
+    the author wrote them.
+    """
+
+    failing: pl.Expr
+    shown: pl.Expr
+    problem: str
+    remedy: str
+    written: tuple[str, ...]
+
+    def refusal(self, found: Sequence[Any]) -> tuple[str, str]:
+        """What is wrong, quoting back the values found, and what to do."""
+        listed = ", ".join(render_value(value) for value in found)
+
+        def fill(match: re.Match[str]) -> str:
+            return listed if match[1] == "found" else self.written[int(match[1])]
+
+        return _PLACEHOLDER.sub(fill, self.problem), _PLACEHOLDER.sub(fill, self.remedy)
+
+
+# {0}, {1} ... and {found} in a function's wording; filled in one pass, so an argument that happens to
+# be spelled like a placeholder stays as written.
+_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\{(\d+|found)\}")
+
+
 def build(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[pl.Expr, frozenset[str]]:
     """The front door, then the column expression for what survived it."""
     tree, scanned, schema = front_door(text, columns)
@@ -77,6 +107,14 @@ def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | 
     return tuple(compiler.divisions)
 
 
+def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[RowCheck, ...]:
+    """Every function call in ``text`` that has rows with no answer, in the order written."""
+    tree, scanned, schema = front_door(text, columns)
+    compiler = _Compiler(text, scanned, schema)
+    compiler.compile(tree.body)
+    return tuple(compiler.row_checks)
+
+
 class _Compiler:
     """Translates a checked tree into a polars expression. Every refusal about the language is made here.
 
@@ -84,7 +122,7 @@ class _Compiler:
     on a tree `front_door` has returned.
     """
 
-    __slots__ = ("_schema", "_spelling", "_text", "divisions")
+    __slots__ = ("_schema", "_spelling", "_text", "divisions", "row_checks")
 
     def __init__(
         self,
@@ -97,6 +135,8 @@ class _Compiler:
         self._schema = schema
         #: Every '/' compiled, in the order written, so a tool can stop on a divisor of zero.
         self.divisions: list[Division] = []
+        #: Every function call with rows it has no answer for, so a tool can stop on such a row.
+        self.row_checks: list[RowCheck] = []
 
     def compile(self, node: ast.expr) -> Any:
         """What one node builds to, with its type discarded once it has been checked."""
@@ -422,7 +462,10 @@ class _Compiler:
         else:
             family = function.result
         typed = {"dtype": operands[0].dtype} if function.typed else {}
-        built = function.to_polars(*(self._built(param, argument) for param, argument in zip(params, arguments)), **typed)
+        given = [self._built(param, argument) for param, argument in zip(params, arguments)]
+        built = function.to_polars(*given, **typed)
+        if function.no_answer is not None:
+            self._record_row_check(function, node, given)
 
         if function.result_dtype == "common":
             dtype = combined_dtype([operand.dtype for operand in operands])
@@ -534,6 +577,13 @@ class _Compiler:
         if isinstance(written, (int, float)) and not isinstance(written, bool) and written == 0:
             raise error(self._text, f"'/' divides by {self._spelling.render(node)}, which is zero, so it has no answer")
         self.divisions.append(Division(self._spelling.render(node), divisor.expr))
+
+    def _record_row_check(self, function: Function, node: ast.Call, given: list[Any]) -> None:
+        """Note the rows a function call has no answer for, with its arguments spelled as written."""
+        rule = function.no_answer
+        assert rule is not None
+        written = tuple(self._spelling.render(argument) for argument in node.args)
+        self.row_checks.append(RowCheck(rule.when(*given), given[rule.shows], rule.problem, rule.remedy, written))
 
     def _check_whole_number(self, value: int | float) -> None:
         """Refuse a whole number no column could hold, measured on the value as written."""

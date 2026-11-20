@@ -7,6 +7,12 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **Date functions** `month`, `day`, `quarter` and `day_of_week` (Monday is 1), `add_days`,
+  `month_start`, and `parse_date`, which reads text as a date in a stated format and stops the step
+  on text that does not match, instead of leaving the date blank.
+
 ## [0.2.0] - 2026-11-20
 
 This release makes the library easier to start with and to read. It adds a command and a viewer

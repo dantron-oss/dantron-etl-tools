@@ -690,9 +690,7 @@ class TestSecurity:
         ``year`` is the newest, and the first that reads a *part* of a value rather than
         transforming the whole of it. It arrived with a consumer: repairing a term whose end year
         was mistyped means comparing against the year after the one it starts in, and no
-        combination of the names above can produce that number. ``month`` and ``day`` are its
-        obvious siblings and are deliberately absent until something needs them -- a function with
-        no caller is checked only against whatever its author imagined.
+        combination of the names above can produce that number.
 
         ``add_months`` is newer still. It moves a date forward by a whole number of months and
         hands back a date. It arrived with a caller too: spreading one billed amount across the
@@ -716,17 +714,27 @@ class TestSecurity:
         ``months_between``, ``days_between``, ``make_date`` and ``month_end`` came together: flows
         were casting dates to whole numbers to subtract them. Each answers what a tool already does
         (``date_diff``, ``assemble_date``), from the same shared code.
+
+        ``month``, ``day``, ``quarter``, ``day_of_week``, ``add_days``, ``month_start`` and
+        ``parse_date`` were asked for by a second project, and complete the dates.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
             "coalesce",
             "round",
             "year",
+            "month",
+            "day",
+            "quarter",
+            "day_of_week",
             "add_months",
+            "add_days",
             "months_between",
             "days_between",
             "make_date",
             "month_end",
+            "month_start",
+            "parse_date",
             "abs",
             "lower",
             "upper",
