@@ -45,9 +45,10 @@ DESKTOP_ENV = {"DISPLAY": ":0"}
 
 class TestWindows:
     def test_explorer_opens_with_the_file_selected_and_any_exit_code_counts(self) -> None:
-        found = how_to_open(there(r"C:\work\out\totals.csv"), machine("win32", {}, "explorer"))
+        found = how_to_open(there(r"C:\work\out files\totals.csv"), machine("win32", {}, "explorer"))
         assert isinstance(found, Launch)
-        assert found.argv == ("/bin/explorer", r"/select,C:\work\out\totals.csv")
+        # Two arguments, so a path with a space is quoted on its own and Explorer still reads it.
+        assert found.argv == ("/bin/explorer", "/select,", r"C:\work\out files\totals.csv")
         assert found.any_exit
 
     def test_a_file_not_there_yet_opens_its_folder(self) -> None:
@@ -77,12 +78,15 @@ class TestWsl:
         assert found.windows_path == ("/bin/wslpath", "-w", FILE)
         assert found.argv == ("/bin/explorer.exe", "/select,")
         assert found.any_exit
+        fake = Fake(Ran(0, "C:\\work\\out files\\totals.csv\n"), Ran(1, ""))
+        assert carry_out(found, fake).opened
+        assert fake.calls[1] == ("/bin/explorer.exe", "/select,", "C:\\work\\out files\\totals.csv")
 
     def test_a_file_not_there_yet_opens_its_folder_in_explorer(self) -> None:
         found = how_to_open(not_yet(), machine("linux", WSL_ENV, "explorer.exe", "wslpath", kernel=WSL_KERNEL))
         assert isinstance(found, Launch)
         assert found.windows_path == ("/bin/wslpath", "-w", FOLDER)
-        assert found.argv == ("/bin/explorer.exe", "")
+        assert found.argv == ("/bin/explorer.exe",)
 
     def test_wsl_comes_before_vs_code(self) -> None:
         facts = machine("linux", {**WSL_ENV, **CODE_ENV}, "explorer.exe", "wslpath", "code", kernel=WSL_KERNEL)
@@ -147,6 +151,7 @@ class TestLinuxDesktop:
         assert isinstance(found, Launch)
         assert found.argv[:2] == ("/bin/gdbus", "call")
         assert "org.freedesktop.FileManager1.ShowItems" in found.argv
+        assert found.argv[found.argv.index("--timeout") + 1] == "3"  # a bus that hangs falls back
         assert "['file:///work/a%20b%2Cc/it%27s.csv']" in found.argv
         assert found.otherwise is not None
         assert found.otherwise.argv == ("/bin/xdg-open", "/work/a b,c")
@@ -178,10 +183,8 @@ class TestNothingToOpenWith:
         assert isinstance(found, NoLaunch)
         assert "nothing was opened" in found.reason
 
-    def test_a_desktop_with_dbus_alone_asks_it_with_nothing_to_fall_back_on(self) -> None:
-        found = how_to_open(there(), machine("linux", DESKTOP_ENV, "gdbus"))
-        assert isinstance(found, Launch)
-        assert found.otherwise is None
+    def test_a_desktop_with_dbus_alone_is_not_used_without_a_fallback(self) -> None:
+        assert isinstance(how_to_open(there(), machine("linux", DESKTOP_ENV, "gdbus")), NoLaunch)
         assert isinstance(how_to_open(not_yet(), machine("linux", DESKTOP_ENV, "gdbus")), NoLaunch)
 
     def test_a_folder_that_is_not_there_either_opens_nothing(self) -> None:
@@ -254,11 +257,11 @@ class TestCarryOut:
     def test_a_program_still_running_after_the_wait_counts_as_started(self) -> None:
         assert carry_out(Launch(("/bin/xdg-open", FOLDER), "Opened."), Fake(Ran(None, ""))).opened
 
-    def test_the_windows_path_is_put_on_the_end_of_the_last_argument(self) -> None:
+    def test_the_windows_path_is_added_as_the_last_argument(self) -> None:
         fake = Fake(Ran(0, "C:\\work\\totals.csv\r\n"), Ran(1, ""))
         launch = Launch(("/bin/explorer.exe", "/select,"), "Opened.", any_exit=True, windows_path=("/bin/wslpath", "-w", FILE))
         assert carry_out(launch, fake).opened
-        assert fake.calls == [("/bin/wslpath", "-w", FILE), ("/bin/explorer.exe", "/select,C:\\work\\totals.csv")]
+        assert fake.calls == [("/bin/wslpath", "-w", FILE), ("/bin/explorer.exe", "/select,", "C:\\work\\totals.csv")]
 
     def test_a_path_that_will_not_convert_launches_nothing(self) -> None:
         fake = Fake(Ran(1, "wslpath: bad path"))

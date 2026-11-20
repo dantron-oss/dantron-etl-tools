@@ -76,8 +76,8 @@ class Launch:
     """A command to run, and what to tell the reader once it worked.
 
     ``any_exit``: Explorer answers 1 even when it worked, so its exit code means nothing.
-    ``windows_path``: a command that prints a path in Windows form; its answer is added to the end
-    of the last argument. ``otherwise``: what to try when this command fails.
+    ``windows_path``: a command that prints a path in Windows form; its answer is added as the last
+    argument. ``otherwise``: what to try when this command fails.
     """
 
     argv: tuple[str, ...]
@@ -170,27 +170,24 @@ def _vs_code(target: Target, folder: str, programs: Mapping[str, str]) -> Launch
 
 
 def _desktop(target: Target, folder: str, programs: Mapping[str, str]) -> Launch | NoLaunch:
+    """The folder, opened with ``xdg-open``. With D-Bus, the file manager is first asked to select the file."""
     opener = programs.get("xdg-open")
-    fallback = (
-        Launch((opener, folder), f"Opened the file's folder. Look for {PurePosixPath(target.path).name} there.")
-        if opener
-        else None
-    )
+    if opener is None:
+        return NoLaunch(_NOTHING)
     if not target.exists:
-        if opener is None:
-            return NoLaunch(_NOTHING)
         return Launch((opener, folder), "The file is not there yet, so its folder was opened instead.")
-    if "gdbus" in programs:
-        uri = PurePosixPath(target.path).as_uri()
-        ask = (
-            programs["gdbus"], "call", "--session",
-            "--dest", "org.freedesktop.FileManager1",
-            "--object-path", "/org/freedesktop/FileManager1",
-            "--method", "org.freedesktop.FileManager1.ShowItems",
-            f"['{uri}']", "",
-        )  # fmt: skip
-        return Launch(ask, "Opened the file manager with the file selected.", otherwise=fallback)
-    return fallback or NoLaunch(_NOTHING)
+    fallback = Launch((opener, folder), f"Opened the file's folder. Look for {PurePosixPath(target.path).name} there.")
+    if "gdbus" not in programs:
+        return fallback
+    uri = PurePosixPath(target.path).as_uri()
+    ask = (
+        programs["gdbus"], "call", "--session", "--timeout", "3",
+        "--dest", "org.freedesktop.FileManager1",
+        "--object-path", "/org/freedesktop/FileManager1",
+        "--method", "org.freedesktop.FileManager1.ShowItems",
+        f"['{uri}']", "",
+    )  # fmt: skip
+    return Launch(ask, "Opened the file manager with the file selected.", otherwise=fallback)
 
 
 def how_to_open(target: Target, machine: Machine) -> Launch | NoLaunch:
@@ -211,8 +208,12 @@ def how_to_open(target: Target, machine: Machine) -> Launch | NoLaunch:
     if machine.platform == "win32":
         if "explorer" not in programs:
             return NoLaunch(_NOTHING)
+        # "/select," and the path go as two arguments: Explorer reads them as one, and a path with a
+        # space is then quoted on its own, which Explorer understands.
         if target.exists:
-            return Launch((programs["explorer"], f"/select,{target.path}"), "Opened Explorer with the file selected.", True)
+            return Launch(
+                (programs["explorer"], "/select,", target.path), "Opened Explorer with the file selected.", True
+            )
         return Launch((programs["explorer"], folder), missing.format(app="Explorer"), True)
 
     if machine.platform == "darwin":
@@ -232,7 +233,7 @@ def how_to_open(target: Target, machine: Machine) -> Launch | NoLaunch:
                 windows_path=(*convert, target.path),
             )
         return Launch(
-            (programs["explorer.exe"], ""),
+            (programs["explorer.exe"],),
             missing.format(app="Windows Explorer"),
             any_exit=True,
             windows_path=(*convert, folder),
@@ -301,7 +302,7 @@ def carry_out(launch: Launch, run: Spawn = spawn) -> Opened:
         if converted.code != 0 or not converted.output.strip():
             told = f" It said: {converted.output}" if converted.output else ""
             return Opened(False, f"The viewer could not work out the file's Windows path.{told}", launch.windows_path)
-        argv[-1] += converted.output.strip()
+        argv.append(converted.output.strip())
     ran = _run(run, argv)
     if isinstance(ran, Ran) and (ran.code is None or ran.code == 0 or launch.any_exit):
         return Opened(True, launch.done, tuple(argv))
