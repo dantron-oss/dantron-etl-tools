@@ -17,6 +17,7 @@ from ..status import STATUS_LEVELS
 from ..trace import PipelineTrace
 from .assets import escape as _e
 from .assets import page, page_data
+from .files import file_settings
 from .layout import canvas
 
 # Rows drawn into the page for a slice of one entity, which the service cannot serve.
@@ -121,14 +122,18 @@ def _value(value: Any) -> str:
     return _scalar(value)
 
 
-def _config(config: Mapping[str, Any]) -> str:
-    """A step's configuration as the fields it sets, drawn from the value's own shape so any tool draws."""
+def _config(config: Mapping[str, Any], files: tuple[str, ...] = ()) -> str:
+    """A step's configuration as the fields it sets, drawn from the value's own shape so any tool draws.
+
+    A setting in ``files`` holds a file path. It is marked, so the page can offer to show the file.
+    """
     if not config:
         return '<p class="more">nothing to configure</p>'
-    return "".join(
-        f'<div class="cfg"><span class="ck">{_e(key)}</span><span>{_value(value)}</span></div>'
-        for key, value in config.items()
-    )
+    rows = []
+    for key, value in config.items():
+        mark = f' data-file="{_e(key)}"' if key in files else ""
+        rows.append(f'<div class="cfg"{mark}><span class="ck">{_e(key)}</span><span>{_value(value)}</span></div>')
+    return "".join(rows)
 
 
 def _event_if_ran(trace: PipelineTrace, step_id: str) -> Any:
@@ -163,6 +168,13 @@ def _index(spec: Pipeline, trace: PipelineTrace) -> str:
     )
 
 
+def _files(spec: Pipeline, step_id: str) -> tuple[str, ...]:
+    """The settings of a step's tool that hold a file path."""
+    registry = spec.registry
+    assert registry is not None  # a Pipeline always fills it in
+    return file_settings(registry.get(spec.step(step_id).tool).config_template())
+
+
 def _step_detail(spec: Pipeline, trace: PipelineTrace, step_id: str) -> str:
     """What this step is: why it exists, how it is configured, what feeds it, what it cost."""
     step = spec.step(step_id)
@@ -183,7 +195,7 @@ def _step_detail(spec: Pipeline, trace: PipelineTrace, step_id: str) -> str:
         f'<p class="where">{_e(step.lane or "")} &middot; {_e(step.stage or "")} &middot; '
         f"{cost}</p>"
         f"{f'<p class=why>{_e(step.why)}</p>' if step.why else ''}{notes}</header>"
-        f"<h5>configuration, as written</h5>{_config(step.config)}"
+        f"<h5>configuration, as written</h5>{_config(step.config, _files(spec, step_id))}"
         f"{f'<h5>fed by</h5><ul class=feeds>{feeds}</ul>' if feeds else ''}"
         f"</section>"
     )
@@ -316,7 +328,7 @@ def build(
     )
     return page(
         "walkthrough",
-        scripts=("runbar", "walkthrough"),
+        scripts=("files", "runbar", "walkthrough"),
         name=_e(spec.name),
         summary=summary,
         canvas=canvas(spec, trace),

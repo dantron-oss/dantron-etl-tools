@@ -86,7 +86,8 @@
     row.append(td);
   }
 
-  function writesTable(plan) {
+  // Each file a write replaces carries its full path and the buttons to look at it first.
+  function writesTable(name, plan) {
     if (!plan.writes.length) {
       const none = document.createElement('p');
       none.textContent = 'This pipeline writes nothing.';
@@ -105,6 +106,8 @@
       cell(row, write.step);
       cell(row, write.tool + ' (' + write.kind + ')');
       cell(row, write.target);
+      if (window.etlFiles)
+        for (const file of write.files || []) row.lastElementChild.append(window.etlFiles.box(name, file));
       cell(row, write.detail);
     }
     return table;
@@ -129,7 +132,7 @@
     const heading = document.createElement('h2');
     heading.textContent = 'A real run of ' + name + ' writes these';
     const writes = document.createElement('div');
-    writes.append(writesTable(plan));
+    writes.append(writesTable(name, plan));
     const label = document.createElement('label');
     label.textContent = 'Type the pipeline name, ' + name + ', to confirm: ';
     const typed = document.createElement('input');
@@ -162,7 +165,7 @@
       // What it writes changed since it was shown: show the new list and ask again.
       if (answer.body.plan && answer.body.plan.digest) {
         plan = answer.body.plan;
-        writes.replaceChildren(writesTable(plan));
+        writes.replaceChildren(writesTable(name, plan));
         typed.value = '';
       }
     });

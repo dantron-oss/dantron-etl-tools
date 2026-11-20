@@ -1,0 +1,23 @@
+/* A file a step names: its path, what is known about it, its buttons and its first rows. */
+.filebox { margin:.3rem 0 .6rem; padding:.5rem .6rem; border:1px solid var(--line); border-radius:6px;
+  background:var(--surface); font-size:.78rem; text-align:left; }
+.filebox .fpath { width:100%; font:400 .74rem var(--mono); padding:.2rem .4rem; border:1px solid var(--line);
+  border-radius:4px; background:var(--ground); color:var(--ink); }
+.filebox ul.ffacts { margin:.35rem 0; padding-left:1.1rem; color:var(--muted); }
+.filebox .fbuttons { display:flex; flex-wrap:wrap; gap:.4rem; margin:.3rem 0; }
+.filebox button, button.fshow { font:500 .74rem var(--sans); padding:.2rem .6rem; border:1px solid var(--accent);
+  background:var(--surface); color:var(--accent); border-radius:5px; cursor:pointer; }
+.filebox button:disabled, button.fshow:disabled { opacity:.45; cursor:default; }
+button.fshow { margin-left:.5rem; }
+.filebox .fanswer { margin:.2rem 0; color:var(--ink); }
+.filebox .fanswer:empty { display:none; }
+.filebox .bad { color:var(--bad); margin:0; }
+.filebox .fnote { margin:.3rem 0 0; color:var(--muted); }
+.filebox .fsheet select { font:inherit; }
+.filebox .fpreview .scroll { max-height:18rem; overflow:auto; margin-top:.3rem; }
+.filebox table.fgrid { border-collapse:collapse; font:400 .72rem var(--mono); width:auto; margin:0; }
+.filebox table.fgrid th, .filebox table.fgrid td { border:1px solid var(--line); padding:.12rem .4rem;
+  text-align:left; white-space:nowrap; word-break:normal; }
+.filebox table.fgrid th { background:var(--accent-soft); font-weight:600; }
+.filebox table.fgrid td.nul { color:var(--muted); font-style:italic; }
+.filebox pre.ftext { max-height:18rem; overflow:auto; font:400 .72rem var(--mono); margin:.3rem 0 0; }

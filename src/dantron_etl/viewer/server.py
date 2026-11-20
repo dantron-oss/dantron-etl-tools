@@ -461,7 +461,7 @@ def _home(state: _State) -> str:
     )
     return page(
         "home",
-        scripts=("runbar",),
+        scripts=("files", "runbar"),
         root=_e(listed["project"]),
         rows=table,
         problems=problem_list,
@@ -518,7 +518,7 @@ def _pipeline_page(
     data = {"pipeline": entry.name, "title": entry.title, "last": last}
     return page(
         "pipeline",
-        scripts=("runbar",),
+        scripts=("files", "runbar"),
         name=_e(entry.name),
         title=_e(entry.title),
         happened=_e(happened),
