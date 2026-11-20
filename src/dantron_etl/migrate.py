@@ -1,14 +1,14 @@
-"""Rewrite a pipeline file written before the renames, in the new names.
+"""Rewrite old pipeline and rules files in the current names.
 
 Run it as ``python -m`` this module, with files or folders. By default it only reports what it
 would change. ``--write`` changes the files.
 
-The file is edited as text, never loaded and written back. Only the characters of a renamed name
-change, so comments, layout, quoting and ``why`` text stay exactly as they were. What to rename
-comes from the rename table in ``renames.py``, walked per tool and per path.
+Only the characters of each renamed name change, so comments, layout, quoting and ``why`` text
+stay as they were. What to rename comes from the table in ``renames.py``. After editing, the new
+text is read back and compared with the old document with the renames applied; if they differ,
+the file is refused and left as it was.
 
-After editing, the new text is read back and compared with the old document with the renames
-applied. If the two differ, the file is refused rather than written wrong.
+Why: docs/design/loading-and-running.md#the-migration-edits-text
 """
 
 import copy
@@ -192,8 +192,8 @@ class _Editor:
         self.data_edits: list[tuple[str, tuple[Any, ...], Any, Any]] = []
         self.changes: list[Change] = []
         self.manual: list[str] = []
-        # Node id -> (node, step index -> the edits that step makes to that node). A node written
-        # once under an anchor and reused by an alias is one node, reached from every step using it.
+        # Node id -> (node, step index -> the edits that step makes to it). A node reused through a
+        # YAML alias is one node, reached from every step that uses it.
         self.by_node: dict[int, tuple[Any, dict[int | None, set[tuple[int, int, str]]]]] = {}
 
     def result(self) -> str:

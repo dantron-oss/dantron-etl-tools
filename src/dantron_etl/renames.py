@@ -1,14 +1,14 @@
-"""The names a pipeline file used to be written in, and what each one is called now.
+"""The table of retired names in a pipeline file, and what each one is called now.
 
-This is the one rename table. The loader reads it to say what an old name became when it refuses a
-file. The migration tool (``migrate.py``) reads it to rewrite an old file in the new names.
+The loader reads it to explain a refusal caused by an old name. The migration tool
+(``migrate.py``) reads it to rewrite an old file in the new names.
 
-A name is renamed by where it sits: which tool, which field, which part of the file. The same word
-somewhere else is not a retired name. So the table is keyed by tool and by path, and
-:func:`find_renames` walks a parsed document the same way.
+A name is retired only where it sits: which tool, which field, which part of the file. So the
+table is keyed by tool and by path, and :func:`find_renames` walks a parsed document the same way.
+A path names a field inside a step's ``config``: ``tables[].key`` is the ``key`` member of each
+entry of the ``tables`` list. Every part of a path but the last is written in the new names.
 
-A path names a field inside a step's ``config``. ``tables[].key`` is the ``key`` member of each
-entry of the ``tables`` list. The parts of a path before its last one are written in the new names.
+Why: docs/design/loading-and-running.md#one-rename-table-keyed-by-where-a-name-sits
 """
 
 import ast
@@ -69,8 +69,7 @@ VALUE_RENAMES: dict[tuple[str, str], dict[str, str]] = {
     ("cross_tab", "function"): {"count_values": "count_non_null", "n_unique": "count_distinct"},
 }
 
-# A renamed value whose meaning moved with its name, and what moved. The migration's report and the
-# loader's refusal both say it, so nobody takes the new name for the old answer.
+# Renamed values whose meaning changed too, and how. The migration and the loader's refusal say it.
 RENAME_NOTES: dict[tuple[str, str], str] = {
     ("n_unique", "count_distinct"): (
         "count_distinct skips nulls, as SQL's COUNT(DISTINCT) does, where n_unique counted a null as "
@@ -78,20 +77,19 @@ RENAME_NOTES: dict[tuple[str, str], str] = {
     ),
 }
 
-# Old defaults that differ from the new ones. Keyed by the tool name as the file writes it, then by
-# the new field name. A step with neither the field nor its old name gets the old value written in.
+# Old defaults that differ from the new ones: tool name as the file writes it -> new field -> old default.
+# A step with neither the field nor its old name gets the old value written in.
 OLD_DEFAULTS: dict[str, dict[str, str]] = {
     "date_diff": {"counting": "inclusive"},
     "connected_components": {"record_column": "node", "group_column": "component"},
 }
 
-# Settings a step must now state, where the file alone says which value keeps what the step did
-# before. The migration writes that value in. Each entry: the tool, the path of the mapping the
-# setting goes in (written in the new names, "" for the step's config itself), the values that
-# mapping must hold for the setting to apply, the setting, and the value that keeps the old behaviour.
+# Settings a step must now state, where the file shows which value keeps the old behaviour. The
+# migration writes that value in. Each entry: tool, path of the mapping the setting goes in (new
+# names, "" for the config itself), values that mapping must hold, setting, value to write.
 STATED_NOW: tuple[tuple[str, str, Mapping[str, Any], str, Any], ...] = (
     ("publish_tables", "tables[]", {"mode": "merge"}, "when_incoming_is_null", "keep_published"),
-    # A file writer always wrote an empty frame; it now stops on one unless the step allows it.
+    # A file writer now stops on an empty frame unless the step allows it.
     ("write_csv", "", {}, "allow_empty", True),
     ("write_excel", "sheets[]", {}, "allow_empty", True),
 )
@@ -108,11 +106,10 @@ LANE_KEY_RENAMES: dict[str, str] = {"label": "title"}
 # Expression functions: old name -> new name.
 FUNCTION_RENAMES: dict[str, str] = {"strip": "trim"}
 
-# The old single-sheet workbook writer: this tool with this config key. It cannot be migrated.
+# A step of this tool with this config key is the retired single-sheet writer. It cannot be migrated.
 SINGLE_SHEET_TOOL: tuple[str, str] = ("write_excel", "sheet")
 
-# Settings now required that the file alone cannot show are needed. The migration prints these as
-# guidance, because only the data's types can say which steps need them.
+# Settings now required where only the data shows which steps need them. Printed as guidance.
 NEEDS_THE_DATA: tuple[str, ...] = (
     "A cast to Date, date_diff and expand_date_range now need 'in_zone' when they read a timestamp "
     "that carries a time zone, which a pipeline file does not show. Such a step stops when it runs, "
@@ -140,7 +137,7 @@ _PLACEHOLDER = re.compile(r"\$\{[^}]*\}")
 
 
 def port_map() -> dict[str, Any]:
-    """The renamed output ports, keyed by the old tool name, for a figure check outside the library."""
+    """Return the renamed output ports, keyed by the old tool name, for a figure check outside the library."""
     old_names = {new: old for old, new in TOOL_RENAMES.items()}
     return {"tools": {old_names.get(tool, tool): dict(ports) for tool, ports in OUTPUT_PORT_RENAMES.items()}}
 
@@ -171,12 +168,12 @@ class Found:
 
 
 def retired_names(document: Mapping[str, Any], registry: Any = None) -> list[str]:
-    """One sentence per retired name ``document`` uses. Empty when it uses only current names."""
+    """Return one sentence per retired name ``document`` uses. Empty when it uses only current names."""
     return [found.sentence for found in find_renames(document, registry) if found.retired]
 
 
 def summarise(found: list[Found], *, examples: int = 3, limit: int = 12) -> list[str]:
-    """One line per kind of rename among the retired names in ``found``, with a count and examples.
+    """Return one line per kind of rename in ``found``, with a count and examples.
 
     A file of five hundred steps that all use one old key gives one line, not five hundred. At most
     ``limit`` lines; any kinds beyond that are counted on the last one.
@@ -234,7 +231,7 @@ def _kind_of(item: Found) -> tuple[str, str]:
 
 
 def rename_document(document: Any, found: list[Found]) -> Any:
-    """A copy of the parsed ``document`` with every rename and old default in ``found`` applied.
+    """Return a copy of the parsed ``document`` with every rename and old default in ``found`` applied.
 
     Notes for a person (``manual``) change nothing. Values, calls and inserts go first, because their
     paths are written in the names the file used; keys are renamed last, the deepest first.
@@ -276,7 +273,7 @@ def rename_document(document: Any, found: list[Found]) -> Any:
 
 
 def find_renames(document: Any, registry: Any = None) -> list[Found]:
-    """Every retired name in a parsed pipeline document, walked per tool and per path."""
+    """Return what to change in a parsed pipeline document: retired names, old defaults, notes for a person."""
     if not isinstance(document, Mapping):
         return []
     found: list[Found] = []

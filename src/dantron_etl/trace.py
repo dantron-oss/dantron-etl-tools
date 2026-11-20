@@ -1,9 +1,9 @@
 """What a run leaves behind: one event per step, and the trace that holds them all.
 
-A ``StepEvent`` says what one step did: the shapes it read and wrote, how long it took, and one
-line a log can print. A ``PipelineTrace`` holds every event of a run, the shape of every port, and
-the frames the run kept. ``StepFailedError`` and ``ColumnCheckError`` carry the partial trace of a
-run that stopped.
+A ``StepEvent`` says what one step did: the shapes it read and wrote, how long it took, and a
+message a log can print. A ``PipelineTrace`` holds every event of a run, the shape of every port,
+and the frames the run kept. ``StepFailedError`` and ``ColumnCheckError`` carry the trace of a run
+that stopped part way.
 """
 
 from collections.abc import Mapping
@@ -28,18 +28,18 @@ __all__ = [
 ]
 
 
-#: How a reader should treat one event. ``"warning"`` is a step that ran and produced a frame but
-#: has something to say: a note its tool reported, or an empty frame on a port a later step will
-#: read. ``"error"`` is a step that produced nothing, and is always the last event a run reports.
+#: How serious one event is. ``"warning"``: the step ran but has something to say, such as a note
+#: from its tool or an empty frame a later step will read. ``"error"``: the step produced nothing;
+#: it is always the last event of a run.
 Level = Literal["info", "warning", "error"]
 
 
 @dataclass(frozen=True, slots=True)
 class FrameShape:
-    """A named frame's size, reported against the port that produced it rather than the step.
+    """The size of the frame on one port: its row count and its column names.
 
-    ``columns`` carries names rather than a count: a released port's frame is gone under
-    ``retain="live"``, but its schema is still worth drawing, and a width alone cannot be drawn.
+    Column names are kept, not only a count, so a page can still draw a port whose frame was
+    freed under ``retain="live"``.
     """
 
     port: PortRef
@@ -49,16 +49,13 @@ class FrameShape:
 
 @dataclass(frozen=True, slots=True)
 class CachedFrame:
-    """A frame a previous run left on a computed port, and the fingerprint recorded beside it.
+    """A frame from an earlier run, with the fingerprint of the steps that produced it.
 
-    Two fields because neither is any use alone. The frame without the fingerprint is a number with
-    no provenance, and the danger a cache carries is not one that fails to load -- it is one that
-    loads perfectly against a pipeline somebody has since edited. The fingerprint is
-    :meth:`~.spec.Pipeline.fingerprint` of the port, taken over the closure that produced it, and
-    :func:`run_pipeline` compares it before it walks a step.
+    Build one with ``CachedFrame(frame, pipeline.fingerprint(port))`` and pass it to
+    :func:`run_pipeline` in ``cached=``. The run refuses it if the fingerprint no longer matches
+    the flow, so a frame made by a since-edited flow is never reused.
 
-    Frozen because it is evidence of a run that already happened, not a value the run holding it may
-    edit on its way past.
+    Why: docs/design/loading-and-running.md#a-cached-frame-carries-its-fingerprint
     """
 
     frame: pl.DataFrame
@@ -67,18 +64,15 @@ class CachedFrame:
 
 @dataclass(frozen=True, slots=True)
 class StepEvent:
-    """What one step did, for a reader who was not there when it ran.
+    """What one step did in a run.
 
-    ``inputs`` and ``outputs`` are one shape per declared port, in the tool's own declared order --
-    a pairing reports one input shape per side and one output shape per branch, never a single
-    number standing in for all of them. ``message`` is the whole sentence a log line or an exception
-    reads; nothing here is assembled twice into two different wordings.
-
-    ``supplied`` and ``cached`` are separate facts and are never both true. A supplied source is
-    the routine case -- a run handed the frame a reader would otherwise have opened. A cached step
-    is a claim about a *previous* run, whose ancestors did not run in this one, so its event reports
-    no input shapes: it read nothing, and reporting what it would have read would be inventing
-    evidence.
+    - ``inputs`` and ``outputs``: one :class:`FrameShape` per port, in the tool's port order.
+    - ``message``: the sentence a log line or an exception prints.
+    - ``level``: ``"info"``, ``"warning"`` or ``"error"``.
+    - ``supplied``: the run was handed this step's frame instead of reading its source.
+    - ``cached``: the step's frames came from an earlier run. Its ``inputs`` is empty, because it
+      read nothing in this run. ``supplied`` and ``cached`` are never both true.
+    - ``released``: ports whose frames were freed after this step under ``retain="live"``.
     """
 
     pipeline: str
@@ -101,16 +95,13 @@ class StepEvent:
 
 
 class StepFailedError(RunError):
-    """A step failed mid-run. ``__cause__`` is the tool's own refusal, exactly as it was raised.
+    """Raised when a step fails during a run.
 
-    A :class:`~.errors.DataError` cause says go and look at the rows; an
-    :class:`~.errors.ExecutionError` says go and look at the run.
+    ``__cause__`` is the tool's own error, unchanged. A :class:`~.errors.DataError` means look at
+    the rows; an :class:`~.errors.ExecutionError` means look at the run.
 
     ``step_id``, ``event`` and ``trace`` are read-only. ``trace`` is the run up to the failure,
     frames included, so a caller can still save or show what ran before it.
-
-    A plain exception class, not a frozen dataclass: Python and pytest write to an exception's
-    ``__traceback__`` and notes, and a frozen dataclass refuses those writes with a second error.
     """
 
     def __init__(self, step_id: str, event: StepEvent, trace: "PipelineTrace") -> None:
@@ -137,44 +128,32 @@ class StepFailedError(RunError):
 
 
 class ColumnCheckError(StepFailedError):
-    """A step's configuration names a column that none of its input frames carry.
+    """Raised when a step's settings name a column that none of its input frames have.
 
-    Caught the moment those frames exist, before the tool runs. A kind of :class:`StepFailedError`,
-    so ``except StepFailedError`` catches it too.
+    It is raised before the tool runs. ``except StepFailedError`` catches it too.
     """
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineTrace:
-    """One run: every frame it produced (subject to ``retain``), every shape, every event, in order.
+    """Everything one run left behind. :func:`run_pipeline` returns it.
 
-    ``shapes`` is complete regardless of ``retain`` -- how large a released frame was is exactly
-    what a failure needs -- while ``frames`` holds only what the retention mode kept. Both are
-    read-only mappings: a trace is evidence of what happened, not a value a reader can rewrite.
+    Read a port's frame with ``trace.frame("step.port")`` and a step's event with
+    ``trace.event("step")``. Both refuse a name the run did not produce, listing the choices.
 
-    ``until`` is what the run was asked to reach, and is empty for a whole run. A reader of a trace
-    is not the caller that produced it and cannot ask it anything, so a partial run has to say on
-    its own face that it was one: rendering a seven-step closure of a nine-step flow as the flow
-    would quietly tell somebody that two steps do not exist. The steps are reported in dependency
-    order, whatever order or container the caller wrote them in -- a set has no order of its own,
-    and a field on a piece of evidence that renders differently run to run is not evidence.
+    - ``events``: one :class:`StepEvent` per step, in the order the steps ran.
+    - ``shapes``: the size of every port's frame, kept whatever ``retain`` says.
+    - ``frames``: the frames the run kept. Under ``retain="live"`` most are freed.
+    - ``status``: per-row status for a port where a step emptied or changed values. Ports with
+      nothing to report have no entry. A status is freed with its frame.
+    - ``until``: the steps a partial run was asked to reach, in dependency order. Empty for a
+      whole run.
+    - ``cached``: the ports this run took from a cache instead of computing. Empty when the run
+      computed everything. Check it before publishing a resumed run's figures.
 
-    ``cached`` names the ports this run took from a cache instead of computing, in the order it
-    reached them, and is empty for a run that computed everything it reports. It is the only thing
-    that tells an honest run from a resumed one, because a resumed run's figures are as plausible
-    as any other's -- so a report, a page or a scheduled job that must not publish a resumed run
-    reads this field, and a caller who merely offered a cache the run never reached does not
-    trip it.
+    The mappings are read-only.
 
-    ``status`` holds the per-row mark a step reported beside a port it degraded -- one row per row
-    of that port, in the same order -- and holds nothing for every port that degraded nothing, which
-    on a real flow is almost all of them. It does not travel downstream: a step handing on the very
-    rows an earlier step emptied reports nothing, because a status is a fact about what a step did
-    and that step did nothing to those values. Propagating it would turn one degradation into a mark
-    on every step after it and make the last step of a flow look like the culprit. It is released in
-    lockstep with the frame it describes, since a status kept after its rows were freed is a row
-    reference with nothing to point at -- ``shapes``, which is a summary rather than a reference,
-    survives as it always did.
+    Why: docs/design/loading-and-running.md#what-the-trace-says-about-itself
     """
 
     pipeline: str
@@ -196,8 +175,7 @@ class PipelineTrace:
         object.__setattr__(self, "_by_step", MappingProxyType(by_step))
 
     def __reduce__(self) -> tuple[Any, ...]:
-        # The read-only mappings cannot be pickled as they are, so they travel as plain dicts and are
-        # wrapped again on the way back in.
+        # Read-only mappings cannot be pickled, so they travel as plain dicts.
         return (
             _rebuilt_trace,
             (
@@ -214,10 +192,11 @@ class PipelineTrace:
         )
 
     def frame(self, port: PortRef | str) -> pl.DataFrame:
-        """The frame ``port`` produced, or a refusal naming why it cannot be handed back.
+        """Return the frame on ``port``.
 
         ``port`` is a :class:`PortRef`, the text ``"step.port"``, or a step id alone when that step
-        produced exactly one port.
+        has one port. Refuses a port the run did not produce, or one whose frame was freed under
+        ``retain="live"`` (pass it in ``keep=`` to hold on to it).
         """
         ref = self._port(port)
         if ref in self.frames:
@@ -231,7 +210,7 @@ class PipelineTrace:
         raise RunError(f"no port {ref!s} on this trace; {name_choices(str(ref), map(str, self.shapes), 'ports')}")
 
     def _port(self, port: PortRef | str) -> PortRef:
-        """``port`` as a :class:`PortRef`, read from any of the three spellings :meth:`frame` takes."""
+        """Turn any of the three spellings :meth:`frame` takes into a :class:`PortRef`."""
         if isinstance(port, PortRef):
             return port
         if not isinstance(port, str):
@@ -250,14 +229,14 @@ class PipelineTrace:
         raise RunError(f"no step {port!r} produced a port on this trace; {name_choices(port, self._by_step, 'steps that ran')}")
 
     def event(self, step_id: str) -> StepEvent:
-        """The event ``step_id`` reported, or a refusal listing the steps that actually ran."""
+        """Return the event ``step_id`` reported. Refuses a step that did not run, listing those that did."""
         found = self._by_step.get(step_id)
         if found is not None:
             return found
         raise RunError(f"no event for step {step_id!r}; {name_choices(step_id, self._by_step, 'steps that ran')}")
 
     def event_or_none(self, step_id: str) -> StepEvent | None:
-        """The event ``step_id`` reported, or ``None`` when it did not run."""
+        """Return the event ``step_id`` reported, or ``None`` when it did not run."""
         return self._by_step.get(step_id)
 
 def _rebuilt_trace(
@@ -271,7 +250,7 @@ def _rebuilt_trace(
     cached: tuple[PortRef, ...],
     run_id: str | None,
 ) -> PipelineTrace:
-    """A trace from its pickled parts. See :meth:`PipelineTrace.__reduce__`."""
+    """Rebuild a trace from its pickled parts. See :meth:`PipelineTrace.__reduce__`."""
     return PipelineTrace(
         pipeline=pipeline,
         retain=retain,

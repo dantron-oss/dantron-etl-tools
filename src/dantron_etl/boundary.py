@@ -1,17 +1,10 @@
-"""``run_tool``: the one door every call to a tool goes through.
+"""``run_tool``: every call to a tool goes through here.
 
-It checks the ports a tool was given, checks and fills the configuration, runs the tool, and then
-checks what came back: the ports, the inputs left untouched, and any per-row status. A stray
-exception from a tool's own code comes out as an ``ExecutionError`` naming the tool and the phase.
-The runner, the conformance check and the tests all run tools through here.
+It checks the input ports, checks and fills the settings, runs the tool, and then checks what came
+back: the output ports, the inputs left unchanged, and any per-row status. The runner, the
+conformance check and the tests all run tools through ``run_tool``.
 
-**The boundary calls into a tool's own code five times per run**, in an order that is part of the
-contract: ask which input ports this step reads, build the template, validate the configuration,
-check that configuration against the schemas of the frames that actually arrived, and only then run.
-The fourth is the least obvious and was the last to exist: neither a template nor a cross-field rule
-has a frame in front of it, so "does the column this configuration names exist, on the port it will
-be read from?" had nowhere to live but the first lines of every tool's own ``execute`` -- which is a
-rule that holds while every author remembers it, and therefore not a rule.
+Why: docs/design/core.md#the-boundary
 """
 
 import copy
@@ -28,48 +21,24 @@ __all__ = ["run_tool"]
 
 
 def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
-    """Run ``tool`` on ``inputs`` with ``config``, checking the envelope on the way in and out.
+    """Run ``tool`` on ``inputs`` with the settings ``config`` and return its output :class:`Ports`.
 
-    The order below is part of the contract, not an implementation detail. Ports come first,
-    because a port mistake belongs to the flow that wired the step rather than to the configuration
-    anybody wrote. The template comes next, and it is checked here rather than left to the tool: a
-    tool with nothing to add beyond its template writes an empty ``validate_config``, which is the
-    natural thing to write and which used to buy it no validation whatsoever. A tool's own
-    ``validate_config`` is therefore for what a template cannot express, it runs last, and it runs
-    on the *filled* configuration, so a cross-field rule reads a defaulted value by subscript
-    instead of guessing with ``.get``. ``execute`` never sees a configuration that fails
-    validation -- a caller relying on that is relying on something this function guarantees. A tool
-    that derives its ports is therefore asked about the configuration as written, before any
-    default is filled in, which is the same configuration the loader asks it about.
+    In order, it:
 
-    On the way out, what came back must be :class:`Ports`. Returning a bare mapping of frames is
-    the likeliest authoring slip, and left unchecked it surfaces as an attribute error raised from
-    inside this function, naming neither the tool nor the mistake.
+    1. asks which input ports the step reads (from ``config`` as written) and refuses a port
+       missing or extra;
+    2. checks ``config`` against the tool's template, fills defaults, and calls
+       ``validate_config`` on the filled settings;
+    3. hands the tool a copy of each input frame and calls ``validate_inputs``, then ``execute``;
+    4. refuses a result that is not :class:`Ports`, an output port missing or extra, an output
+       with no columns, a change to an input's columns or row count, and a bad per-row status.
 
-    The tool is handed a copy of each input frame, made with polars' ``clone``, which shares the
-    data and costs nothing. A change the tool makes in place -- rows appended, a value set, a column
-    added or dropped -- lands on the copy, so it never reaches the caller's frame, another branch
-    reading the same port, or a step's record of what it produced. A change to the copy's columns
-    or its number of rows is still refused afterwards, because it is a slip a tool author should
-    hear about. A value changed in place on the copy is not looked for: it cannot reach anything but
-    this tool's own result, and comparing every value would cost a pass over every input per step.
+    Refusals are :class:`PortError` or :class:`ConfigError`. Any other exception from the tool's
+    own code becomes an :class:`ExecutionError` naming the phase; a :class:`ToolError` the tool
+    raises passes through unchanged. The outputs come back in the tool's declared order, with the
+    tool's notes and status.
 
-    Between the tool's own configuration rules and ``execute`` sits ``validate_inputs``, the only
-    phase that sees the configuration and the frames together. It runs on the filled configuration,
-    like ``validate_config``, and it exists because the question it answers -- do the columns this
-    configuration names exist, on the ports they will be read from -- can be answered by neither of
-    its neighbours, and so used to be answered by the first few lines of every tool's ``execute``,
-    in each tool's own words, after this boundary had already reported that the tool was running.
-
-    Each call into the tool's own code -- ``input_ports_for``, ``config_template``, ``validate_config``,
-    ``validate_inputs``, ``execute`` -- goes through :func:`call_tool_code`, so a stray exception
-    from any of them, including one raised from inside the query engine a tool called into, arrives
-    here as :class:`ExecutionError` naming which phase failed, rather than as whatever exception
-    type that phase happened to raise. Each phase names itself distinctly, because a reader sent to
-    the wrong one of two neighbouring functions has been told nothing. A :class:`ToolError` a tool
-    raises on purpose is never touched by this -- including a :class:`DataError`, which is a
-    diagnosis about the rows and would be buried by a phase name: it reaches the caller exactly as
-    the tool wrote it.
+    Why: docs/design/core.md#the-boundary
     """
     declared_inputs = input_ports_for(tool, config)
     declared_input_set = set(declared_inputs)
@@ -88,17 +57,15 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
             f"it declares: {', '.join(declared_inputs)}"
         )
 
-    # A deep copy, so a tool that appends to a list in its configuration cannot change the step it
-    # was given -- or that step's fingerprint.
+    # A deep copy, so a tool that changes its settings cannot change the step or its fingerprint.
     config = copy.deepcopy(dict(config))
     template = call_tool_code(tool, "config_template", tool.config_template)
     validate_against_template(template, config)
     filled_config = apply_defaults(template, config)
     call_tool_code(tool, "validate_config", lambda: tool.validate_config(filled_config))
 
-    # The tool is handed its own copy of each input frame. A polars clone shares the data and costs
-    # nothing (0.01 ms on a million rows), and a change made in place to the copy -- rows appended,
-    # a value set, a column added -- never reaches the caller's frame or another branch reading it.
+    # A polars clone shares the data and costs almost nothing.
+    # Why: docs/design/core.md#tools-get-a-copy-of-their-inputs
     given = Ports({name: frame.clone() for name, frame in inputs.items()}, notes=inputs.notes, status=inputs.status)
     call_tool_code(tool, "validate_inputs", lambda: tool.validate_inputs(given, filled_config))
 
@@ -149,11 +116,7 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
 
     _check_status(tool, result, declared_outputs)
 
-    # Rebuilt so the ports come back in the tool's declared order whatever order it produced them
-    # in -- and carrying the notes and the per-row status across, which rebuilding would otherwise
-    # drop. A tool that reported something worth knowing and had it silently discarded at the
-    # boundary is the exact failure the boundary exists to prevent, one level up, and it has
-    # happened here once already: the notes were dropped by this very rebuild.
+    # Rebuilt in declared order. The notes and status must be carried across.
     return Ports(
         {name: result[name] for name in declared_outputs},
         notes=result.notes,
@@ -162,23 +125,10 @@ def run_tool(tool: Tool, inputs: Ports, config: Mapping[str, Any]) -> Ports:
 
 
 def _check_status(tool: Tool, result: Ports, declared_outputs: tuple[str, ...]) -> None:
-    """Refuse a per-row status that cannot mean what it says, before anything downstream reads it.
+    """Refuse a per-row status that is on an unknown port, has the wrong shape, uses an unknown
+    level, has a different height from its port, or says every row is ``ok``.
 
-    Checked on every call rather than trusted, because the correspondence between a status row and
-    a data row is positional and is never re-derived afterwards: a status one row short does not
-    report less, it reports the *wrong* rows, sliding every mark after the gap onto its neighbour,
-    and nothing built from it later could tell. Both directions are refused, since a check written
-    against the short case alone passes a status a tool built per *input* row after filtering.
-
-    The shape is refused too, and so is a level outside :data:`STATUS_LEVELS`: what reads a status
-    is a renderer, and a level it has no drawing for shows as neither a tick nor a warning nor a
-    cross, so the row shows nothing and reads as fine -- the same defect as a missing column,
-    arriving more quietly.
-
-    An all-``ok`` status is refused last and on sight. Seven million rows asserting that nothing
-    happened would make the presence of a status mean nothing, and a mark that is always there is a
-    mark nobody reads. This is the ruling this library already takes on a cast to the type a column
-    already holds: an inert declaration is refused rather than agreed with.
+    Why: docs/design/core.md#what-the-boundary-refuses-in-a-status
     """
     for name, status in result.status.items():
         if name not in declared_outputs:

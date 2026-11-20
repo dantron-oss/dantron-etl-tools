@@ -26,18 +26,14 @@ CATEGORY_ORDER = ("input", "preparation", "transform", "combine", "text", "asser
 
 
 def _field_json(spec: ConfigField) -> dict[str, Any]:
-    """One configuration field, flattened for a reader that is not Python.
+    """Return one configuration field as plain data, with every property it sets.
 
-    Built from the dataclass rather than field by field, so a property added to a configuration
-    field reaches the catalogue because it exists rather than because somebody remembered a line
-    here. The hand-written version had three branches whose false arm was "say nothing", which is
-    a silent omission by construction and exactly the drift this page cannot afford.
+    Why: docs/design/core.md#the-catalog-lists-every-field-property
     """
     out: dict[str, Any] = {}
     for field in fields(spec):
         name, value = field.name, getattr(spec, field.name)
-        # Only absence is skipped. Skipping a falsey value would drop a meaningful
-        # default=False -- the very silent omission this rewrite exists to remove.
+        # Skip only None: a default of False or 0 must still be shown.
         if value is None:
             continue
         if name == "items":
@@ -61,7 +57,10 @@ def _frame_json(frame: pl.DataFrame) -> dict[str, Any]:
 
 
 def catalog() -> dict[str, Any]:
-    """The whole catalogue as plain data -- the model-facing interface, and diffable."""
+    """Return the whole catalog as plain data (dicts and lists), ready to write as JSON.
+
+    One entry per tool: name, description, category, ports, settings, notes and worked examples.
+    """
     tools = []
     for tool in REGISTRY.tools():
         helped = tool.help()
@@ -70,10 +69,7 @@ def catalog() -> dict[str, Any]:
                 "name": tool.name,
                 "description": tool.description,
                 "category": tool.category,
-                # A tool that works its ports out from a step's configuration has no fixed ports to
-                # show, so the catalogue shows the ones its first worked example reads and says so
-                # with the flag beside them. Both halves are needed: the names, and where they
-                # came from.
+                # For a tool whose ports come from its settings, these are its first example's.
                 "input_ports": list(catalog_input_ports(tool)),
                 "ports_from_config": ports_from_config(tool),
                 "output_ports": list(tool.output_ports),
@@ -116,7 +112,7 @@ def _plain(value: Any) -> Any:
 
 
 def example_yaml(configuration: Mapping[str, Any]) -> str:
-    """A worked example's configuration as YAML, ready to paste under a step's ``config:``."""
+    """Return a worked example's configuration as YAML, ready to paste under a step's ``config:``."""
     import yaml
 
     return yaml.safe_dump(_plain(configuration), sort_keys=False, allow_unicode=True, width=WIDTH - 8)
@@ -212,7 +208,10 @@ def _find_tool(name: str) -> Tool:
 
 
 def describe(name: str) -> str:
-    """Everything the catalog says about one tool, as plain text for a terminal."""
+    """Return everything the catalog says about one tool, as plain text for a terminal.
+
+    Raises :class:`UnknownToolError`, with the closest names, when there is no tool called ``name``.
+    """
     tool = _find_tool(name)
     helped = tool.help()
     out = [f"{tool.name}  ({tool.category} tool)", "", *_wrap(tool.description)]
@@ -241,7 +240,7 @@ def describe(name: str) -> str:
 
 
 def tools_text() -> str:
-    """Every tool on one line, grouped by category."""
+    """Return every tool on one line each, grouped by category, as plain text."""
     by_category: dict[str, list[Tool]] = {}
     for tool in sorted(REGISTRY.tools(), key=lambda tool: tool.name):
         by_category.setdefault(tool.category, []).append(tool)
@@ -254,7 +253,7 @@ def tools_text() -> str:
 
 
 def functions_text() -> str:
-    """Every function an expression may call, with what it gives and one example call."""
+    """Return every expression function with what it gives and one example call, as plain text."""
     out: list[str] = []
     for definition in DEFINITIONS:
         out += [definition.name, *_wrap(definition.summary, "    "), f"    example: {definition.example}", ""]

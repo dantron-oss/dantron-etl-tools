@@ -1,41 +1,13 @@
-"""Serving a finished run's ports a window at a time, so a reader can look at all of it.
+"""Save a finished run's ports to disk and serve them a window of rows at a time.
 
-A rendered page draws a fixed number of rows per port, because a page that draws them all is a page
-no browser will lay out -- the twelve ports of one real flow came to 113 MB of plain text. That cap
-is honest about what it shows, but it puts every question of the form *does any row anywhere carry
-this* out of reach: a search over the drawn rows answers a question about the page rather than about
-the data.
+``persist_trace(trace, directory)`` writes every kept port to Parquet, with each port's per-row
+status beside it, and ``persist_panels`` writes each step's panel. ``PortStore(directory)`` reads
+them back: ``window(port, offset=, limit=, filters=)`` returns up to 500 rows, after filtering the
+whole port. ``serve(root)`` is a small local web server over every run saved under ``root``.
 
-So the rows are written down once, beside the page, and served a window at a time. Filtering happens
-against the whole port and only the window crosses to the browser, which means the memory a reader
-costs does not grow with the size of the flow -- the same reason the runner leaves a step's work to
-the query engine rather than gathering rows itself.
+A page draws only a few rows per port, so this is what lets a reader search all of them.
 
-Three decisions worth stating, because each has a quieter alternative that is wrong:
-
-**A filter is a substring, matched against the column's text, and never an expression.** This library
-already has one expression language with two compile targets, and every check it makes -- column
-references, types, refusals -- exists because config is a file a non-developer edits. A search box is
-typed into casually by somebody looking at a page, so it gets the construct with no failure modes:
-text that is either in a value or is not. A reader who needs a real predicate has Filter, which is a
-step, which is checked, and which is part of the flow rather than part of the looking.
-
-**Everything crosses as text, with the dtype named separately.** A date, a decimal and a large
-integer each lose something different on the way through JSON, and a page that renders them is going
-to render text regardless. Converting once, here, beats three separate roundings nobody chose.
-
-**A port that was released is absent rather than empty.** The runner drops a frame nothing will read
-again when it is told to, and reporting that as a port with no rows would be indistinguishable from a
-step that produced none -- which is the difference between a quiet day and a lost figure.
-
-Imports the standard library's ``json`` rather than ``orjson``, against this repository's usual
-preference, and the reason is what this package is for: it is imported BY other projects, so every
-module-level import here is one those projects are made to carry. The rule is polars plus the
-standard library at import time, with everything else loaded inside the function that needs it --
-which is why :func:`~.loader.read_pipeline` imports ``yaml`` inside itself, and why a
-database driver is reached for by URI scheme rather than declared. Measured cost of keeping it:
-parsing a 625 KB run manifest takes 4.6 ms rather than 3.0, on a path that is read lazily and so is
-touched once a page rather than once a panel.
+Why: docs/design/loading-and-running.md#preview
 """
 
 from __future__ import annotations
@@ -55,11 +27,10 @@ import polars as pl
 
 from .status import STATUS_LEVELS
 
-if TYPE_CHECKING:  # pragma: no cover -- the trace is a type here and never a runtime dependency
+if TYPE_CHECKING:  # pragma: no cover - a type only
     from .trace import PipelineTrace
 
-#: The most rows one request may ask for. A window is for looking at; a caller wanting everything
-#: wants the Parquet file, which is sitting right there.
+#: The most rows one request may ask for. For everything, read the Parquet file.
 MAX_WINDOW = 500
 
 #: The prefix a per-column filter arrives under: ``f.account_code=2-5100``.
@@ -67,25 +38,19 @@ FILTER_PREFIX = "f."
 
 MANIFEST = "ports.json"
 
-#: Where a step's panel -- the markup a reader is shown when they open that step -- is written, and
-#: the index naming which file belongs to which step. An index rather than a naming convention the
-#: reader of a request could re-derive: a step id arrives in a query string, and anything that turns
-#: one into a path is a path a caller writes. Looked up, an unknown step is a refusal before any
-#: filename exists.
+#: Where each step's panel (what a reader sees on opening the step) is written, and the index of
+#: which file belongs to which step. A step id is looked up in the index, never turned into a path.
 PANEL_MANIFEST = "panels.json"
 PANEL_DIR = "panels"
 
-#: The kinds of file the source route hands out: pipeline and settings YAML, Python source and
-#: Markdown. Everything else under the source root -- data, keys, workbooks -- is refused.
+#: The kinds of file the source route serves. Everything else (data, keys, workbooks) is refused.
 SOURCE_SUFFIXES = frozenset({".py", ".yaml", ".yml", ".md"})
 
 
 def _inside(directory: Path, name: str) -> Path:
-    """``directory / name``, refused unless it resolves to a file inside ``directory``.
+    """Return ``directory / name``. Refuse a name that leads outside ``directory``.
 
-    The names come from a run's own index files. Those are written by this module, but they are
-    files on disk, and one edited or copied from elsewhere must not point the viewer at the rest of
-    the machine.
+    The names come from the run's own index files, which someone could have edited.
     """
     landed = (directory / name).resolve()
     if not landed.is_relative_to(directory.resolve()):
@@ -93,15 +58,13 @@ def _inside(directory: Path, name: str) -> Path:
     return landed
 
 
-#: The name a port's marks travel under while they are being sliced beside its rows. A port is a
-#: client's data and may well carry a column called ``status`` of its own, so the name is checked
-#: against the port and lengthened until it is free rather than assumed to be: a collision here
-#: would silently overwrite one of the columns the reader came to read.
+#: The name the per-row status travels under beside a port's rows. Lengthened with ``_`` if the
+#: port already has a column of that name.
 STATUS_COLUMN = "status"
 
 
 def _beside(columns: list[str]) -> str:
-    """A name for the marks that no column of this port answers to."""
+    """Return a name for the status column that no column of the port already uses."""
     name = STATUS_COLUMN
     while name in columns:
         name = "_" + name
@@ -109,24 +72,19 @@ def _beside(columns: list[str]) -> str:
 
 
 class PreviewError(ValueError):
-    """A request this store cannot honour, named so a caller can tell it from a bug."""
+    """A request the store cannot answer: an unknown port, step or column, or a bad window."""
 
 
 @dataclass(frozen=True)
 class Window:
-    """One answer: the rows asked for, the two counts needed to say where they came from, and what
-    the step that made them said about each one.
+    """One window of a port: the rows asked for, as text, with the counts that place them.
 
-    ``status`` is one mark per row of *this window*, in the same order, or ``None`` for a port no
-    step said anything about. ``None`` rather than a tuple of ``ok``s, because the absence is what a
-    viewer reads to decide whether the port has a status column to draw at all -- and almost every
-    port in a real flow degraded nothing, so a column of ticks on all of them is a column a reader
-    learns to skip, which costs the flagged ports the attention this channel exists to buy.
+    - ``rows``: every value as text (or ``None``), with each column's type in ``dtypes``.
+    - ``total``: rows in the whole port. ``matched``: rows left after the filters.
+    - ``status``: one mark per row of this window, in the same order, or ``None`` when no step
+      said anything about this port.
 
-    Sliced with the rows and never re-derived afterwards: the correspondence is positional, so a
-    window that took the first ``limit`` marks for the rows at some later offset would draw a status
-    column that is right on the first page and, on every page after it, puts a warning on a row that
-    never had one.
+    Why: docs/design/loading-and-running.md#the-status-travels-with-the-rows
     """
 
     columns: tuple[str, ...]
@@ -144,24 +102,13 @@ def persist_ports(
     *,
     status: dict[str, pl.DataFrame] | None = None,
 ) -> dict[str, Any]:
-    """Write every retained port to Parquet under ``directory`` and return the manifest.
+    """Write each frame in ``frames`` to Parquet under ``directory``, and return the manifest.
 
-    Keyed by ``step.port``, the same spelling the page and the query string use, so no reader has to
-    know how a :class:`~.spec.PortRef` is put together to ask for one.
+    ``frames`` is keyed by ``"step.port"``. ``status``, keyed the same way, is each port's per-row
+    status; it goes in a file of its own beside the port. A port with no status gets no status
+    file. The manifest (``ports.json``) lists each port's file, row count, columns and types.
 
-    A port's per-row status is written to a file of its own beside the port rather than as extra
-    columns inside it, for the same reason it is not a column in the frame: the port file is what a
-    reader is shown as the data, and somebody scrolling it must see what the step produced and
-    nothing the step said about it. Its own manifest entry, so the viewer can scan the two lazily
-    and side by side -- they are joined by row position and by nothing else, which is why the row
-    count is written down here where it can be checked against the port's own.
-
-    A port with nothing to say gets no file and no entry, and the absence is what a viewer reads to
-    decide whether the port has a status column to draw at all: an empty file per port would cost a
-    pointless read apiece to be told nothing. Having no status and saying so are the same run --
-    ``status={}`` is a complete run rather than a refusal, the ruling ``run_pipeline`` already takes
-    on an empty cache, because a caller assembling statuses from whatever its run produced should
-    not have to write the conditional itself.
+    Why: docs/design/loading-and-running.md#status-is-saved-beside-the-port
     """
     directory.mkdir(parents=True, exist_ok=True)
     marked = status or {}
@@ -186,18 +133,10 @@ def persist_ports(
 
 
 def persist_trace(trace: PipelineTrace, directory: Path) -> dict[str, Any]:
-    """Write one run to ``directory``: every port it retained, and every mark its steps made.
+    """Write a finished run to ``directory``: every port it kept, and the per-row status of each.
 
-    Both halves off the one object, because they are one run and the writer is where they come
-    apart. A caller assembling the frames by hand and calling :func:`persist_ports` has to remember
-    the statuses separately -- they sit on the same trace, one attribute away -- and a directory
-    written without them loads, serves and draws exactly like a run whose steps degraded nothing.
-    The difference is invisible until a reader asks which rows a warning covers and the run cannot
-    say. Taking the trace makes forgetting impossible rather than unlikely.
-
-    A status is written only for a port whose frame was retained, which falls out of ``persist_ports``
-    keying the two together: marks kept beside rows nobody can read are row references with nothing
-    to point at. A run that degraded nothing writes no status files at all.
+    Use this rather than :func:`persist_ports`, so the statuses cannot be forgotten. Returns the
+    manifest.
     """
     return persist_ports(
         {f"{ref.step}.{ref.port}": frame for ref, frame in trace.frames.items()},
@@ -207,24 +146,19 @@ def persist_trace(trace: PipelineTrace, directory: Path) -> dict[str, Any]:
 
 
 def persist_panels(panels: dict[str, str], directory: Path) -> dict[str, str]:
-    """Write one file per step's panel under ``directory`` and return the index of them.
+    """Write each step's panel markup to its own file under ``directory``, and return the index.
 
-    Beside the ports rather than inside them, because a panel is the same kind of thing: written
-    once when the run is written, and handed over when a reader asks for that one step. The page
-    used to carry all 672 of them, which was 7.76 MB of an 8.98 MB document laid out before the
-    browser could paint anything at all.
+    ``panels`` maps a step id to its HTML. The index (``panels.json``) maps each step id to its
+    file name.
 
-    One file each rather than one document holding every panel: the service reads a run's directory
-    per request, and a single file would be read whole -- megabytes of six hundred other steps --
-    to answer for one.
+    Why: docs/design/loading-and-running.md#panels-are-separate-files
     """
     directory.mkdir(parents=True, exist_ok=True)
     into = directory / PANEL_DIR
     into.mkdir(exist_ok=True)
     index: dict[str, str] = {}
     for step, markup in panels.items():
-        # Percent-encoded, so every character a step id may carry -- including the separators that
-        # would otherwise spell a directory -- lands as one file in one directory.
+        # Percent-encoded, so any step id becomes one file name in this directory.
         name = quote(step, safe="") + ".html"
         (into / name).write_text(markup, encoding="utf-8")
         index[step] = name
@@ -233,11 +167,10 @@ def persist_panels(panels: dict[str, str], directory: Path) -> dict[str, str]:
 
 
 class PortStore:
-    """The persisted ports of one run, answered a window at a time.
+    """The saved ports of one run, read a window at a time.
 
-    Holds no frame in memory: every request scans the Parquet lazily, so a port of five million rows
-    costs the same as one of five hundred, and two readers asking different questions do not queue
-    behind one another's data.
+    ``PortStore(directory)`` refuses a directory with no ``ports.json``. It keeps no frame in
+    memory: each request reads the Parquet file lazily.
     """
 
     def __init__(self, directory: Path) -> None:
@@ -248,15 +181,7 @@ class PortStore:
 
     @property
     def manifest(self) -> dict[str, Any]:
-        """The run's ports, read the first time one is asked about and kept for the rest of the store.
-
-        Checked for at construction and read here, rather than both at construction: a mistyped
-        directory still refuses immediately -- that is the whole of what the check is for -- but a
-        store built to hand over one step's panel no longer parses an index of every port in the
-        run to do it. On the real flow that manifest is 625 KB, which is 4.6 ms of parsing per
-        request to answer a question it has nothing to do with. The same argument, on the other
-        index, is written at :meth:`panels`.
-        """
+        """Return the run's port index, read on first use and kept."""
         if self._manifest is None:
             self._manifest = json.loads((self.directory / MANIFEST).read_text(encoding="utf8"))
         return self._manifest
@@ -265,24 +190,14 @@ class PortStore:
         return self.manifest
 
     def panels(self) -> dict[str, str]:
-        """Which steps this run wrote a panel for. Absent is empty, not an error.
-
-        Every run written before panels existed is a directory with no index in it, and a reader
-        asking one of those for a step has asked for something this run does not have -- which is a
-        fact about the run. Read per call rather than in ``__init__`` so that a store built for a
-        window does not pay for an index it will not open.
-        """
+        """Return the index of steps that have a panel. A run with no panels gives an empty dict."""
         index = self.directory / PANEL_MANIFEST
         return json.loads(index.read_text(encoding="utf8")) if index.is_file() else {}
 
     def panel(self, step: str) -> str:
-        """The markup written for ``step``, exactly as it was written.
+        """Return the panel markup written for ``step``, exactly as written.
 
-        Refused by name, in the shape every other refusal here takes, because the alternatives are
-        both worse in the same direction: an empty answer draws a blank pane over a step that has
-        rows behind it, and a missing file thrown out of a request handler is a stack trace where a
-        sentence belongs. The index is also the only thing consulted -- a step id is a caller's
-        text, and nothing here joins it to a path before it has been found to be a step.
+        Refuses (:class:`PreviewError`) a step with no panel, listing the steps that have one.
         """
         written = self.panels()
         name = written.get(step)
@@ -301,29 +216,17 @@ class PortStore:
         level: str | None = None,
         match: Mapping[str, Collection[str]] | None = None,
     ) -> Window:
-        """``limit`` rows of ``port`` from ``offset``, after every filter has been applied.
+        """Return up to ``limit`` rows of ``port`` from ``offset``, after narrowing, as a :class:`Window`.
 
-        Refusals name what was asked for: a port that was never written, a column that port does not
-        carry, a window that runs backwards. Each is a caller's mistake rather than an empty answer,
-        and answering nothing would read exactly like a port that matched nothing.
+        - ``filters``: ``{column: text}``. Keeps rows whose value, as shown, contains the text.
+        - ``match``: ``{column: values}``. Keeps rows whose value, as text, is exactly one of them.
+        - ``level``: keeps rows the step marked at that status level.
 
-        ``level`` narrows to the rows a step marked at that level, and is its own parameter rather
-        than one more entry in ``filters``. The per-column filters are substring searches, which is
-        right for a value somebody half-remembers and wrong for a vocabulary of three: ``warn`` would
-        match ``warning``, and ``error`` would match every row of a client's own column holding the
-        word -- both reading as a filter that works. So a level is checked against what the library
-        publishes and refused when it is not one of them. A port with no marks is refused too rather
-        than answered plausibly: every row and no rows are both readings of the data, when what is
-        wrong is the question.
+        All narrowings apply together to the same rows. Refuses (:class:`PreviewError`) an unknown
+        port or column, a negative offset, a limit outside 1 to 500, an unknown level, and a level
+        on a port with no status.
 
-        The two narrowings are applied to the same rows rather than one to what the other already
-        cut. A reader types a party into one box and picks a level in the other, and the answer they
-        expect is the intersection; either order of narrowing-then-narrowing gives a subset that
-        looks entirely plausible and is not it.
-
-        ``match`` keeps the rows whose column, as text, is exactly one of the given values. It is
-        how one entity is followed through a saved run. A column the port does not carry is refused,
-        as for a filter, and it narrows together with the filters and the level.
+        Why: docs/design/loading-and-running.md#searching-a-saved-run
         """
         entry = self.manifest.get(port)
         if entry is None:
@@ -352,26 +255,15 @@ class PortStore:
         scan = pl.scan_parquet(_inside(self.directory, entry["file"]))
         beside = _beside(columns)
         if marks is not None:
-            # A status is written row for row with the port it describes -- the tool boundary
-            # refuses one that is not -- so a pair that disagrees by the time it is read back is a
-            # directory that was assembled by hand rather than written, or truncated after it was.
-            # Worth refusing here because the disagreement is otherwise silent and then wrong: the
-            # concat below pads the shorter side with nulls rather than failing, which hands a reader
-            # a mark of ``null`` on every row past the end of the status and draws it as a level
-            # nobody published. This is the one place the count ``persist_ports`` writes down beside
-            # the file is ever read.
+            # The status and the port must have the same row count; a mismatch would pad with nulls.
             if int(marks["rows"]) != int(entry["rows"]):
                 raise PreviewError(
                     f"port {port!r} holds {entry['rows']:,} row(s) and the status beside it {marks['rows']:,}; "
                     "the two line up row for row, and position is the whole of what joins them"
                 )
 
-            # Carried alongside as one struct column so that the marks are sliced and filtered by
-            # exactly the operations that slice and filter the rows -- the correspondence is
-            # positional and is never re-derived, which is what stops a later window being given the
-            # marks of the first one. Concatenated by position for the same reason: there is no key
-            # joining a row to its mark, and a join on a column either side happens to carry would
-            # be a different question with a plausible answer.
+            # The marks ride beside the rows as one column, so every slice and filter keeps them
+            # lined up. They are joined by position: there is no key to join on.
             scan = pl.concat(
                 [scan, pl.scan_parquet(_inside(self.directory, marks["file"])).select(pl.struct(pl.all()).alias(beside))],
                 how="horizontal",
@@ -380,8 +272,7 @@ class PortStore:
                 scan = scan.filter(pl.col(beside).struct.field("level") == level)
 
         for name, text in wanted.items():
-            # Cast before matching so a filter reads the value the page shows: a reader typing 2026
-            # into a date column means the text they are looking at, not an epoch.
+            # Match the text the page shows: 2026 in a date column means the text, not a number.
             scan = scan.filter(pl.col(name).cast(pl.String, strict=False).str.contains(text, literal=True))
         for name, texts in exact.items():
             scan = scan.filter(pl.col(name).cast(pl.String, strict=False).is_in(texts))
@@ -389,8 +280,7 @@ class PortStore:
         narrowed = bool(wanted) or bool(exact) or level is not None
         matched = int(scan.select(pl.len()).collect().item()) if narrowed else int(entry["rows"])
         page = scan.slice(offset, limit).collect()
-        # Named rather than `pl.all()`, so the marks travelling beside the rows cannot be handed back
-        # as one more column of them: what the port produced is what a reader is shown as the data.
+        # Only the port's own columns, so the status column is not shown as data.
         as_text = page.select(pl.col(name).cast(pl.String, strict=False) for name in columns)
 
         return Window(
@@ -411,7 +301,7 @@ _TITLE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
 @dataclass(frozen=True)
 class Run:
-    """One flow's persisted run: where its ports live, the page that draws them, what to call it."""
+    """One saved run: its name, its directory, its page (if any) and its title."""
 
     name: str
     directory: Path
@@ -420,12 +310,7 @@ class Run:
 
 
 def discover(root: Path) -> list[Run]:
-    """Every run written under ``root``, one per directory holding a manifest.
-
-    Discovery rather than registration, so standing up a second flow for the same client is writing
-    another directory rather than editing this module -- which is the difference between a viewer
-    that serves what exists and one that serves what somebody remembered to list.
-    """
+    """Return every run saved under ``root``: one per folder that holds a ``ports.json``."""
     root = Path(root)
     runs: list[Run] = []
     for directory in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
@@ -445,7 +330,7 @@ def discover(root: Path) -> list[Run]:
 
 
 def _index(runs: list[Run]) -> bytes:
-    """A page listing the runs, for a reader who arrived at the root without a flow in mind."""
+    """Return the HTML page listing the runs, served at the root."""
     items = "".join(
         f'<li><a href="/{run.name}/">{html.escape(run.title)}</a>'
         f"<span>{len(PortStore(run.directory).ports())} ports</span></li>"
@@ -470,16 +355,12 @@ def _index(runs: list[Run]) -> bytes:
 
 
 def _source_file(source_root: Path | None, query: dict[str, list[str]]) -> tuple[int, Path | str]:
-    """The source file a page asked for, or the status and sentence that refuse it.
+    """Return the source file a page asked for, or the HTTP status and sentence refusing it.
 
-    Served only when all of these hold:
-
-    - the path is relative;
-    - it resolves, with ``..`` and symlinks followed, to a file inside the source root;
-    - no part of where it landed starts with a dot, so no ``.env`` and nothing in ``.git``;
-    - the file it landed on is one of :data:`SOURCE_SUFFIXES`.
-
-    A refusal is 403 for a file this route never serves and 404 for one that is not there.
+    A file is served only when the path is relative, resolves (following ``..`` and links) to a
+    file inside the source root, has no part starting with a dot (no ``.env``, nothing in
+    ``.git``), and has one of the :data:`SOURCE_SUFFIXES`. A refused kind of file is 403; a file
+    that is not there is 404.
     """
     if source_root is None:
         return 404, "this service was not given a source root, so it serves no code"
@@ -506,13 +387,13 @@ def _source_file(source_root: Path | None, query: dict[str, list[str]]) -> tuple
 
 
 def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandler]:
-    """The request handler, reading ``root`` on each request so a re-run is picked up without a restart."""
+    """Return the request handler. It reads ``root`` on each request, so a new run shows without a restart."""
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, *_: Any) -> None:
-            """Quiet: this serves one reader looking at their own runs, and a line per request is noise."""
+            """Print nothing per request."""
 
         def _send(self, status: int, body: bytes, kind: str) -> None:
             self.send_response(status)
@@ -547,8 +428,7 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
                 self._json(404, {"error": f"no run {name!r}; this service has: {', '.join(sorted(runs)) or 'none'}"})
                 return
 
-            # Without the trailing slash a browser resolves the page's relative requests against the
-            # service root instead of against the run, so every window would be asked of nobody.
+            # Redirect to the trailing slash, or the page's relative requests miss the run.
             if not parsed.path.endswith("/") and tail == "":
                 self.send_response(301)
                 self.send_header("Location", f"/{name}/")
@@ -569,8 +449,7 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
                     self._json(400, {"error": str(refusal)})
                 return
             if tail == "api/panel":
-                # As markup, not as JSON carrying markup: the page puts what comes back straight
-                # into the pane, so there is nothing here for a caller to decide or to unwrap.
+                # Sent as HTML: the page puts it straight into the pane.
                 try:
                     asked = (parse_qs(parsed.query).get("step") or [""])[0]
                     self._send(200, PortStore(run.directory).panel(asked).encode("utf-8"), "text/html; charset=utf-8")
@@ -593,11 +472,8 @@ def _handler(root: Path, source_root: Path | None) -> type[BaseHTTPRequestHandle
                 for name, values in query.items()
                 if name.startswith(FILTER_PREFIX) and values
             }
-            # Its own parameter, and deliberately not reachable through the ``f.`` channel: a port
-            # carrying a column called ``level`` is an ordinary thing for a client's data to have,
-            # and spelling the level filter as ``f.level`` would make one control mean two different
-            # things on two different ports with nothing to tell them apart. Asked for a column this
-            # port does not carry, ``f.`` goes on refusing.
+            # The level is its own parameter, not ``f.level``, because a port may have a column
+            # called ``level``. Why: docs/design/loading-and-running.md#searching-a-saved-run
             level = (query.get("level") or [""])[0] or None
             found = PortStore(run.directory).window(port, offset=offset, limit=limit, filters=filters, level=level)
             return {
@@ -620,27 +496,19 @@ def serve(
     port: int = 8899,
     source_root: Path | None = None,
 ) -> ThreadingHTTPServer:
-    """Serve every run written under ``root``, each at ``/<its directory name>/``.
+    """Start a web server for every run saved under ``root``, each at ``/<folder name>/``.
 
-    One service for a client's whole set of flows rather than one process each: they are read side
-    by side, a figure in one is chased into another, and a reader should not have to remember which
-    number a given flow was started on.
+    Returns the server, already listening on a background thread; call ``shutdown()`` to stop it.
 
-    Returns the server, already listening on its own thread, so a caller keeps the process alive
-    however it likes and shuts it down by name rather than by signal.
+    - ``host``: ``127.0.0.1`` by default, so only this machine can reach it. ``0.0.0.0`` lets
+      every machine on the network read every row; a container publishing its port needs that.
+    - ``port``: the port to listen on.
+    - ``source_root``: if given, ``/api/source?path=`` serves YAML, Python and Markdown files under
+      it, never a hidden file. See :func:`_source_file`.
 
-    **This is a local viewer, and it carries no authentication, no authorisation and no transport
-    security.** Every row of every port is readable by anything that can reach the socket. That is a
-    deliberate trade, not an omission: the alternative is a dependency chain and a login on a tool
-    one person uses to look at their own run. Anyone putting this anywhere a stranger can reach is
-    not hardening this module; they are choosing a different one.
+    There is no login and no encryption. Anything that can reach the port can read every row.
 
-    It listens on ``127.0.0.1`` unless ``host`` says otherwise, so only this machine can reach it.
-    Passing ``host="0.0.0.0"`` lets every machine on the network read every row of every run; a
-    process in a container whose port is published to its host needs exactly that.
-
-    With ``source_root``, ``/api/source?path=`` hands out source files under it: YAML, Python and
-    Markdown only, never a hidden file, never anything outside it. See :func:`_source_file`.
+    Why: docs/design/loading-and-running.md#a-local-viewer-with-no-login
     """
     server = ThreadingHTTPServer(
         (host, port), _handler(Path(root), Path(source_root).resolve() if source_root else None)
