@@ -13,9 +13,12 @@ from typing import Final, Literal
 import polars as pl
 
 from .arguments import (
+    LARGEST_COUNT,
     REWRITE_REASON,
     SEPARATOR_REASON,
+    Characters,
     Choice,
+    DateFormat,
     Namespace,
     Param,
     Pattern,
@@ -24,22 +27,39 @@ from .arguments import (
     WholeNumber,
     probe_pattern,
 )
-from .dates import count_between, date_or_null, days_in_month
+from .dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .errors import Refusal
 from .families import Family
 from .formatting import written_as_text
 
 
 @dataclass(frozen=True)
+class NoAnswer:
+    """The rows a function has no answer for. The step stops on them instead of writing a null.
+
+    `when` is given what the builder is given and is true on such a row. `problem` says what is wrong:
+    {0}, {1} ... stand for the arguments as the author wrote them, and {found} for the values found
+    in argument number `shows`. `remedy` says what to do.
+    """
+
+    when: Callable[..., pl.Expr]
+    problem: str
+    shows: int
+    remedy: str
+
+
+@dataclass(frozen=True)
 class Function:
     """Everything about one function: its arguments, its result, its builder, its summary and example.
 
-    `params` lists the arguments in order; there are no defaults. A `variadic` function has one entry that
-    every argument must meet, and needs at least two. `result` is the family returned ("common": the
+    `params` lists the arguments in order. The last `optional` of them may be left out, and the builder
+    is then given fewer. A `variadic` function has one entry that every argument must meet, and needs at
+    least two. `result` is the family returned ("common": the
     family the arguments agree on). `result_dtype` is the exact type where known ("subject": the first
     argument's; "common": worked out from all). `to_polars` builds the column from a polars expression
     per value argument and the Python value per literal argument. `typed` passes the first argument's
-    dtype as `dtype=` (None without a schema), for round() and format_number().
+    dtype as `dtype=` (None without a schema), for round(), format_number(), floor(), ceil() and
+    sign(). `no_answer` names the rows the function has no answer for; a tool stops the step on them.
     """
 
     name: str
@@ -49,8 +69,17 @@ class Function:
     summary: str
     example: str
     variadic: bool = False
+    optional: int = 0
     result_dtype: pl.DataType | Literal["subject", "common"] | None = None
     typed: bool = False
+    no_answer: NoAnswer | None = None
+    #: How the value arguments meet each other, beyond sharing a family. "compared": tested for
+    #: equality, so a timestamp against a date is refused as '=' refuses it. "ordered": put in order,
+    #: so timestamps on different clocks are refused. "arithmetic": worked out as the operators work,
+    #: so an unsigned whole number is widened to Int64 and an exact Decimal is refused.
+    meets: Literal["compared", "ordered", "arithmetic"] | None = None
+    #: The argument that divides: a zero there stops the step, as a '/' by zero does.
+    divides_by: int | None = None
 
 
 def _coalesce(*parts: pl.Expr) -> pl.Expr:
@@ -104,8 +133,97 @@ def _abs(subject: pl.Expr) -> pl.Expr:
     return subject.abs()
 
 
+def _without_negative_zero(value: pl.Expr) -> pl.Expr:
+    """-0.0 as 0.0, every other value as it is: a minus sign on a zero reads as a debit in a written file."""
+    return pl.when(value == 0).then(value.abs()).otherwise(value)
+
+
+def _floor(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    # A whole number comes back as it is; a Decimal keeps its places; a null of no type stays null.
+    return subject if dtype == pl.Null else _without_negative_zero(subject.floor())
+
+
+def _ceil(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject if dtype == pl.Null else _without_negative_zero(subject.ceil())
+
+
+def _sign(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject if dtype == pl.Null else _without_negative_zero(subject.sign())
+
+
+def _mod(dividend: pl.Expr, divisor: pl.Expr) -> pl.Expr:
+    """The remainder with the sign of the dividend, as SQL's MOD: mod(-7, 3) is -1.
+
+    The engine's own % takes the divisor's sign (-7 % 3 is 2), so the remainder is worked out on the
+    two sizes and given the dividend's sign, which is exact for numbers with a fraction too.
+    """
+    return _without_negative_zero(dividend.sign() * (dividend.abs() % divisor.abs()))
+
+
+def _least(*parts: pl.Expr) -> pl.Expr:
+    # Nulls are skipped, as PostgreSQL's LEAST skips them; only all nulls give null.
+    return pl.min_horizontal(list(parts))
+
+
+def _greatest(*parts: pl.Expr) -> pl.Expr:
+    return pl.max_horizontal(list(parts))
+
+
+def _nullif(subject: pl.Expr, other: pl.Expr) -> pl.Expr:
+    return pl.when(subject == other).then(None).otherwise(subject)
+
+
 def _year(subject: pl.Expr) -> pl.Expr:
     return subject.dt.year()
+
+
+# month(), day() and the rest give Int32, as year() does, so month([d]) * 100 cannot wrap round.
+def _month(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.month().cast(pl.Int32)
+
+
+def _day(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.day().cast(pl.Int32)
+
+
+def _quarter(subject: pl.Expr) -> pl.Expr:
+    return subject.dt.quarter().cast(pl.Int32)
+
+
+def _day_of_week(subject: pl.Expr) -> pl.Expr:
+    # The engine counts as ISO does: Monday is 1, Sunday is 7.
+    return subject.dt.weekday().cast(pl.Int32)
+
+
+# The engine counts a move of days in nanoseconds, and a move longer than this wraps round to a wrong date.
+_MOST_DAYS: Final[int] = 106_751
+
+
+def _add_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+    """Move a date by a count of days, built as add_months() builds its offset ('3d').
+
+    A day is a calendar day, so a timestamp keeps its time of day when the clocks change.
+    """
+    offset = pl.concat_str([count.cast(pl.String), pl.lit("d")], ignore_nulls=False)
+    return subject.dt.offset_by(offset)
+
+
+def _too_many_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+    return ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
+
+
+def _month_start(subject: pl.Expr) -> pl.Expr:
+    return subject.cast(pl.Date).dt.month_start()
+
+
+def _parse_date(text: pl.Expr, format_: str) -> pl.Expr:
+    """Text read as a date in the format; null where it does not match or names no date in the years 1 to 9999."""
+    parsed = text.str.strptime(pl.Date, format_, strict=False, exact=True)
+    return pl.when(parsed.dt.year().is_between(MIN_YEAR, MAX_YEAR)).then(parsed)
+
+
+def _unreadable(text: pl.Expr, format_: str) -> pl.Expr:
+    return text.is_not_null() & _parse_date(text, format_).is_null()
 
 
 def _add_months(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
@@ -209,6 +327,38 @@ def _contains(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
     return subject.str.contains(needle, literal=True)
 
 
+def _left(subject: pl.Expr, count: int) -> pl.Expr:
+    # A negative count is PostgreSQL's: all but the last that many. The engine counts the same way.
+    return subject.str.head(count)
+
+
+def _right(subject: pl.Expr, count: int) -> pl.Expr:
+    return subject.str.tail(count)
+
+
+def _substr(subject: pl.Expr, start: int, length: int | None = None) -> pl.Expr:
+    # `start` counts from 1, as SQL does; the engine counts from 0. No length runs to the end.
+    return subject.str.slice(start - 1, length)
+
+
+def _split_part(subject: pl.Expr, delimiter: str, part: int) -> pl.Expr:
+    """The `part`th piece of text split at `delimiter`, from 1; negative counts from the end.
+
+    A part past the last is empty text, as PostgreSQL gives it; a null is null.
+    """
+    pieces = subject.str.split(delimiter).list.get(part - 1 if part > 0 else part, null_on_oob=True)
+    return pl.when(subject.is_not_null()).then(pieces.fill_null(""))
+
+
+def _pad_left(subject: pl.Expr, length: int, fill: str) -> pl.Expr:
+    # Never cuts: text already longer than `length` is left as it is.
+    return subject.str.pad_start(length, fill)
+
+
+def _pad_right(subject: pl.Expr, length: int, fill: str) -> pl.Expr:
+    return subject.str.pad_end(length, fill)
+
+
 def _regex_match(subject: pl.Expr, pattern: str) -> pl.Expr:
     # Unanchored: does the pattern occur anywhere.
     return subject.str.contains(pattern)
@@ -284,6 +434,42 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         example="year([starts_on])",
     ),
     Function(
+        "month",
+        params=(Value(Family.DATE, "reads the month of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_month,
+        summary="The month of a date, 1 to 12.",
+        example="month([starts_on])",
+    ),
+    Function(
+        "day",
+        params=(Value(Family.DATE, "reads the day of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_day,
+        summary="The day of the month of a date, 1 to 31.",
+        example="day([starts_on])",
+    ),
+    Function(
+        "quarter",
+        params=(Value(Family.DATE, "reads the quarter of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_quarter,
+        summary="The quarter of the year a date falls in, 1 to 4; January to March is 1.",
+        example="quarter([starts_on])",
+    ),
+    Function(
+        "day_of_week",
+        params=(Value(Family.DATE, "reads the day of the week of a date"),),
+        result=Family.NUMBER,
+        result_dtype=pl.Int32(),
+        to_polars=_day_of_week,
+        summary="The day of the week of a date, counted the ISO way: Monday is 1 and Sunday is 7.",
+        example="day_of_week([ordered_on])",
+    ),
+    Function(
         "add_months",
         params=(
             Value(Family.DATE, "moves a date"),
@@ -293,6 +479,27 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_add_months,
         summary="A date moved by whole months; 31 January plus one month is 28 February.",
         example="add_months([starts_on], [months] - 1)",
+    ),
+    Function(
+        "add_days",
+        params=(
+            Value(Family.DATE, "moves a date"),
+            Value(Family.NUMBER, "moves a date by a count of days", whole="moves a date by whole days"),
+        ),
+        result=Family.DATE,
+        result_dtype="subject",
+        to_polars=_add_days,
+        summary="A date moved by whole days; a negative count goes back.",
+        example="add_days([ordered_on], 30)",
+        no_answer=NoAnswer(
+            when=_too_many_days,
+            problem=(
+                f"moves a date with add_days() by more than {_MOST_DAYS:,} days (about 292 years), further than "
+                "the engine can count exactly: {1} holds {found}"
+            ),
+            shows=1,
+            remedy="The step stops rather than write a wrong date. Check that {1} is the count of days you meant",
+        ),
     ),
     Function(
         "months_between",
@@ -339,6 +546,33 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         example="month_end([ordered_on])",
     ),
     Function(
+        "month_start",
+        params=(Value(Family.DATE, "finds the start of a date's month", no_time_zone=True),),
+        result=Family.DATE,
+        result_dtype=pl.Date(),
+        to_polars=_month_start,
+        summary="The first day of the month a date falls in.",
+        example="month_start([ordered_on])",
+    ),
+    Function(
+        "parse_date",
+        params=(Value(Family.TEXT, "reads text as a date"), DateFormat()),
+        result=Family.DATE,
+        result_dtype=pl.Date(),
+        to_polars=_parse_date,
+        summary="Text read as a date in a stated format; text that does not match stops the step.",
+        example="parse_date([shipped], '%d/%m/%Y')",
+        no_answer=NoAnswer(
+            when=_unreadable,
+            problem="reads text as a date with parse_date(), and {0} holds text that is not a date in the format {1}: {found}",
+            shows=0,
+            remedy=(
+                "The step stops rather than leave those dates blank. Correct the text, or give those rows a "
+                "case_when rung of their own before the rung that reads them"
+            ),
+        ),
+    ),
+    Function(
         "abs",
         params=(_ON_NUMBERS,),
         result=Family.NUMBER,
@@ -346,6 +580,82 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_abs,
         summary="A number without its sign.",
         example="abs([amount])",
+    ),
+    Function(
+        "floor",
+        params=(_ON_NUMBERS,),
+        result=Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_floor,
+        typed=True,
+        summary="A number taken down to the whole number at or below it, in the number's own type: -2.5 gives -3.",
+        example="floor([hours])",
+    ),
+    Function(
+        "ceil",
+        params=(_ON_NUMBERS,),
+        result=Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_ceil,
+        typed=True,
+        summary="A number taken up to the whole number at or above it, in the number's own type: 2.1 gives 3.",
+        example="ceil([hours])",
+    ),
+    Function(
+        "sign",
+        params=(_ON_NUMBERS,),
+        result=Family.NUMBER,
+        result_dtype="subject",
+        to_polars=_sign,
+        typed=True,
+        summary="-1 for a number below zero, 0 for zero, 1 above zero.",
+        example="sign([balance])",
+    ),
+    Function(
+        "mod",
+        params=(_ON_NUMBERS, _ON_NUMBERS),
+        result=Family.NUMBER,
+        result_dtype="common",
+        to_polars=_mod,
+        meets="arithmetic",
+        divides_by=1,
+        summary="The remainder of the first number divided by the second, with the first one's sign: mod(-7, 3) is -1.",
+        example="mod([month_number], 3)",
+    ),
+    Function(
+        "least",
+        params=(Value(None, "needs every value it compares in the same type family"),),
+        variadic=True,
+        result="common",
+        result_dtype="common",
+        to_polars=_least,
+        meets="ordered",
+        summary="The smallest of the values; nulls are skipped, and only all nulls give null.",
+        example="least([due_on], [paid_on])",
+    ),
+    Function(
+        "greatest",
+        params=(Value(None, "needs every value it compares in the same type family"),),
+        variadic=True,
+        result="common",
+        result_dtype="common",
+        to_polars=_greatest,
+        meets="ordered",
+        summary="The largest of the values; nulls are skipped, and only all nulls give null.",
+        example="greatest([amount], 0)",
+    ),
+    Function(
+        "nullif",
+        params=(
+            Value(None, "needs both values in the same type family"),
+            Value(None, "needs both values in the same type family"),
+        ),
+        result="common",
+        result_dtype="subject",
+        to_polars=_nullif,
+        meets="compared",
+        summary="Null where the first value equals the second, otherwise the first: nullif([code], '') blanks empty text.",
+        example="nullif([discount], 0)",
     ),
     Function(
         "lower",
@@ -379,6 +689,55 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_len,
         summary="The number of characters in a piece of text.",
         example="len([code])",
+    ),
+    Function(
+        "left",
+        params=(_ON_TEXT, WholeNumber(least=-LARGEST_COUNT)),
+        result=Family.TEXT,
+        to_polars=_left,
+        summary="The first characters of text; a negative count gives all but the last that many, as in SQL.",
+        example="left([code], 3)",
+    ),
+    Function(
+        "right",
+        params=(_ON_TEXT, WholeNumber(least=-LARGEST_COUNT)),
+        result=Family.TEXT,
+        to_polars=_right,
+        summary="The last characters of text; a negative count gives all but the first that many, as in SQL.",
+        example="right([account], 4)",
+    ),
+    Function(
+        "substr",
+        params=(_ON_TEXT, WholeNumber(least=1), WholeNumber()),
+        optional=1,
+        result=Family.TEXT,
+        to_polars=_substr,
+        summary="Part of text: from a start counted from 1, for a length of characters, or to the end if none.",
+        example="substr([reference], 4, 2)",
+    ),
+    Function(
+        "split_part",
+        params=(_ON_TEXT, Characters(), WholeNumber(least=-LARGEST_COUNT, nonzero=True)),
+        result=Family.TEXT,
+        to_polars=_split_part,
+        summary="One part of text split at a delimiter, counted from 1; past the last part gives empty text.",
+        example="split_part([reference], '-', 2)",
+    ),
+    Function(
+        "pad_left",
+        params=(_ON_TEXT, WholeNumber(), Characters(exactly_one=True)),
+        result=Family.TEXT,
+        to_polars=_pad_left,
+        summary="Text padded at the start to a length with one character; longer text is never cut.",
+        example="pad_left([account], 6, '0')",
+    ),
+    Function(
+        "pad_right",
+        params=(_ON_TEXT, WholeNumber(), Characters(exactly_one=True)),
+        result=Family.TEXT,
+        to_polars=_pad_right,
+        summary="Text padded at the end to a length with one character; longer text is never cut.",
+        example="pad_right([name], 20, ' ')",
     ),
     Function(
         "starts_with",

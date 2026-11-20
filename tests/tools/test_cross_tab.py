@@ -476,7 +476,7 @@ class TestAnEmptyCellIsNull:
         assert result["rows"].filter(pl.col("code") == "c")["p3"].to_list() == [None]
 
     def test_the_configuration_offers_no_way_to_fill_an_empty_cell(self) -> None:
-        """Four fields, and none of them is a fill.
+        """Five fields, and none of them is a fill. The fifth, 'fraction', is read only by 'quantile'.
 
         This is the assertion that makes the ruling stick. A ``fill`` field would be a one-line
         addition with a plausible reason behind it, and the reason it is refused -- that the cell is
@@ -485,7 +485,7 @@ class TestAnEmptyCellIsNull:
         """
         template = CrossTab().config_template()
 
-        assert set(template) == {"by", "names_from", "values_from", "function"}
+        assert set(template) == {"by", "names_from", "values_from", "function", "fraction"}
         assert expression_fields(template) == (), "every field here names a column; none computes one"
 
 
@@ -598,6 +598,10 @@ def _one_cell_frame() -> pl.DataFrame:
     column of numbers: both tools refuse that on the schema, which is itself a ruling. Its values
     arrive in an order that is not their sorted order and one of them is missing, so a join that
     sorted behind the author's back or joined a blank in as a gap would come back visibly wrong.
+
+    ``size`` is for the four statistics: 11, 3, 15, 7 and 14 with a blank, whose mean is 10, median
+    11, sample standard deviation exactly 5 and 0.375 quantile exactly 9. ``late`` starts and ends
+    blank, so ``last`` and ``last_non_null`` disagree. ``shipped`` holds true and false.
     """
     return pl.DataFrame(
         {
@@ -606,8 +610,18 @@ def _one_cell_frame() -> pl.DataFrame:
             "amount": [5.0, None, 1.0, 9.0, 5.0, 9.0],
             "note": ["beta", None, "alpha", "gamma", "beta", "delta"],
             "late": [None, 7.5, 1.0, None, 2.0, None],
+            "size": [11.0, None, 3.0, 15.0, 7.0, 14.0],
+            "shipped": [True, None, False, True, None, False],
         },
-        schema={"code": pl.String, "period": pl.String, "amount": pl.Float64, "note": pl.String, "late": pl.Float64},
+        schema={
+            "code": pl.String,
+            "period": pl.String,
+            "amount": pl.Float64,
+            "note": pl.String,
+            "late": pl.Float64,
+            "size": pl.Float64,
+            "shipped": pl.Boolean,
+        },
     )
 
 
@@ -618,9 +632,30 @@ def _values_column(aggregate: str) -> str:
     column of numbers into a string is refused on the schema by both tools -- so asking it of
     ``amount`` would test the refusal, not the answer.
     """
-    if aggregate == "first_non_null":
-        return "late"  # its first row is blank, so first_non_null and first disagree
+    if aggregate in ("first_non_null", "last", "last_non_null"):
+        return "late"  # it starts and ends blank, so each of these disagrees with its sibling
+    if aggregate in ("mean", "median", "std", "quantile"):
+        return "size"
+    if aggregate in ("any_true", "all_true"):
+        return "shipped"
     return "note" if aggregate == "join_text" else "amount"
+
+
+# The fraction a quantile is asked for wherever a test asks every aggregate the same question.
+QUANTILE_FRACTION = 0.375
+
+
+def _cross_tab_config(aggregate: str) -> dict[str, Any]:
+    """The CrossTab configuration that asks ``aggregate`` of the one cell, with a fraction for a quantile."""
+    config: dict[str, Any] = {
+        "by": ["code"],
+        "names_from": "period",
+        "values_from": _values_column(aggregate),
+        "function": aggregate,
+    }
+    if aggregate == "quantile":
+        config["fraction"] = QUANTILE_FRACTION
+    return config
 
 
 def _cell_answers() -> dict[str, Any]:
@@ -640,6 +675,14 @@ def _cell_answers() -> dict[str, Any]:
         "first": 5.0,
         "first_non_null": 7.5,
         "join_text": "beta, alpha, gamma, beta, delta",
+        "mean": 10.0,
+        "median": 11.0,
+        "std": 5.0,
+        "quantile": 9.0,
+        "last": None,
+        "last_non_null": 2.0,
+        "any_true": True,
+        "all_true": False,
     }
 
 
@@ -654,6 +697,8 @@ def _group_by_config(aggregate: str) -> dict[str, Any]:
     element: dict[str, Any] = {"name": "answer", "function": aggregate}
     if aggregate != "count":
         element["value"] = f"[{_values_column(aggregate)}]"
+    if aggregate == "quantile":
+        element["fraction"] = QUANTILE_FRACTION
     return {"by": ["code"], "aggregations": [element]}
 
 
@@ -692,12 +737,7 @@ class TestEveryPublishedAggregateIsReallyComputed:
         result = run_tool(
             CrossTab(),
             Ports({"rows": _one_cell_frame()}),
-            {
-                "by": ["code"],
-                "names_from": "period",
-                "values_from": _values_column(aggregate),
-                "function": aggregate,
-            },
+            _cross_tab_config(aggregate),
         )
 
         assert result["rows"]["p1"].to_list() == [answers[aggregate]]
@@ -715,12 +755,7 @@ class TestEveryPublishedAggregateIsReallyComputed:
         wide = run_tool(
             CrossTab(),
             Ports({"rows": rows}),
-            {
-                "by": ["code"],
-                "names_from": "period",
-                "values_from": _values_column(aggregate),
-                "function": aggregate,
-            },
+            _cross_tab_config(aggregate),
         )
         grouped = run_tool(GroupBy(), Ports({"rows": rows}), _group_by_config(aggregate))
 
@@ -949,7 +984,13 @@ def _refusal_cases() -> list[Any]:
         pytest.param({**base, "names_from": "code"}, "code", id="an_on_column_that_is_also_in_the_index"),
         pytest.param({**base, "values_from": "code"}, "code", id="a_values_column_that_is_also_in_the_index"),
         pytest.param({**base, "function": "average"}, "average", id="an_aggregate_nobody_published"),
-        pytest.param({**base, "function": "mean"}, "mean", id="the_aggregate_the_catalog_deliberately_omits"),
+        pytest.param({**base, "function": "mode"}, "mode", id="an_aggregate_this_release_does_not_have"),
+        pytest.param({**base, "function": "quantile"}, "fraction", id="a_quantile_with_no_fraction"),
+        pytest.param({**base, "function": "mean", "fraction": 0.5}, "fraction", id="a_fraction_beside_a_mean"),
+        pytest.param({**base, "function": "quantile", "fraction": 1.5}, "1.5", id="a_fraction_above_1"),
+        pytest.param({**base, "function": "quantile", "fraction": -0.1}, "-0.1", id="a_fraction_below_0"),
+        pytest.param({**base, "values_from": "label", "function": "median"}, "label", id="a_median_of_text"),
+        pytest.param({**base, "function": "any_true"}, "true/false", id="any_true_of_a_number"),
         pytest.param({**base, "names_from": "site"}, "site", id="an_on_column_that_is_not_text"),
         pytest.param({**base, "values_from": "label"}, "label", id="a_sum_of_something_that_is_not_a_number"),
         pytest.param(
@@ -1220,3 +1261,38 @@ class TestACellTooLargeForItsTypeStopsTheRun:
         assert result.schema == pl.Schema({"code": pl.String, "p1": dtype, "p2": dtype})
         assert result.rows() == [("a", limit, None), ("b", None, 7)]
         assert empty.schema == pl.Schema({"code": pl.String})
+
+
+class TestTheNewAggregatesInACell:
+    """The statistics and the true/false aggregates fill a cell as they fill a group."""
+
+    ROWS = pl.DataFrame(
+        {
+            "code": ["a", "a", "a", "b", "b"],
+            "period": ["p1", "p1", "p2", "p1", "p1"],
+            "amount": [1.0, 3.0, None, 4.0, None],
+            "flag": [True, False, None, None, None],
+            "money": pl.Series(["1.25", "2.50", "0.20", "1.00", "3.00"]).cast(pl.Decimal(10, 2)),
+        },
+        schema_overrides={"flag": pl.Boolean},
+    )
+
+    def _cells(self, function: str, values_from: str, **extra: Any) -> dict[str, list[Any]]:
+        config = {"by": ["code"], "names_from": "period", "values_from": values_from, "function": function, **extra}
+        return run_tool(CrossTab(), Ports({"rows": self.ROWS}), config)["rows"].drop("code").to_dict(as_series=False)
+
+    def test_a_cell_of_only_nulls_gives_null_and_a_cell_with_no_rows_stays_null(self) -> None:
+        assert self._cells("mean", "amount") == {"p1": [2.0, 4.0], "p2": [None, None]}
+        assert self._cells("quantile", "amount", fraction=0.25) == {"p1": [1.5, 4.0], "p2": [None, None]}
+        assert self._cells("any_true", "flag") == {"p1": [True, None], "p2": [None, None]}
+        assert self._cells("all_true", "flag") == {"p1": [False, None], "p2": [None, None]}
+
+    def test_an_exact_decimal_is_refused_with_what_to_do(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            self._cells("mean", "money")
+        for word in ("money", "Decimal", "Float64", "cast_columns", "mean"):
+            assert word in str(caught.value), str(caught.value)
+
+    def test_the_fraction_is_an_optional_number_with_no_default(self) -> None:
+        field = CrossTab().config_template()["fraction"]
+        assert (field.type, field.required, field.default) == ("number", False, None)

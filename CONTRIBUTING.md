@@ -127,8 +127,9 @@ It needs:
 
 A function is one entry in the function table, `DEFINITIONS` in `src/dantron_etl/expr/functions.py`:
 the name, the arguments in order, the type of the result, the code that builds the column, a
-one-line summary and an example. Add its tests, list it in `MANUAL.md` section 4.2, and rewrite the
-generated pages. A function never adds syntax to the language: no new operators, no variables, no
+one-line summary and an example. If a function has no answer for some rows, such as text it cannot
+read, say which in the entry's `no_answer`: every tool then stops the step on those rows instead of
+writing a null. Add its tests, list it in `MANUAL.md` section 4.2, and rewrite the generated pages. A function never adds syntax to the language: no new operators, no variables, no
 functions defined in a pipeline.
 
 ### Renaming something

@@ -13,7 +13,7 @@ import polars as pl
 
 from .config import ConfigField
 from .errors import ConfigError, DataError
-from .expr import ExpressionError, compile_expr, divisions
+from .expr import ExpressionError, compile_expr, divisions, row_checks
 
 __all__ = [
     "REPLACE_FIELD",
@@ -46,10 +46,12 @@ def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
 
 
 def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
-    """Stop the step when a ``/`` in ``text`` divides by zero on a row of ``frame``.
+    """Stop the step on a row of ``frame`` that ``text`` has no answer for.
 
-    Raises :class:`DataError` naming the field, the expression, the divisor and up to five rows.
-    Zero means 0, 0.0 or -0.0. A null divisor gives null and is allowed; so is not-a-number.
+    That is a ``/`` whose divisor is zero, and a function call with no answer on that row, such as
+    text ``parse_date()`` cannot read. Raises :class:`DataError` naming the field, the expression,
+    what was wrong and up to five rows. Zero means 0, 0.0 or -0.0. A null divisor gives null and is
+    allowed; so is not-a-number.
 
     ``among`` limits the check to the rows the expression is used on (``case_when`` passes the
     rows that reach a case). Other tools pass nothing.
@@ -58,9 +60,10 @@ def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among
     """
     try:
         found = divisions(text, frame.schema)
+        checks = row_checks(text, frame.schema)
     except ExpressionError as error:
         raise ConfigError(f"config field {field!r} does not compile: {error}") from error
-    if not found or frame.height == 0:
+    if not (found or checks) or frame.height == 0:
         return
     used = pl.lit(True) if among is None else among.fill_null(False)
     for division in found:
@@ -75,6 +78,22 @@ def refuse_division_by_zero(frame: pl.DataFrame, text: str, field: str, *, among
             offending=frame.filter(zero),
             total=frame.height,
         )
+    for check in checks:
+        failing = check.failing.fill_null(False) & used
+        if not frame.select(failing.any()).item():
+            continue
+        offending = frame.filter(failing)
+        values = offending.select(check.shown.alias("value")).unique(maintain_order=True).head(_VALUES_SHOWN)
+        problem, remedy = check.refusal(values["value"].to_list())
+        raise DataError(
+            f"config field {field!r} {problem}, in expression: `{text}`. {remedy}",
+            offending=offending,
+            total=frame.height,
+        )
+
+
+# How many different values a refusal quotes back, beside the rows it shows.
+_VALUES_SHOWN: Final[int] = 5
 
 
 def compiled_dtype(frame: pl.DataFrame, text: str, field: str) -> tuple[str, pl.DataType]:
