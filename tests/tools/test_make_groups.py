@@ -33,13 +33,14 @@ Vocabulary is neutral: items linked to other items.
 
 import random
 from collections.abc import Hashable, Iterable, Mapping
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.config import expression_fields
 from dantron_etl.tools.make_groups import MakeGroups
 
@@ -349,6 +350,75 @@ class TestMakeGroupsRefusals:
             for height in (3, 0):
                 result = _run(edges.head(height), config)
                 assert result.width == 2
+
+
+def _exact(values: Iterable[str | None], places: int, precision: int = 38) -> pl.Series:
+    """Exact decimals, written as text so nothing passes through a float."""
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+class TestMakeGroupsExactRecords:
+    """Two exact columns of different places name the same record when their values are equal.
+
+    1.50 and 1.5000 are one record, held at the larger places, as union stacks them. An exact column
+    beside a whole-number or float column stays refused, as every other pair of types is here.
+    """
+
+    @pytest.mark.parametrize(("left_places", "right_places"), [(2, 4), (4, 2)])
+    def test_exact_columns_of_different_places_link_by_value_at_the_larger_places(
+        self, left_places: int, right_places: int
+    ) -> None:
+        def written(values: list[str | None], places: int) -> pl.Series:
+            return _exact([None if v is None else f"{Decimal(v):.{places}f}" for v in values], places)
+
+        edges = pl.DataFrame(
+            {
+                "item": written(["1.5", "-2.25", "9", None], left_places),
+                "linked_item": written(["2.25", "1.5", "9", "3"], right_places),
+            }
+        )
+
+        result = _run(edges)
+
+        assert result.schema == {"record": pl.Decimal(38, 4), "group": pl.Decimal(38, 4)}
+        assert result.rows() == [
+            (Decimal("-2.2500"), Decimal("-2.2500")),
+            (Decimal("1.5000"), Decimal("-2.2500")),
+            (Decimal("2.2500"), Decimal("-2.2500")),
+            (Decimal("3.0000"), Decimal("3.0000")),
+            (Decimal("9.0000"), Decimal("9.0000")),
+        ]
+
+    def test_exact_columns_of_the_same_places_but_different_total_digits_link(self) -> None:
+        edges = pl.DataFrame({"item": _exact(["1.50"], 2, precision=18), "linked_item": _exact(["2.00"], 2)})
+
+        result = _run(edges)
+
+        assert result.schema["record"] == pl.Decimal(38, 2)
+        assert result["group"].to_list() == [Decimal("1.50"), Decimal("1.50")]
+
+    def test_a_value_too_wide_for_the_larger_places_is_refused_naming_the_row(self) -> None:
+        wide = "9" * 36 + ".00"
+        edges = pl.DataFrame({"item": _exact([wide, "1.00"], 2), "linked_item": _exact(["1.0000", "1.0000"], 4)})
+
+        with pytest.raises(DataError) as caught:
+            _run(edges)
+
+        message = str(caught.value)
+        for word in ("'item'", "'linked_item'", "4 places", "34 digits", "round([linked_item], 2)", "1 of 2"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    @pytest.mark.parametrize("other", [pl.Int64, pl.Float64])
+    @pytest.mark.parametrize("height", [1, 0], ids=["with_rows", "with_no_rows"])
+    def test_an_exact_column_beside_a_whole_number_or_float_column_stays_refused(
+        self, other: pl.DataType, height: int
+    ) -> None:
+        edges = pl.DataFrame({"item": _exact(["1.00"], 2), "linked_item": pl.Series([1], dtype=other)}).head(height)
+
+        with pytest.raises(ConfigError) as caught:
+            _run(edges)
+
+        assert "'linked_item'" in str(caught.value) and str(other) in str(caught.value)
 
 
 # ---------------------------------------------------------------------------

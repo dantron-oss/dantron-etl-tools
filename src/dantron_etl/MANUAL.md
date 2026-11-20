@@ -589,6 +589,11 @@ Each of these has caught a real pipeline.
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
   the point, from 0 to 38. No tool takes it yet. `cast_columns`, `read_csv`, `unpivot` and
   `write_excel`'s rules refuse it by name; use `Float64` until they do.
+- **Exact keys pair by value.** `join` pairs a `Decimal` key with a `Decimal` key of other places
+  (1.50 with 1.5000) and with a whole-number key (5.00 with 5), as SQL's `=` does; the key on
+  `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
+  places the same way, writing the records at the larger places. A `Decimal` key beside a `Float64`
+  key is refused, naming the float column: convert one side with `cast_columns` first.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

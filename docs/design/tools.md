@@ -48,6 +48,14 @@ the types compare, so the check accepts exactly what a join accepts (Int32 with 
 Float64 no). A key column typed Null, as an empty branch gives, takes the other side's type so
 `joined` keeps its usual columns; none of its rows pair.
 
+**Exact keys are compared by value, by the tool.** polars joins only keys of one type, so it refuses
+`Decimal(38,2)` against `Decimal(38,4)` and against a whole number. SQL's `=` compares both by value,
+so the tool gives each side a copy of the key at the larger places, joins on the copies and drops
+them; every original column keeps its own type. A value with too many digits before the point to be
+held at the larger places becomes null in its copy and pairs nothing, which is the right answer: no
+value on the other side can equal it. A float key against an exact key is refused (the owner's ruling
+that an exact column meeting a float stops the step), naming the float column.
+
 ## group_by
 
 **Aggregates are settings, not expression functions.** The expression language works one row at a
@@ -630,6 +638,8 @@ record. A pair of a record with itself is how a record with no links is listed.
 
 **Types must match.** The number 2 and the text '2' are not the same record, so the tool refuses rather
 than guess.
+Two exact columns of different places are the exception, as in `union`: 1.50 and 1.5000 are one
+record, widened to the larger places. A value too wide to widen is refused by name, never rounded.
 
 **How it runs on whole columns.** Each distinct record gets a number: its position when sorted, so a
 smaller number is a smaller record. In each round, every group touching a smaller group points at the

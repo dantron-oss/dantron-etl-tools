@@ -12,6 +12,11 @@ things; each such release says how to upgrade.
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
   listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv`, `unpivot` and
   `write_excel`'s format, width and wrap rules refuse it, now with a message that says so.
+- **`join` pairs exact keys by value**: a `Decimal` key with a `Decimal` key of other places (1.50
+  with 1.5000), and with a whole-number key (5.00 with 5). Both used to be refused, so no join that
+  ran before gives a different answer. A `Decimal` key beside a `Float64` key is still refused, now
+  naming the float column to convert. `make_groups` links two `Decimal` columns of different places
+  by value too, at the larger places.
 
 ## [0.3.0] - 2026-11-20
 

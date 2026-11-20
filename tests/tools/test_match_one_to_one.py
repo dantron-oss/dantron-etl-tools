@@ -39,6 +39,7 @@ Vocabulary is generic on purpose: left and right keys, a gap, a difference, a se
 
 import random
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -680,3 +681,31 @@ class TestAgainstAPlainWalk:
                 answers[set_of_row[row]][side].append(row)
         for number, rows in enumerate(sets):
             assert answers[number] == _walk_one_row_at_a_time(rows, ties), f"set {number}, ties={ties}: {rows}"
+
+
+class TestExactColumns:
+    """Exact keys and an exact priority work as any other type does, on every supported engine.
+
+    The tool compares a left key only with left keys and a right key only with right keys, so two
+    exact keys of different places never meet, and nothing is converted.
+    """
+
+    @pytest.mark.parametrize("ties", ["first", "refuse"])
+    def test_exact_keys_and_an_exact_priority_pair_the_closest_first(self, ties: str) -> None:
+        def exact(values: list[str | None], places: int) -> pl.Series:
+            return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(38, places))
+
+        frame = pl.DataFrame(
+            {
+                "row": [1, 2, 3, 4],
+                "left_id": exact(["1.50", "1.50", "2.00", None], 2),
+                "right_id": exact(["7.0000", "8.0000", "7.0000", "9.0000"], 4),
+                "gap": exact(["0.10", "0.05", "0.01", "0.00"], 2),
+            }
+        )
+
+        result = _run(frame, [{"column": "gap"}], ties)
+
+        assert result["accepted"]["row"].to_list() == [3, 2]
+        assert result["accepted"].schema == frame.schema
+        assert result["rejected"]["row"].to_list() == [4, 1]
