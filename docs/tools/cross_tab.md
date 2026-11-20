@@ -19,7 +19,8 @@ Use cross_tab to turn a long table into a grid, like a pivot table: one row per 
 | `by[]` | string | optional |  | One column that stays as a row label. Naming it twice counts it once. |
 | `names_from` | string | required |  | The column whose values become the new column headings, such as 'month'. It must hold text. |
 | `values_from` | string | required |  | The column that fills the cells, such as 'amount'. Needed even for 'count', which ignores it. |
-| `function` | string | required | `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `max`, `min`, `sum` | How the rows in one cell become one value, such as 'sum' or 'count'. |
+| `function` | string | required | `all_true`, `any_true`, `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `last`, `last_non_null`, `max`, `mean`, `median`, `min`, `quantile`, `std`, `sum` | How the rows in one cell become one value, such as 'sum' or 'count'. |
+| `fraction` | number | optional |  | For 'quantile' only, and required there: the fraction from 0 to 1, such as 0.5 for the median or 0.9 for the 90th percentile. |
 
 More on some settings:
 
@@ -27,6 +28,7 @@ More on some settings:
 - `names_from`: For example 'month', holding text such as '2026-01'.
 - `values_from`: For example 'amount'.
 - `function`: For example 'sum'. The list is the same as group_by's.
+- `fraction`: For example 0.9, beside function: quantile, for the 90th percentile.
 
 ## Notes
 
@@ -41,6 +43,8 @@ More on some settings:
 - 'join_text' fills a cell as it fills a group: values in arrival order, joined with a comma and a space, nulls skipped. A cell whose values are all null is empty text.
 - So with 'join_text', a cell with rows but no values is empty text, while a cell with no rows is null. group_by never has the second case.
 - 'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that type, the run stops instead of giving a wrong number. Cast to Int64 first if totals can be that large.
+- 'quantile' reads 'fraction', from 0 to 1. Leave 'fraction' out for every other function; it is refused there, not ignored.
+- 'mean', 'median', 'std', 'quantile', 'last', 'last_non_null', 'any_true' and 'all_true' fill a cell as they fill a group in group_by, from the same code.
 
 ## Example 1
 

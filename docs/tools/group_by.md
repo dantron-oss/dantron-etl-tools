@@ -19,9 +19,10 @@ Use group_by for subtotals: one row per customer, per month, or per any mix of c
 | `by[]` | string | optional |  | One column to group by. Naming a column twice counts it once. |
 | `aggregations` | array | required |  | The columns to work out for each group, one entry per output column. |
 | `aggregations[].name` | string | required |  | The output column's name. |
-| `aggregations[].function` | string | required | `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `max`, `min`, `sum` | What to work out, such as 'sum', 'count' or 'max'. |
+| `aggregations[].function` | string | required | `all_true`, `any_true`, `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `last`, `last_non_null`, `max`, `mean`, `median`, `min`, `quantile`, `std`, `sum` | What to work out, such as 'sum', 'count' or 'max'. |
 | `aggregations[].value` | expression | optional |  | The column or expression the function reads, such as '[amount]'. Leave it out for 'count', which counts rows. |
 | `aggregations[].separator` | string | optional |  | For 'join_text' only: what goes between the joined values. The default is a comma and a space. |
+| `aggregations[].fraction` | number | optional |  | For 'quantile' only, and required there: the fraction from 0 to 1, such as 0.5 for the median or 0.9 for the 90th percentile. |
 
 More on some settings:
 
@@ -34,10 +35,16 @@ More on some settings:
 - To keep a column that is the same on every row of a group, take its 'min' or 'max'.
 - 'sum' of a group where every value is null is null, not zero. A zero would look like a measured amount.
 - 'sum' skips nulls in a group that has at least one value: 10 and null sum to 10.
-- 'first' and 'join_text' depend on the order the rows arrive in, so the same data in another order can give another answer. Sort first if that matters.
+- 'first', 'last' and 'join_text' depend on the order the rows arrive in, so the same data in another order can give another answer. Sort first if that matters.
 - Use 'first' for a column that is the same on every row of a group. If you are not sure it is, add a 'count_distinct' of the same column to check.
 - 'first' takes the first row's value, even when it is null and a later row has a value.
 - 'first_non_null' skips nulls and takes the first value there is. Only a group of nulls gives null.
+- 'last' and 'last_non_null' are the same from the other end: 'last' takes the last row's value, even when it is null and an earlier row has a value.
+- 'mean', 'median', 'std' and 'quantile' skip nulls, as SQL's AVG does. A group with no value gives null, and 'std' of a single value is null.
+- 'std' is the sample standard deviation, as SQL's STDDEV and Excel's STDEV.S.
+- 'quantile' reads 'fraction', from 0 to 1, and interpolates between the two nearest values, as SQL's PERCENTILE_CONT and Excel's PERCENTILE.INC: 0.25 of 1, 2, 3, 4 is 1.75.
+- The statistics refuse an exact Decimal column, since they would work it out in binary floating point. Cast it to Float64 first.
+- 'any_true' and 'all_true' read a true/false column, skip nulls, and give null for a group with no value, as SQL's BOOL_OR and BOOL_AND.
 - 'count' counts the rows of a group and reads no column. 'count_non_null' counts the values of one column that are not null.
 - Some other libraries call the non-null count 'count'. Check which one you mean when copying a step from them.
 - 'count_distinct' counts the different values and skips nulls, as SQL's COUNT(DISTINCT) does: a, a, null, b counts 2, and a group of nulls counts 0.
@@ -170,6 +177,55 @@ Rows out:
 | C | "" | 1 |
 
 Each group's notes are joined in the order the rows arrived, with '; ' between. A's missing note is skipped, so 'notes' reads 'late' while 'lines' still counts two rows. C has a row but no note, so its notes are empty text, not null.
+
+## Example 4
+
+the mean, median and 90th percentile of each product's delivery days
+
+```yaml fragment
+tool: group_by
+config:
+  by:
+  - product
+  aggregations:
+  - name: mean_days
+    function: mean
+    value: '[days]'
+  - name: median_days
+    function: median
+    value: '[days]'
+  - name: days_90th
+    function: quantile
+    value: '[days]'
+    fraction: 0.9
+  - name: any_late
+    function: any_true
+    value: '[late]'
+```
+
+Rows in:
+
+`rows`
+
+| product | days | late |
+|---|---|---|
+| A | 2.0 | false |
+| A | 4.0 | false |
+| A | null | null |
+| A | 9.0 | true |
+| B | 3.0 | false |
+| B | null | null |
+
+Rows out:
+
+`rows`
+
+| product | mean_days | median_days | days_90th | any_late |
+|---|---|---|---|---|
+| A | 5.0 | 4.0 | 8.0 | true |
+| B | 3.0 | 3.0 | 3.0 | false |
+
+The blank days are skipped, so A's mean is (2 + 4 + 9) / 3 = 5. The 90th percentile lies between A's two largest values, 4 and 9, so it is 4 + 0.8 * 5 = 8. 'any_late' is true where any row is late.
 
 ---
 

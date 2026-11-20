@@ -18,6 +18,10 @@ things; each such release says how to upgrade.
 - **Text functions** `left`, `right`, `substr`, `split_part`, `pad_left` and `pad_right`. They count
   characters, not bytes. `pad_left` and `pad_right` never cut a longer value. `substr`'s length may
   be left out, the first argument in the language that may be.
+- **Aggregates** for `group_by` and `cross_tab`: `mean`, `median`, `std` (the sample standard
+  deviation), `quantile` with a `fraction` from 0 to 1, `last`, `last_non_null`, `any_true` and
+  `all_true`. They skip nulls, and a group with no value gives null. The statistics refuse an exact
+  `Decimal` column; cast it to `Float64` first.
 
 ## [0.2.0] - 2026-11-20
 

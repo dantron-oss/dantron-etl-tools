@@ -332,17 +332,34 @@
           "required": true,
           "type": "array"
         },
+        "fraction": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "number"
+        },
         "function": {
           "default": null,
           "enum": [
+            "all_true",
+            "any_true",
             "count",
             "count_distinct",
             "count_non_null",
             "first",
             "first_non_null",
             "join_text",
+            "last",
+            "last_non_null",
             "max",
+            "mean",
+            "median",
             "min",
+            "quantile",
+            "std",
             "sum"
           ],
           "fields": null,
@@ -607,17 +624,34 @@
             "default": null,
             "enum": null,
             "fields": {
+              "fraction": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "number"
+              },
               "function": {
                 "default": null,
                 "enum": [
+                  "all_true",
+                  "any_true",
                   "count",
                   "count_distinct",
                   "count_non_null",
                   "first",
                   "first_non_null",
                   "join_text",
+                  "last",
+                  "last_non_null",
                   "max",
+                  "mean",
+                  "median",
                   "min",
+                  "quantile",
+                  "std",
                   "sum"
                 ],
                 "fields": null,

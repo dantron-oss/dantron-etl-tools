@@ -28,11 +28,37 @@ from ..authoring import (
     require_not_blank,
 )
 
-# The aggregates a flow may name. cross_tab offers the same list. Why no mean:
-# docs/design/tools.md#group_by
+# The aggregates a flow may name. cross_tab offers the same list. Why: docs/design/tools.md#group_by
 AGGREGATE_FUNCTIONS: Final[frozenset[str]] = frozenset(
-    {"sum", "count", "count_non_null", "count_distinct", "min", "max", "first", "first_non_null", "join_text"}
+    {
+        "sum",
+        "count",
+        "count_non_null",
+        "count_distinct",
+        "min",
+        "max",
+        "first",
+        "first_non_null",
+        "last",
+        "last_non_null",
+        "join_text",
+        "mean",
+        "median",
+        "std",
+        "quantile",
+        "any_true",
+        "all_true",
+    }
 )
+
+# The aggregates that work out a figure from numbers. Shared with cross_tab.
+STATISTICS: Final[frozenset[str]] = frozenset({"mean", "median", "std", "quantile"})
+
+# The aggregates over true/false values. Shared with cross_tab.
+TRUTH_AGGREGATES: Final[frozenset[str]] = frozenset({"any_true", "all_true"})
+
+# The one aggregate that reads 'fraction'. Shared with cross_tab.
+FRACTION_FUNCTION: Final[str] = "quantile"
 
 # The one aggregate that reads no column.
 _NO_VALUE_FUNCTION: Final[str] = "count"
@@ -50,6 +76,75 @@ NARROW_SUM_LIMITS: Final[dict[pl.DataType, tuple[int, int]]] = {
     pl.Int32: (-(2**31), 2**31 - 1),
     pl.UInt32: (0, 2**32 - 1),
 }
+
+
+def unsuitable(function: str, dtype: pl.DataType) -> str | None:
+    """Why ``function`` cannot summarise a column of ``dtype``, worded to follow "which holds <dtype>, "; None if it can.
+
+    Shared with cross_tab, so the two refuse the same columns in the same words.
+    """
+    if function in STATISTICS:
+        if isinstance(dtype, pl.Decimal):
+            return (
+                f"an exact decimal. {function!r} would work it out in binary floating point, where 0.20 and "
+                f"0.70 have a median of 0.44999999999999996. Cast the column to Float64 first with "
+                f"cast_columns, so the change is written in the pipeline"
+            )
+        if not dtype.is_numeric():
+            return "not a number"
+    if function in TRUTH_AGGREGATES and dtype != pl.Boolean:
+        return "not true/false. Compare it in an expression first, such as [amount] > 0"
+    return None
+
+
+def fraction_problem(function: str, fraction: Any, field: str) -> str | None:
+    """What is wrong with ``fraction`` beside ``function``, as a refusal naming ``field``; None if nothing.
+
+    Shared with cross_tab. The fraction is required by 'quantile', refused beside anything else, and
+    must lie from 0 to 1.
+    """
+    if function != FRACTION_FUNCTION:
+        if fraction is None:
+            return None
+        return (
+            f"config field {field!r} sits beside function {function!r}, which reads no fraction; only "
+            f"'quantile' reads one, so either make the function 'quantile' or drop the fraction"
+        )
+    if fraction is None:
+        return f"'quantile' needs config field {field!r}, the fraction from 0 to 1, such as 0.9 for the 90th percentile"
+    if not 0 <= fraction <= 1:
+        return f"config field {field!r} is {fraction}, but a quantile's fraction lies from 0 to 1, such as 0.9"
+    return None
+
+
+def shared_aggregate(expression: pl.Expr, function: str, fraction: float | None) -> pl.Expr:
+    """One of :data:`SHARED_AGGREGATES` over ``expression``, worked out once for both group_by and cross_tab.
+
+    Each skips nulls, and a group with no value gives null. 'any_true' and 'all_true' are guarded for
+    that, because the engine answers false and true for a group of nulls.
+    """
+    if function == "mean":
+        return expression.mean()
+    if function == "median":
+        return expression.median()
+    if function == "std":
+        return expression.std(ddof=1)
+    if function == FRACTION_FUNCTION:
+        assert fraction is not None, "validate_config requires a fraction beside 'quantile'"
+        return expression.quantile(fraction, interpolation="linear")
+    if function == "last":
+        return expression.last()
+    if function == "last_non_null":
+        return expression.drop_nulls().last()
+    if function == "any_true":
+        return pl.when(expression.is_not_null().any()).then(expression.any()).otherwise(None)
+    if function == "all_true":
+        return pl.when(expression.is_not_null().any()).then(expression.all()).otherwise(None)
+    raise AssertionError(f"unreachable aggregate function {function!r}")  # pragma: no cover
+
+
+# The aggregates both tools work out with :func:`shared_aggregate`, so the two cannot answer differently.
+SHARED_AGGREGATES: Final[frozenset[str]] = STATISTICS | TRUTH_AGGREGATES | {"last", "last_non_null"}
 
 
 def sum_without_wrapping(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
@@ -112,6 +207,12 @@ class GroupBy:
                             "The default is a comma and a space.",
                             required=False,
                         ),
+                        "fraction": ConfigField(
+                            type="number",
+                            description="For 'quantile' only, and required there: the fraction from 0 "
+                            "to 1, such as 0.5 for the median or 0.9 for the 90th percentile.",
+                            required=False,
+                        ),
                     },
                 ),
             ),
@@ -125,7 +226,12 @@ class GroupBy:
                 "the 'by' columns, then one column per aggregation. Every other column is dropped. "
                 "Groups come out in the order each one first appears in the input, not sorted."
             ),
-            examples=(_total_and_count_example(), _carried_column_example(), _joined_text_example()),
+            examples=(
+                _total_and_count_example(),
+                _carried_column_example(),
+                _joined_text_example(),
+                _statistics_example(),
+            ),
             notes=(
                 "Rows whose 'by' value is null form one group of their own, as in SQL's GROUP BY. "
                 "They are never dropped.",
@@ -133,13 +239,24 @@ class GroupBy:
                 "'sum' of a group where every value is null is null, not zero. A zero would look "
                 "like a measured amount.",
                 "'sum' skips nulls in a group that has at least one value: 10 and null sum to 10.",
-                "'first' and 'join_text' depend on the order the rows arrive in, so the same data "
-                "in another order can give another answer. Sort first if that matters.",
+                "'first', 'last' and 'join_text' depend on the order the rows arrive in, so the same "
+                "data in another order can give another answer. Sort first if that matters.",
                 "Use 'first' for a column that is the same on every row of a group. If you are not "
                 "sure it is, add a 'count_distinct' of the same column to check.",
                 "'first' takes the first row's value, even when it is null and a later row has a value.",
                 "'first_non_null' skips nulls and takes the first value there is. Only a group of "
                 "nulls gives null.",
+                "'last' and 'last_non_null' are the same from the other end: 'last' takes the last "
+                "row's value, even when it is null and an earlier row has a value.",
+                "'mean', 'median', 'std' and 'quantile' skip nulls, as SQL's AVG does. A group with no "
+                "value gives null, and 'std' of a single value is null.",
+                "'std' is the sample standard deviation, as SQL's STDDEV and Excel's STDEV.S.",
+                "'quantile' reads 'fraction', from 0 to 1, and interpolates between the two nearest "
+                "values, as SQL's PERCENTILE_CONT and Excel's PERCENTILE.INC: 0.25 of 1, 2, 3, 4 is 1.75.",
+                "The statistics refuse an exact Decimal column, since they would work it out in binary "
+                "floating point. Cast it to Float64 first.",
+                "'any_true' and 'all_true' read a true/false column, skip nulls, and give null for a "
+                "group with no value, as SQL's BOOL_OR and BOOL_AND.",
                 "'count' counts the rows of a group and reads no column. 'count_non_null' counts the "
                 "values of one column that are not null.",
                 "Some other libraries call the non-null count 'count'. Check which one you mean "
@@ -170,7 +287,11 @@ class GroupBy:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse what the configuration alone shows is wrong: clashing names, a misplaced separator, a missing or extra value."""
+        """Refuse what the configuration alone shows is wrong.
+
+        That is clashing names, a misplaced separator or fraction, a missing fraction or one outside 0
+        to 1, and a missing or extra value.
+        """
         by_columns = set(config["by"])
         seen_names: set[str] = set()
         for index, aggregation in enumerate(config["aggregations"]):
@@ -195,6 +316,10 @@ class GroupBy:
                     f"separator, so either make the function 'join_text' or drop the separator"
                 )
 
+            problem = fraction_problem(function, aggregation.get("fraction"), f"aggregations[{index}].fraction")
+            if problem is not None:
+                raise ConfigError(problem)
+
             if function == _NO_VALUE_FUNCTION:
                 if value is not None:
                     raise ConfigError(
@@ -215,8 +340,9 @@ class GroupBy:
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
         """Check the named columns against the frame's schema.
 
-        Refuses a missing 'by' column, a 'value' naming a missing column, a 'sum' of something that is not a
-        number, and a 'join_text' of something that is not text. An empty frame is refused the same way.
+        Refuses a missing 'by' column, a 'value' naming a missing column, a 'sum' or a statistic of something
+        that is not a number, a statistic of an exact decimal, 'any_true' or 'all_true' of something that is
+        not true/false, and a 'join_text' of something that is not text. An empty frame is refused the same way.
         """
         frame = inputs["rows"]
         require_columns(frame, _by_columns(config), "by", "rows")
@@ -240,6 +366,14 @@ class GroupBy:
                         f"config field {field!r} asks 'join_text' to join column {column!r}, which "
                         f"holds {dtype}, not text, in expression: `{value}`; format it into text in "
                         f"the step before this one, where the formatting is written down"
+                    )
+            elif aggregation["function"] in STATISTICS | TRUTH_AGGREGATES:
+                column, dtype = compiled_dtype(frame, value, field)
+                problem = unsuitable(aggregation["function"], dtype)
+                if problem is not None:
+                    raise ConfigError(
+                        f"config field {field!r} asks {aggregation['function']!r} of column {column!r}, "
+                        f"which holds {dtype}, {problem}, in expression: `{value}`"
                     )
             else:
                 compile_for(frame, value, field)
@@ -318,6 +452,8 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
         return expression.str.join(separator).alias(name)
     if function == "max":
         return expression.max().alias(name)
+    if function in SHARED_AGGREGATES:
+        return shared_aggregate(expression, function, aggregation.get("fraction")).alias(name)
     # Reached only if AGGREGATE_FUNCTIONS grew without a branch here. Never fall through to a default.
     raise AssertionError(f"unreachable aggregate function {function!r}")  # pragma: no cover
 
@@ -435,6 +571,52 @@ def _joined_text_example() -> WorkedExample:
         explanation="Each group's notes are joined in the order the rows arrived, with '; ' between. "
         "A's missing note is skipped, so 'notes' reads 'late' while 'lines' still counts two rows. "
         "C has a row but no note, so its notes are empty text, not null.",
+        inputs=inputs,
+        outputs=outputs,
+        check_row_order=True,
+    )
+
+
+def _statistics_example() -> WorkedExample:
+    inputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {
+                    "product": ["A", "A", "A", "A", "B", "B"],
+                    "days": [2.0, 4.0, None, 9.0, 3.0, None],
+                    "late": [False, False, None, True, False, None],
+                },
+                schema={"product": pl.String, "days": pl.Float64, "late": pl.Boolean},
+            )
+        }
+    )
+    outputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {
+                    "product": ["A", "B"],
+                    "mean_days": [5.0, 3.0],
+                    "median_days": [4.0, 3.0],
+                    "days_90th": [8.0, 3.0],
+                    "any_late": [True, False],
+                },
+            )
+        }
+    )
+    return WorkedExample(
+        scenario="the mean, median and 90th percentile of each product's delivery days",
+        configuration={
+            "by": ["product"],
+            "aggregations": [
+                {"name": "mean_days", "function": "mean", "value": "[days]"},
+                {"name": "median_days", "function": "median", "value": "[days]"},
+                {"name": "days_90th", "function": "quantile", "value": "[days]", "fraction": 0.9},
+                {"name": "any_late", "function": "any_true", "value": "[late]"},
+            ],
+        },
+        explanation="The blank days are skipped, so A's mean is (2 + 4 + 9) / 3 = 5. The 90th percentile "
+        "lies between A's two largest values, 4 and 9, so it is 4 + 0.8 * 5 = 8. 'any_late' is true "
+        "where any row is late.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

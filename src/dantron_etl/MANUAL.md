@@ -643,7 +643,8 @@ Each of these has caught a real pipeline.
 - **`first` means "the first row as it arrives", null or not.** It is only meaningful after a
   `sort`. A `first` with no ordering in front of it is a coin toss that will land the same way in
   testing and differently in production. A group whose first row is blank gives null even when a
-  later row has a value; `first_non_null` gives the first value that is there instead.
+  later row has a value; `first_non_null` gives the first value that is there instead. `last` and
+  `last_non_null` are the same from the other end.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
   and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
@@ -697,6 +698,11 @@ Two more rulings you will meet:
   different figures.
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
+- **`mean`, `median`, `std` and `quantile` skip nulls**, as SQL's `AVG` does, so a mean divides by
+  the values that are there. A group with no value gives null. They refuse an exact `Decimal`
+  column, which they would work out in binary floating point; cast it to `Float64` first.
+  `quantile` needs `fraction`, from 0 to 1, beside it. `any_true` and `all_true` skip nulls too, and
+  a group of nulls gives null, as SQL's `BOOL_OR` and `BOOL_AND`.
 - **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a
   group of nulls counts 0. To count a blank as a value too, count `coalesce([v], '(blank)')`. It
   was called `n_unique` and counted a null as one more value; the migration renames it.
