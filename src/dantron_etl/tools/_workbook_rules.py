@@ -9,13 +9,13 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES
+from ..column_types import DECLARED_DTYPE
 
 _DATE_FORMAT: Final[str] = "yyyy-mm-dd"
 _DATETIME_FORMAT: Final[str] = "yyyy-mm-dd hh:mm:ss"
 
 #: Each dtype, by the type name a rule uses for it. A dtype not listed (Float32, say) matches no rule.
-_DECLARED_NAME: Final[Mapping[Any, str]] = {DECLARED_DTYPE[name].base_type(): name for name in DECLARED_TYPES}
+_DECLARED_NAME: Final[Mapping[Any, str]] = {dtype.base_type(): name for name, dtype in DECLARED_DTYPE.items()}
 
 
 def format_rules(entry: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:

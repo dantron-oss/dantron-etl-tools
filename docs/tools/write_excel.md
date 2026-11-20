@@ -22,16 +22,16 @@ Use write_excel to deliver results as a spreadsheet. Each entry in 'sheets' name
 | `sheets[].sheet` | string | required |  | The tab name, such as 'Summary'. At most 31 characters, and none of '[' ']' ':' '*' '?' '/' '\'. |
 | `sheets[].allow_empty` | boolean | optional |  | Set true to write a port with no rows as a tab of headings only. Left out, an empty port stops the run. |
 | `sheets[].formats` | array | optional |  | Number formats for this tab, one rule per entry, each for a type or one column. Left out, only dates are formatted. |
-| `sheets[].formats[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Apply the format to every column of this type, such as Float64. |
+| `sheets[].formats[].type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Apply the format to every column of this type, such as Float64. |
 | `sheets[].formats[].column` | string | optional |  | Apply the format to this one column. It beats a rule about the column's type. |
 | `sheets[].formats[].format` | string | required |  | The spreadsheet's format code, such as '#,##0.00' for money or '0.0%' for a percentage. |
 | `sheets[].widths` | array | optional |  | Column widths, one rule per entry, each for a type or one column. Left out, no width is set. |
-| `sheets[].widths[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Set this width on every column of this type. |
+| `sheets[].widths[].type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Set this width on every column of this type. |
 | `sheets[].widths[].column` | string | optional |  | Set this width on this one column; it beats any rule about the column's type. |
 | `sheets[].widths[].width` | number | required |  | The width, in characters: more than 0, at most 255. |
 | `sheets[].fit_widths` | boolean | optional |  | Set true to size each column to fit its heading and values, up to 60 characters wide. |
 | `sheets[].wrap` | array | optional |  | Columns whose text wraps onto several lines, one rule per entry, each for a type or one column. |
-| `sheets[].wrap[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Wrap every column of this type. |
+| `sheets[].wrap[].type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Wrap every column of this type. |
 | `sheets[].wrap[].column` | string | optional |  | Wrap this one column. |
 | `sheets[].table` | object | optional |  | Turn the rows into a spreadsheet table with filter dropdowns. Write {} to name it after the tab. |
 | `sheets[].table.name` | string | optional |  | The table's name, such as 'Sales'. Left out, it is made from the tab name. |

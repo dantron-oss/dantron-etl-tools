@@ -17,7 +17,7 @@ Use cast_columns to say what type a column really is: numbers that arrived as te
 |---|---|---|---|---|
 | `columns` | array | required |  | The columns to change, one entry each, with the type each should be. |
 | `columns[].column` | string | required |  | The column to change, such as 'amount'. |
-| `columns[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The new type, such as 'Float64' for decimals, 'Int64' for whole numbers, 'Date' or 'String'. |
+| `columns[].type` | string | required | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | The new type, such as 'Float64' for decimals, 'Int64' for whole numbers, 'Date' or 'String'. |
 | `columns[].in_zone` | string | optional |  | Only when turning a timestamp with a time zone into a 'Date': the zone whose calendar decides the day, such as 'UTC'. |
 | `on_invalid` | string | default `error` | `error`, `set_null` | What to do with a value that will not convert: 'error' stops the run; 'set_null' makes it null and reports how many. |
 

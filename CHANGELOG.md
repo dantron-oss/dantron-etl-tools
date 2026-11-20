@@ -7,6 +7,12 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
+  listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv`, `unpivot` and
+  `write_excel`'s format, width and wrap rules refuse it, now with a message that says so.
+
 ## [0.3.0] - 2026-11-20
 
 This release adds to the library and changes no result a pipeline gives today. It reads Excel's

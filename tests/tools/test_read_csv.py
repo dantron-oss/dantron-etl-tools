@@ -915,7 +915,7 @@ class TestReadCsvInTheCatalog:
         assert tuple((entry.fields or {})["type"].enum or ()) == tuple(DECLARED_TYPES)
         assert (entry.fields or {})["format"].required is False, "a date in ISO order needs no format"
 
-        assert set(DECLARED_TYPES) == {"String", "Int64", "Float64", "Boolean", "Date", "Datetime", "Time"}
+        assert set(DECLARED_TYPES) == {"String", "Int64", "Float64", "Decimal", "Boolean", "Date", "Datetime", "Time"}
         assert not set(DECLARED_TYPES) & YAML_UNSAFE_VALUES, "a declared type has to survive a definition file"
 
     def test_read_csv_conforms_and_its_example_leaves_nothing_behind_it(self) -> None:

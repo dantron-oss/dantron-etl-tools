@@ -22,8 +22,10 @@ from ..column_types import (
     DATETIME_DEFAULT_FORMAT,
     DECLARED_DTYPE,
     DECLARED_TYPES,
+    EXACT_TYPE,
     TEMPORAL_TYPES,
     TIME_DEFAULT_FORMAT,
+    not_yet_exact,
 )
 from ..authoring import (
     REGISTRY,
@@ -263,9 +265,13 @@ class ReadCsv:
 def _validate_column_types(column_types: Sequence[Mapping[str, Any]]) -> None:
     """Refuse two rulings for one column, or a format on a type no format says anything about."""
     seen: set[str] = set()
-    for entry in column_types:
+    for index, entry in enumerate(column_types):
         column = entry["column"]
         declared_type = entry["type"]
+        if declared_type == EXACT_TYPE:
+            raise ConfigError(
+                not_yet_exact("read_csv", f"column_types[{index}].type", "use Float64 for figures, or String to keep the digits as written")
+            )
         fmt = entry.get("format")
         if column in seen:
             raise ConfigError(f"read_csv declares column_types for column {column!r} more than once")

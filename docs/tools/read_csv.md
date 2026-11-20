@@ -22,7 +22,7 @@ Use read_csv to start a flow from a .csv or .tsv file. The whole file is read to
 | `skip_rows` | integer | default `0` |  | How many lines to skip before the header, or before the data without one. |
 | `column_types` | array | optional |  | Columns whose worked-out type is wrong, with the type they should be. |
 | `column_types[].column` | string | required |  | The column name from the header, such as 'zip'. |
-| `column_types[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The type, such as 'String', 'Int64', 'Float64' or 'Date'. |
+| `column_types[].type` | string | required | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | The type, such as 'String', 'Int64', 'Float64' or 'Date'. |
 | `column_types[].format` | string | optional |  | For a date or time: how it is written, such as '%d/%m/%Y'. Left out, year-month-day. |
 
 More on some settings:

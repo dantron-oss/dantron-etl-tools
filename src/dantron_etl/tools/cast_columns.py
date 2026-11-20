@@ -12,7 +12,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, cut_fractions, fraction_refusal
+from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, EXACT_TYPE, cut_fractions, fraction_refusal, not_yet_exact
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -31,6 +31,8 @@ from ..authoring import (
 
 # 'set_null', not 'null': YAML reads an unquoted null as no value at all.
 _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "set_null")
+
+_FLOAT_OR_TEXT: Final[str] = "use Float64 for figures, or String to keep the digits as written"
 
 
 class CastColumns:
@@ -130,6 +132,8 @@ class CastColumns:
         named: set[str] = set()
         for index, entry in enumerate(config["columns"]):
             column = entry["column"]
+            if entry["type"] == EXACT_TYPE:
+                raise ConfigError(not_yet_exact("cast_columns", f"columns[{index}].type", _FLOAT_OR_TEXT))
             zone = entry.get("in_zone")
             if zone is not None:
                 check_zone_name(zone, f"columns[{index}].in_zone")

@@ -19,7 +19,7 @@ Use unpivot to turn a wide table into a long one, for example one column per mon
 | `by[]` | string | optional |  | One column that stays as it is. Naming it twice counts it once. |
 | `names_to` | string | required |  | The name of the new column holding each old column's heading, such as 'month'. |
 | `values_to` | string | required |  | The name of the new column holding each old cell's value, such as 'amount'. |
-| `values_type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Optional: the type to read every turned column as, such as 'Float64'. Without it, those columns must already share a type. |
+| `values_type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Optional: the type to read every turned column as, such as 'Float64'. Without it, those columns must already share a type. |
 | `on_invalid` | string | optional | `error`, `set_null` | With 'values_type': 'error' stops the run on a value that will not convert (the default); 'set_null' makes it null and reports how many. |
 | `exclude_nulls` | boolean | default `false` |  | Set true to leave out cells that are null, instead of making a row with no value. |
 

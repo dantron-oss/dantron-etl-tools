@@ -11,7 +11,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, cut_fractions, fraction_refusal
+from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, EXACT_TYPE, cut_fractions, fraction_refusal, not_yet_exact
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -144,6 +144,8 @@ class Unpivot:
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
         """Refuse blank or clashing new names, and on_invalid without values_type."""
+        if config["values_type"] == EXACT_TYPE:
+            raise ConfigError(not_yet_exact("unpivot", "values_type", "use Float64 for figures, or String to keep the digits as written"))
         by_columns = set(_by_columns(config))
         for field in ("names_to", "values_to"):
             column = config[field]

@@ -23,7 +23,7 @@ from ..authoring import (
     Ports,
     ToolHelp,
 )
-from ..column_types import DECLARED_TYPES
+from ..column_types import DECLARED_TYPES, EXACT_TYPE, not_yet_exact
 from ._spreadsheet import (
     MAX_CELL_TEXT,
     MAX_DATA_ROWS,
@@ -365,7 +365,18 @@ class WriteExcel:
             tabs[sheet] = port
             ports.add(port)
 
-        for entry in config["sheets"]:
+        for index, entry in enumerate(config["sheets"]):
+            for setting in ("formats", "widths", "wrap"):
+                for number, rule in enumerate(entry.get(setting) or ()):
+                    if rule.get("type") == EXACT_TYPE:
+                        raise ConfigError(
+                            not_yet_exact(
+                                "write_excel",
+                                f"sheets[{index}].{setting}[{number}].type",
+                                "an exact column cannot be written to a tab yet, so convert it to Float64 "
+                                "with cast_columns and write the rule for Float64",
+                            )
+                        )
             validate_format_rules(entry)
             validate_layout(entry)
         validate_table_names(config["sheets"])

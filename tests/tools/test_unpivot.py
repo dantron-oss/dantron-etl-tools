@@ -879,7 +879,7 @@ def _typed_melt_refusal_cases() -> list[Any]:
         pytest.param(
             {**BASE, "values_type": "Decimal"},
             ("values_type", "Float64", "String"),
-            id="a_values_type_that_is_not_one_of_the_declared_types",
+            id="a_values_type_of_decimal_which_unpivot_does_not_take_yet",
         ),
         pytest.param(
             {**BASE, "values_type": "float64"},
