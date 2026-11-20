@@ -1,8 +1,8 @@
 /* A file a step names: its path, what is known about it, its buttons and its first rows. */
 .filebox { margin:.3rem 0 .6rem; padding:.5rem .6rem; border:1px solid var(--line); border-radius:6px;
   background:var(--surface); font-size:.78rem; text-align:left; }
-.filebox .fpath { width:100%; font:400 .74rem var(--mono); padding:.2rem .4rem; border:1px solid var(--line);
-  border-radius:4px; background:var(--ground); color:var(--ink); }
+.filebox .fpath { margin:0; font:400 .74rem var(--mono); padding:.2rem .4rem; border:1px solid var(--line);
+  border-radius:4px; background:var(--ground); color:var(--ink); overflow-wrap:anywhere; user-select:all; }
 .filebox ul.ffacts { margin:.35rem 0; padding-left:1.1rem; color:var(--muted); }
 .filebox .fbuttons { display:flex; flex-wrap:wrap; gap:.4rem; margin:.3rem 0; }
 .filebox button, button.fshow { font:500 .74rem var(--sans); padding:.2rem .6rem; border:1px solid var(--accent);

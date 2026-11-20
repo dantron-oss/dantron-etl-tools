@@ -143,8 +143,11 @@ def _inside(path: str, folder: Path) -> bool:
     return True
 
 
-def facts(named: NamedFile, project_root: Path) -> dict[str, Any]:
-    """Where the file is, whether it is there, its size and time, and those facts as sentences."""
+def facts(named: NamedFile, project_root: Path, *, opens: bool = True) -> dict[str, Any]:
+    """Where the file is, whether it is there, its size and time, and those facts as sentences.
+
+    ``opens`` says whether this machine has a file manager; without one, ``can_open`` is false.
+    """
     shown: dict[str, Any] = {
         "step": named.step,
         "setting": named.setting,
@@ -158,7 +161,7 @@ def facts(named: NamedFile, project_root: Path) -> dict[str, Any]:
         "size": None,
         "modified": None,
         "outside_project": False,
-        "can_open": named.path is not None,
+        "can_open": opens and named.path is not None,
         "can_preview": False,
         "said": [],
     }

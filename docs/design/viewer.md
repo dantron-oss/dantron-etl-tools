@@ -98,13 +98,18 @@ are on `PATH`), so every case is tested without a desktop, in this order:
 | Windows | `explorer /select, <file>` (Explorer's exit code means nothing, so it is ignored) |
 | macOS | `open -R <file>` |
 | WSL (a WSL kernel, a WSL session, `explorer.exe` and `wslpath`) | `explorer.exe /select, <wslpath -w file>` |
-| A VS Code terminal (`code` on `PATH` and `VSCODE_IPC_HOOK_CLI` set), including a dev container | `code -r <file>`: the file opens in the editor and the file panel shows where it is. A workbook opens as a "cannot show as text" tab, and the reader is told to use Preview. |
 | A Linux desktop (`DISPLAY` or `WAYLAND_DISPLAY`, and `xdg-open`) | asks the file manager over D-Bus to select the file, falling back to `xdg-open <folder>` |
-| none of these | nothing; the page says so and leaves the path and Preview |
+| none of these | nothing; the page does not offer the button, and leaves the path and Preview |
 
-A file not written yet has its folder opened instead, and the reader is told. VS Code is the exception:
-its command line can open a folder only by switching the window to it or adding it to the workspace, so
-nothing is opened and the folder is named. Commands are argument lists, never a shell, every path is
+**Never an editor.** An earlier version opened the file in VS Code when the viewer ran from a VS Code
+terminal, which covers a dev container. The owner tried it and turned it down: he wants the file's
+location in the file manager, as a browser's "show in folder" gives, not the file open in an editor.
+A dev container has no file manager to reach, because the viewer runs inside it, walled off from the
+computer's desktop, and its files are on the container's own disk. So there the page shows the full
+path and Preview, and no "Open location" button. `has_file_manager` decides this once, when the server
+starts, from the same facts `how_to_open` uses, and a test keeps the two in agreement.
+
+A file not written yet has its folder opened instead, and the reader is told. Commands are argument lists, never a shell, every path is
 absolute so a file named `-n.csv` cannot read as an option, and the server waits at most five seconds.
 
 ## Why the page is plain files

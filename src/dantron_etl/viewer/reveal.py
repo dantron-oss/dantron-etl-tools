@@ -26,6 +26,7 @@ __all__ = [
     "Ran",
     "Target",
     "carry_out",
+    "has_file_manager",
     "how_to_open",
     "open_location",
     "spawn",
@@ -33,18 +34,14 @@ __all__ = [
 ]
 
 #: The programs the table below may use. Each is looked up on PATH once per request.
-HELPERS = ("explorer", "explorer.exe", "wslpath", "open", "code", "gdbus", "xdg-open")
+HELPERS = ("explorer", "explorer.exe", "wslpath", "open", "gdbus", "xdg-open")
 
 #: How long to wait for a program before taking it as started. A file manager may never return.
 WAIT_SECONDS = 5.0
 
-#: Files VS Code shows as a "cannot display" tab rather than as text.
-_NOT_TEXT = frozenset({".xlsx", ".xlsm", ".xls", ".xlsb", ".ods", ".parquet", ".zip", ".pdf"})
-_WORKBOOKS = frozenset({".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"})
-
 _NOTHING = (
-    "This computer has no file manager the viewer can open, so nothing was opened. "
-    "Copy the path, or use Preview to see what the file holds."
+    "The viewer cannot reach a file manager on this computer, so nothing was opened. "
+    "This happens when the viewer runs inside a container. Use Preview to see what the file holds."
 )
 
 
@@ -139,34 +136,10 @@ def _is_wsl(machine: Machine) -> bool:
     )
 
 
-def _has_vs_code(machine: Machine) -> bool:
-    """A terminal inside VS Code: its ``code`` command and the hook its terminal sets."""
-    return "code" in machine.programs and bool(machine.environ.get("VSCODE_IPC_HOOK_CLI"))
-
-
 def _has_desktop(machine: Machine) -> bool:
     return machine.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")) and bool(
         machine.environ.get("DISPLAY") or machine.environ.get("WAYLAND_DISPLAY")
     )
-
-
-def _vs_code(target: Target, folder: str, programs: Mapping[str, str]) -> Launch | NoLaunch:
-    if not target.exists:
-        return NoLaunch(
-            "The file is not there yet. VS Code can open a folder only by switching this window to it, "
-            f"so nothing was opened. The file will be written in {folder}."
-        )
-    where = "If the file is inside the folder VS Code has open, the file panel on the left shows where it is."
-    suffix = PurePosixPath(target.path).suffix.lower()
-    if suffix in _NOT_TEXT:
-        kind = "a workbook" if suffix in _WORKBOOKS else "this kind of file"
-        done = (
-            f"Opened the file in VS Code. VS Code cannot show {kind} as text, so its tab says so. "
-            f"{where} Use Preview to see what it holds."
-        )
-    else:
-        done = f"Opened the file in VS Code. {where}"
-    return Launch((programs["code"], "-r", target.path), done)
 
 
 def _desktop(target: Target, folder: str, programs: Mapping[str, str]) -> Launch | NoLaunch:
@@ -190,11 +163,25 @@ def _desktop(target: Target, folder: str, programs: Mapping[str, str]) -> Launch
     return Launch(ask, "Opened the file manager with the file selected.", otherwise=fallback)
 
 
+def has_file_manager(machine: Machine) -> bool:
+    """Whether this machine has a file manager the viewer can open: Explorer, Finder, or a Linux desktop's.
+
+    Not inside a container, which has none. The page shows "Open location" only when this is true.
+    """
+    programs = machine.programs
+    if machine.platform == "win32":
+        return "explorer" in programs
+    if machine.platform == "darwin":
+        return "open" in programs
+    if _is_wsl(machine):
+        return True
+    return _has_desktop(machine) and "xdg-open" in programs
+
+
 def how_to_open(target: Target, machine: Machine) -> Launch | NoLaunch:
     """The command that shows ``target`` in this machine's file manager, or why there is none.
 
-    In this order: Windows Explorer, macOS Finder, Explorer from WSL, VS Code from its own terminal,
-    a Linux desktop's file manager. A file not there yet has its folder opened instead.
+    In this order: Windows Explorer, macOS Finder, Explorer from WSL, a Linux desktop's file manager. A file not there yet has its folder opened instead.
     """
     path = _pure(machine.platform, target.path)
     if not path.is_absolute():
@@ -238,9 +225,6 @@ def how_to_open(target: Target, machine: Machine) -> Launch | NoLaunch:
             any_exit=True,
             windows_path=(*convert, folder),
         )
-
-    if _has_vs_code(machine):
-        return _vs_code(target, folder, programs)
 
     if _has_desktop(machine):
         return _desktop(target, folder, programs)

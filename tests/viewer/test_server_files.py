@@ -325,3 +325,24 @@ def test_the_plan_gives_each_file_a_real_run_writes_with_the_same_facts(served: 
         written.unlink()
     assert {w["step"]: w for w in again["writes"]}["save"]["files"][0]["exists"]
     assert again["digest"] == digest  # a file appearing is not a change to what the run writes
+
+
+@pytest.mark.parametrize("has_one", [True, False], ids=["file-manager", "no-file-manager"])
+def test_open_location_is_offered_only_where_this_machine_has_a_file_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_one: bool
+) -> None:
+    """Inside a container there is no file manager, so the page is told not to offer the button."""
+    import dantron_etl.viewer.server as server_module
+
+    monkeypatch.setattr(server_module, "has_file_manager", lambda machine: has_one)
+    root = make_project(tmp_path / "case" / "project")
+    server = start_server(load_project(root), port=0)
+    try:
+        here = Served(root.resolve(), server, FakeOpener())
+        facts = ask(here, "file", step="read", setting="path").json()
+        assert facts["can_open"] is has_one
+        assert facts["can_preview"] is True
+        written = [f for one in ask(here, "plan").json()["writes"] for f in one.get("files", [])]
+        assert written and all(f["can_open"] is has_one for f in written)
+    finally:
+        server.shutdown()
