@@ -23,6 +23,12 @@ things; each such release says how to upgrade.
   `all_true`. They skip nulls, and a group with no value gives null. The statistics refuse an exact
   `Decimal` column; cast it to `Float64` first.
 
+### Fixed
+
+- **`mod` of the most negative whole number** (-9223372036854775808, or a 32-bit column's
+  -2147483648) now gives the right remainder, with the sign of the first number: `mod` of it by 3 is
+  -2, where it gave -1.
+
 ## [0.2.0] - 2026-11-20
 
 This release makes the library easier to start with and to read. It adds a command and a viewer

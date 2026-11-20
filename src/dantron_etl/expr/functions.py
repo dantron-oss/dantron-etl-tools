@@ -155,9 +155,15 @@ def _mod(dividend: pl.Expr, divisor: pl.Expr) -> pl.Expr:
     """The remainder with the sign of the dividend, as SQL's MOD: mod(-7, 3) is -1.
 
     The engine's own % takes the divisor's sign (-7 % 3 is 2), so the remainder is worked out on the
-    two sizes and given the dividend's sign, which is exact for numbers with a fraction too.
+    two sizes and given the dividend's sign, which is exact for numbers with a fraction too. The one
+    value whose size does not fit its own type, the most negative whole number, makes abs() wrap
+    round to a negative; there the engine's remainder is moved to the dividend's sign instead.
     """
-    return _without_negative_zero(dividend.sign() * (dividend.abs() % divisor.abs()))
+    on_sizes = dividend.sign() * (dividend.abs() % divisor.abs())
+    floored = dividend % divisor
+    moved = pl.when((floored != 0) & ((floored < 0) != (dividend < 0))).then(floored - divisor).otherwise(floored)
+    too_large = (dividend.abs() < 0) | (divisor.abs() < 0)
+    return _without_negative_zero(pl.when(too_large).then(moved).otherwise(on_sizes))
 
 
 def _least(*parts: pl.Expr) -> pl.Expr:
