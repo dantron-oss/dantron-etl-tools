@@ -23,6 +23,13 @@ things; each such release says how to upgrade.
   `all_true`. They skip nulls, and a group with no value gives null. The statistics refuse an exact
   `Decimal` column; cast it to `Float64` first.
 
+### Changed
+
+- **For tool authors: `refuse_division_by_zero` is now `refuse_rows_without_an_answer`**, in
+  `dantron_etl.authoring`, since it stops a step on any row an expression has no answer for. There
+  is no alias; a tool of your own that called the old name must call the new one. Pipeline files
+  are not affected.
+
 ### Fixed
 
 - **`add_months` stops the step on a count that takes a date past what the engine can hold**, and

@@ -140,7 +140,7 @@ the rows that reach a report. Details in `formatting.py`:
 Owner's ruling (2026-11-18, finding C-02): **a division whose divisor is zero stops the run.** Left to
 polars it gives infinity, or not-a-number for 0/0, and a later filter reads not-a-number as larger than
 every number. The compiler records every `/` with its divisor (`divisions()`), and each tool calls
-`refuse_division_by_zero` before running, which names the field, the expression, the divisor and up to
+`refuse_rows_without_an_answer` before running, which names the field, the expression, the divisor and up to
 five rows. Zero means 0, 0.0 or -0.0. A null divisor is not zero: the division gives null. A divisor
 written in the file as zero is refused at compile time, since it would stop every row. case_when checks
 each division only on the rows that reach it, as SQL's CASE does, so an earlier case can guard it.

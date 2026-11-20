@@ -21,7 +21,7 @@ from ..authoring import (
     WorkedExample,
     check_output_column,
     compile_for,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
     require_not_blank,
 )
 
@@ -114,7 +114,7 @@ class Formula:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         for index, entry in enumerate(config["columns"]):
-            refuse_division_by_zero(frame, entry["value"], f"columns[{index}].value")
+            refuse_rows_without_an_answer(frame, entry["value"], f"columns[{index}].value")
         written = [
             compile_for(frame, entry["value"], f"columns[{index}].value").alias(entry["name"])
             for index, entry in enumerate(config["columns"])

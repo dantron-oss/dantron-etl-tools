@@ -21,7 +21,7 @@ from ..authoring import (
     WorkedExample,
     compile_for,
     compiled_dtype,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
     require_not_blank,
     ZONE_FIELD,
     as_calendar_date,
@@ -127,7 +127,7 @@ class ExpandDateRange:
         frame = inputs["rows"]
         # Timestamps become calendar dates first, so two times on one day are not a backwards range.
         for side in ("start", "end"):
-            refuse_division_by_zero(frame, config[side], side)
+            refuse_rows_without_an_answer(frame, config[side], side)
         start, end = (
             as_calendar_date(compile_for(frame, config[side], side), compiled_dtype(frame, config[side], side)[1], config["in_zone"])
             for side in ("start", "end")

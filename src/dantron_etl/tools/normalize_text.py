@@ -22,7 +22,7 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
 )
 
 # The order the selected operations always run in. Why: docs/design/tools.md#normalize_text
@@ -158,7 +158,7 @@ class NormalizeText:
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         source_expr = compile_for(frame, config["source"], "source")
-        refuse_division_by_zero(frame, config["source"], "source")
+        refuse_rows_without_an_answer(frame, config["source"], "source")
         output = config["output"]
         selected = set(config["operations"])
 

@@ -521,7 +521,7 @@ mistakes are a misspelling and a wrong case, and both are obvious next to the re
 
 ### Division by zero stops the step
 
-By the owner's ruling, a division by zero stops the step (`refuse_division_by_zero`). Left to the
+By the owner's ruling, a division by zero stops the step (`refuse_rows_without_an_answer`). Left to the
 engine it gives infinity, or not-a-number for 0 / 0, and a later filter reads not-a-number as larger
 than every number. The refusal names the field, the expression, the divisor and up to five rows. A
 flow that expects zeros guards with `case_when` first; `case_when` passes `among` so a case that
@@ -534,7 +534,7 @@ The same function also stops the step on a row a function has no answer for. A f
 rows those are in its entry in the function table (`no_answer`): text `parse_date` cannot read, a
 count `add_days` cannot move by exactly. Every tool that reads an expression already calls this
 function, so a new function with such a rule is checked in every tool, and inside `case_when` only
-on the rows that reach the case. The name stayed `refuse_division_by_zero` so no tool had to change.
+on the rows that reach the case. Its name, `refuse_rows_without_an_answer`, says it covers both.
 
 ### Writing a column name
 

@@ -33,7 +33,7 @@ from .frame_checks import (
     compile_for,
     compile_predicate_for,
     compiled_dtype,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
     require_columns,
     require_stated_zone,
 )
@@ -69,7 +69,7 @@ __all__ = [
     "compile_for",
     "compile_predicate_for",
     "compiled_dtype",
-    "refuse_division_by_zero",
+    "refuse_rows_without_an_answer",
     "references",
     "require_columns",
     "require_not_blank",

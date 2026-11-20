@@ -23,7 +23,7 @@ from ..authoring import (
     check_output_column,
     compile_for,
     compiled_dtype,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
 )
 
 _STRUCT_COLUMN: Final[str] = "__regex_extract_groups__"
@@ -182,7 +182,7 @@ class RegexExtractGroups:
         frame = inputs["rows"]
         pattern = config["pattern"]
         source_expr = compile_for(frame, config["source"], "source")
-        refuse_division_by_zero(frame, config["source"], "source")
+        refuse_rows_without_an_answer(frame, config["source"], "source")
         if config.get("all_matches"):
             return Ports({"rows": _every_match(frame, source_expr, pattern, config["match_number_column"])})
         extracted = (

@@ -23,7 +23,7 @@ from ..authoring import (
     compile_for,
     compiled_dtype,
     references,
-    refuse_division_by_zero,
+    refuse_rows_without_an_answer,
     require_columns,
     require_not_blank,
 )
@@ -383,7 +383,7 @@ class GroupBy:
         by_columns = _by_columns(config)
         for index, aggregation in enumerate(config["aggregations"]):
             if aggregation.get("value") is not None:
-                refuse_division_by_zero(frame, aggregation["value"], f"aggregations[{index}].value")
+                refuse_rows_without_an_answer(frame, aggregation["value"], f"aggregations[{index}].value")
         aggregates = [
             _compile_aggregation(frame, index, aggregation) for index, aggregation in enumerate(config["aggregations"])
         ]
