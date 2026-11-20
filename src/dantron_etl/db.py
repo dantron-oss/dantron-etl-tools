@@ -331,7 +331,11 @@ def _key_value_where(text: str) -> tuple[_Where, str | None, str | None]:
                 raise _Unreadable(text)
             at += 1
         found[key] = "".join(value)
-    where = _Where(found.get("host") or found.get("hostaddr"), found.get("port"), found.get("dbname"))
+    database = found.get("dbname")
+    if database and ("=" in database or database.lower().startswith(_POSTGRES_PREFIXES)):
+        # The driver opens such a name as an address of its own, which may hold a password.
+        raise _Unreadable(text)
+    where = _Where(found.get("host") or found.get("hostaddr"), found.get("port"), database)
     password = found.get("password")
     return where, password, password
 

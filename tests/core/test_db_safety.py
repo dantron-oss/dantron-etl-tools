@@ -319,3 +319,78 @@ class TestWhereAConnectionPoints:
 
         assert "password is also written" in described, described
         _no_piece_of_the_password(described)
+
+
+_READ_AS_THE_DRIVER_READS = [
+    "postgresql://etl:pw@db.example:5433/orders",
+    "postgresql://etl:pw@db.example/orders",
+    "postgresql://etl@db.example/orders",
+    "postgresql://db.example/orders",
+    "postgresql://db.example",
+    "postgresql:///orders",
+    "postgres://etl:pw@db.example:1/orders?sslmode=require",
+    "postgresql://etl:p%40w@db.example:5433/orders",
+    "postgresql://etl:p%2Fw%3Ax@db.example/orders",
+    "postgresql://etl:pw@one.example:1,two.example:2/orders",
+    "postgresql://etl:pw@db.example/orders?host=other.example&port=9",
+    "postgresql:///orders?host=/var/run/postgresql",
+    "postgresql://etl:pw@db.example/my%20orders",
+    "postgresql://etl:pw@db.example/orders?dbname=archive",
+    "postgresql://etl:pw@db.example:5433/orders?password=zz",
+    "postgresql://etl:pw@:5433/orders",
+    "postgresql://etl:pw@db.example/",
+    "postgresql://etl:pw#x@db.example/orders",
+    "postgresql://etl:pw?x@db.example/orders",
+    "host=db.example port=5 dbname=orders user=etl password=pw",
+    "host=db.example dbname=orders",
+    "dbname=orders",
+    "host = db.example   dbname = 'my orders' password='a b'",
+    "host=db.example password='it\\'s' dbname=orders",
+    "hostaddr=10.0.0.1 dbname=orders",
+    "host=db.example hostaddr=10.0.0.1 dbname=orders",
+    "host=one.example,two.example port=1,2 dbname=orders",
+]
+
+
+class TestAnAddressIsReadAsTheDriverReadsIt:
+    """The confirmation must name the database the run will really open, so the driver is the judge."""
+
+    @pytest.mark.parametrize("address", _READ_AS_THE_DRIVER_READS)
+    def test_the_host_port_and_database_are_the_driver_s(self, address: str) -> None:
+        conninfo = pytest.importorskip("psycopg.conninfo")
+        driver = conninfo.conninfo_to_dict(address)
+
+        where = db._postgres_where(address)  # type: ignore[attr-defined]
+
+        assert (where.host, where.port, where.database) == (
+            driver.get("host") or driver.get("hostaddr"),
+            driver.get("port"),
+            driver.get("dbname"),
+        )
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "postgresql://etl:pa@ss@db.example/orders",
+            "postgresql://etl:pa/ss@db.example/orders",
+            "postgresql://etl:1/x?application_name=ss@db.example/orders",
+        ],
+    )
+    def test_a_password_the_driver_would_read_as_the_place_is_refused(self, address: str) -> None:
+        # The driver reads part of each password as the host, the port or the database name.
+        with pytest.raises(db._Unreadable):  # type: ignore[attr-defined]
+            db._postgres_where(address)  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize(
+        "name",
+        ["postgresql://etl:pw@db.example/orders", "postgres://db.example/orders", "'host=other.example password=pw'"],
+    )
+    def test_a_database_name_that_is_itself_an_address_is_refused(self, name: str) -> None:
+        # The driver opens such a name as an address, so showing it would show its password.
+        with pytest.raises(db._Unreadable):  # type: ignore[attr-defined]
+            db._postgres_where(f"host=db.example dbname={name}")  # type: ignore[attr-defined]
+
+    def test_an_ordinary_database_name_beside_it_is_still_read(self) -> None:
+        where = db._postgres_where("host=db.example dbname=orders_archive")  # type: ignore[attr-defined]
+
+        assert where.database == "orders_archive"
