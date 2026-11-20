@@ -47,13 +47,7 @@ _UUID_EXAMPLE: Final[str] = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 
 
 def probe_pattern(name: str, pattern: str, build: Callable[[pl.Expr], pl.Expr]) -> None:
-    """Compile one pattern against this engine, in both directions.
-
-    It has to be the engine's own judgement: look-behind is legal in the standard library's
-    regular expressions and illegal in this engine, and a unicode script class is the reverse
-    -- so validating against the wrong one is worse than not validating, because it either
-    passes a pattern that fails at row time or refuses one that works.
-    """
+    """Ask polars whether it accepts a pattern, both ways, since polars and Python's `re` disagree on some."""
     try:
         pl.select(build(pl.lit("", dtype=pl.String)))
     except Exception as failure:
@@ -64,13 +58,9 @@ def probe_pattern(name: str, pattern: str, build: Callable[[pl.Expr], pl.Expr]) 
 class Value:
     """An argument worked out for each row: a column, a literal, or another expression.
 
-    ``family`` is the type family the argument must belong to. ``None`` accepts any family, and
-    then the arguments have to agree with one another instead, which is what coalesce() needs.
-    ``requirement`` finishes the sentence a refusal starts with the function's name, as in
-    "lower() works on text". ``whole`` is set where the value must also be a whole number, and
-    finishes that refusal's sentence the same way.
-
-    A text argument reaches the function cast to a plain string (see ``_built`` in compiler.py).
+    `family` is the family it must belong to; None means the arguments must agree with each other, as in
+    coalesce(). `requirement` completes a refusal ("lower() works on text"). `whole`, when set, also
+    requires a whole number and completes that refusal. Text reaches the builder cast to a plain String.
     """
 
     family: Family | None
@@ -92,12 +82,7 @@ class WholeNumber:
 
 @dataclass(frozen=True)
 class QuotedText:
-    """Quoted text, for an argument that has to be a decision in the file rather than data.
-
-    The reason travels with the argument rather than with this method, because the argument is
-    what an author has to change: a replacement and a separator are refused by the same rule
-    and for two different-sounding versions of the same worry.
-    """
+    """Quoted text that must be written in the file, such as a separator; the reason travels with it."""
 
     reason: str = REWRITE_REASON
 
@@ -121,11 +106,7 @@ class Choice:
 
 
 class Pattern:
-    """The pattern for one of the regex functions: quoted text, checked, or nothing.
-
-    A literal and not a column, which is what makes a check before the run possible at all: a
-    pattern that varies row by row can be neither read in the file nor validated up front.
-    """
+    """A regex pattern: quoted text in the file, checked by polars before any row is read."""
 
     def read(self, name: str, value: Any, position: str) -> str:
         if not isinstance(value, str):
@@ -139,13 +120,7 @@ class Pattern:
 
 
 class Namespace:
-    """uuid5()'s first argument: quoted text in the file, and a UUID, checked before any row.
-
-    Parsed rather than pattern-matched, and parsed by the same library that will derive the
-    ids, so what is accepted here is exactly what works there -- a rule of this module's own
-    would either refuse a namespace that derives perfectly good ids or pass one that fails at
-    row time, and both defeat the point of checking at all.
-    """
+    """uuid5()'s first argument: a UUID in the file, checked with the same `uuid` library that makes the ids."""
 
     def read(self, name: str, value: Any, position: str) -> uuid.UUID:
         written = QuotedText(_NAMESPACE_REASON).read(name, value, position)

@@ -534,7 +534,8 @@ class TestEveryEntryReadsTheInputAsItArrived:
             run_tool(Formula(), Ports({"rows": pl.DataFrame({"amount": [10.0]})}), config)
 
     def test_the_help_shows_the_old_value_case(self) -> None:
-        text = Formula().help().detailed_description
+        help_ = Formula().help()
+        text = " ".join((help_.detailed_description, *help_.notes))
 
         for phrase in ("as it arrived", "old value", "two formula steps"):
             assert phrase in text, f"the help should say {phrase!r}: {text}"

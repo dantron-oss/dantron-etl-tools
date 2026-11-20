@@ -1,34 +1,9 @@
-"""RenameColumns: a column changes its name, and nothing else about it changes.
+"""RenameColumns: rename columns and keep each one where it is.
 
-Sibling of SelectColumns, which decides which columns survive and in what order but cannot rename
-one. Without this tool a rename has to be faked with a formula that computes a new column from the
-old one and a selection that drops the old one -- two steps rather than one, and the computed column
-is **appended**, so the faked rename silently moves the column to the end of the frame. A consumer
-reading columns positionally gets a different frame from the one it asked for and is never told. So
-*the renamed column stays exactly where it was* is not a nicety here; it is the whole reason the
-tool exists.
+The renames are applied together, so two entries can swap names. A new name that would overwrite a
+column that stays is refused, and so is a rename that changes nothing.
 
-**Renames are simultaneous.** The list is one mapping applied to the input schema, not a sequence of
-steps, so no entry can read another's output: `code -> region` beside `region -> code` exchanges the
-two names, and `code -> region` beside `region -> territory` is a chain that needs no temporary
-name. Applying the pairs one at a time would either raise a duplicate-column error from inside the
-query engine or, worse, finish with two columns under one name.
-
-**A collision is refused; a name being vacated in the same step is not a collision.** Writing over a
-column that is staying is data loss with nothing said about it, so it is refused by name -- and that
-check must not catch the swap above, where the name being taken is being given up in the very same
-step.
-
-**A declaration that changes nothing is refused.** Renaming a column to the name it already carries,
-a blank name, a whitespace-only name: each reads as an instruction and is not one. This library
-already refuses a pattern matching nothing and a `non_empty` on a type with no notion of emptiness,
-for the reason that applies here too -- the usual cause is a configuration edited halfway, and
-saying so beats quietly agreeing.
-
-Every refusal is a `ConfigError` and every refusal names the offender. This
-tool never reads a row, so there is no value it could diagnose: each refusal is decided from the
-configuration and the incoming column names alone, which is why a zero-row frame earns exactly the
-same refusals a populated one does.
+Why: docs/design/tools.md#rename_columns
 """
 
 from collections.abc import Mapping, Sequence
@@ -50,10 +25,10 @@ _TO = "to"
 
 
 class RenameColumns:
-    """Rename columns of `rows` in place: same rows, same order, same dtypes, new names."""
+    """Rename columns of `rows`: same rows, same order, same types, new names."""
 
     name = "rename_columns"
-    description = "Rename columns of `rows` in place, leaving every column where it already sat."
+    description = "Give columns new names, keeping each column where it is."
     category = "preparation"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -62,22 +37,21 @@ class RenameColumns:
         return {
             "columns": ConfigField(
                 type="array",
-                description="The renames to apply, each naming the column to rename and its new name. "
-                "Applied together, so two entries may exchange names.",
+                description="The renames, each giving a column's current name and its new name.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="object",
-                    description="One rename: the column as it arrives, and the name it leaves under.",
+                    description="One rename: the column's current name and its new name.",
                     fields={
                         _FROM: ConfigField(
                             type="string",
-                            description="The column to rename, as it is spelled on the input port.",
+                            description="The column's current name, such as 'region'.",
                             required=True,
                         ),
                         _TO: ConfigField(
                             type="string",
-                            description="The name that column carries on the output port.",
+                            description="The column's new name, such as 'territory'.",
                             required=True,
                         ),
                     },
@@ -88,37 +62,33 @@ class RenameColumns:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Each column keeps its position, its dtype and every one of its values; only the name "
-                "in the header changes. The renames are resolved against the incoming columns as a "
-                "single mapping, so a pair of entries may exchange two names and a chain of entries "
-                "may pass a name along, neither needing a temporary name to get there."
+                "Use rename_columns to give columns clearer or matching names, for example before a "
+                "join or a union. Only the names change: each column keeps its position, type and "
+                "values. All the renames happen at once, so two columns can swap names in one step."
             ),
             examples=(_in_place_example(), _exchange_example()),
             notes=(
-                "A new name that collides with a column which is staying is refused, because writing "
-                "over that column would lose it with nothing said; a name being renamed away in the "
-                "same step is free to be taken.",
-                "Renaming a column to the name it already carries is refused, as are blank and "
-                "whitespace-only names: each is a declaration that does nothing, and the usual cause "
-                "is a configuration edited halfway.",
+                "A new name that is already used by a column that stays is refused, because that "
+                "column would be lost. A name that another entry renames away in the same step is free.",
+                "Renaming a column to its own name is refused, as is a blank or all-space name. "
+                "These usually mean the configuration was edited halfway.",
+                "A column to rename that is not on the input is refused.",
             ),
             field_help={
-                "columns": "Order does not matter: the list is a mapping, not a sequence of steps, and "
-                "the output follows the frame's own column order rather than this list's.",
+                "columns": "For example [{from: region, to: territory}]. The order of the entries "
+                "does not matter, and the output keeps the table's column order.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Everything decidable from the configuration alone, ahead of any look at the schema.
+        """Refuse what the configuration alone shows: blank names, a rename to the same name, repeats.
 
-        Blank names are refused here rather than against the frame so that the refusal can cite the
-        entry's position: there is no column name worth printing, and reporting a whitespace `from`
-        as "no such column '   '" would send a reader hunting for a column instead of for a typo.
+        Blank names are refused here so the refusal can cite the entry's position instead of a column name.
         """
         _renames(config)
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """The two refusals that need the incoming column names: a missing source, and a collision."""
+        """Refuse a column that is not on the input, and a new name that collides with a column that stays."""
         _resolved(inputs["rows"].columns, config)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -128,11 +98,7 @@ class RenameColumns:
 
 
 def _renames(config: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The `(old, new)` pairs, with every refusal the configuration can earn on its own.
-
-    Pure, and run again by :meth:`RenameColumns.execute`, so one registered instance keeps no state
-    between the check and the work -- a pass over a short list of names, paid twice.
-    """
+    """The `(old, new)` pairs, refusing what the configuration alone shows is wrong."""
     pairs: list[tuple[str, str]] = []
     taken: dict[str, int] = {}
     renamed: dict[str, int] = {}
@@ -168,10 +134,9 @@ def _renames(config: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def _resolved(available: Sequence[str], config: Mapping[str, Any]) -> dict[str, str]:
-    """The rename mapping, checked against the columns actually arriving on the port.
+    """The rename mapping, checked against the incoming columns.
 
-    A new name collides only with a column that is **staying**: one being renamed away is vacated in
-    the same step, which is what makes an exchange of two names expressible as one step.
+    A new name collides only with a column that stays; one being renamed away in this step is free.
     """
     pairs = _renames(config)
     vacated = {old for old, _ in pairs}
@@ -215,10 +180,9 @@ def _in_place_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="rename a column that sits in the middle of the frame",
+        scenario="rename one column",
         configuration={"columns": [{_FROM: "region", _TO: "territory"}]},
-        explanation="`region` becomes `territory` and stays the second column, between `record_id` "
-        "and `amount`. A formula-and-drop rename would have moved it to the end instead.",
+        explanation="'region' becomes 'territory' and stays the second column, between 'record_id' and 'amount'.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -247,16 +211,15 @@ def _exchange_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="exchange two column names in one step",
+        scenario="swap two column names in one step",
         configuration={
             "columns": [
                 {_FROM: "code", _TO: "region"},
                 {_FROM: "region", _TO: "code"},
             ]
         },
-        explanation="Both renames are applied to the incoming schema at once, so each name is free "
-        "to be taken by the other column; neither entry sees the other's result, and no temporary "
-        "name is needed. The values do not move -- only the headers above them.",
+        explanation="Both renames happen at once, so each column can take the other's name without a temporary "
+        "name. The values stay where they were; only the headings change.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

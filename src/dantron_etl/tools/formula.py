@@ -1,24 +1,9 @@
-"""Formula: named columns, each one expression, every expression read against the input alone.
+"""Formula: add or replace named columns, each worked out by one expression.
 
-A single ``formula: "[out] = expr"`` field would put the output name, the expression and the count
-of columns a step writes into one opaque string, so ``columns`` is instead an ordered array of
-``{name, value, replace}`` objects -- the nested shape the contract's ``items``/``fields`` seam
-exists for, because one realistic step writes several derived columns at once.
+Every expression reads the input frame as it arrived, never a column another entry is about to
+write. A replaced column keeps its position; new columns are added at the end.
 
-Every ``value`` is compiled against the *input* frame only, never against a frame that already
-carries the columns this step is about to add. That matches the query engine's own multi-column
-``with_columns``: a single call is handed every expression at once and evaluates each of them
-against the frame as it stood before any of them ran, so an author who wants a second value to read
-a first writes two Formula steps -- which says so in the pipeline, rather than hiding it in a list's
-order. Compiling every expression once, in one ``with_columns`` call, is also what gives a replaced
-column its position back: the query engine keeps a name already in the frame exactly where it was
-and only appends the names that are new.
-
-A divisor is not guarded here. Money is naturally divided by a rate quoted the other way round, and
-what a zero or a null divisor gives back is the query engine's own three-valued, floating-point
-answer -- pinned in the tests, not reinterpreted here, because a row-level guarantee that an
-infinity never reaches a money column belongs to a rule an author writes downstream (a CaseWhen
-guard, an Assert step), not to a silent decision a derived-column step makes on their behalf.
+Why: docs/design/tools.md#formula
 """
 
 from collections.abc import Mapping
@@ -42,10 +27,10 @@ from ..authoring import (
 
 
 class Formula:
-    """Add or replace named columns of ``rows``, each computed by an expression against the input alone."""
+    """Add or replace named columns of `rows`, each worked out by an expression on the input."""
 
     name = "formula"
-    description = "Add or replace named columns, each computed by an expression against the input alone."
+    description = "Add a calculated column, or change one, using an expression such as [price] * [quantity]."
     category = "transform"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -54,24 +39,22 @@ class Formula:
         return {
             "columns": ConfigField(
                 type="array",
-                description="One entry per column to write, applied together against the input "
-                "frame; an empty list is refused rather than treated as a no-op step.",
+                description="The columns to work out, one entry each. At least one is needed.",
                 required=True,
                 items=ConfigField(
                     type="object",
-                    description="One derived column: the name it is written under, the expression "
-                    "that computes it, and whether it may overwrite a column already there.",
+                    description="One column: its name, the expression that works it out, and "
+                    "whether it may replace a column already there.",
                     fields={
                         "name": ConfigField(
                             type="string",
-                            description="The column this entry writes; blank, and a name repeated "
-                            "by another entry, are both refused.",
+                            description="The column to write, such as 'net_amount'.",
                             required=True,
                         ),
                         "value": ConfigField(
                             type="expression",
-                            description="Computed against the input frame only -- never against a "
-                            "column another entry in this same list is about to write.",
+                            description="The expression, such as '[amount] - [discount]'. It reads "
+                            "the input as it arrived.",
                             required=True,
                         ),
                         "replace": REPLACE_FIELD,
@@ -83,31 +66,31 @@ class Formula:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every entry reads the frame as it arrived, not as the entries above it left it. "
-                "If one entry replaces 'amount' with '[amount] * 2' and the next computes "
-                "'[amount] + 1', the second reads the old value: 10 becomes 20 and 11, not 20 and "
-                "21. An entry that reads a column an entry above it adds is refused, because that "
-                "column is not on the input. To read a value this step computes, use two formula "
-                "steps in sequence. A replaced column keeps the position it already had; a new one "
-                "is appended in the order the list gives."
+                "Use formula to add a calculated column, or to change the values of one, like a "
+                "spreadsheet formula filled down a column. Each entry names a column and the "
+                "expression for it. `rows` comes out with the new columns at the end; a replaced "
+                "column stays where it was. Every expression reads the input as it arrived, so to "
+                "use a column this step works out, read it in a second formula step."
             ),
             examples=(_monthly_figure_example(), _multi_column_with_replace_example()),
             notes=(
-                "A null divisor gives null; a zero divisor gives the query engine's infinity, and "
-                "0/0 gives its not-a-number. Neither is guarded here -- keeping an infinity out of a "
-                "money column is a rule an author writes with CaseWhen or Assert, not a decision "
-                "this tool makes silently on every row.",
+                "Every entry reads the input as it arrived, not as the entries above left it. If one "
+                "entry replaces 'amount' with '[amount] * 2' and the next works out '[amount] + 1', "
+                "the second reads the old value: 10 gives 20 and 11, not 20 and 21.",
+                "An entry that reads a column added by an entry above it is refused, because that "
+                "column is not on the input. Use two formula steps.",
+                "A name already on the input is refused unless its entry says 'replace: true'.",
+                "A blank name, or a name written by two entries, is refused. So is an empty list.",
+                "Dividing by zero stops the run and names the rows. Guard the division with "
+                "case_when first if zeros are expected.",
+                "Dividing by a null gives null.",
             ),
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse what the template's ``required`` cannot: an empty list, a blank or repeated name.
+        """Refuse an empty list, a blank name, and a name written twice.
 
-        ``required=True`` on ``columns`` is satisfied by ``[]`` -- it is a value, just an empty one
-        -- so a dropped list of entries reaches here rather than the template, and must be refused
-        loudly rather than run as a step that writes nothing. A blank name and a name two entries
-        both claim are refused the same way, because neither is a question the template's own type
-        and required checks can ask.
+        `required` is satisfied by an empty list, so it is refused here rather than run as a step that does nothing.
         """
         columns = config["columns"]
         if not columns:
@@ -122,12 +105,7 @@ class Formula:
             seen.add(name)
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Compile every entry's expression against the frame, and rule on its output column.
-
-        Both questions need the frame in hand rather than the template alone: whether the
-        expression's columns exist on this particular ``rows`` port, and whether the name it writes
-        under is new, already there and meant to be replaced, or already there and not.
-        """
+        """Compile each expression against the input, and refuse a name already there unless `replace` is set."""
         frame = inputs["rows"]
         for index, entry in enumerate(config["columns"]):
             compile_for(frame, entry["value"], f"columns[{index}].value")
@@ -171,7 +149,7 @@ def _monthly_figure_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a per-month figure divides by the rate, because the rate is quoted the other way round",
+        scenario="work out a monthly amount from a total, a rate and a number of months",
         configuration={
             "columns": [
                 {
@@ -180,7 +158,7 @@ def _monthly_figure_example() -> WorkedExample:
                 }
             ]
         },
-        explanation="The amount is divided by the rate and then by the count of months, appended as "
+        explanation="The amount is divided by the rate, then by the number of months, and the result is added as "
         "a new column at the end.",
         inputs=inputs,
         outputs=outputs,
@@ -212,15 +190,15 @@ def _multi_column_with_replace_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="one entry repairs 'code' in place, another appends a new column",
+        scenario="tidy a column in place and add a new one",
         configuration={
             "columns": [
                 {"name": "code", "value": "upper(trim([code]))", "replace": True},
                 {"name": "doubled", "value": "[line_amount] * 2"},
             ]
         },
-        explanation="'code' is overwritten because its entry says 'replace: true' and keeps its "
-        "original position; 'doubled' has no name collision to resolve and is appended.",
+        explanation="'code' is replaced because its entry says 'replace: true', and it keeps its position. "
+        "'doubled' is a new name, so it is added at the end.",
         inputs=inputs,
         outputs=outputs,
     )

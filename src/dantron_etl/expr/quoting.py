@@ -15,10 +15,8 @@ def escape_text(value: str) -> str:
 
 
 def quote_text(value: str) -> str:
-    """``value`` spelled as a complete text literal of this language: quoted and escaped.
+    """`value` as a complete text literal of this language: quoted, with inner quotes doubled.
 
-    Published because escaping is the caller's job to hand off, not to reinvent: a value that
-    reaches an expression through someone else's string formatting is the one way author-supplied
-    characters get into the text this module parses.
+    Callers writing a value into an expression should use this, not their own string formatting.
     """
     return f"'{escape_text(value)}'"

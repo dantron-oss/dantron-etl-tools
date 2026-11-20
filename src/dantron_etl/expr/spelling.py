@@ -63,12 +63,9 @@ class Spelling:
         self._literals = scanned.literals
 
     def render(self, node: ast.expr) -> str:
-        """The author's own spelling of one subtree, for a refusal that points at the part at fault.
+        """The author's own spelling of one part of the expression, for a refusal that points at it.
 
-        Rebuilt from the scanned tree rather than sliced out of the incoming text, because the scan
-        is the only thing that knows which index belongs to which name or literal. Quoting the whole
-        line back is not enough on its own: an author reading a refusal about a line with four
-        columns in it should not have to work out which of the four is the problem.
+        Rebuilt from the scanned tree, since only the scan knows which index is which name or value.
         """
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             name = node.func.id
@@ -106,11 +103,7 @@ class Spelling:
         return self._literals[index]
 
     def _table_index(self, node: ast.Call, size: int) -> int:
-        """The index carried by one of the scan's own calls.
-
-        Unreachable by hand -- the scan refuses these names in incoming text -- so this is a
-        consistency check on this module rather than a check on the author, and it fails closed.
-        """
+        """The index carried by one of the scan's own calls; fails closed, since an author cannot write these."""
         if len(node.args) == 1 and isinstance(node.args[0], ast.Constant):
             index = node.args[0].value
             if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < size:
@@ -118,11 +111,7 @@ class Spelling:
         raise error(self._text, "the expression could not be understood")  # pragma: no cover
 
     def literal(self, node: ast.expr) -> Any:
-        """The value of ``node`` if it is a literal, else :data:`MISSING`.
-
-        A sentinel rather than an exception because each caller wants to say something different
-        about a value it cannot use, in the author's terms rather than the tree's.
-        """
+        """The value of `node` if it is a literal, else MISSING, so each caller can word its own refusal."""
         if isinstance(node, ast.Constant):
             value = node.value
             if isinstance(value, bool) or value is None:

@@ -1,25 +1,9 @@
-"""AssertRows: an invariant a run must satisfy, and a run that stops when it does not.
+"""AssertRows: stop the run unless every row meets a condition.
 
-**One output port, not two.** "Which rows failed" is the first thing anyone asks of a guard, and a
-second port carrying them cannot answer it: when the assertion fails the run stops, so nothing
-downstream ever reads that port, and when the assertion passes the port is empty. A port that is
-empty whenever it is readable and unreadable whenever it is not has no possible consumer, so the
-offending rows go in the raised message instead. A flow that wants them as *data* rather than as a
-refusal reaches for Filter, which already keeps both sides of a predicate.
+A null result is a failure, and so is an empty frame unless `allow_empty`. The failing rows go into
+the error message; there is no second port for them.
 
-**A violated assertion is a data fault, never a configuration fault and never a bare execution
-failure.** It raises :class:`~.authoring.DataError`, because the reader's next move differs from every
-other member of the family: go and look at the data, not at the run and not at the file.
-
-**A predicate over no rows is not satisfied.** Every row of an empty frame satisfies every
-condition, which is exactly the silence a filter that matched nothing leaves behind -- the most
-common real failure these guards exist to catch. So an empty frame fails by default, and
-``allow_empty`` is how a flow whose branch is legitimately sometimes empty says so, in writing.
-
-**A null predicate result is a failure, always, with no knob to change that.** Filter offers one for
-its null rows because both dispositions are legitimate for a *selection*; for an invariant, "could
-not tell" is never a satisfied condition, and a setting that let it pass would exist only to
-silence the tool.
+Why: docs/design/tools.md#assert_rows
 """
 
 from collections.abc import Mapping
@@ -39,17 +23,15 @@ from ..authoring import (
     refuse_division_by_zero,
 )
 
-# Published rather than private, so a caller reading a capped message knows the cap without reading
-# this module's source; equal to the boundary's own cap, since a message this long is one log line's
-# worth regardless of which tool raised it.
+# How many failing rows a message shows; the same cap the boundary uses.
 REPORTED_ROW_LIMIT: Final[int] = MAX_REPORTED_ROWS
 
 
 class AssertRows:
-    """Refuse to let `rows` through unless every row satisfies `predicate`."""
+    """Stop the run unless every row of `rows` meets `predicate`; otherwise pass `rows` through."""
 
     name = "assert_rows"
-    description = "Stop the run unless every row of `rows` satisfies a predicate."
+    description = "Check that every row meets a condition, and stop the run if any does not."
     category = "assert"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -58,17 +40,17 @@ class AssertRows:
         return {
             "predicate": ConfigField(
                 type="expression",
-                description="The invariant every row must satisfy; a null result counts as a failure.",
+                description="The condition every row must meet, such as '[amount] >= 0'.",
                 required=True,
             ),
             "label": ConfigField(
                 type="string",
-                description="What a reader recognises the assertion by in a log; optional.",
+                description="A short name for the check, shown in the message when it fails.",
                 required=False,
             ),
             "allow_empty": ConfigField(
                 type="boolean",
-                description="Whether a frame with no rows passes instead of failing.",
+                description="Set true to let a table with no rows pass. Left out, an empty table fails.",
                 default=False,
             ),
         }
@@ -76,28 +58,24 @@ class AssertRows:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every row of 'rows' is tested against 'predicate'; if every row satisfies it, "
-                "'rows' passes through unchanged. If any row does not -- including a row whose "
-                "result is null, which is never treated as a pass -- the run stops with a "
-                "DataError naming the assertion, how many rows failed out of how many, and a "
-                "handful of the offending rows. An empty frame fails by default, because every "
-                "row of it vacuously satisfies any predicate; 'allow_empty' is how a flow whose "
-                "branch is legitimately sometimes empty says so."
+                "Use assert_rows to check a rule that must always hold, such as no negative amounts "
+                "or every row having a customer. If every row meets the condition, `rows` passes "
+                "through unchanged. If any row does not, the run stops with a message naming the "
+                "check, how many rows failed out of how many, and some of the failing rows."
             ),
             examples=(_satisfied_example(), _allowed_empty_example()),
             notes=(
-                "A null predicate result is a failure with no knob to change it: an invariant has "
-                "no legitimate 'could not tell', unlike Filter's selection, which has a 'nulls' "
-                "option for exactly that reason.",
-                "An empty frame fails unless 'allow_empty' says otherwise, because a filter that "
-                "matched nothing leaves an empty frame behind and every assertion on it would "
-                "otherwise pass in silence.",
+                "A row whose condition is null fails. There is no setting to change that: a check "
+                "that could not tell has not passed. (filter has a 'nulls' setting because choosing "
+                "rows is different.)",
+                "A table with no rows fails unless 'allow_empty' is true, because an empty table "
+                "meets every condition, and an upstream filter that matched nothing would otherwise "
+                "pass in silence.",
+                "To keep the failing rows as data instead of stopping, use filter.",
             ),
             field_help={
-                "label": "Shown in the failure message alongside the predicate text; the predicate "
-                "itself is always shown, labelled or not.",
-                "allow_empty": "Defaults to false: an empty frame fails until a flow says in writing "
-                "that this branch may be empty.",
+                "label": "For example 'no negative amounts'. The condition itself is always shown too.",
+                "allow_empty": "Set it on a branch that is sometimes empty for a good reason.",
             },
         )
 
@@ -105,11 +83,7 @@ class AssertRows:
         return None
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Compile the predicate against the incoming schema, refusing anything that is not a condition.
-
-        A column that is not there, and an unresolved placeholder, both belong to a configuration
-        fault, never a data fault -- so both are refused here, before a single row is judged.
-        """
+        """Refuse a condition that names a missing column or does not give true or false."""
         compile_predicate_for(inputs["rows"], config["predicate"], "predicate")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -137,7 +111,7 @@ class AssertRows:
 
 
 def _heading(config: Mapping[str, Any]) -> str:
-    """The part of the message naming the assertion, before the counts and examples are appended."""
+    """The start of the failure message, naming the check by its label and condition."""
     label = config.get("label")
     predicate = config["predicate"]
     if label:
@@ -150,10 +124,9 @@ def _satisfied_example() -> WorkedExample:
     inputs = Ports({"rows": frame})
     outputs = Ports({"rows": frame})
     return WorkedExample(
-        scenario="every row satisfies the predicate, so it passes through unchanged",
+        scenario="check that every amount is positive",
         configuration={"predicate": "[amount] > 0", "label": "every figure is positive"},
-        explanation="Both rows have a positive amount, so nothing stops the run and 'rows' arrives "
-        "on the other side exactly as it came in.",
+        explanation="Both rows have a positive amount, so the run carries on and 'rows' passes through unchanged.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -164,10 +137,10 @@ def _allowed_empty_example() -> WorkedExample:
     inputs = Ports({"rows": frame})
     outputs = Ports({"rows": frame})
     return WorkedExample(
-        scenario="an empty frame passes because the flow says in writing that it may be",
+        scenario="let an empty table pass, because this branch is sometimes empty",
         configuration={"predicate": "[amount] > 0", "allow_empty": True},
-        explanation="An empty frame would otherwise fail, since every row of it vacuously satisfies "
-        "the predicate; 'allow_empty: true' is how this branch declares that emptiness is expected.",
+        explanation="An empty table would fail by default. 'allow_empty: true' says that an empty table is "
+        "expected here.",
         inputs=inputs,
         outputs=outputs,
     )

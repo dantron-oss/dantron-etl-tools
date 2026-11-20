@@ -14,14 +14,10 @@ import polars as pl
 
 
 class Family(enum.Enum):
-    """The type families an operation may work within, named as an author would name them.
+    """The kinds of value an operation works with: text, number, date, true/false.
 
-    Coarse on purpose, and the coarseness is the design. A whole number and a decimal are one
-    family because separating them would refuse ``[qty] > 2.5``, which the engine answers perfectly
-    well -- and a check stricter than the engine costs an author capability they cannot argue with.
-    ``NULL`` belongs to every family, because a null is the one value that may meet anything.
-    ``UNKNOWN`` is what a column has when no schema was supplied: unknown means unchecked, never
-    refused, so a caller with no frame in hand still gets every other check.
+    Coarse on purpose: whole numbers and decimals are one family, so `[qty] > 2.5` is allowed. NULL fits
+    every family. UNKNOWN (no schema) means unchecked, never refused.
     """
 
     TEXT = "text"
@@ -38,12 +34,7 @@ WILDCARD_FAMILIES: Final[frozenset[Family]] = frozenset({Family.NULL, Family.UNK
 
 
 def family_of_dtype(dtype: pl.DataType) -> Family:
-    """The family a column belongs to, from what it holds.
-
-    Anything this module does not recognise is ``UNKNOWN`` rather than a guess: an unrecognised
-    dtype means the check has nothing true to say, and refusing on a guess would take capability
-    away from a caller whose frame is merely unusual.
-    """
+    """The family a column belongs to; UNKNOWN for a dtype this module does not recognise, rather than a guess."""
     if dtype in (pl.String, pl.Categorical, pl.Enum):
         return Family.TEXT
     if dtype == pl.Boolean:
@@ -58,11 +49,7 @@ def family_of_dtype(dtype: pl.DataType) -> Family:
 
 
 def family_of_value(value: Any) -> Family:
-    """The family a literal belongs to, which is knowable from the text with no schema at all.
-
-    This is what lets ``'100' + '20'`` and ``concat([code], 1)`` be refused at the boundary a
-    definition crosses first, where there is no frame to consult.
-    """
+    """The family a literal belongs to, known from the text alone, so `'100' + '20'` is refused with no frame."""
     if value is None:
         return Family.NULL
     if isinstance(value, bool):
@@ -75,11 +62,7 @@ def family_of_value(value: Any) -> Family:
 
 
 def dtype_of_value(value: Any) -> pl.DataType:
-    """The exact type a literal holds, beside the coarser family it belongs to.
-
-    One check needs this much detail. A count of months may be 3 and may not be 1.5, and the
-    family calls both of those a number.
-    """
+    """The exact type a literal holds, for the one check that must tell 3 from 1.5 (add_months)."""
     if value is None:
         return pl.Null()
     if isinstance(value, bool):
@@ -152,26 +135,12 @@ def compatible(one: Family, other: Family) -> bool:
 
 
 class Typed(NamedTuple):
-    """One compiled sub-expression, carrying what a refusal about it would need to say.
+    """One compiled part of an expression, with what a refusal about it would need to say.
 
-    ``node`` rather than a rendered string because rendering is only ever wanted on the way to an
-    error, and rendering every subtree eagerly would do quadratic work on a healthy expression.
-    ``holds`` is a phrase and not a family so that a column can report the dtype it actually holds:
-    an author told "expected text" without being told what the column holds goes to the schema to
-    find out why, which is a round trip the message should have saved them.
-
-    ``expr`` is the column expression built so far.
-
-    ``dtype`` is what this value holds, where the language can work that out. The family is
-    coarse on purpose: a whole number and a decimal are both numbers, and almost every check here
-    is happier that way. One check is not. add_months() moves a date by whole months, so it has to
-    tell 3 from 1.5, in a column as well as in a line of the file.
-
-    A leaf fills it in from what it is: a column from the schema, a literal from the value written.
-    A value built out of other values fills it in from its parts. Arithmetic and coalesce() work
-    theirs out, abs() and round() hand their subject's type on, and year() and len() always give a
-    whole number. None means the language could not work the type out, which is what a count of
-    months is refused for: a count nobody can show is whole is not one to move a date by.
+    `node` is kept, not a rendered string, because rendering is only needed for an error. `holds` is a
+    phrase, so a refusal can say what a column actually holds. `expr` is the polars expression so far.
+    `dtype` is the exact type where it can be worked out (from the schema, the literal, or the parts), or
+    None; add_months() refuses a count of months whose type is None or a decimal.
     """
 
     expr: Any

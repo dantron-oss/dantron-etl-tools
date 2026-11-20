@@ -1,24 +1,9 @@
-"""SelectColumns: one input, one output, and only the column set (and its order) between them.
+"""SelectColumns: keep or drop columns named by a list of names or `*` patterns.
 
-A flow that carries every column it ever read is a flow whose every later step is read against a
-schema nobody can hold in their head, and narrowing that back down -- to what a later step actually
-needs, or to everything except a column that has served its purpose -- is common enough to earn its
-own step rather than being folded into whichever tool happens to run next. Both directions share one
-config: a list of patterns and which way to read it.
+Under `keep` the output follows the list's order; under `drop` it keeps the frame's order. Every
+entry must match a column. Only `*` is a wildcard, and matching is case sensitive.
 
-**Order follows the list, under `keep`.** A pattern list is also a reordering: `[amount, code]`
-puts `amount` first even though the frame does not. Under `drop` there is no list of survivors to
-follow an order from, so they keep whatever order the frame already had.
-
-**A pattern that matches nothing is refused, wildcard included.** A wildcard that silently
-contributed zero columns would be a whitelist failing open -- the schema has moved under a config
-written against an older one, and the author needs to be told which pattern stopped matching, not
-handed back fewer columns than they asked for.
-
-**Only `*` is a wildcard, and matching is case sensitive.** An entry that is exactly a column's
-name selects that column. Otherwise an entry holding `*` is a pattern, where `*` stands for any run
-of characters and everything else is read as written. Brackets and `?` are not wildcards: a header
-copied from a spreadsheet, such as `Total [CAD]`, has to select itself and nothing else.
+Why: docs/design/tools.md#select_columns
 """
 
 import re
@@ -40,10 +25,10 @@ _ACTION_ENUM: Final[tuple[str, ...]] = ("keep", "drop")
 
 
 class SelectColumns:
-    """Keep or drop the columns of `rows` a pattern list names; the rows themselves are untouched."""
+    """Keep or drop the columns of `rows` that a list names. The rows are untouched."""
 
     name = "select_columns"
-    description = "Keep or drop the columns of `rows` a pattern list names, in the order asked for."
+    description = "Keep or remove columns by name, and put the kept ones in the order you list."
     category = "preparation"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -52,18 +37,17 @@ class SelectColumns:
         return {
             "columns": ConfigField(
                 type="array",
-                description="Column names, or patterns where `*` stands for any run of characters "
-                "(case sensitive); at least one is required and each must match at least one column.",
+                description="The columns to keep or drop, by name or by a pattern using `*`.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="string",
-                    description="One column name, or a pattern using `*`. Nothing else is a wildcard.",
+                    description="One column name, or a pattern where `*` stands for any characters.",
                 ),
             ),
             "action": ConfigField(
                 type="string",
-                description="Whether the patterns name the columns to 'keep' (default) or the columns to 'drop'.",
+                description="'keep' to keep only the listed columns, 'drop' to remove them.",
                 default="keep",
                 enum=_ACTION_ENUM,
             ),
@@ -72,22 +56,25 @@ class SelectColumns:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every pattern is matched against the frame's own columns before a single row is "
-                "touched. Under 'keep', the output follows the order the patterns are listed in, not "
-                "the frame's order; under 'drop', the survivors keep the frame's own order, because "
-                "nothing was listed for them to follow."
+                "Use select_columns to narrow a table to the columns later steps need, or to remove "
+                "the ones you are finished with. The rows are not changed. With 'keep', the output "
+                "has the listed columns in the order you list them, so it also reorders. With 'drop', "
+                "the remaining columns keep the table's own order."
             ),
             examples=(_wildcard_example(), _drop_example()),
             notes=(
-                "A pattern that matches nothing is refused, wildcard included: a wildcard silently "
-                "contributing zero columns would be a whitelist failing open.",
+                "Every name or pattern must match at least one column, or the step is refused. A "
+                "pattern that quietly matched nothing would hide a column that was renamed upstream.",
+                "Only `*` is a wildcard. Brackets and `?` are part of the name, so 'Total [CAD]' "
+                "selects exactly that column.",
+                "Matching is case sensitive.",
+                "A column matched by two entries is kept once, where it first matched.",
+                "A 'drop' that would remove every column is refused.",
             ),
             field_help={
-                "columns": "Patterns are matched case-sensitively against the frame's columns; a "
-                "column matched by more than one pattern is kept only once, at its first appearance. "
-                "Only `*` is a wildcard: brackets and `?` are read as part of the name.",
-                "action": "'keep' selects only the listed columns; 'drop' selects everything else, in "
-                "the frame's own order.",
+                "columns": "For example ['code*', 'amount']: every column starting with 'code', then "
+                "'amount'.",
+                "action": "Use 'drop' when it is shorter to list what goes than what stays.",
             },
         )
 
@@ -95,13 +82,7 @@ class SelectColumns:
         return None
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Resolve the patterns against the incoming schema, which is where every refusal lives.
-
-        A pattern matching nothing and a selection that empties the frame are both decided by the
-        column names alone, so nothing here waits for a row. Resolving twice -- once to refuse, once
-        to select -- is the price of the tool holding no state between the two calls, and it is a
-        pass over a list of column names.
-        """
+        """Refuse an entry that matches no column, or a drop that removes every column."""
         _selection(inputs["rows"].columns, config)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -110,12 +91,7 @@ class SelectColumns:
 
 
 def _selection(available: Sequence[str], config: Mapping[str, Any]) -> list[str]:
-    """The columns the output carries, in order -- and every refusal a pattern list can earn.
-
-    A pure function of the column names and the configuration, so the refusals reach an author
-    before any row moves and the same answer serves both the check and the work. Nothing is kept on
-    the tool between the two: one registered instance serves every flow that names it.
-    """
+    """The columns the output keeps, in order, refusing an entry that matches nothing or a drop of everything."""
     selected: list[str] = []
     seen: set[str] = set()
     for pattern in config["columns"]:
@@ -175,10 +151,10 @@ def _wildcard_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="keep a code column and its suffix ahead of the amount",
+        scenario="keep the code columns and the amount, dropping the rest",
         configuration={"columns": ["code*", "amount"]},
-        explanation="`code*` matches `code` and `code_suffix`, in the frame's own order; `amount` "
-        "follows because it is listed second. `region` is not listed, so it does not survive.",
+        explanation="'code*' matches 'code' and 'code_suffix', in the table's order. 'amount' comes next because "
+        "it is listed second. 'region' is not listed, so it is dropped.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -209,10 +185,10 @@ def _drop_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="drop the region column, keeping the rest in the frame's own order",
+        scenario="remove the region column",
         configuration={"columns": ["region"], "action": "drop"},
-        explanation="Only `region` matches, so it is the only column removed; the survivors keep the "
-        "order the frame already had, since 'drop' names what leaves, not what stays.",
+        explanation="Only 'region' matches, so only it is removed. The other columns keep the order the table "
+        "had.",
         inputs=inputs,
         outputs=outputs,
     )

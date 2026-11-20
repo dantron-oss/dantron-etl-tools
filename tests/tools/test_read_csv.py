@@ -962,7 +962,9 @@ class TestReadCsvInTheCatalog:
             )
 
         documented = " ".join((help_.detailed_description, *help_.notes)).lower()
-        assert "infer" in documented, "that a column is inferred has to be documented"
+        assert "type" in documented and "whole file" in documented, (
+            "that each column's type is worked out from the whole file has to be documented"
+        )
         assert "null" in documented or "nothing" in documented, "and so does what a blank field becomes"
 
         assert "read_csv" in REGISTRY

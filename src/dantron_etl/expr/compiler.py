@@ -49,12 +49,8 @@ _COMPARISONS: Final[dict[type[ast.AST], Callable[[Any, Any], Any]]] = {
     ast.GtE: operator.ge,
 }
 
-# Two numeric bounds, both about keeping a refusal a refusal. A whole number outside the signed
-# 64-bit range has no column that could hold it, and a decimal place or capture group beyond a few
-# thousand has no meaning -- and in both cases the engine below rejects the value with an error of
-# its own type, which would escape this module and defeat the promise that every bad expression
-# raises one thing. The bound is measured on the value the author wrote, sign folded in: the most
-# negative whole number is spellable, and negating it twice is not.
+# Bounds that keep polars' own errors from escaping: a whole number must fit Int64, and a place or
+# group count must be small. Measured on the value as written, sign included.
 _WHOLE_NUMBER_MIN: Final[int] = -(2**63)
 _WHOLE_NUMBER_MAX: Final[int] = 2**63 - 1
 
@@ -82,14 +78,10 @@ def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | 
 
 
 class _Compiler:
-    """Translates a checked tree into a column expression.
+    """Translates a checked tree into a polars expression. Every refusal about the language is made here.
 
-    Every refusal about the language lives here: what a function may be given, what two sides of
-    a comparison may hold, what a list of values may mix.
-
-    Recursive, which is safe only because :func:`_check_depth` has already bounded the tree. The
-    order matters: nothing in here may run before the whitelist has, so this class is private and
-    is only ever constructed on a tree :func:`front_door` has already returned.
+    Recursive, which is safe only because the depth limit has already bounded the tree; only ever built
+    on a tree `front_door` has returned.
     """
 
     __slots__ = ("_schema", "_spelling", "_text", "divisions")
@@ -136,15 +128,10 @@ class _Compiler:
     # -- shapes ------------------------------------------------------------
 
     def _bool_op(self, node: ast.BoolOp) -> Typed:
-        """``and`` / ``or``, left to the engine so that its three-valued logic is the one in force.
+        """`and` / `or`, left to polars so its three-valued logic applies.
 
-        Each operand has to be a truth value. Without that rule a logical operator applied to a
-        number would quietly become a bitwise one -- ``[qty] and [flag]`` returning arithmetic
-        instead of a truth value -- so a column of counts is refused and the author writes
-        ``[qty] > 0``, which is what they meant.
-
-        The cast is a no-op on a truth value and keeps a null null, which is what makes the logic
-        below faithful rather than merely close.
+        Each operand must be true/false; on numbers polars would do bitwise arithmetic, so `[qty] and [flag]`
+        is refused and the author writes `[qty] > 0`.
         """
         spelling = OPERATOR_SYMBOLS[type(node.op)]
         operands: list[Typed] = []
@@ -164,10 +151,7 @@ class _Compiler:
             self._require(operand, Family.BOOLEAN, "'not' needs a truth value")
             return Typed(~operand.expr.cast(pl.Boolean), Family.BOOLEAN, node, "gives a truth value")
 
-        # A signed number is one literal, not a negation applied to one, so the bound on a whole
-        # number is measured here -- on the value the author wrote. That is what makes the most
-        # negative whole number spellable, and it holds for a doubled sign too, because folding
-        # happens before the bound is applied rather than beneath it.
+        # A signed number is one literal, so the most negative Int64 is spellable.
         folded = self._spelling.literal(node)
         if isinstance(folded, (int, float)) and not isinstance(folded, bool):
             self._check_whole_number(folded)
@@ -252,11 +236,8 @@ class _Compiler:
     def _refuse_timestamp_against_date(self, left: Typed, right: Typed, operation: ast.cmpop | None) -> None:
         """Refuse a timestamp compared with a date where reading the date as midnight gives a wrong answer.
 
-        A date compared with a timestamp is read as midnight at its start. That is right for two
-        comparisons: ``[ts] >= date'2025-01-01'`` (on or after that day) and ``[ts] < date'2025-02-01'``
-        (before that day). It is wrong for the rest: ``=`` and ``in`` are false for any time after
-        midnight, ``<=`` leaves out the day itself, which is the classic month-end slip, ``>``
-        takes the day in, and ``!=`` keeps it. ``operation`` is ``None`` for ``in``.
+        Right for `>=` and `<`; wrong for `=`, `in`, `<=` (misses the day itself), `>` and `!=`.
+        `operation` is None for `in`.
         """
         if isinstance(left.dtype, pl.Datetime) and right.dtype == pl.Date:
             timestamp, calendar_date, safe = left, right, (ast.GtE, ast.Lt)
@@ -275,12 +256,7 @@ class _Compiler:
         )
 
     def _null_test(self, node: ast.Compare, right_node: ast.expr, *, negated: bool) -> Typed:
-        """``is null`` / ``is not null`` -- the only expressions in this language never themselves null.
-
-        That is what makes them the escape hatch from three-valued logic: every other test against
-        a null row is null, and a filter drops it, so without these two an author could not find a
-        missing value at all.
-        """
+        """`is null` / `is not null`: the only tests never null themselves, so the way to find a missing value."""
         if not (isinstance(right_node, ast.Name) and right_node.id == "null"):
             raise error(
                 self._text,
@@ -291,20 +267,11 @@ class _Compiler:
         return Typed(built, Family.BOOLEAN, node, "gives a truth value")
 
     def _membership(self, node: ast.Compare, right_node: ast.expr, *, negated: bool) -> Typed:
-        """``in`` / ``not in`` over a parenthesised list of literals.
+        """`in` / `not in` over a bracketed list of literals.
 
-        Only literals: a set of values to match is a decision recorded in the file, and allowing a
-        column on the right would turn a readable membership test into a row-by-row join nobody
-        reviewing the file would see coming.
-
-        A mixed *family* is refused in this language's words rather than in the engine's, which
-        would leak an exception type of its own out of compilation.
-
-        The list handed to the engine is one this module built rather than the one the author's
-        text implies. The engine types the list from its first value and rejects the rest with an
-        exception of its own, which for a list of whole numbers and decimals together refuses
-        something an author wrote perfectly sensibly. One family spanning both number spellings is
-        therefore widened here to the one that holds them all.
+        Only literals: a column on the right would be a hidden row-by-row join. A list mixing families is
+        refused; a list mixing whole numbers and decimals is widened here, since polars types it from its
+        first value.
         """
         candidates = right_node.elts if isinstance(right_node, ast.Tuple) else [right_node]
         values: list[Any] = []
@@ -374,15 +341,8 @@ class _Compiler:
             return Typed(pl.col(name), Family.UNKNOWN, node, "holds an unknown type")
         dtype = self._schema[name]
         family = family_of_dtype(dtype)
-        # One column reference, cast at the leaf wherever the schema says it is stored compactly.
-        #
-        # Two dtypes store text compactly -- dictionary-encoded, and restricted to a fixed set of
-        # members -- and the engine's string kernels and its own coercions only work reliably
-        # against a plain string. Casting here, on the leaf, is what makes that true for every
-        # operation built on top of the reference: a call nested three deep still meets a plain
-        # string, because the column never handed back anything else. Casting inside each text
-        # function instead is not enough -- it disappears the moment the value passes through
-        # something that is not a text function, such as coalesce().
+        # A Categorical or Enum column is cast to String here, at the leaf, so every operation on it
+        # meets a plain string. Why: docs/design/expressions.md#types-and-widths
         expression = pl.col(name)
         if family is Family.TEXT and dtype is not None and dtype != pl.String:
             expression = expression.cast(pl.String)
@@ -492,13 +452,9 @@ class _Compiler:
         return param.read(name, self._spelling.literal(node), POSITIONS[position])
 
     def _built(self, param: Param, argument: Any) -> Any:
-        """What a function's builder is given for one argument.
+        """What a function's builder is given for one argument; text is cast to a plain String.
 
-        A text operand is cast so an engine string kernel always meets a plain string. Redundant
-        whenever a schema was supplied, because the leaf column reference is already cast there --
-        this is what is left for the caller with no schema in hand, where the leaf dtype is unknown
-        and a compactly stored column would otherwise reach a string kernel uncast. The cast is a
-        no-op on a column already stored as a plain string.
+        Needed when no schema was given, so a compact text column cannot reach a string function uncast.
         """
         if not isinstance(param, Value):
             return argument
@@ -509,11 +465,7 @@ class _Compiler:
     # -- type requirements -------------------------------------------------
 
     def _require(self, typed: Typed, family: Family, requirement: str) -> None:
-        """Refuse an operand outside the family an operation works in, saying all three facts.
-
-        Which operand, what it holds, and what was needed instead. A wildcard family is skipped:
-        a null meets anything, and an unchecked column is not something to refuse on.
-        """
+        """Refuse an operand outside the family an operation needs: which operand, what it holds, what was needed."""
         if typed.family in WILDCARD_FAMILIES or typed.family is family:
             return
         raise error(self._text, f"{self._describe(typed)}, but {requirement}")
@@ -521,22 +473,9 @@ class _Compiler:
     def _require_whole(self, typed: Typed, requirement: str) -> None:
         """Refuse a count of months that cannot be shown to be whole.
 
-        Half a month is not a distance a date can move. A count like 1.5 is not something anyone
-        writes on purpose; it arrives because a number was divided by something, and rounding it
-        here would bury that division inside a date that looks perfectly ordinary.
-
-        The count is checked however it was built. A decimal column is refused for the same reason
-        a decimal typed into the file is: the schema says which one a column is before a row is
-        read. So is a decimal that arrives through arithmetic, or through abs(), round() or
-        coalesce(), because each of those works out what it hands back from what it was given.
-        Division is refused whatever it was given, since 3 / 2 is 1.5.
-
-        A count whose type could not be worked out is refused too. This check would rather say no
-        to an expression it cannot read than let one through and have the engine fail on a row.
-
-        Two things are not refusals. A null is not half a month: there is no count, so the date
-        comes back null. And nothing is refused when no schema was given, because then there are no
-        types to read at all, which is how every other check here behaves.
+        Half a month is not a distance; a 1.5 usually means a forgotten division. Refused: a decimal column or
+        literal, a decimal from arithmetic, abs(), round() or coalesce(), any division, and a count of unknown
+        type. A null gives a null date. Nothing is refused without a schema.
         """
         if typed.family in WILDCARD_FAMILIES or self._schema is None:
             return
@@ -550,13 +489,7 @@ class _Compiler:
         raise error(self._text, f"{self._describe(typed)}, but {requirement}")
 
     def _require_arithmetic(self, typed: Typed, symbol: str) -> None:
-        """Arithmetic needs numbers, and text is the operand worth a sentence of its own.
-
-        The engine joins two pieces of text with '+', so two amount columns that arrived from an
-        import as text add up to '10020' instead of 120. Both operands are in the same family, so
-        no other rule here would ever catch it; the only way to close it is to refuse the operator
-        and move the capability to a name that says what it does.
-        """
+        """Arithmetic needs numbers. `+` on text is refused: polars would join '100' and '20' into '10020'."""
         if typed.family in WILDCARD_FAMILIES or typed.family is Family.NUMBER:
             return
         hint = (
@@ -570,10 +503,9 @@ class _Compiler:
         )
 
     def _one_family(self, parts: Sequence[Typed], requirement: str) -> Family:
-        """The single family a list of operands agrees on, refusing the first that disagrees.
+        """The one family a list of operands agrees on, refusing the first that disagrees.
 
-        The engine would rather coerce -- it will turn a number into text to sit beside one without
-        a word -- and a number that arrives in a column of text looks like data somebody meant.
+        polars would turn a number into text to sit beside text, without a word.
         """
         settled: Typed | None = None
         for part in parts:
@@ -597,11 +529,7 @@ class _Compiler:
     # -- helpers -----------------------------------------------------------
 
     def _record_division(self, node: ast.expr, divisor: Typed) -> None:
-        """Note a divisor for the tool to check row by row, or refuse one written as zero.
-
-        A division by zero has no answer, so a tool stops on a row whose divisor is zero. A divisor
-        written in the file as zero would stop every row, so it is refused here, before any row.
-        """
+        """Note a divisor for the tool to check row by row, or refuse one written as zero."""
         written = self._spelling.literal(node)
         if isinstance(written, (int, float)) and not isinstance(written, bool) and written == 0:
             raise error(self._text, f"'/' divides by {self._spelling.render(node)}, which is zero, so it has no answer")

@@ -1,9 +1,7 @@
-"""write_excel: opening the one workbook, and making room for each tab in it.
+"""write_excel: open the one workbook, and make room for each tab in it.
 
-The workbook is loaded from the template, or started new, and it is opened exactly once. The file
-already at ``path`` is never read. The refusals that can only be answered with it open live here too: a tab
-already there with no permission to replace it, and a table name the workbook already uses. Part of
-``write_excel``; the leading underscore keeps it out of the tool catalog.
+The refusals that need the workbook open are here: a template tab named without `overwrite`, and a
+table name the workbook already uses.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -16,16 +14,10 @@ from ._workbook_checks import table_name
 
 @contextmanager
 def opened_once(path: str, template: str | None) -> Iterator[Any]:
-    """The one workbook every tab is written into, opened once and closed however the run ends.
+    """Open the workbook every tab is written into: the template, or a new one. Always closed.
 
-    Two ways in. A template is loaded, and saved to ``path``, so the template survives the run.
-    Otherwise the book is new. The file already at ``path`` is never read: each run writes the same
-    file whatever an earlier run left there.
-
-    ``openpyxl`` is imported here rather than at the top of the module, and named if it is missing,
-    the way this library reaches for a database driver only when a database is asked for. Every tool
-    module is imported when the catalog is, so a top-level import would cost every consumer,
-    including the many tools that never open a workbook.
+    The file already at `path` is never read. openpyxl is imported here, and named if missing, so
+    importing the package does not load it.
     """
     try:
         import openpyxl
@@ -49,14 +41,9 @@ def opened_once(path: str, template: str | None) -> Iterator[Any]:
 
 
 def empty_tab(book: Any, sheet: str, *, replace: bool) -> Any:
-    """A tab named ``sheet``, empty and ready to be written, or a refusal if one is already there.
+    """An empty tab named `sheet`, ready to write; or a refusal if it exists and `replace` is false.
 
-    This is the tool's one refusal that needs the workbook open, so it is the one refusal left this
-    late. It is raised while the book is still only in memory, so a run that ends here writes
-    nothing.
-
-    A tab being replaced is removed and remade in the place it already held. A tab that moved to the
-    end of the pack is a tab a reader reports as missing.
+    A replaced tab is remade in the same position, so it does not move to the end of the workbook.
     """
     if sheet not in book.sheetnames:
         return book.create_sheet(sheet)
@@ -74,11 +61,9 @@ def empty_tab(book: Any, sheet: str, *, replace: bool) -> Any:
 
 
 def refuse_names_in_use(book: Any, entries: Sequence[Mapping[str, Any]]) -> None:
-    """Refuse a table name the workbook already uses on a tab this step leaves alone.
+    """Refuse a table name already used on a tab this step leaves alone, or as a defined name.
 
-    A tab this step writes is remade, so its old tables go with it and their names are free. A tab
-    it leaves alone keeps its tables, and so does every name the workbook defines. This is only
-    known with the workbook open. It is still refused before the save, so nothing is written.
+    A tab this step writes is remade, so its old table names are free again.
     """
     written = {entry["sheet"] for entry in entries}
     in_use: dict[str, str] = {}

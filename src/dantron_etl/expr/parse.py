@@ -16,20 +16,12 @@ from .errors import ExpressionError, error
 from .scan import Scanned, scan
 
 
-# The size limits are published rather than private because they are part of the contract with
-# whoever writes an expression: a limit an author cannot see is a limit they cannot design around.
-# All three are generous next to any real predicate -- the widest honest one is a membership test
-# against a list of codes -- and they exist to bound work on untrusted text, not to shape the
-# language. MAX_NODES has to sit below half of MAX_TEXT_LENGTH to mean anything at all: roughly two
-# characters buy one node, so a breadth cap above that could never be reached.
+# Public size limits: an author can see them. Why: docs/design/expressions.md#limits-come-before-parsing
 MAX_TEXT_LENGTH: Final[int] = 2_000
 MAX_DEPTH: Final[int] = 40
 MAX_NODES: Final[int] = 500
 
-# The whitelist. ``Expression`` and ``Load`` are housekeeping: the root of an eval tree, and the
-# context flag every name carries. Everything else here is either a shape the language uses or an
-# operator it exposes -- and everything absent is refused, including every form of attribute
-# access, subscripting, comprehension, binding, unpacking and string formatting.
+# The whitelist. Expression and Load are housekeeping; everything not listed is refused.
 ALLOWED_NODES: Final[frozenset[type[ast.AST]]] = frozenset(
     {
         ast.Expression,
@@ -66,8 +58,7 @@ ALLOWED_NODES: Final[frozenset[type[ast.AST]]] = frozenset(
     }
 )
 
-# An operator refusal has to be readable by an author, who typed characters, and precise for
-# whoever reads the log, who wants the node type. So a refusal carries both spellings.
+# An operator refusal gives both the characters typed and the node type.
 _OPERATOR_SPELLINGS: Final[dict[str, str]] = {
     "Pow": "**",
     "Mod": "%",
@@ -83,8 +74,7 @@ _OPERATOR_SPELLINGS: Final[dict[str, str]] = {
 }
 
 
-# Words an author brings from SQL, Excel or Python, and what this language writes instead. Matched as
-# whole words outside quotes and brackets, and only offered once the parser has refused the text.
+# Words from SQL, Excel or Python, and what to write instead; offered only after the parser refuses.
 _WORD_HINTS: Final[dict[str, str]] = {
     **{
         word: f"write {word.lower()!r} in lower case"
@@ -106,14 +96,10 @@ _SYMBOL_HINTS: Final[dict[str, str]] = {
 
 
 def _parse(text: str, scanned: Scanned) -> ast.Expression:
-    """Build a tree from the rewritten text, mapping every parser failure onto one refusal.
+    """Build a tree from the rewritten text, turning every parser failure into one refusal.
 
-    A syntax error says where it is, in the author's text, and adds a hint when the text holds a
-    spelling from another language (``AND``, ``<>``, ``&&``, ``like``, ``if(``).
-
-    ``RecursionError`` and ``MemoryError`` are caught alongside the syntax errors because the
-    parser is the component that fails on pathological nesting, and a caller of this module should
-    never have to catch an error type that leaks how the text was analysed.
+    A syntax error points at the author's text, with a hint for words from other languages (`AND`, `<>`).
+    `RecursionError` and `MemoryError` are caught too, since the parser is what fails on deep nesting.
     """
     try:
         return ast.parse(scanned.source, mode="eval")
@@ -180,11 +166,7 @@ def _outside_quotes_and_brackets(text: str) -> str:
 
 
 def _check_depth(text: str, tree: ast.Expression) -> None:
-    """Refuse a tree nested past :data:`MAX_DEPTH`, walking it with an explicit stack.
-
-    Iterative on purpose: a recursive depth check would itself blow the stack on the input it
-    exists to reject, which is exactly the failure it is meant to convert into a clear refusal.
-    """
+    """Refuse a tree nested past MAX_DEPTH, walking it with an explicit stack so the check cannot itself overflow."""
     stack: list[tuple[ast.AST, int]] = [(tree, 0)]
     while stack:
         node, depth = stack.pop()
@@ -194,12 +176,7 @@ def _check_depth(text: str, tree: ast.Expression) -> None:
 
 
 def _check_breadth(text: str, tree: ast.Expression) -> None:
-    """Refuse a tree with more parts than :data:`MAX_NODES`, naming the limit that fired.
-
-    Depth says nothing about a flat expression, so a list of ten thousand values sits inside the
-    depth limit and is bounded only by the character limit -- which then reports a number unrelated
-    to what the author wrote. A published breadth cap refuses it by the limit that actually applies.
-    """
+    """Refuse a tree with more parts than MAX_NODES, which a flat list can reach inside the depth limit."""
     parts = sum(1 for _ in ast.walk(tree))
     if parts > MAX_NODES:
         raise error(
@@ -211,12 +188,7 @@ def _check_breadth(text: str, tree: ast.Expression) -> None:
 
 
 def _check_nodes(text: str, tree: ast.Expression) -> None:
-    """Refuse any node type outside :data:`ALLOWED_NODES`, naming it.
-
-    A whitelist, so the question a future reader asks is "why is this node allowed?" rather than
-    "did anyone think of this node?". ``ast.walk`` is breadth-first and iterative, so the outermost
-    offending node in the text is the one reported and no recursion is involved.
-    """
+    """Refuse any node type outside ALLOWED_NODES, naming the outermost one found."""
     for node in ast.walk(tree):
         if type(node) not in ALLOWED_NODES:
             raise node_refusal(text, node)
@@ -270,12 +242,7 @@ def front_door(
 
 
 def _check_columns(text: str, referenced: tuple[str, ...], columns: Collection[str]) -> None:
-    """Refuse a column the frame does not have, naming it and listing what is there.
-
-    Checked in the order written, so the first mistake in the line is the one reported. Listing the
-    available names is the whole point: an author who misspells a column cannot see the frame, and
-    a message that only says "unknown column" leaves them guessing.
-    """
+    """Refuse a column the frame does not have, naming it and listing what is there, first mistake first."""
     available = set(columns)
     for name in referenced:
         if name not in available:

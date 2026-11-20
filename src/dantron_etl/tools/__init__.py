@@ -1,11 +1,7 @@
-"""Tools built on the contract in :mod:`.authoring`.
+"""The tools. Importing this package registers every one of them.
 
-Each tool's module registers its own instance into :data:`.registry.REGISTRY` at import time, so
-importing a tool's module -- directly, or by importing this package -- is what puts it in the
-shipped catalog. This package imports every module beneath it itself, discovered from the
-filesystem rather than listed here, so that importing this package (or the top-level package, which
-imports this one) always sees the whole catalog, not merely whatever tool a caller happened to
-import by name.
+Each module in this folder registers its tool into `REGISTRY` when imported. This package imports
+every module it finds here, except helpers whose name starts with `_`, so the catalog is always whole.
 """
 
 import importlib

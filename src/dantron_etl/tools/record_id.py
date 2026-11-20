@@ -1,21 +1,9 @@
-"""RecordId: one whole number per row, counting up in the order the rows arrived.
+"""RecordId: add a column numbering the rows from `start`, in the order they arrived.
 
-Everything that came in comes back, unmoved, with one more column on the end. The number starts at
-`start` and goes up by one per row.
+It never sorts; put a sort in front for a meaningful order. The column is Int64, even on an empty
+frame. A name already in use is refused.
 
-**The numbering follows arrival order.** This tool sorts nothing and decides nothing. That is why
-it is worth something only after an explicit sort step. Put a `sort` in front of it and the
-numbering follows the order that step chose, which is an order somebody wrote down. Without one it
-follows whatever order the rows happened to be in.
-
-**The column is a 64-bit integer, declared rather than inferred.** A frame with no rows has nothing
-to infer a type from. A column typed as nothing at all would break the next join on the day an
-upstream filter matched nothing, and not before.
-
-**A name already in use is refused.** There is no option here to overwrite, so the shared check the
-rest of the catalog uses is asked with nothing to replace. Whoever writes this step does not know
-every column of the frame they are writing into. A collision taken quietly destroys a column and
-reports success.
+Why: docs/design/tools.md#record_id
 """
 
 from collections.abc import Mapping
@@ -38,10 +26,10 @@ _INT64_MAX: Final[int] = 2**63 - 1
 
 
 class RecordId:
-    """Add a column of whole numbers to `rows`, counting up in the order the rows arrived."""
+    """Add a column of whole numbers to `rows`, counting up in arrival order."""
 
     name = "record_id"
-    description = "Add a column numbering the rows of `rows`, counting up from a starting number."
+    description = "Number the rows 1, 2, 3 and so on, in a new column."
     category = "preparation"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -50,15 +38,13 @@ class RecordId:
         return {
             "output": ConfigField(
                 type="string",
-                description="The name of the number column to add. It may not take the name of a "
-                "column that is already there.",
+                description="The name of the new number column, such as 'row_no'.",
                 required=True,
                 non_empty=True,
             ),
             "start": ConfigField(
                 type="integer",
-                description="The number the first row gets. Every row after it counts up by one. "
-                "Left out, the numbering starts at 1.",
+                description="The number the first row gets. Each row after it gets one more.",
                 default=1,
             ),
         }
@@ -66,33 +52,31 @@ class RecordId:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Adds one column to the end of the frame, holding a 64-bit integer per row. The "
-                "first row gets 'start'. The next gets one more, and so on. The rows themselves do "
-                "not move, so the numbering follows the order they arrived in. Put a sort in front "
-                "of this step and the numbering follows the order that sort chose. A start of 0 or "
-                "a negative start counts up from there. The type is declared rather than inferred, "
-                "so a frame with no rows still comes back carrying the column."
+                "Use record_id to number rows 1, 2, 3 and so on, for example to give each row an "
+                "id or a rank. The number goes in a new column at the end of `rows`; nothing else "
+                "changes. The rows are numbered in the order they arrive, so put a sort in front "
+                "for a meaningful order, such as a rank by amount."
             ),
             examples=(_default_start_example(), _zero_start_example()),
             notes=(
-                "This step decides no order of its own. On an unsorted frame the numbers are only "
-                "as meaningful as the order the rows happened to be in. A read_table hands rows "
-                "over in no fixed order, so a Sort belongs between the two.",
+                "This step does not sort. Without a sort in front, the numbers follow whatever order "
+                "the rows happened to be in.",
+                "read_table gives rows in no fixed order, so put a sort between the two.",
+                "The new column is a 64-bit whole number, even on a table with no rows.",
+                "A column name already in use is refused. There is no setting to overwrite one.",
+                "A 'start' too large for a 64-bit number is refused, and so is a numbering that "
+                "would pass the largest 64-bit number part way down.",
             ),
             field_help={
-                "output": "The new column goes on the end. A name already in use is refused. There "
-                "is no option here to overwrite one.",
+                "output": "For example 'row_no'. It must be a name the table does not already have.",
                 "start": "Any whole number, including 0 and negative numbers. Left out, it is 1.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """The rules the template cannot state: a blank name, a start with no value, a start too big.
+        """Refuse a blank name, a start with no value, and a start too big for Int64.
 
-        A Python integer has no ceiling and the column has one, so a start can be written that
-        nothing here could hold. That is wrong on its own, whatever frame turns up, so it is
-        refused here. A start that fits but runs off the end part way down the frame is a different
-        question, because the answer depends on how many rows arrive. That one waits for the frame.
+        A start that fits but would overflow part way down depends on the row count, so it waits for the frame.
         """
         if not config["output"].strip():
             raise ConfigError("config field 'output' is blank; the new column needs a name")
@@ -109,11 +93,9 @@ class RecordId:
             )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a name the frame already carries, and a numbering that runs off the end.
+        """Refuse a name already on the frame, and a numbering that would pass the Int64 ceiling.
 
-        The last row is given `start + height - 1`. A frame with no rows is given nothing, so there
-        is no last number and nothing to refuse. Left alone, a numbering that passes the ceiling
-        wraps round to large negative numbers part way down, and the tool reports success.
+        Left alone, such a numbering wraps round to large negative numbers part way down and reports success.
         """
         frame = inputs["rows"]
         check_output_column(frame, config["output"], "output", replace=None)
@@ -129,11 +111,7 @@ class RecordId:
             )
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
-        """Count up over the rows as they are, without touching their order.
-
-        The range is built from the frame's own height, not from anything in the data. That is what
-        keeps the numbering a function of arrival order alone.
-        """
+        """Number the rows from `start`, in their arrival order."""
         frame = inputs["rows"]
         start = config["start"]
         numbering = (pl.int_range(pl.len(), dtype=pl.Int64) + start).alias(config["output"])
@@ -155,11 +133,10 @@ def _default_start_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="number the rows from 1, in the order they arrived",
+        scenario="number the rows from 1",
         configuration={"output": "row_no"},
-        explanation="The frame is in no particular order, and the numbering follows it anyway. 'c' "
-        "arrived first, so 'c' gets 1. The new column goes on the end, and nothing else about the "
-        "frame changes.",
+        explanation="The rows are numbered in the order they arrived: 'c' came first, so it gets 1. The new "
+        "column goes at the end.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -179,10 +156,9 @@ def _zero_start_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="number the rows from 0, for a consumer that counts from zero",
+        scenario="number the rows from 0",
         configuration={"output": "offset", "start": 0},
-        explanation="'start: 0' is honoured as written. Zero reads as an absence in a lot of code, "
-        "so it is worth seeing it work. The first row gets 0, not 1.",
+        explanation="'start: 0' gives the first row 0, not 1.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

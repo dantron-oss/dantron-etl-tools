@@ -1,9 +1,7 @@
-"""The checks a frame passes before it is loaded into a table. Shared by write_table and publish_tables.
+"""The checks a frame passes before it is loaded into a table, shared by write_table and publish_tables.
 
-One copy, so the two table writers refuse the same frames in the same words: columns that do not
-line up with the table's, an empty frame nobody allowed, a column whose values will not fit the
-column the table declares, and, for a merge, a key that does not pick out one row. The leading
-underscore keeps this module out of the tool catalog.
+Columns that do not match the table's, an empty frame not allowed, values that will not fit the
+declared column type, and, for a merge, a key that does not pick out one row.
 """
 
 from collections.abc import Mapping, Sequence
@@ -38,15 +36,10 @@ def require_rows(tool: str, frame: pl.DataFrame, qualified: str, allow_empty: bo
 
 
 def require_landable_columns(frame: pl.DataFrame, declared: Mapping[str, str | None], qualified: str) -> None:
-    """Refuse a column whose values will not go into the column the table declared, naming it.
+    """Refuse a column whose values will not go into the column the table declares, naming it.
 
-    Worth doing here rather than leaving to the engine because neither engine does it usefully. One
-    says nothing at all -- sqlite stores ``'heavy'`` in an ``integer`` column and reports success --
-    and the other says it at load time, in its own words, about a copy stream.
-
-    A type this library does not recognise is passed over rather than refused. A domain, an enum, a
-    JSON column: each is a column something else has an opinion about, and refusing on a reading
-    this side did not understand would stop a load that was perfectly correct.
+    SQLite stores 'heavy' in an integer column and reports success; Postgres fails later in its own words.
+    A type this library does not know (a domain, an enum, JSON) is passed over, not refused.
     """
     for column, dtype in frame.schema.items():
         wanted = declared.get(column)

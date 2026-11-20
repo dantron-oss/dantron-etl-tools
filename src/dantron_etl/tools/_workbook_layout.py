@@ -1,7 +1,6 @@
-"""write_excel: how a written tab looks -- headings, widths, wrapping and tables.
+"""write_excel: how a written tab looks: headings, widths, wrapping and tables.
 
-Layout never changes a value or a number format; it runs after the cells are written. Part of
-``write_excel``; the leading underscore keeps it out of the tool catalog.
+Layout runs after the cells are written and never changes a value or a number format.
 """
 
 import re
@@ -14,8 +13,7 @@ import polars as pl
 from ._workbook_checks import table_name
 from ._workbook_rules import column_formats, format_rules, resolve_rules
 
-#: A fitted column is never wider than this. A paragraph of text would otherwise make a column
-#: hundreds of characters wide. A stated width is how a column goes past it.
+#: The widest a fitted column gets, so a paragraph does not make a column hundreds wide.
 _FIT_CAP: Final[float] = 60
 #: Room either side of the text in a fitted column.
 _FIT_PADDING: Final[float] = 2
@@ -28,12 +26,10 @@ _GENERAL_NUMBER_LENGTH: Final[int] = 11
 
 
 def lay_out_tab(worksheet: Any, frame: pl.DataFrame, entry: Mapping[str, Any]) -> None:
-    """Apply a sheet entry's layout options to a tab whose values are already written.
+    """Apply a sheet entry's layout settings to a tab whose values are already written.
 
-    Layout never touches a value. Each step below sets a font, a column width, an alignment or a
-    table, and nothing else. None of them may set a cell's value or its number format, so every
-    figure is the same with layout as without it. ``TestLayoutNeverTouchesAFigure`` fails if that
-    stops being true. A new layout option belongs here only if it keeps that promise.
+    Each step sets a font, a width, an alignment or a table, never a value or a number format.
+    `TestLayoutNeverTouchesAFigure` fails if that stops being true.
     """
     header = entry.get("header")
     if header is not None:
