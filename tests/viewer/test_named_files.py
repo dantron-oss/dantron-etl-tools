@@ -306,6 +306,20 @@ def test_a_workbook_lists_its_sheets_and_shows_the_one_asked_for(tmp_path: Path)
         preview(found, sheet="Four")
 
 
+def test_an_old_format_xls_workbook_is_shown_as_a_workbook_too(tmp_path: Path) -> None:
+    """The mirror of the .xlsx case above: read_excel reads .xls, so Show file opens it as one."""
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "read_excel_1900.xls"
+    root = make(tmp_path / "project", [{"id": "read", "tool": "read_excel", "config": {"path": "in.xls", "sheet": "Headings"}}])
+    (root / "in.xls").write_bytes(fixture.read_bytes())
+    project_, spec = loaded(root)
+
+    shown = preview(named_file(spec, run_folder(project_), "read", "path"))
+
+    assert shown["kind"] == "workbook"
+    assert shown["sheet"] == "Headings"
+    assert shown["rows"] == [["key", "2026", "1.5"], ["o1", "10.25", "3"]]
+
+
 def test_another_text_file_shows_its_first_lines(tmp_path: Path) -> None:
     # No shipped tool names a plain text file yet; a future one gets this for free.
     notes = tmp_path / "notes.txt"

@@ -584,6 +584,12 @@ Each of these has caught a real pipeline.
 - **A workbook column takes its type from its first 100 rows.** `read_excel` stops when a cell
   holds something the column's type would turn into null: text far down a column of figures, or a
   word such as `n/a` or `#N/A` anywhere in one. Set `as_text: true` and convert with `cast_columns`.
+  A cell holding an error value that a formula left behind (`#N/A`, `#DIV/0!`) is the exception: it
+  reads as null and is not refused. Check for nulls with `assert_rows` where that matters.
+- **`read_excel` reads `.xlsx` and `.xls`**, Excel's older format, by the same rules: the same
+  cells give the same rows, the same types and the same refusals, whichever day an `.xls` counts its
+  dates from. A file with an `.xls` name that holds a web page or delimited text is refused, saying
+  so; read delimited text with `read_csv`.
 
 ### How a figure is shown
 

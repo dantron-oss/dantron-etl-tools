@@ -24,7 +24,9 @@ output_files/*
 # Anything a consumer's own data lands in. Never version data.
 data/
 *.xlsx
+*.xls
 !tests/fixtures/*.xlsx
+!tests/fixtures/*.xls
 *.parquet
 
 # Local secrets: connection strings, tokens, keys. A template of names with no values,

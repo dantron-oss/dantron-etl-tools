@@ -7,6 +7,13 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`read_excel` reads `.xls`**, Excel's older format, as well as `.xlsx`. The same cells give the
+  same rows, types and refusals in both, whichever day an `.xls` counts its dates from. A file named
+  `.xls` that holds a web page or delimited text is refused, saying so. The viewer's **Show file**
+  previews an `.xls` as a workbook.
+
 ### Changed
 
 - The package's **Documentation** and **Changelog** links, and the README's Postgres install line,
