@@ -1,26 +1,15 @@
-"""Connection plumbing shared by every source and sink: an environment name in, an open connection out.
+"""Database connections and the table helpers the table tools share.
 
-A pipeline definition is a file that gets committed and handed to another client as a template, so
-it must never hold a credential. What it holds instead is the *name* of an environment variable, and
-resolving that name to a real connection -- reading the environment, never a file; picking the
-driver by scheme; refusing a name that could carry SQL before a connection ever opens -- is the same
-four steps for a source reading a table and a sink writing one. Written once here so a fifth tool
-reaching for a database inherits the same refusals rather than reinventing a slightly different set
-of them.
+A step names an environment variable; :func:`resolve_connection_uri` reads the connection string
+from it and :func:`open_connection` opens it. The driver is picked by the URI's scheme: SQLite
+needs only the standard library, Postgres uses ``psycopg`` (or ADBC), imported only when needed.
+A missing driver is refused with the package to install.
 
-**The environment, and never a file.** ``os.environ`` is the only place a value is read from. In an
-orchestrator or in CI there is no ``.env`` to parse, the secret arrives from a secret store, and a
-tool that parsed one anyway would bake a single project's layout into a library that ships to every
-other consumer of it.
+:func:`driver_for` gives the :class:`RowLoader` for a connection, which writes rows, merges, and
+reads what a table declares. Table and schema names are checked with :func:`validate_identifier`
+before any connection opens.
 
-**A name is the whole injection fence.** ``schema`` and ``table`` are spliced into a statement and
-cannot be bound as parameters, so the only defence available is refusing anything that is not a
-plain identifier -- cheap to check, and the check runs before a connection opens, so a name that
-could carry a second statement never gets the chance to run one.
-
-**No driver is declared.** SQLite needs nothing beyond the standard library; anything else imports
-its driver lazily, by scheme, and a missing one is refused by naming the package to install rather
-than surfacing as a bare ``ImportError`` a caller has never heard of.
+Why: docs/design/database.md
 """
 
 import os
@@ -50,7 +39,7 @@ __all__ = [
     "validate_identifier",
 ]
 
-# Matched with fullmatch: '$' alone would also accept a name with a newline at its end.
+# Matched with fullmatch: a pattern ending in '$' would also accept a trailing newline.
 _ENV_NAME: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -58,39 +47,28 @@ _SQLITE_PREFIX: Final[str] = "sqlite:///"
 _KNOWN_SCHEMES: Final[tuple[str, ...]] = ("sqlite", "file", "postgresql", "postgres")
 _POSTGRES_SCHEMES: Final[frozenset[str]] = frozenset({"postgresql", "postgres"})
 
-# The word that makes a SQLite table definition unreadable to anything short of a SQL parser. The
-# pragmas expose keys, nullability and unique indexes; they say nothing at all about a CHECK, which
-# lives only in the definition's own text.
+# A SQLite CHECK rule appears only in the table definition's text, never in the pragmas.
 _CHECK_WORD: Final[re.Pattern[str]] = re.compile(r"\bcheck\b", re.IGNORECASE)
 
-# How many values one SQLite statement may carry. The real ceiling is higher on every version this
-# runs on; staying well under it costs one extra round trip per half-thousand distinct values.
+# How many values one SQLite statement may carry. SQLite's own limit is higher.
 _SQLITE_PARAMETER_CHUNK: Final[int] = 500
 
-# Where the two pragmas that carry a rule keep it. ``table_info`` hands back one row per column,
-# ``(cid, name, type, notnull, dflt_value, pk)``, and ``index_info`` one row per indexed column,
-# ``(seqno, cid, name)``. The last of ``table_info``'s is the one worth naming: ``pk`` is not a flag
-# but the column's position in the primary key, counting from one and zero for a column outside it,
-# so it answers "is this column in the key" and "does the key span columns" at once.
+# Positions in the rows the pragmas return. ``table_info`` gives (cid, name, type, notnull,
+# dflt_value, pk) per column; ``pk`` is the column's position in the primary key, 0 when outside it.
+# ``index_info`` gives (seqno, cid, name) per indexed column.
 _TABLE_INFO_NAME: Final[int] = 1
 _TABLE_INFO_DECLARED_TYPE: Final[int] = 2
 _TABLE_INFO_NOT_NULL: Final[int] = 3
 _TABLE_INFO_KEY_POSITION: Final[int] = 5
 _INDEX_INFO_NAME: Final[int] = 2
 
-# The scratch table a merge loads into before it upserts. One fixed name rather than one per merge,
-# dropped again as soon as the upsert has read it, so two merges in the same unit of work do not
-# collide. Spelled unlike anything a schema would hold, because on sqlite a temporary table shadows
-# a permanent one of the same name and the merge would then read its own scratch as the target.
+# The temporary table a merge loads into before it upserts.
+# Why: docs/design/database.md#merging-through-a-staging-table
 _MERGE_STAGING: Final[str] = "_etl_merge_staging"
 
-# Every SQL type name this library is willing to claim it understands, as the declared type it
-# means. Both drivers are read into this one vocabulary -- sqlite hands back the word from the
-# definition, postgres hands back ``format_type``'s spelling -- so a caller comparing a frame
-# against a table gets the same answer whichever engine the table lives on. A name that is not here
-# is answered with ``None``, which means "no opinion" rather than "wrong": a domain, an enum, a
-# JSON column and a type this list has never heard of are all passed over, because any doubt buys
-# the slow answer and never the wrong one.
+# The SQL type names the library understands, and the column type each means. Any other name
+# gets ``None`` ("no opinion").
+# Why: docs/design/database.md#one-type-vocabulary-for-both-engines
 _SQL_TYPE_NAMES: Final[dict[str, str]] = {
     "int": "Int64",
     "int2": "Int64",
@@ -130,11 +108,9 @@ _SQL_TYPE_NAMES: Final[dict[str, str]] = {
 
 
 def _register_adapters() -> None:
-    """Bind ``date``/``datetime`` to ISO text ourselves, ahead of the deprecation.
+    """Store Python dates and datetimes in SQLite as ISO text.
 
-    sqlite3's own default adapters for these two types are deprecated in 3.12 and gone in 3.14, so
-    a column of ``pl.Date`` bound straight through would warn today and raise on a later Python.
-    Registering our own keeps every write on the safe side of that regardless of interpreter.
+    Why: docs/design/database.md#dates-in-sqlite
     """
     sqlite3.register_adapter(date, lambda value: value.isoformat())
     sqlite3.register_adapter(datetime, lambda value: value.isoformat(sep=" "))
@@ -144,11 +120,12 @@ _register_adapters()
 
 
 def validate_identifier(value: str, field: str) -> None:
-    """Refuse anything that is not a plain name, quoting the offender.
+    """Refuse ``value`` unless it is a plain name: letters, digits and underscores, not starting with a digit.
 
-    Called on ``schema`` and ``table`` before a connection is ever opened: an identifier cannot be
-    bound as a parameter, so this grammar check is the only defence against a name carrying a second
-    statement, and it has to run first for that defence to mean anything.
+    ``field`` is the setting it came from, used in the message. Raises :class:`ConfigError`. Call it on
+    a schema or table name before opening a connection.
+
+    Why: docs/design/database.md#a-plain-name-is-the-only-guard
     """
     if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
         raise ConfigError(
@@ -158,18 +135,18 @@ def validate_identifier(value: str, field: str) -> None:
 
 
 def qualified_name(schema: str | None, table: str) -> str:
-    """The one name ``schema`` and ``table`` compose into, the only form either is ever handed to a database."""
+    """Return ``schema.table``, or ``table`` alone when there is no schema."""
     return f"{schema}.{table}" if schema else table
 
 
 def resolve_connection_uri(name: str, field: str) -> str:
-    """The connection string named by the environment variable ``name``, read from ``os.environ`` alone.
+    """Return the connection string held in the environment variable ``name``.
 
-    Two refusals, and neither repeats a value that might be a credential. A ``name`` that is not
-    itself a plausible environment variable -- because it is the connection string that was meant to
-    sit in the environment, not the field -- is refused without echoing it. A variable that is a
-    plausible name but is not set is refused by that name, which is safe to repeat because it is
-    never the secret itself.
+    ``field`` is the setting that named the variable, used in the message. Raises :class:`ConfigError`
+    if ``name`` does not look like a variable name (it may be the connection string itself, so it is
+    not repeated) or if the variable is not set. Reads ``os.environ`` only, never a ``.env`` file.
+
+    Why: docs/design/database.md#credentials-come-from-the-environment
     """
     if not isinstance(name, str) or not _ENV_NAME.fullmatch(name):
         raise ConfigError(
@@ -184,7 +161,13 @@ def resolve_connection_uri(name: str, field: str) -> str:
 
 @contextmanager
 def open_connection(uri: str) -> Iterator[Any]:
-    """A DB-API connection for ``uri``, closed on the way out whether the block succeeds or raises."""
+    """Open a DB-API connection for ``uri`` as a context manager, and close it on the way out.
+
+    Use it as ``with open_connection(uri) as connection:``. The scheme picks the driver:
+    ``sqlite:///<path>``, ``file:`` (SQLite), or ``postgresql://`` / ``postgres://``. Raises
+    :class:`ConfigError` for an unknown scheme, a SQLite file that does not exist, a missing Postgres
+    driver, or a failed connection. The message never shows the password.
+    """
     connection = _connect(uri)
     try:
         yield connection
@@ -210,11 +193,9 @@ def _connect(uri: str) -> Any:
 
 
 def _connect_sqlite_path(uri: str) -> sqlite3.Connection:
-    """A file-backed sqlite connection, refusing a path that is not there rather than creating one.
+    """Open a ``sqlite:///<path>`` database, refusing a path that does not exist.
 
-    ``sqlite3.connect`` would happily create a missing path, and a read or a write against the file
-    it just created would report success having touched nothing the author meant. So existence is
-    checked here, before ``connect`` is ever called.
+    Why: docs/design/database.md#a-missing-sqlite-file-is-refused
     """
     if not uri.startswith(_SQLITE_PREFIX):
         raise ConfigError(f"a sqlite connection must be written as {_SQLITE_PREFIX}<path>")
@@ -225,11 +206,9 @@ def _connect_sqlite_path(uri: str) -> sqlite3.Connection:
 
 
 def _connect_sqlite_file_uri(uri: str) -> sqlite3.Connection:
-    """A sqlite ``file:`` URI. One that states no ``mode`` opens an existing file only.
+    """Open a SQLite ``file:`` URI. With no ``mode`` stated, the file must already exist.
 
-    sqlite would otherwise create a missing file, and a read from it would report a missing table
-    while leaving an empty database behind. A URI that states a mode (``mode=memory``,
-    ``mode=rwc``) is opened as written.
+    A URI that states a mode (``mode=memory``, ``mode=rwc``) is opened as written.
     """
     if "mode=" not in uri:
         uri = f"{uri}{'&' if '?' in uri else '?'}mode=rw"
@@ -242,10 +221,10 @@ def _connect_sqlite_file_uri(uri: str) -> sqlite3.Connection:
 
 
 def _could_not_connect(uri: str, failure: str) -> str:
-    """A refusal to connect that names where, and never the connection string, the user or the password.
+    """Build the message for a failed Postgres connection.
 
-    A driver's own message can quote the connection string, password included, so only the kind of
-    failure is kept from it.
+    It names the database, host and port, and the kind of error. It never shows the driver's own
+    message, which can contain the password.
     """
     try:
         parsed = urlparse(uri)
@@ -270,12 +249,9 @@ def _could_not_connect(uri: str, failure: str) -> str:
 
 
 def _connect_postgres(uri: str) -> Any:
-    """A postgres connection through whichever driver the consumer installed, imported lazily by scheme.
+    """Open a Postgres connection with ``psycopg``, or with ADBC if psycopg is not installed.
 
-    The library declares no database driver, so this is the one place that reaches for one, and it
-    reaches for it only when a postgres connection is actually asked for. Neither package present is
-    refused with the name of what to install, rather than the bare ``ImportError`` that would
-    otherwise surface from a library the caller has never heard of.
+    Raises :class:`ConfigError` naming the package to install when neither is present.
     """
     try:
         import psycopg
@@ -292,8 +268,8 @@ def _connect_postgres(uri: str) -> Any:
             connect = adbc_postgres.connect
 
     if connect is not None:
-        # The refusal is raised after the except block, so the driver's error is not even chained to
-        # it: a traceback, a trace or a log cannot show its message.
+        # Raised outside the except block so the driver's message, which may hold the password,
+        # is not chained into the traceback.
         failure: str | None = None
         try:
             return connect(uri)
@@ -308,11 +284,9 @@ def _connect_postgres(uri: str) -> Any:
 
 
 def probe_columns(connection: Any, qualified: str) -> tuple[str, ...]:
-    """The column names ``qualified`` carries, or a refusal naming it if it is not there.
+    """Return the column names of table ``qualified``, without reading any rows.
 
-    A single zero-row query answers both questions at once: it fails exactly when the table does
-    not exist, in this library's own words rather than the driver's, and it succeeds with a cursor
-    description that names every column without reading a single row of data.
+    Raises :class:`ConfigError` saying the table was not found, or naming the driver's error.
     """
     cursor = connection.cursor()
     try:
@@ -330,7 +304,7 @@ def probe_columns(connection: Any, qualified: str) -> tuple[str, ...]:
 
 
 def _is_missing_table(error: Exception) -> bool:
-    """Whether a driver's error says the table (or its schema) does not exist, and nothing else."""
+    """Say whether a driver's error means the table or its schema does not exist."""
     if type(error).__name__ in ("UndefinedTable", "InvalidSchemaName"):
         return True
     text = str(error).lower()
@@ -344,11 +318,11 @@ def require_matching_columns(
     *,
     stamp: str | None = None,
 ) -> None:
-    """Refuse rows whose columns, plus ``stamp`` if one is given, are not exactly the table's.
+    """Refuse rows whose columns are not exactly the table's columns.
 
-    Compared in both directions and case-sensitively. A column the rows carry and the table lacks is
-    refused, and so is a column the table has and the rows lack. The stamp is a column the writer
-    adds itself, so it counts on the rows' side.
+    ``frame_columns`` are the rows' columns, ``table_columns`` the table's. ``stamp`` is a column the
+    writer adds itself, so it counts on the rows' side. The check runs both ways and is case-sensitive:
+    a column only the rows have, or only the table has, raises :class:`ConfigError` listing both.
     """
     carried = set(frame_columns) | ({stamp} if stamp else set())
     expected = set(table_columns)
@@ -372,25 +346,21 @@ def require_matching_columns(
 
 
 def quoted_identifier(name: str) -> str:
-    """One column name, spelled so a statement reads it as a name and nothing else.
+    """Return a column name in double quotes, so SQL reads it as a name.
 
-    The names quoted here come back from the database's own catalog rather than from a definition,
-    so the grammar check that guards ``schema`` and ``table`` has nothing to bite on. Quoting is
-    what keeps a column whose name is a reserved word, or holds a space, readable -- and it is the
-    same spelling on both drivers.
+    Use it for names read from the database itself, which may be reserved words or hold spaces.
     """
     return '"' + name.replace('"', '""') + '"'
 
 
 def declared_type_of(sql_type: str) -> str | None:
-    """The declared type ``sql_type`` means, or ``None`` when this library has no opinion about it.
+    """Return the column type name (``"Int64"``, ``"String"`` ...) a SQL type means, or ``None``.
 
-    One reading for both engines. The width, the precision and the time zone are dropped before the
-    lookup -- ``varchar(20)``, ``numeric(12, 2)`` and ``timestamp without time zone`` each say
-    nothing about *which* of the declared types a value has to be, and carrying them would mean a
-    table declared one place differently from another was answered differently. An array is not
-    reduced to its element type: a column of them holds something no declared type here describes,
-    so it is passed over with everything else unrecognised.
+    ``sql_type`` is the type as the database spells it, such as ``varchar(20)`` or ``timestamp with
+    time zone``. Width, precision and time zone are ignored. ``None`` means "no opinion": an array, a
+    domain, an enum, JSON or any name not in the table.
+
+    Why: docs/design/database.md#one-type-vocabulary-for-both-engines
     """
     name = sql_type.strip().lower()
     if name.endswith("[]"):
@@ -401,7 +371,7 @@ def declared_type_of(sql_type: str) -> str | None:
     return _SQL_TYPE_NAMES.get(name.strip())
 
 
-# What a postgres column's values arrive as through psycopg, for the types where that never varies.
+# The type of value psycopg returns for each Postgres type, where that never varies.
 _POSTGRES_VALUE_TYPES: Final[dict[str, str]] = {
     "smallint": "Int64",
     "integer": "Int64",
@@ -419,12 +389,16 @@ _POSTGRES_VALUE_TYPES: Final[dict[str, str]] = {
 
 
 def _bare_type_name(spelling: str) -> str:
-    """A type's name without its width or precision: ``timestamp(3) without time zone`` -> ``timestamp without time zone``."""
+    """Drop a type's width or precision: ``timestamp(3) without time zone`` becomes ``timestamp without time zone``."""
     return re.sub(r"\(\s*\d+(\s*,\s*\d+)?\s*\)", "", spelling).strip().lower()
 
 
 def _sqlite_value_type(spelling: str) -> str | None:
-    """Which kind of value a SQLite column stores, by the engine's rule on its declared type."""
+    """Return the kind of value a SQLite column stores, by SQLite's own rule on its declared type.
+
+    A type naming INT stores whole numbers; CHAR, CLOB or TEXT stores text; REAL, FLOA or DOUB stores
+    figures. Any other column stores whatever it was given, so the answer is ``None``.
+    """
     name = spelling.upper()
     if "INT" in name:
         return "Int64"
@@ -438,16 +412,12 @@ def _sqlite_value_type(spelling: str) -> str | None:
 def _merge_statement(
     qualified: str, staging: str, columns: Sequence[str], key: Sequence[str], *, keep_published: bool
 ) -> str:
-    """Upsert every staged row into ``qualified``, doing with a null what the author chose.
+    """Build the upsert from the staging table into ``qualified``.
 
-    ``keep_published`` writes ``coalesce(excluded.c, {target}.c)``: a value overwrites, and a null
-    leaves the published value standing. Otherwise the plain ``= excluded.c``: a null is written.
-    The two agree on three of the four cases and differ on the one that matters, a value that has
-    gone blank upstream, so the caller states which one it wants.
+    With ``keep_published``, a null in an incoming row leaves the published value as it is. Without
+    it, the null is written.
 
-    ``WHERE true`` is not decoration. sqlite refuses ``INSERT ... SELECT ... ON CONFLICT`` outright
-    without a ``WHERE`` on the select -- it reads the ``ON`` as the start of a join -- and postgres
-    accepts the same clause, so one statement serves both.
+    Why: docs/design/database.md#merging-through-a-staging-table
     """
     quoted = [quoted_identifier(column) for column in columns]
     named = ", ".join(quoted)
@@ -468,19 +438,16 @@ def _merge_statement(
 
 @dataclass(frozen=True)
 class TableRules:
-    """What a table demands of a row, as far as the catalog can be read and the rows can be judged.
+    """The rules a table sets on its rows, as far as they can be read from the database's catalog.
 
-    ``beyond_the_frame`` is the field that matters. It is true whenever the table carries a rule the
-    rows in hand cannot be judged against -- a CHECK expression, a key whose answer lives in another
-    table, a unique constraint spanning columns, an exclusion constraint, a unique index no
-    constraint stands behind. It defaults to true, so a reader that half-understands a table says so
-    rather than reporting the rules it did recognise as though they were all of them.
+    - ``not_null``: columns that refuse a null.
+    - ``unique``: columns with a one-column unique rule or primary key.
+    - ``settled_by_the_engine``: key columns where SQLite fills or accepts a null on its own, so a
+      null there cannot be judged from the rows.
+    - ``beyond_the_frame``: true when the table has any rule the rows cannot be checked against
+      alone (a CHECK, a foreign key, a key over several columns ...). It defaults to true.
 
-    ``settled_by_the_engine`` names the columns in which a null is not a value to be judged, because
-    the engine decides what goes there. SQLite fills a null in a rowid-alias key with a number of its
-    own choosing, which a later row can then collide with, and accepts a null in any other key more
-    than once; neither is visible in the rows as written. A frame carrying a null in one of those
-    columns is one this route cannot answer for.
+    Why: docs/design/database.md#reading-a-tables-rules
     """
 
     not_null: tuple[str, ...] = ()
@@ -490,15 +457,12 @@ class TableRules:
 
 
 class RowLoader:
-    """One driver's answers to the four questions a load asks that the DB-API does not settle.
+    """How one database driver writes rows, runs a transaction and reads a table's rules.
 
-    The DB-API says how a statement is executed and nothing about how a batch of rows is written,
-    how a unit of work is opened, how a single row is attempted and undone, or which exception
-    types mean "the rows were wrong" rather than "the run went wrong". Every one of those differs
-    between the two drivers this library knows, and a sink that answered them by reaching for the
-    conveniences of the driver it happened to be written against is a sink that works on exactly
-    that driver. So they are answered here, once, beside the connection plumbing, and a sink asks
-    for the loader belonging to the connection it was handed rather than assuming one.
+    Get one with :func:`driver_for`, never by building it yourself. The two drivers differ in each of
+    these, and the standard Python database interface does not settle them.
+
+    Why: docs/design/database.md#one-loader-per-driver
     """
 
     placeholder: str
@@ -508,43 +472,38 @@ class RowLoader:
     def load_rows(
         self, connection: Any, qualified: str, columns: Sequence[str], rows: Sequence[tuple[Any, ...]]
     ) -> None:
-        """Write every row of ``rows`` into ``qualified`` without costing a statement per row."""
+        """Write all of ``rows`` into table ``qualified``, in bulk."""
         raise NotImplementedError
 
     def insert_row(self, connection: Any, qualified: str, columns: Sequence[str], row: tuple[Any, ...]) -> None:
-        """Write one row, so a failed bulk load can be replayed to find which rows offended."""
+        """Write one row. Used to replay a failed bulk load row by row and find the bad rows."""
         connection.execute(self._insert_statement(qualified, columns), row)
 
     def _insert_statement(self, qualified: str, columns: Sequence[str]) -> str:
-        # Every column quoted, as a merge already quotes them: a column named like a reserved word
-        # ('order') or holding a space is otherwise a syntax error that reads as bad rows.
+        # Quote every column, so a name like 'order' or one holding a space is not a syntax error.
         marks = ", ".join(self.placeholder for _ in columns)
         return f"INSERT INTO {qualified} ({', '.join(quoted_identifier(column) for column in columns)}) VALUES ({marks})"
 
     def table_rules(self, connection: Any, schema: str | None, table: str) -> TableRules:
-        """What ``table`` demands of a row, read from the catalog rather than learned by attempting one.
+        """Return the :class:`TableRules` for ``table``, read from the database's catalog.
 
-        The one method here that answers rather than refusing to. Every other is something a load
-        cannot proceed without, so a loader that has not written it should say so loudly; this one
-        is an optimisation, and its default -- ``beyond_the_frame``, the admission that the rows
-        cannot be judged away from the server -- costs a slower diagnosis and never a wrong one.
+        The default answers "cannot judge from the rows". That makes a failure slower to explain, never
+        wrong.
         """
         return TableRules()
 
     def declared_column_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
-        """What ``table`` declares each of its columns as, in this library's own vocabulary.
+        """Return each column's declared type, in the library's type names (see :func:`declared_type_of`).
 
-        An optimisation in the same sense as :meth:`table_rules`: the empty answer costs a caller
-        the type check it wanted and never a wrong refusal, so a loader that has not written this
-        one is allowed to decline the whole question rather than guess at it.
+        The default is an empty answer, which skips the type check rather than guess.
         """
         return {}
 
     def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
-        """The type each column's values arrive as when read, from the table's definition alone.
+        """Return the type each column's values come back as when read, from the table's definition alone.
 
-        For a read with no rows to look at. ``None`` where the answer depends on the value rather
-        than the column. The empty answer is allowed, and costs a reader the types, never a wrong one.
+        Used for a read with no rows to look at. ``None`` where the answer depends on the value. The default
+        is an empty answer.
         """
         return {}
 
@@ -559,32 +518,30 @@ class RowLoader:
         *,
         keep_published: bool,
     ) -> None:
-        """Upsert ``rows`` into ``table`` on ``key``, through ``_etl_merge_staging``, which it disposes of.
+        """Upsert ``rows`` into ``table`` on the ``key`` columns.
 
-        ``keep_published`` says what a null in an incoming row does: leave the published value
-        standing (true) or write the null (false).
+        ``keep_published`` says what a null in an incoming row does: true leaves the published value as it
+        is, false writes the null. The rows go through a temporary table named ``_etl_merge_staging``,
+        which is removed afterwards.
 
-        Staged rather than done a row at a time because the bulk path on one of the two drivers is
-        ``COPY``, which cannot carry a conflict resolution of its own. Loading into scratch and
-        upserting from it in one statement keeps the bulk load and gives both engines the same
-        answer, which a per-row upsert on one and a ``COPY`` on the other would not.
+        Why: docs/design/database.md#merging-through-a-staging-table
         """
         raise NotImplementedError
 
     def existing_values(self, connection: Any, qualified: str, column: str, values: Sequence[Any]) -> set[Any]:
-        """Which of ``values`` ``column`` already holds, asked in one statement rather than one per value."""
+        """Return which of ``values`` column ``column`` of ``qualified`` already holds."""
         raise NotImplementedError
 
     def transaction(self, connection: Any) -> AbstractContextManager[None]:
-        """A unit of work: committed if the block returns, rolled back if it raises."""
+        """A transaction as a context manager: committed if the block returns, rolled back if it raises."""
         raise NotImplementedError
 
     def discarded_transaction(self, connection: Any) -> AbstractContextManager[None]:
-        """A unit of work always rolled back, for a pass that exists to look rather than to write."""
+        """A transaction that is always rolled back, for a pass that only looks."""
         raise NotImplementedError
 
     def attempted_row(self, connection: Any) -> AbstractContextManager[None]:
-        """One row's attempt, undone on failure without taking the surrounding pass down with it."""
+        """Try one row inside a pass. A failure undoes that row only."""
         raise NotImplementedError
 
 
@@ -600,21 +557,17 @@ class _SqliteLoader(RowLoader):
             connection.executemany(self._insert_statement(qualified, columns), rows)
 
     def table_rules(self, connection: Any, schema: str | None, table: str) -> TableRules:
-        """The pragmas, plus the definition's own text, because a CHECK is not in the pragmas.
+        """Read the rules from SQLite's pragmas, and from the table definition's text for CHECK.
 
-        ``table_info`` gives nullability and the key; ``index_list``/``index_info`` give the unique
-        indexes, and say whether each one stands behind a constraint or was created on its own;
-        ``foreign_key_list`` gives the keys whose answer is in another table. A CHECK appears in
-        none of them -- it exists only as text in the definition -- so a table whose definition says
-        the word is declared unjudgeable outright rather than parsed. That over-reaches on a column
-        merely named for it, which costs a slower diagnosis and never a wrong one.
+        A definition that contains the word "check" anywhere is treated as unjudgeable.
+
+        Why: docs/design/database.md#sqlite-check-rules
         """
         prefix = f"{quoted_identifier(schema)}." if schema else ""
         name = quoted_identifier(table)
         info = connection.execute(f"pragma {prefix}table_info({name})").fetchall()
         key = [entry[_TABLE_INFO_NAME] for entry in info if entry[_TABLE_INFO_KEY_POSITION]]
-        # A key over one column is a rule a row can be read against; a key over several is not, and
-        # neither is any one of its columns, so it contributes nothing rather than its first column.
+        # Only a one-column key can be checked against the rows. A key over several columns cannot.
         unique = list(key) if len(key) == 1 else []
         beyond = len(key) > 1
         for entry in connection.execute(f"pragma {prefix}index_list({name})").fetchall():
@@ -647,25 +600,16 @@ class _SqliteLoader(RowLoader):
         )
 
     def declared_column_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
-        """``table_info``'s third column, which is the word the definition used and nothing more.
+        """Read each column's declared type from ``pragma table_info``.
 
-        ``cursor.description`` cannot answer this on sqlite. Its type codes are absent outside the
-        detect-types modes, and the storage class a value came back as is a property of the value
-        rather than of the column: this engine stores the text ``'heavy'`` in a column declared
-        ``integer`` and reports success. The declaration is the only thing here that says what the
-        column was meant to hold.
+        Why: docs/design/database.md#sqlite-declared-types
         """
         prefix = f"{quoted_identifier(schema)}." if schema else ""
         info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
         return {entry[_TABLE_INFO_NAME]: declared_type_of(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
 
     def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
-        """By the engine's own rule for which kind of value a declared type stores.
-
-        A type naming INT stores whole numbers, CHAR, CLOB or TEXT stores text, and REAL, FLOA or
-        DOUB stores figures. Any other column (numeric, date, boolean, none) stores whatever kind
-        of value it was given, so it has no answer here.
-        """
+        """Answer by SQLite's own rule for which kind of value a declared type stores."""
         prefix = f"{quoted_identifier(schema)}." if schema else ""
         info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
         return {entry[_TABLE_INFO_NAME]: _sqlite_value_type(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
@@ -681,14 +625,11 @@ class _SqliteLoader(RowLoader):
         *,
         keep_published: bool,
     ) -> None:
-        """Scratch built from a zero-row select, and dropped by name on both sides of the upsert.
+        """Stage the rows in a temporary table, upsert from it, then drop it.
 
-        This engine has neither ``LIKE`` nor ``ON COMMIT DROP``, so the shape of the scratch table
-        is taken from a select that returns nothing and its disposal is explicit. Dropped *before*
-        it is created as well as after it is read, because a temporary table here can outlive the
-        unit of work that made it: a publish that failed part way would otherwise leave one behind,
-        and the next attempt would collide with it and fail for a reason that has nothing to do with
-        the rows.
+        The staging table is dropped before it is created as well as after.
+
+        Why: docs/design/database.md#merging-in-sqlite
         """
         qualified = qualified_name(schema, table)
         connection.execute(f"DROP TABLE IF EXISTS temp.{_MERGE_STAGING}")
@@ -722,23 +663,17 @@ class _SqliteLoader(RowLoader):
 
     @contextmanager
     def attempted_row(self, connection: Any) -> Iterator[None]:
-        """Nothing to undo: a failed statement on this driver leaves the rest of the pass usable."""
+        """Nothing to undo: on SQLite a failed statement leaves the rest of the pass usable."""
         yield
 
 
 class _PostgresLoader(RowLoader):
-    """The psycopg loader, whose every answer differs from sqlite3's in a way that has already bitten.
+    """The loader for ``psycopg`` connections.
 
-    ``COPY ... FROM STDIN`` rather than a row at a time, because a publish is of the order of a
-    hundred thousand rows and a statement per row is not a slower way to do that, it is a different
-    job. The stream is written through the driver's own row writer rather than a hand-built line,
-    because that stream is tab-delimited and backslash-escaped: a value carrying a tab, a newline
-    or the two characters ``\\N`` silently lands in the wrong column, or as a null, if the escaping
-    is done by hand.
+    Rows are written with ``COPY ... FROM STDIN`` through the driver's own row writer. A transaction
+    uses ``connection.transaction()``, and each replayed row gets its own savepoint.
 
-    ``with connection:`` is *not* the unit of work here -- on this driver it closes the connection,
-    where sqlite3's only commits. And a failed statement poisons the whole transaction, so replaying
-    rows one at a time needs a savepoint per row rather than a bare attempt.
+    Why: docs/design/database.md#postgres-loading
     """
 
     placeholder = "%s"
@@ -758,14 +693,9 @@ class _PostgresLoader(RowLoader):
                 stream.write_row(row)
 
     def table_rules(self, connection: Any, schema: str | None, table: str) -> TableRules:
-        """``pg_attribute`` for nullability, ``pg_constraint`` for the rules, ``pg_index`` for the rest.
+        """Read the rules from ``pg_attribute``, ``pg_constraint`` and ``pg_index``.
 
-        Three catalog reads and not one statement against the table itself. The constraint query
-        resolves ``conkey`` to column names in the server, so a single-column key arrives as the name
-        the frame knows it by; everything else -- a CHECK, a foreign key, an exclusion, a key
-        spanning columns -- arrives as a reason to say the rows cannot be judged here. The last query
-        is for the unique index no constraint stands behind, which enforces uniqueness just as firmly
-        and appears in neither of the first two.
+        The last query finds unique indexes that no constraint stands behind.
         """
         qualified = qualified_name(schema, table)
         cursor = connection.cursor()
@@ -795,12 +725,9 @@ class _PostgresLoader(RowLoader):
         return _rules_from_constraints(not_null, constraints, unbacked > 0)
 
     def declared_column_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
-        """``format_type`` over ``pg_attribute``, which is the only reading that survives a domain.
+        """Read each column's declared type with ``format_type`` over ``pg_attribute``.
 
-        ``cursor.description`` carries type codes here, unlike on sqlite, but they are OIDs a caller
-        would have to resolve against the catalog anyway -- and a domain resolves to its own OID
-        rather than to the type underneath it. Asking the catalog directly is the same round trip
-        and gives the name the definition was written with.
+        Why: docs/design/database.md#postgres-declared-types
         """
         qualified = qualified_name(schema, table)
         cursor = connection.cursor()
@@ -815,10 +742,9 @@ class _PostgresLoader(RowLoader):
             cursor.close()
 
     def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
-        """Only the types this driver always hands back as one kind of Python value.
+        """Answer only for types psycopg always returns as one kind of Python value.
 
-        A numeric arrives as a decimal of its own precision, a zone-aware timestamp carries a zone,
-        and a uuid or json column has no declared type here, so each of those has no answer.
+        A numeric, a zone-aware timestamp, a uuid or a JSON column has no answer.
         """
         qualified = qualified_name(schema, table)
         cursor = connection.cursor()
@@ -843,12 +769,9 @@ class _PostgresLoader(RowLoader):
         *,
         keep_published: bool,
     ) -> None:
-        """Scratch shaped by ``LIKE``, loaded by ``COPY``, and upserted from in one statement.
+        """Stage the rows in a temporary table made with ``LIKE``, load it by ``COPY``, upsert, then drop it.
 
-        ``LIKE`` copies the target's ``NOT NULL`` declarations, so a row the target would refuse is
-        refused on the way into the scratch table rather than surviving as far as the upsert.
-        ``ON COMMIT DROP`` disposes of the table whichever way the unit of work ends; the explicit
-        drop afterwards is what lets a second merge in the same unit of work reuse the name.
+        Why: docs/design/database.md#merging-in-postgres
         """
         qualified = qualified_name(schema, table)
         connection.execute(f"CREATE TEMPORARY TABLE {_MERGE_STAGING} (LIKE {qualified}) ON COMMIT DROP")
@@ -887,12 +810,10 @@ def _rules_from_constraints(
     constraints: Sequence[tuple[str, Sequence[str] | None]],
     unbacked_unique_index: bool,
 ) -> TableRules:
-    """Turn what ``pg_constraint`` said into rules the rows can be judged against, or an admission.
+    """Turn what ``pg_constraint`` reports into :class:`TableRules`.
 
-    A primary key or a unique constraint over one column is a rule a frame can be read against.
-    Everything else the catalog reports -- with the sole exception of the not-null constraint newer
-    servers record here, which ``attnotnull`` has already answered -- is a rule it cannot be, and
-    one of those is enough to make the whole answer unsafe to give from the rows alone.
+    A primary key or unique constraint over one column becomes a ``unique`` column. Any other
+    constraint, except not-null, sets ``beyond_the_frame``.
     """
     unique: list[str] = []
     beyond = unbacked_unique_index
@@ -908,12 +829,12 @@ def _rules_from_constraints(
 
 
 def driver_for(connection: Any) -> RowLoader:
-    """The loader belonging to ``connection``, or a refusal naming the drivers this library knows.
+    """Return the :class:`RowLoader` for ``connection``.
 
-    Dispatch is by asking what the connection is, never by recognising one driver and assuming the
-    other. A connection from a third driver answers most of the methods a load reaches for, so
-    assuming would not fail loudly: it would write through transaction and escaping rules nothing
-    here has ever checked. It is refused by name instead, the way an unrecognised scheme already is.
+    Accepts a ``sqlite3`` connection or a ``psycopg`` one. Any other connection, including an ADBC
+    one, raises :class:`ConfigError`.
+
+    Why: docs/design/database.md#an-unknown-driver-is-refused
     """
     if isinstance(connection, sqlite3.Connection):
         return _SqliteLoader()

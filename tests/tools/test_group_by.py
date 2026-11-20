@@ -621,7 +621,7 @@ class TestEveryPublishedAggregateIsReallyComputed:
     which raises before ``execute`` ever runs. Today the only thing standing between
     ``expression.first()`` becoming ``expression.last()`` and a shipped release is a test in
     CrossTab's file, on CrossTab's fixture. That is the wrong tool answering for this one, and it
-    is fourteen money columns of ``mrr.yaml`` that depend on the answer.
+    is fourteen money columns of a real client flow that depend on the answer.
 
     So this class walks the published set rather than a list typed out beside it. An aggregate
     added to that set is accepted in configuration here the day it lands, and if nothing walks the
@@ -656,7 +656,7 @@ class TestEveryPublishedAggregateIsReallyComputed:
         """One group, one aggregate, against an answer written down by hand.
 
         ``first`` is the one this catches today. It is in the published set and in the template, it
-        is what ``mrr.yaml`` carries a document's constant columns forward with, and nothing in
+        is what a real client flow carries a document's constant columns forward with, and nothing in
         this file computes it: swapped for ``last`` it answers 3.0 where the first row holds 8.0,
         and every test here stays green.
         """

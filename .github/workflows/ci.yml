@@ -1,11 +1,13 @@
-# Lint, and the whole test suite on Linux and on Windows, for every push and pull request.
+# For every push and pull request: lint, the whole test suite on Linux and Windows, and the package
+# a user would install, built and tried from a clean environment.
 #
-# Linux runs everything, including the tests that need Postgres, against a throwaway server the same
-# as the one in compose.yaml. Windows runs everything else: GitHub's Windows machines cannot start a
-# database container. It still installs the Postgres drivers, because a consumer on Windows will.
+# Linux runs the tests that need Postgres against a throwaway server, like the one in compose.yaml.
+# Windows runs the rest: GitHub's Windows machines cannot start a database container.
 #
-# `--locked` refuses to run if uv.lock no longer matches pyproject.toml, so a version change that
-# was not locked fails here instead of on somebody's fresh checkout.
+# `--locked` stops the run if uv.lock no longer matches pyproject.toml.
+#
+# The client-word check runs only when the repository secret ETL_FORBIDDEN_TERMS holds the words
+# (comma-separated). Without it, that one test is skipped. See CONTRIBUTING.md.
 
 name: CI
 
@@ -29,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --locked --extra dev
-      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync ruff check src tests docs/_build
 
   test-linux:
     runs-on: ubuntu-latest
@@ -49,6 +51,7 @@ jobs:
           --health-retries 15
     env:
       DANTRON_TEST_POSTGRES: postgresql://etl_test:etl_test@localhost:5434/etl_test
+      ETL_FORBIDDEN_TERMS: ${{ secrets.ETL_FORBIDDEN_TERMS }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -63,24 +66,35 @@ jobs:
       - run: uv sync --locked --extra dev --extra postgres
       - run: uv run --no-sync pytest tests/ -q
 
-  # What a user installs: the wheel, in a fresh environment with no dev extras, driven only through
-  # the command. Catches a page template or launcher missing from the wheel, or a module that
-  # imports something only the dev extras provide.
+  # What a user installs: the wheel and the source package are built, then the wheel goes into a
+  # fresh environment with no dev extras and is driven only through the command. This catches a
+  # template or launcher missing from the wheel, or a module importing something only dev provides.
   package:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv build --wheel --out-dir dist
-      - run: uv venv /tmp/user-env
-      - run: uv pip install --python /tmp/user-env/bin/python dist/*.whl
+      - run: uv build --out-dir dist
+      - run: ls dist
+      - run: uv venv "$RUNNER_TEMP/user-env"
+      - run: uv pip install --python "$RUNNER_TEMP/user-env" dist/*.whl
       - name: the command works on a new project
-        working-directory: /tmp
+        working-directory: ${{ runner.temp }}
         run: |
-          /tmp/user-env/bin/dantron-etl --version
-          /tmp/user-env/bin/dantron-etl new demo
+          source user-env/bin/activate 2>/dev/null || source user-env/Scripts/activate
+          dantron-etl --version
+          dantron-etl new demo
           cd demo
-          /tmp/user-env/bin/dantron-etl check pipelines/example.yaml
-          /tmp/user-env/bin/dantron-etl run example
-          /tmp/user-env/bin/dantron-etl help join > /dev/null
-          /tmp/user-env/bin/python -c "import importlib.resources as r; assert r.files('dantron_etl').joinpath('MANUAL.md').is_file()"
+          dantron-etl check pipelines/example.yaml
+          dantron-etl run example
+          dantron-etl tools > /dev/null
+          dantron-etl help join > /dev/null
+          python -c "import importlib.resources as r; assert r.files('dantron_etl').joinpath('MANUAL.md').is_file()"
+          python -c "import importlib.resources as r; assert r.files('dantron_etl').joinpath('py.typed').is_file()"

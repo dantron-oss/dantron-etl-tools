@@ -178,7 +178,7 @@ class TestWhatReachesTheFile:
 
         Every one of these values is refused by the workbook sink, and correctly: a cell holds a
         double, so 123456789012345678 would come back 123456789012345696, an identifier whose last
-        digits changed matches nothing and reconciles to nothing, and no part of the run would say
+        digits changed matches nothing and adds up to nothing, and no part of the run would say
         so. A file holds digits, so there is nothing here to refuse and nothing to round. A tool
         with a format switch would have to carry that refusal and then disable it on one branch,
         which is how a refusal ends up applied to the branch it was never about.

@@ -1,15 +1,11 @@
 """The conformance check: is a tool fit to be in the catalog?
 
-``check_tool`` holds one tool to the catalog's rules: a machine name, a description, a published
-category, a well-formed template, names that survive YAML, and worked examples. Then it runs every
-worked example and compares the result with what the example says it produces. ``check_registry``
-does the same for a whole catalog.
+``check_tool(tool)`` holds one tool to the catalog's rules: a machine name, a description, a
+published category, a well-formed template, names that survive YAML, and worked examples. Then it
+runs every worked example and compares the result with what the example says. ``check_registry``
+does the same for every tool in a registry.
 
-**A registry** is a catalog resolved by name, and a catalog is only as trustworthy as its examples
-are true. So this module ships the check that keeps it that way: every worked example a tool
-documents is actually run, and its output is compared against what the tool claims it produces. An
-example that has quietly drifted from its tool is worse than no example, because someone will read
-it and copy it.
+Why: docs/design/core.md#worked-examples-are-run
 """
 
 import re
@@ -35,9 +31,8 @@ __all__ = ["YAML_UNSAFE_VALUES", "check_registry", "check_tool"]
 _MACHINE_NAME: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-# The bare words a definition file written in YAML resolves into another type before this module
-# ever sees them, in every spelling such a loader recognises. Published rather than private,
-# because the person who needs the list is the tool author choosing what to call an option.
+# Words YAML reads as a boolean or null instead of text. A field name, input port name or option
+# may not be one of them.
 YAML_UNSAFE_VALUES: Final[frozenset[str]] = frozenset(
     {
         spelling
@@ -47,39 +42,27 @@ YAML_UNSAFE_VALUES: Final[frozenset[str]] = frozenset(
     | {"~", ""}
 )
 
-# Text such a loader hands over as a number. A pattern rather than a call to ``float``, so that a
-# word like ``nan`` or ``inf`` -- which a loader leaves as text, and either of which is a reasonable
-# name for a fill policy -- is not refused for a reason its author could do nothing about.
+# Text YAML reads as a number. ``nan`` and ``inf`` stay text in YAML, so they are allowed.
 _NUMERIC_TEXT: Final[re.Pattern[str]] = re.compile(r"^[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$")
 
 
 def check_tool(tool: Tool) -> None:
-    """Check ``tool`` against every rule that makes the catalog trustworthy.
+    """Check one tool against the catalog's rules. Returns nothing; raises :class:`ConformanceError`.
 
-    The structural rules -- a machine name, a real description, an output port unless the tool is a
-    sink, unique port names, a well-formed template, documentation that matches the template -- run
-    first, because there is no point running a worked example against a tool that does not even
-    have a name worth reporting.
+    The rules, in order:
 
-    The rule that runs last is the one that matters most: every worked example is run through
-    :func:`run_tool` and its result is compared, port by port over every port the tool *declares*,
-    against what the tool claims. A tool whose example has quietly drifted from its own behaviour
-    is worse than one with no example at all, because someone will read the example and copy it.
+    - it has every member of :class:`Tool`, a machine name (``lower_case``), a description and a
+      published category;
+    - it has an output port, unless its category is ``output``;
+    - it uses ``input_ports`` or ``input_ports_for``, not both, and no port name twice;
+    - no field name, input port name or option is a word YAML rewrites (:data:`YAML_UNSAFE_VALUES`);
+    - its template is well formed and every default passes its own field;
+    - ``help()`` has a detailed description, at least one worked example, ``field_help`` only for
+      real fields, and does not change environment variables or the working directory;
+    - every worked example validates, documents every output port, runs, and gives exactly the
+      documented output on every port.
 
-    Row order is unchecked by default: a tool that pairs or groups rows produces an order that is an
-    artefact of the query engine underneath, and pinning it in the catalog would make such an
-    example flaky against nothing the tool actually got wrong. An example opts into the comparison
-    with :attr:`WorkedExample.check_row_order`, and doing so covers every port that example
-    documents, so an order-preserving tool can have the one property a reader most wants to trust
-    actually checked here rather than merely claimed in prose.
-
-    ``help()`` itself is held to one further rule: describing a tool must not change the process
-    doing the describing. A snapshot is taken immediately before the call and compared immediately
-    after, and a ``help()`` that exported an environment variable or changed the working directory
-    while building its worked examples is refused right here, before any example runs -- a
-    description that disturbs the process is the defect, not anything an example does later. The
-    same comparison runs again around each example's own declared setup, in
-    :func:`_check_example_with_setup`, which is this rule's mirror rather than a separate one.
+    Why: docs/design/core.md#what-check_tool-refuses
     """
     if not isinstance(tool, Tool):
         raise ConformanceError(f"{tool!r} does not conform to the Tool protocol")
@@ -99,24 +82,14 @@ def check_tool(tool: Tool) -> None:
             f"categories: {', '.join(sorted(CATEGORIES))}"
         )
 
-    # A sink may be terminal, and nothing else may. A transform, a combine or a read that produces
-    # nothing has been wired into a flow that can never use it, which is a defect; a sink that
-    # produces nothing is the whole point of a sink -- a workbook writer has nothing honest to hand
-    # on, and inventing a receipt to hand back would be shape without information. So the rule is
-    # about the category rather than about every tool.
+    # Only an output tool may have no output ports.
     if not tool.output_ports and tool.category != "output":
         raise ConformanceError(
             f"tool {tool.name!r} declares no output ports, and only a tool in the 'output' category "
             f"may be terminal; it is in {tool.category!r}"
         )
 
-    # A tool says what it reads in one of two ways: a static attribute, or the optional member that
-    # works the ports out from a step's configuration. Doing both makes the tool answer differently
-    # depending on which one a reader asked, and the cost is silent. Configure such a tool to derive
-    # no ports and the run guard accepts a supplied frame, while the decision to skip the step reads
-    # the static attribute and says the step is computed. The step then runs and the supplied frame
-    # is dropped, with nothing said. This used to be a line in a docstring, and a rule that holds
-    # only while an author remembers it is a convention.
+    # Why: docs/design/core.md#input-ports-from-the-settings
     if ports_from_config(tool) and tuple(tool.input_ports):
         raise ConformanceError(
             f"tool {tool.name!r} declares static input ports ({', '.join(tool.input_ports)}) and "
@@ -154,12 +127,7 @@ def check_tool(tool: Tool) -> None:
     if not help_.examples:
         raise ConformanceError(f"tool {tool.name!r} ships no worked examples")
 
-    # A tool that derives its ports can name one port twice, and nothing further down would say so.
-    # Ports are built from a mapping, so a repeated name arrives as one frame: the declared ports
-    # and the supplied ports collapse to the same set and the boundary sees nothing wrong. The
-    # example then runs, stacks the same frame twice, and what a reader is told is that the example
-    # has drifted -- which sends them to compare output rows when the defect is the port list. So
-    # this check is explicit, and it runs before any example does.
+    # Checked before any example runs; otherwise a repeated port shows up as a drifted example.
     if ports_from_config(tool):
         for example in help_.examples:
             derived = input_ports_for(tool, example.configuration)
@@ -182,7 +150,7 @@ def _check_specs(
     *,
     nested: bool = False,
 ) -> None:
-    """One level of a template, and then whatever each of its fields describes below itself."""
+    """Check each field of one level of a template, and the fields nested below it."""
     for name, spec in template.items():
         _refuse_rewritten_name(tool_name, _joined(prefix, name), name)
         _check_spec(tool_name, _joined(prefix, name), spec, nested=nested)
@@ -196,29 +164,15 @@ def _check_spec(
     nested: bool = False,
     element: bool = False,
 ) -> None:
-    """One field spec, held to the same rules wherever it sits -- top level or nested.
+    """Check one field's declaration, at the top level or nested.
 
-    Nested included, because a nested declaration is where a template is least read and most
-    trusted. Every rule below refuses a declaration that reads as if it constrains something and
-    does not, which is the worst outcome available to a template: an element type on a field that is
-    not an array, members on a field with none, ``non_empty`` on a field with no notion of
-    emptiness, and the two that depend on where the field sits.
+    Refuses a declaration that looks as if it constrains something and does not: an unknown type,
+    a blank description, ``items`` outside an array, ``fields`` outside an object, ``non_empty``
+    on a type with no notion of empty, a ``default`` below the top level (never filled), and
+    ``required`` on an array element (nothing reads it). Also refuses a default its own field
+    would refuse.
 
-    Those two are ``default`` anywhere below the top level and ``required`` on an element spec
-    itself. :func:`apply_defaults` fills the top level only -- an element that does not exist has
-    nothing to fill, and inventing one would add an entry to an ordered list nobody wrote -- so a
-    nested default is never applied, while reading exactly as if it were, leaving ``execute`` to
-    write ``.get`` against a field its own template promised would always be there. ``required`` on
-    an element spec is read by nothing at all, because an element that is absent is not an element;
-    what an author means by it is ``non_empty`` on the array itself, so the refusal says so.
-    ``required`` on a *member* of an element is a different declaration and stays: the validator
-    enforces it per element, and an ordered-rules tool depends on it.
-
-    A declared default is also checked against its own field here, and this is the only place it can
-    be checked, because validation runs on what a caller supplied and the default is added
-    afterwards. Left out, a default is the one value in a configuration that never meets the
-    validator, and a default of the wrong type reaches ``execute`` as something its own template
-    says it will never receive.
+    Why: docs/design/core.md#template-declarations-that-do-nothing
     """
     if spec.type not in FIELD_TYPES:
         raise ConformanceError(
@@ -279,20 +233,14 @@ def _check_spec(
 
 
 def _yaml_rewrites(text: str) -> bool:
-    """Whether a definition file hands this text over as something other than the text itself."""
+    """Return whether YAML would read ``text`` as something other than that text."""
     return text in YAML_UNSAFE_VALUES or _NUMERIC_TEXT.match(text) is not None
 
 
 def _refuse_rewritten_name(tool_name: str, path: str, name: str) -> None:
-    """Refuse a config field name a definition file would turn into something else.
+    """Refuse a field name YAML would read as something else, at any depth.
 
-    A field name is a key in the file. ``cross_tab`` used to have a field called ``on``, so the
-    obvious way to write that step handed the loader the key ``True``. Quoting the key in the file
-    works, but that puts the fix on every author of every pipeline using the tool, and nothing
-    tells them. The tool has one author, so the refusal belongs here.
-
-    Nested names included. A member of an object and a member of an element of an array are both
-    keys in the file, and a template is least read where it is deepest.
+    Why: docs/design/core.md#names-yaml-would-rewrite
     """
     if _yaml_rewrites(name):
         raise ConformanceError(
@@ -304,21 +252,10 @@ def _refuse_rewritten_name(tool_name: str, path: str, name: str) -> None:
 
 
 def _refuse_rewritten_input_port(tool_name: str, port: str) -> None:
-    """Refuse an input port name a definition file would turn into something else.
+    """Refuse a declared input port name YAML would read as something else.
 
-    A step says what it reads as ``inputs: {rows: earlier_step.rows}``. The port name is the key,
-    on the left of the colon, which is the same place a config field name sits. A port called
-    ``on`` hands the loader the key ``True``, and the name has stopped being a name.
-
-    Quoting the key in the file works. It also puts the fix on every author of every pipeline using
-    the tool, and nothing tells them. The tool has one author, so the refusal belongs here.
-
-    Output port names are left alone. A step names one as a value, on the right of the colon, where
-    a definition file hands the word over as written -- ``filter`` ships ports called ``true`` and
-    ``false``.
-
-    This covers the ports a tool declares. A tool that works its input ports out from a step's
-    configuration can still end up with an unsafe name, and nothing checks that yet.
+    Output port names are allowed, because a step writes them as values, which YAML leaves alone.
+    Ports worked out from a step's settings are not checked.
     """
     if _yaml_rewrites(port):
         raise ConformanceError(
@@ -331,29 +268,12 @@ def _refuse_rewritten_input_port(tool_name: str, port: str) -> None:
 
 
 def _refuse_rewritten_enum(tool_name: str, path: str, spec: ConfigField) -> None:
-    """Refuse an option a definition file would hand over as something other than the word written.
+    """Refuse an option (``enum`` value) YAML would read as something else.
 
-    A pipeline definition is authored in YAML, which resolves a handful of bare words into other
-    types before this library sees any of them, and the two ways that lands are not equally bad. An
-    option arriving as ``True`` is refused by its own field's type check, which is merely confusing.
-    An option arriving as ``None`` -- which is what the obvious spellings of "nothing" do -- is
-    treated as a field nobody configured, filled with the field's default, and the run proceeds
-    under a policy its author did not choose and was never told about. So the value is refused here,
-    at authoring time, where there is a person to tell. Every such word has a safe synonym:
-    ``exclude``/``include`` rather than ``false``/``true``, ``first``/``last`` rather than
-    ``no``/``yes``.
+    Use a safe word instead: ``include``/``exclude`` for ``true``/``false``. Numeric text is
+    refused too; a field that wants numbers should not be a string.
 
-    Field names are held to the same rule, by :func:`_refuse_rewritten_name`, and both read the one
-    published set. Names used to be exempt on the argument that a bad one announces itself. It does
-    not. A key of another type used to crash the code that reports an unknown field, and one level
-    down it produced a refusal naming a field nobody had written. Declared input port names are
-    held to it too, by :func:`_refuse_rewritten_input_port`, because a step names one on the left
-    of a colon as well. A port worked out from a step's configuration is not checked yet. Output
-    port names are exempt: a step names one as a value, where YAML leaves it alone.
-
-    The numeric clause refuses a tool that wanted members ``"1"`` and ``"2"``, and that is correct
-    rather than over-strict: such a definition arrives carrying integers, so the enum would never
-    match. The fix is a field type that is not a string -- not a looser rule here.
+    Why: docs/design/core.md#names-yaml-would-rewrite
     """
     for value in spec.enum or ():
         if isinstance(value, str) and _yaml_rewrites(value):
@@ -366,32 +286,14 @@ def _refuse_rewritten_enum(tool_name: str, path: str, spec: ConfigField) -> None
 
 
 def _run_example(tool: Tool, template: Mapping[str, ConfigField], example: WorkedExample) -> None:
-    """One worked example: readable, valid, documenting every declared output, and true.
+    """Check one worked example: text present, settings valid, every output port documented, and
+    the output exactly as documented.
 
-    Validating the configuration before running it is what separates two defects a single "does
-    not run" refusal would report identically: an example whose configuration is wrong, and an
-    example that uses a port its tool does not declare. They have two different fixes, and a
-    reader told only that the example failed has to work out which one they are looking at.
+    The settings are validated against the example's own inputs before the run, so a bad example
+    is reported as a settings problem, not as a failed run. Every declared output port is compared,
+    including the side outputs the example might not mention.
 
-    The configuration is validated against the example's own inputs too, in that same block and for
-    that same reason. An example naming a column its own frames do not carry is a configuration
-    nobody could ever have run, and a documented example is the thing somebody copies: reported as
-    a run failure it reads as if the tool were broken, and reported as a configuration failure it
-    points at the line to change. This is also why a declared setup, when there is one, has to be
-    open for validation and not merely for the run that follows: resolving a connection is exactly
-    the kind of thing a source's ``validate_config`` does, and a bad example must still be reported
-    as a configuration defect rather than as a run failure that only happened to occur first.
-
-    Every declared output port is compared, not merely the ports the example documents, because the
-    undocumented ones are the side outputs -- the rows that did not match, the leftovers from each
-    side -- which are the whole reason the envelope exists and, being anti-joins, the likeliest to
-    be wrong. An example documenting one of three outputs has been run rather than checked.
-
-    The comparison is unordered by default, and only by default: row order is an artefact of the
-    query engine for a tool that pairs or groups rows, so pinning it would make such an example fail
-    whenever the engine's own internals changed. ``example.check_row_order`` is passed straight
-    through to the comparison, so an example that opts in still has values, dtypes, column order and
-    row count checked exactly as before -- only the one additional property changes.
+    Why: docs/design/core.md#every-output-port-is-compared
     """
     if not example.scenario.strip():
         raise ConformanceError(
@@ -446,29 +348,11 @@ def _run_example(tool: Tool, template: Mapping[str, ConfigField], example: Worke
 
 
 def _check_example_with_setup(tool: Tool, template: Mapping[str, ConfigField], example: WorkedExample) -> None:
-    """Check one worked example, entering its declared world first if it has one.
+    """Check one worked example inside its ``setup``, when it has one.
 
-    ``example.setup`` is ``None`` for every one of the shipped, total-function tools, and for those
-    this is exactly :func:`_run_example` and nothing more -- the fence that keeps this seam from
-    changing behaviour nobody asked it to change.
-
-    Where a setup is declared, it is entered before :func:`_run_example` is called and left open for
-    the whole of it -- validation and the run both -- because validation is where a source resolves
-    its connection, and closing the world after only the run would leave ``validate_config`` and
-    ``validate_inputs`` looking at a process with nothing prepared. The teardown runs in a
-    ``finally``, so a comparison that fails or a tool that raises still tears down the world exactly
-    as a clean check would: a conformance failure that left a database or a variable behind would
-    poison every check that runs after it in the same process.
-
-    A :class:`ToolError` -- including the :class:`ConformanceError` that :func:`_run_example` itself
-    raises -- is never touched here and reaches the caller exactly as raised. Only a failure of the
-    setup's own entry or exit, which is never a :class:`ToolError`, is translated, because that
-    failure belongs to the declaration and not to the example it was checking.
-
-    After the world is closed, the process is compared against the snapshot taken before it was
-    opened, the mirror of the same check :func:`check_tool` runs around ``help()``: a setup that put
-    back everything it changed passes silently, and a teardown that left a variable set or the
-    working directory moved is refused by name.
+    The setup stays open for validation and the run, and is torn down even when the check fails.
+    A failure of the setup itself becomes a :class:`ConformanceError`. Afterwards the process must
+    be as it was: no environment variable left set, no working directory moved.
     """
     if example.setup is None:
         _run_example(tool, template, example)
@@ -494,32 +378,14 @@ def _check_example_with_setup(tool: Tool, template: Mapping[str, ConfigField], e
 
 
 def _check_example(tool: Tool, template: Mapping[str, ConfigField], example: WorkedExample) -> None:
-    """Give ``example`` a directory to work in when its configuration asks for one, then check it.
+    """Check one worked example, first opening a ``{scratch}`` directory if its settings use one.
 
-    ``example.configuration`` is the page a reader copies, so it is inspected for the ``{scratch}``
-    token exactly as written, before anything else runs. A configuration that holds no token at all
-    -- most of the shipped tools, and the whole of :class:`_StubTool`'s default shape in this
-    module's own tests -- is delegated to :func:`_check_example_with_setup` unchanged: this is the
-    fence that keeps this seam from changing behaviour nobody asked it to change.
+    The directory is new for each call and removed afterwards. The example is checked on a copy
+    whose settings have the token replaced; the example itself still reads ``{scratch}``. An
+    example that deletes the directory is refused, unless the check already failed for another
+    reason.
 
-    Where the token is present, a fresh directory is created before anything else -- before the
-    example's own configuration is resolved, and before its declared ``setup``, if it has one, is
-    ever entered -- because ``setup`` reaches the same directory through :func:`scratch_path`, and a
-    source resolves what it is about to read as early as ``validate_config``. The configuration
-    :func:`_check_example_with_setup` goes on to check is a copy with the token resolved, built with
-    :func:`dataclasses.replace` rather than written into ``example`` itself, so the object this
-    module was handed -- and the page it came from -- still reads ``{scratch}`` afterwards.
-
-    The directory is removed in a ``finally``, on every path out of the check, and that removal must
-    not swallow the check's own refusal: whether the directory still exists is captured before it is
-    removed, and the "destroyed the checker's directory" refusal is raised only *after* the whole
-    try/finally has run its course -- which means only when nothing else already raised, so a drifted
-    example or a tool that threw still reports as exactly that, not as a directory gone missing.
-
-    A fresh directory per call, never a cached one: the conformance tests in this catalog run
-    :func:`check_tool` twice on purpose, and a shared directory would let a file a sink's example
-    wrote on the first pass satisfy the second pass's own "nothing exists yet" without writing
-    anything at all.
+    Why: docs/design/core.md#the-scratch-directory
     """
     if not _uses_scratch(example.configuration):
         _check_example_with_setup(tool, template, example)
@@ -547,11 +413,10 @@ def _check_example(tool: Tool, template: Mapping[str, ConfigField], example: Wor
 
 
 def check_registry(registry: ToolRegistry) -> None:
-    """Check every tool in ``registry`` against :func:`check_tool`, and report every failure at once.
+    """Run :func:`check_tool` on every tool in ``registry`` and report every failure at once.
 
-    Every refusal names the tool it came from, including a failure inside a tool's own template or
-    validation code. One failing tool is reported as it is; several are listed in one
-    :class:`ConformanceError`, so a catalog is fixed in one pass rather than one tool at a time.
+    One failing tool raises its own error. Several are listed together in one
+    :class:`ConformanceError`, so a catalog can be fixed in one pass.
     """
     failures: list[ToolError] = []
     for tool in registry.tools():

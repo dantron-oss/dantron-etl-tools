@@ -1,7 +1,9 @@
 # Manual: building a data pipeline with this library
 
-Written for an LLM agent. If you are a person, it works for you too, but the ordering and the
-bluntness are aimed at an agent deciding what to do next.
+Written for an LLM agent deciding what to do next. People will find the same material, written
+for them, in the repository's `docs/` folder: a first-pipeline walk-through, concepts, a reference
+for the pipeline file and the expression language, a page per tool, and a cookbook. This manual
+ships inside the package, so an agent has it wherever the library is installed.
 
 This library gives you a fixed set of **tools**. You build a data pipeline by writing a YAML file
 that names tools and configures them. You do not write transformation code, and you do not add a
@@ -144,10 +146,22 @@ steps:
     config:
       predicate: "[placed_on] >= date'2025-01-01'"
     inputs: {rows: orders.rows}
+
+  - id: save
+    tool: write_csv
+    lane: figures
+    stage: output
+    why: The orders in the window, as a file for the team.
+    config:
+      path: output/recent_orders.csv
+      overwrite: true
+    inputs: {rows: recent_orders.true}
 ```
 
-Every step has `id`, `tool`, `config`, and `inputs` (except a source, which reads no port). `lane`,
-`stage` and `why` drive the rendered walkthrough.
+A file needs `name` and `steps`. Every step has `id` and `tool`, and usually `config` and `inputs`
+(a source reads no port). `lane`, `stage` and `why` drive the drawn page. Every step's output must
+be read by something, or the file is refused: a step nothing reads is a dead end. A writer
+(`write_csv` and the other `output` tools) and `assert_rows` count as reading.
 
 The loader refuses any key it does not know, at every level: the top of the file (`name`, `steps`,
 `lanes`, `containers`), a step (`id`, `tool`, `config`, `inputs`, `lane`, `stage`, `container`,
@@ -160,9 +174,11 @@ meant. `stage` is free text, so a misspelt stage is not caught: it draws as a st
 name is now called, and names the command that rewrites the file:
 
 ```bash
-python -m dantron_etl.migrate pipelines/          # a dry run: what would change, file by file
-python -m dantron_etl.migrate --write pipelines/  # apply it
+dantron-etl migrate pipelines/          # a dry run: what would change, file by file
+dantron-etl migrate --write pipelines/  # apply it
 ```
+
+`python -m dantron_etl.migrate` is the same command.
 
 It edits the file's text, so comments, layout and `why` text are kept exactly. Pass the rules files
 too: an expression in one is migrated the same way. Python code is not rewritten; the command
@@ -176,7 +192,7 @@ the step decides and why that is the right decision, not what the configuration 
 A step's inputs and outputs are **named frames**, not a single value. `inputs` wires one upstream
 port to one of this tool's input ports:
 
-```yaml
+```yaml fragment
 inputs:
   left: orders.rows
   right: customers.rows
@@ -243,29 +259,21 @@ inside the text alone.
 
 `format_number(value, decimals, thousands_separator, decimal_separator)` writes a number as text:
 `format_number([total], 2, ',', '.')` gives `651,623.80` and `format_number([total], 3, '.', ',')`
-gives `123.456,789`. All four arguments are required, because nothing in this language has a
-default, and you state both separators rather than having one chosen for you. The last three are
-quoted decisions written in the file, never columns. It writes what `round` gives (section 5),
-and it works a row at a time, as `uuid5` does — put it at the end of a flow, on the rows somebody
-reads, not in the middle of one.
+gives `123.456,789`. All four arguments are required; the last three are written in the file, never
+taken from columns. It gives the digits `round` gives (section 5). It works a row at a time, so use
+it at the end of a flow, on the rows somebody reads.
 
-`uuid5(namespace, value)` derives a stable id: one 36-character column where the natural key is
-three or four columns of text, which is a poor thing to join on and a worse thing to quote in a
-ticket. It is RFC 4122 version 5 — SHA-1 over a namespace and a name — so the id a flow writes is
-the id anything else computing it the same way writes, and that reproducibility is the entire
-point: a run that re-derived yesterday's id differently would not update a row, it would insert a
-second one. Build the key with `concat` and a separator you can see, as in
-`uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))` — without the
-separator, `('ab', 'c')` and `('a', 'bc')` are two different keys under one id, which is a silent
-merge of two rows. The namespace is quoted text written in the file, never a column: it is what
-keeps one flow's ids from colliding with another's, and a namespace out of the data could not be
-checked until the row that is malformed, by which time the ids before it have been written.
-Generate one per flow once (`python -c "import uuid; print(uuid.uuid4())"`) and leave it alone —
-changing it changes every id. The value must be text; a number is refused rather than quietly
-stringified, because `1` and `1.0` are one value and two ids. Like `format_number` it works a row
-at a time, at roughly five microseconds a row, because there is no SHA-1 in the engine to
-vectorise against: derive the id once, where the key is built, instead of recomputing it in each
-step that joins on it.
+`uuid5(namespace, value)` makes a stable 36-character id from text (RFC 4122 version 5), the same
+on every run and every computer. Use it where the natural key is several columns.
+
+- Build the value with `concat` and a visible separator:
+  `uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))`. Without the
+  separator, `('ab', 'c')` and `('a', 'bc')` get one id.
+- The namespace is a UUID typed into the file, never a column. Make one per flow, once
+  (`python -c "import uuid; print(uuid.uuid4())"`), and never change it: that changes every id.
+- The value must be text. A number is refused, because `1` and `1.0` would be one value and two ids.
+- It works a row at a time (about five microseconds a row). Derive the id once, where the key is
+  built, not in every step that joins on it.
 
 Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`,
 `is null`, `is not null`.
@@ -323,7 +331,7 @@ no field that only applies when another field holds a particular value.
 A flow of any size is unreadable as a list of steps. `containers` names boxes and each step says which
 box it is in:
 
-```yaml
+```yaml fragment
 containers:
   - {id: read_accounts, title: "Fetch the account list and put its header row back"}
 
@@ -426,7 +434,7 @@ data they were written against.
 
 ## 5. Rules that bite
 
-Every one of these was measured, most of them the hard way.
+Each of these has caught a real pipeline.
 
 ### YAML will rewrite your words
 
@@ -475,12 +483,9 @@ Every one of these was measured, most of them the hard way.
 - **A reference that is the whole field takes the rule's value and its type, in any field.** A list
   stays a list, a number stays a number, and a string arrives exactly as written — including a
   string that is itself an expression, which is how a whole predicate can be stated as a rule.
-- **`regex_replace`'s replacement is literal text, not a template.** `$1` is not the first capture
-  group; it is the characters `$1`. That is deliberate: the engine underneath reads `$name` as a
-  group and deletes it when no such group exists, so a replacement of `$5.00` would land as `.00` —
-  which in a library for amounts is unacceptable. The consequence is that a pattern cannot
-  rearrange what it matched. `regex_extract` does return capture groups, so pull the pieces out and
-  put them back together with `concat`.
+- **`regex_replace`'s replacement is literal text, not a template.** `$1` is the two characters
+  `$1`, not the first group, so a replacement of `$5.00` stays `$5.00`. To rearrange what a pattern
+  matched, pull the pieces out with `regex_extract` and join them with `concat`.
 - **`round` rounds a half away from zero, as a spreadsheet's ROUND does, on the number as you read
   it.** `round(2.5, 0)` is `3`, `round(-2.5, 0)` is `-3` and `round(0.125, 2)` is `0.13`. A double
   cannot hold `1.005` (it holds `1.00499999999999989...`), yet `round(1.005, 2)` is `1.01`: a
@@ -618,10 +623,10 @@ Every one of these was measured, most of them the hard way.
 
 ### Paths
 
-- **A relative `path:` resolves against the working directory of the process running the pipeline**,
-  not against the pipeline file. Run from a consistent place, use absolute paths, or pass
-  `run_pipeline(spec, base_dir=project_folder)`: then a relative path is read from that folder,
-  whatever the working directory is.
+- **A relative `path:` is read from the project folder when the `dantron-etl` command runs the
+  pipeline**, wherever the command was started. From Python it is read from the working directory
+  of the process, not from the pipeline file's folder; pass
+  `run_pipeline(spec, base_dir=project_folder)` to read it from a folder you name.
 - **A writer stops on an empty frame unless the step allows it.** `write_table`, `publish_tables`
   (per table), `write_csv` and `write_excel` (per sheet) all refuse a frame with no rows until
   `allow_empty: true` says the branch may be empty, because a table or file that is empty for a
@@ -711,7 +716,7 @@ where you stopped.
 
 **`until`** runs a step and everything behind it, and nothing else:
 
-```python
+```python fragment
 trace = run_pipeline(spec, until="clients_joined")
 ```
 
@@ -722,8 +727,9 @@ is refused before anything runs.
 **`cached`** hands a port back to a later run so the steps behind it do not run at all:
 
 ```python
-from dantron_etl import CachedFrame
+from dantron_etl import CachedFrame, PortRef, read_pipeline, run_pipeline
 
+spec = read_pipeline("pipelines/sales.yaml")
 first = run_pipeline(spec, until="clients_joined")
 port = PortRef("clients_joined", "rows")
 
@@ -774,10 +780,6 @@ else. So a cache survives a change to what the sources hold, and survives it sil
 Nothing catches this, and nothing can: the reads did not happen, so there is no new frame for
 anything to compare against. **A cache is only valid for the data that was there when it was
 taken.** Throw one away whenever the sources are reloaded, and take a fresh one.
-
-This is not an oversight in the hash. Reading the sources to find out whether the cache is stale is
-running the steps the cache exists to skip, so a fingerprint that covered the data would cost exactly
-what it saves. The honest answer is a rule a person follows, which is why it is written here.
 
 The fingerprint does not cover the library either: a cache taken before you upgrade the library, or
 edit it in place, still matches afterwards even when a tool now computes something different. Take
@@ -842,20 +844,18 @@ And the standards a reviewer will hold it to:
 
 ### 8.3 Where
 
-Open the issue or pull request against the repository this package is distributed from — see the
-`Source` URL in the distribution's metadata (`project.urls` in its `pyproject.toml`). It is not
-hardcoded here on purpose: this package is designed to be lifted into its own repository with no
-renames, and a manual naming the repository it currently happens to live in would be wrong the day
-after that move.
+Open the issue or pull request against the repository this package is distributed from: the
+`Source` URL in the distribution's metadata (`project.urls` in its `pyproject.toml`). Its
+`CONTRIBUTING.md` lists how to set up, the tests to run and the standards a change is held to.
 
 ---
 
 ## 9. A worked shape, end to end
 
 A common pattern: reduce a group to one row, keep the detail that would otherwise be lost, and check
-the result.
+the result. These steps continue the file in section 4.
 
-```yaml
+```yaml fragment
   - id: ordered_rows
     tool: sort
     lane: figures

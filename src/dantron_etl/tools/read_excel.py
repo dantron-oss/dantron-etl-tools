@@ -1,25 +1,9 @@
-"""ReadExcel: one named tab of one XLSX workbook becomes one frame, with no tab guessed.
+"""ReadExcel: read one named sheet of an XLSX workbook, or stack the sheets matching a pattern.
 
-The catalog's second file source, and the mirror image of ``read_table``'s own refusal to accept a
-query: there, a schema and a table are the whole of what may be named, because a query duplicates
-Filter and SelectColumns in a second language nothing here can pre-flight. Here, a sheet is the whole
-of what may be named, and deliberately not an index -- "the first tab" is a positional read wearing
-a default's clothes, and a delivered pack is laid out with a cover sheet in front of the figures for
-exactly the audience who never configures a flow. A tab named in the configuration turns that failure
-into a refusal instead: a name that is not there is refused with the names that are, in the same
-words this library already uses for a column that is not on a port, and a near miss -- a wrong case,
-a trailing space -- is not a match.
+The sheet is always named, never picked by position. Each column's type comes from its first 100
+rows, and a cell that would read as null is refused. A bad header is refused, not repaired.
 
-What comes back is what the sheet holds, not what somebody once put in. A column of whole numbers
-written as floats comes back whole. The engine decides each column's type from its first 100 rows,
-so text inside those rows makes the column text. Text further down a column of figures would read
-as null, and so would a word the engine treats as missing (``n/a``, ``#N/A``); the read stops
-instead and points to ``as_text``.
-
-A header row is a sheet's schema. A repeated heading, a blank one, or one that is a date or a truth
-value is refused rather than repaired, and two headings that read the same (the number 2026 and the
-text "2026") count as repeated. Repaired, the engine's own names -- ``key_1``, ``__UNNAMED__1`` --
-would leak into a flow's column names the moment a downstream step names one of them.
+Why: docs/design/tools.md#read_excel
 """
 
 import datetime as dt
@@ -27,9 +11,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, Final
 
-import fastexcel
 import polars as pl
-import xlsxwriter
 
 from ..authoring import (
     REGISTRY,
@@ -57,10 +39,10 @@ _EXACT_WHOLE_LIMIT: Final[float] = float(2**53)
 
 
 class ReadExcel:
-    """Read one named sheet, or every sheet whose name matches a pattern, onto the ``rows`` port."""
+    """Read one named sheet, or every sheet whose name matches a pattern, onto the `rows` port."""
 
     name = "read_excel"
-    description = "Read one named sheet of an XLSX workbook, or stack every sheet whose name matches a pattern."
+    description = "Read a sheet of an Excel workbook into a table, or stack several matching sheets."
     category = "input"
     input_ports = ()
     output_ports = ("rows",)
@@ -69,50 +51,47 @@ class ReadExcel:
         return {
             "path": ConfigField(
                 type="string",
-                description="The workbook to read; must end in .xlsx.",
+                description="The workbook to read. It must end in .xlsx.",
                 required=True,
                 non_empty=True,
                 file_path=True,
             ),
             "sheet": ConfigField(
                 type="string",
-                description="The name of the one sheet to read; never an index, never guessed. "
-                "Give this or sheets_matching, not both.",
+                description="The name of the one sheet to read, such as 'Sales'. Give this or "
+                "'sheets_matching'.",
                 required=False,
                 default=None,
                 non_empty=True,
             ),
             "sheets_matching": ConfigField(
                 type="string",
-                description="A pattern instead of a name. Every sheet whose name contains a match is "
-                "read, and the sheets are stacked in workbook order. Case-sensitive; anchor with ^ "
-                "and $ to match whole names.",
+                description="A pattern instead of a name: every sheet whose name matches is read, and "
+                "the sheets are stacked in workbook order.",
                 required=False,
                 default=None,
                 non_empty=True,
             ),
             "sheet_column": ConfigField(
                 type="string",
-                description="Name for the column saying which sheet each row came from. Required "
-                "with sheets_matching, and refused without it.",
+                description="With 'sheets_matching': the name of a column saying which sheet each row "
+                "came from.",
                 required=False,
                 default=None,
             ),
             "has_header": ConfigField(
                 type="boolean",
-                description="Whether the sheet's first row (after skip_rows) names the columns.",
+                description="Whether the first row (after skip_rows) holds the column names.",
                 default=True,
             ),
             "skip_rows": ConfigField(
                 type="integer",
-                description="How many rows above the header (or the data, if has_header is false) "
-                "to skip -- for a title block laid out above the table.",
+                description="How many rows to skip before the header, such as a title block above the table.",
                 default=0,
             ),
             AS_TEXT: ConfigField(
                 type="boolean",
-                description="Read every cell as text, so a column holding figures on one sheet and text "
-                "on another can be stacked and converted on purpose by cast_columns afterwards.",
+                description="Set true to read every cell as text, then convert columns with cast_columns.",
                 default=False,
             ),
         }
@@ -120,70 +99,63 @@ class ReadExcel:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "The named sheet arrives on `rows` with the columns and the dtypes the sheet "
-                "itself holds: a column of round figures comes back whole, a column with text in "
-                "its first 100 rows comes back as text, and a blank cell comes back null rather "
-                "than an empty string. The sheet is always named, in `sheet`, or found by a pattern, "
-                'in `sheets_matching`. It is never an index: "the first tab" silently reads the '
-                "wrong sheet the moment a delivered pack puts a cover sheet in front of the figures. "
-                "A row blank in every column is dropped as layout rather than kept as a row of nulls."
+                "Use read_excel to start a flow from an Excel workbook. Name the sheet in 'sheet', or "
+                "give a pattern in 'sheets_matching' to read and stack several sheets, such as one per "
+                "month. The rows go to `rows` with the types the sheet holds: whole figures come back "
+                "whole, and blank cells come back null. A row blank in every column is dropped."
             ),
             examples=(_reads_a_sheet_example(), _reads_matching_sheets_example(), _reads_as_text_example()),
             notes=(
+                "A sheet is always named or matched, never picked by position, so a cover sheet added "
+                "in front does not change what is read.",
+                "A sheet name not in the workbook is refused, listing the names that are. A name that "
+                "differs only in case or a trailing space is a different name.",
                 "Each column's type is decided from its first 100 rows. A cell that holds something "
-                "but would read as null is refused, naming the column and the row: text further "
-                "down a column of figures, or a word the engine treats as missing, such as n/a, "
-                "#N/A or null, anywhere in it. A cell of only spaces reads as null. Set as_text to "
-                "read every cell as its text and convert the columns with cast_columns after.",
-                "A sheet named in the configuration that is not in the workbook is refused with "
-                "the sheet names that are there; a name differing only in case or a trailing space "
-                "is a different name, not a near match.",
-                "has_header defaults to true, since a spreadsheet's first row is a header until an "
-                "author says otherwise; a duplicated or a blank heading is refused rather than "
-                "repaired, because a sheet's header row is its schema. Two headings that read the "
-                "same (the number 2026 and the text 2026) are a duplicate, and a heading that is a "
-                "date or a truth value is refused, because it cannot name a column.",
-                "There is no cell range: skip_rows reaches a header sitting below a title block, "
-                "and everything else about narrowing a read -- which columns, which rows -- is a "
-                "SelectColumns or a Filter put after this tool.",
-                "sheets_matching reads every sheet whose name contains a match for the pattern, the "
-                "same test as regex_match() in an expression. A pattern that matches no sheet is "
-                "refused with the sheets that are there. Each sheet is read exactly as naming it in "
-                "'sheet' would read it, and a sheet that does not match is never read.",
+                "but would read as null is refused, naming the column and the row.",
+                "That catches text further down a column of figures, and words read as missing, such "
+                "as n/a, #N/A or null, anywhere in a column. Set as_text to read them.",
+                "A cell of only spaces reads as null.",
+                "The header row is refused, not repaired, if a heading is blank or repeated. The "
+                "number 2026 and the text '2026' count as repeated.",
+                "A heading that is a date or true/false is refused, because it cannot name a column.",
+                "There is no cell range. skip_rows reaches a header below a title block; to narrow "
+                "columns or rows, use select_columns or filter afterwards.",
+                "sheets_matching reads every sheet whose name contains a match, the same test as "
+                "regex_match(); anchor with ^ and $ for whole names. Matching is case sensitive.",
+                "A pattern that matches no sheet is refused, listing the sheets. Each matched sheet is "
+                "read exactly as naming it in 'sheet' would, and unmatched sheets are never read.",
                 "Stacked sheets are lined up by column name. A column a sheet lacks is null on that "
-                "sheet's rows, and columns come in the order they first appear. Whole and fractional "
-                "figures stack as fractional figures. A sheet where a column holds no values takes "
-                "the other sheets' type. Any other difference, such as text on one sheet and figures "
-                "on another, is refused, naming the column and the sheets.",
-                "as_text makes every column text. Each cell reads as what it stores, not as Excel "
-                "displays it. A whole figure has no point: 12, never 12.0. Any other figure reads as "
-                "the shortest text that converts back to exactly the stored number. A date reads "
-                "YYYY-MM-DD, and a date with a time of day YYYY-MM-DDTHH:MM:SS. A truth value reads "
-                "true or false. A blank cell is null. In a column that mixes kinds, each cell keeps "
+                "sheet's rows, and columns come in the order they first appear.",
+                "When stacking, whole and decimal figures become decimals, and a sheet where a column "
+                "is empty takes the others' type. Any other difference, such as text on one sheet and "
+                "figures on another, is refused, naming the column and the sheets.",
+                "as_text makes every column text, each cell as what it stores, not as Excel displays "
+                "it: 12, never 12.0; other figures as the shortest text that converts back exactly.",
+                "With as_text, a date reads YYYY-MM-DD, a date with a time YYYY-MM-DDTHH:MM:SS, "
+                "true/false as true or false, and a blank as null. In a mixed column, each cell keeps "
                 "its own text.",
-                "as_text has two limits, both because Excel stores a date or a time as one number. "
-                "A time of exactly midnight reads as a date. A cell holding only a time of day "
-                "(formatted hh:mm, say) reads as that time on 31 December 1899: 14:05 reads "
-                "1899-12-31T14:05:00.",
-                "as_text reads the sheet four times instead of once: as text, as figures, as truth "
-                "values and as dates. Each cell takes its text from the reading that suits what it "
-                "holds. So a large sheet takes a few times longer to read. The text reading alone "
-                "would be quicker, but it rounds figures: 99999999999.99 comes back "
-                "99999999999.990005493.",
+                "Excel stores dates and times as one number, so with as_text a time of exactly midnight "
+                "reads as a date, and a cell holding only a time reads as that time on 31 December 1899 "
+                "(14:05 reads 1899-12-31T14:05:00).",
+                "as_text reads the sheet four times (as text, figures, true/false and dates) and takes "
+                "each cell from the right reading, so a large sheet takes a few times longer.",
+                "The text reading alone would be quicker, but it rounds figures: 99999999999.99 comes "
+                "back 99999999999.990005493.",
             ),
             field_help={
-                "sheet": "By name. Refused, with the sheet names present, if it does not match one of "
-                "them exactly. Give this or sheets_matching.",
-                "skip_rows": "Rows above the header (or the data) to skip; must not be negative.",
-                "sheets_matching": "Found anywhere in the sheet name, like regex_match(). Refused if no sheet matches.",
-                "sheet_column": "Comes after every column read, and holds the sheet's name as text.",
-                AS_TEXT: "Every column arrives as text; cast_columns afterwards states what each one is. "
-                "Off by default.",
+                "path": "For example 'data/sales.xlsx'.",
+                "sheet": "For example 'Sales'. It must match exactly.",
+                "skip_rows": "For example 3, to skip a title block. Not negative.",
+                "sheets_matching": "For example '^[A-Z][a-z]{2} \\d{4}$' for sheets named like 'Jan 2026'.",
+                "sheet_column": "For example 'sheet'. It is added after the other columns and holds the "
+                "sheet's name.",
+                AS_TEXT: "Use it when a column mixes figures and text, then say what each column is with "
+                "cast_columns.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse the wrong format or a negative skip count before a workbook is ever opened."""
+        """Refuse a non-.xlsx path, a negative skip, and a sheet setting that is missing, doubled or misplaced."""
         path = config["path"]
         if not path.lower().endswith(".xlsx"):
             raise ConfigError(f"read_excel only reads .xlsx workbooks; got path '{path}'")
@@ -222,7 +194,7 @@ class ReadExcel:
             ) from error
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a workbook that is not there, before any step of the flow does work."""
+        """Refuse a workbook that is not there, before the run starts."""
         require_file_to_read("read_excel", config["path"])
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -231,6 +203,7 @@ class ReadExcel:
         has_header = config["has_header"]
         skip_rows = config["skip_rows"]
 
+        fastexcel = _import_fastexcel()
         try:
             reader = fastexcel.read_excel(path)
         except Exception as error:
@@ -245,6 +218,30 @@ class ReadExcel:
                 f"{', '.join(sheet_names)}"
             )
         return Ports({"rows": _read_sheet(reader, path, sheet, has_header, skip_rows, config[AS_TEXT])})
+
+
+def _import_fastexcel() -> Any:
+    """The workbook reader, imported only when a sheet is read, or a refusal naming the package."""
+    try:
+        import fastexcel
+    except ImportError as error:
+        raise ConfigError(
+            "read_excel needs fastexcel, which this environment does not have installed; "
+            "install 'fastexcel' to read a workbook"
+        ) from error
+    return fastexcel
+
+
+def _xlsxwriter() -> Any:
+    """The workbook writer the worked examples build their files with, imported when one runs."""
+    try:
+        import xlsxwriter
+    except ImportError as error:
+        raise ConfigError(
+            "read_excel's examples need xlsxwriter, which this environment does not have installed; "
+            "install 'xlsxwriter' to run them"
+        ) from error
+    return xlsxwriter
 
 
 def _read_matching(reader: Any, config: Mapping[str, Any]) -> pl.DataFrame:
@@ -358,8 +355,7 @@ def _read_sheet(
     _refuse_text_the_typed_read_lost(frame, text, sheet, has_header)
     if frame.width == 0:
         return frame
-    # A row blank in every column is layout, dropped here as the engine's own option would drop it.
-    # It is dropped after the check above, so a row whose only value was lost is still seen there.
+    # A row blank in every column is layout, dropped after the check above so a lost value is still seen.
     return frame.filter(~pl.all_horizontal(pl.all().is_null()))
 
 
@@ -494,11 +490,9 @@ def _cell_as_text() -> pl.Expr:
 
 
 def _validate_header_row(raw_header: Sequence[Any], sheet: str) -> None:
-    """Refuse a header row that repeats or omits a name, rather than repair it.
+    """Refuse a blank or repeated heading, rather than repair it.
 
-    Left alone, the reader underneath renames a repeated heading to ``key_1`` and a blank one to
-    ``__UNNAMED__1`` -- its own vocabulary, leaking into a flow's column names the moment a
-    downstream step names the column that happened to come first.
+    fastexcel would rename them `key_1` or `__UNNAMED__1`, names that then leak into the flow.
     """
     seen: set[Any] = set()
     for index, value in enumerate(raw_header, start=1):
@@ -541,16 +535,9 @@ def _refuse_headings_the_reader_would_rename(raw_header: Sequence[Any], header_t
 
 @contextmanager
 def _example_workbook() -> Iterator[None]:
-    """A small workbook the example reads, entered around the example and torn down after.
-
-    Built here rather than inside ``help()``, which must describe a tool without changing the
-    process doing the describing -- the catalog page generator calls ``help()`` on every tool, and
-    writing a file as a side effect of describing one is exactly the disturbance the boundary now
-    refuses. Planted with :func:`scratch_path`, into the directory :func:`check_tool` opens for the
-    run; nothing here tears it back down, because that directory is the checker's to remove.
-    """
+    """Write the small workbook the example reads into the example's scratch folder."""
     target = scratch_path(_EXAMPLE_PATH)
-    with xlsxwriter.Workbook(str(target)) as workbook:
+    with _xlsxwriter().Workbook(str(target)) as workbook:
         worksheet = workbook.add_worksheet("Sample")
         worksheet.write_row(0, 0, ["key", "label"])
         worksheet.write_row(1, 0, [1, "first"])
@@ -561,9 +548,10 @@ def _example_workbook() -> Iterator[None]:
 def _reads_a_sheet_example() -> WorkedExample:
     outputs = Ports({"rows": pl.DataFrame({"key": [1, 2], "label": ["first", "second"]})})
     return WorkedExample(
-        scenario="read a two-row sheet named in the configuration",
+        scenario="read one sheet by name",
         configuration={"path": _EXAMPLE_PATH, "sheet": "Sample"},
-        explanation="'sheet' names the tab to read; the columns and the dtypes arrive exactly as the sheet holds them.",
+        explanation="'sheet' names the tab to read. The columns and their types come through as the sheet holds "
+        "them.",
         inputs=Ports({}),
         outputs=outputs,
         setup=_example_workbook,
@@ -574,7 +562,7 @@ def _reads_a_sheet_example() -> WorkedExample:
 def _months_workbook() -> Iterator[None]:
     """A workbook of a cover sheet and two month sheets, for the stacking example."""
     target = scratch_path(_MONTHS_EXAMPLE_PATH)
-    with xlsxwriter.Workbook(str(target)) as workbook:
+    with _xlsxwriter().Workbook(str(target)) as workbook:
         workbook.add_worksheet("Cover").write_row(0, 0, ["Monthly report"])
         for name, rows in {"Feb 2026": [["f1", 2.5]], "Jan 2026": [["j1", 10.25], ["j2", 4.0]]}.items():
             worksheet = workbook.add_worksheet(name)
@@ -597,14 +585,14 @@ def _reads_matching_sheets_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="read every month sheet of a report into one frame",
+        scenario="read every month sheet of a report into one table",
         configuration={
             "path": _MONTHS_EXAMPLE_PATH,
             "sheets_matching": r"^[A-Z][a-z]{2} \d{4}$",
             "sheet_column": "sheet",
         },
-        explanation="Both month sheets match the pattern and the cover sheet does not. The months are "
-        "stacked in the order the workbook holds them, and 'sheet' says which one each row came from.",
+        explanation="Both month sheets match the pattern and the cover sheet does not. They are stacked in "
+        "workbook order, and 'sheet' says which sheet each row came from.",
         inputs=Ports({}),
         outputs=outputs,
         setup=_months_workbook,
@@ -616,7 +604,7 @@ def _reads_matching_sheets_example() -> WorkedExample:
 def _mixed_workbook() -> Iterator[None]:
     """A workbook whose one column mixes a figure, text and a date, for the as_text example."""
     target = scratch_path(_TEXT_EXAMPLE_PATH)
-    with xlsxwriter.Workbook(str(target)) as workbook:
+    with _xlsxwriter().Workbook(str(target)) as workbook:
         worksheet = workbook.add_worksheet("Sample")
         date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
         worksheet.write_row(0, 0, ["key", "amount"])
@@ -638,10 +626,11 @@ def _reads_as_text_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="read a sheet whose column mixes figures, text and a date, every cell as text",
+        scenario="read a sheet whose column mixes figures, text and a date",
         configuration={"path": _TEXT_EXAMPLE_PATH, "sheet": "Sample", AS_TEXT: True},
-        explanation="Every column arrives as text, each cell as the text of what it stores: the whole "
-        "figure without a point, the date as YYYY-MM-DD. cast_columns afterwards says what each column is.",
+        explanation="Every column comes in as text, each cell as the text of what it stores: the whole figure "
+        "without a point, the date as YYYY-MM-DD. Use cast_columns afterwards to say what each column "
+        "is.",
         inputs=Ports({}),
         outputs=outputs,
         setup=_mixed_workbook,

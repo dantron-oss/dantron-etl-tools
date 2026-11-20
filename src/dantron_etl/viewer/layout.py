@@ -24,49 +24,11 @@ STACK_GAP, LANE_PAD, LANE_GAP = 18, 22, 26
 # steps of neighbouring lanes, which a box drawn tight to its members does not.
 GROUP_PAD, GROUP_HEAD = 12, 46
 
-# The three margins above are what make a container's rectangle derivable from its members' slots
-# rather than measured off the drawing, which is what `_slots` relies on. Two of them are load
-# bearing beyond their own box:
-#
-#   GROUP_PAD 12 < (COL_W - NODE_W) / 2 = 28, so an outline never reaches out of its own columns
-#   into the one beside it. Column-disjoint containers therefore cannot touch, whatever their rows.
-#
-#   GROUP_PAD + GROUP_HEAD = 58 < 2 * LANE_PAD + LANE_GAP = 70, so a container at the bottom of one
-#   lane and one at the top of the next cannot touch either, and the header of a container in the
-#   first slot of a lane fits in the gap above that lane without reaching the lane before it.
-#
-# Change either margin past those bounds and containers start colliding across a boundary `_slots`
-# never looks at, because `_slots` reasons in whole grid cells and these are what make a cell's
-# worth of separation enough.
+# The margins above keep a container's outline inside its own columns and lane, which `_slots`
+# relies on. Why: docs/design/viewer.md#the-canvas
 
 
-# WHERE THE CONTAINERS COST SOMETHING. A container is drawn round its members, so the layout has to
-# put the members somewhere a box can be drawn round without the box also reaching round a step that
-# is not its own. `_slots` does that by handing each container a rectangle of its lane's grid and
-# letting nothing else into it. What that costs is height: on the flow this page was built for --
-# 672 steps, 150 containers, 152 columns -- the canvas goes from 3,146px unboxed to 8,346px boxed,
-# 2.65x. A flow that declares no container reserves nothing and is laid out to the pixel where it
-# always was.
-#
-# Two things spend that height, and anyone tuning it should know which is which before touching
-# `_slots`. Measured by re-running the same flow with one of them turned off at a time:
-#
-#   The header row costs the most: 2,240px of the 5,200px added. Stop reserving a slot for a header
-#   and the canvas is 6,106px. A header needs GROUP_HEAD 46 of a slot's 80 and takes the whole slot
-#   because slots are what the grid is made of, so the 34px left over is what a finer grid would win
-#   back -- most of it, not all.
-#
-#   The claims' column spans cost 1,840px. Let a claim reserve only the columns its members are
-#   actually in and the canvas is 6,506px -- but the outline is the bounding box of the members, so
-#   the columns in between are inside the box whether they were reserved or not, and a step there is
-#   a step inside a container that does not own it. That height is not paid for the layout's
-#   convenience; it is paid for the rectangle. Winning it back means a container that is not drawn
-#   as one rectangle.
-#
-# The order the containers are placed in is not where the height is. Widest-first lands at 8,346px
-# against 8,826 left to right and 8,666 in declaration order, and the busiest column of the busiest
-# lane needs 52 rows on its own, so the shipped layout is one row off what any order could do. There
-# is nothing left in the packing; the two figures above are the whole bill.
+# Containers cost canvas height; the measurements are in docs/design/viewer.md#the-canvas.
 
 
 def _depths(spec: Pipeline) -> dict[str, int]:
@@ -91,22 +53,10 @@ def _lane_row(step: Step, lanes: dict[str, int]) -> int:
 
 
 def _group_parts(spec: Pipeline, lanes: dict[str, int]) -> list[tuple[int, tuple[str, ...]]]:
-    """Each container's members, split by the lane they are in, as (lane row, members).
+    """Each container's members, split by lane, as (lane row, members).
 
-    Split rather than taken whole because `_slots` reserves cells of one lane's grid, and a lane is
-    the only thing that grid is indexed by. A container declared over two lanes is not a shape this
-    page has a drawing for -- its outline would have to reach across the band between them, over
-    every step of both lanes in its columns -- so the honest thing is to place each half properly in
-    its own lane and let the outline be the bounding box of the two, which is what it is today. The
-    guarantees below are per lane and so is the claim they support.
-
-    No flow read from a file can get here with one, though: `_refuse_bad_groups` refuses a group
-    whose steps sit in two lanes when the document is loaded, and says to move the step or split the
-    container. What reaches this split is a `Pipeline` built in Python, which is how the layout's
-    own cases are written. It stays because it is what makes "a claim is a rectangle of one lane's
-    grid" true of every input rather than of the ones the loader happens to allow -- take it out and
-    a two-lane container silently has half its members placed against the wrong lane's occupancy,
-    which is two steps drawn at one coordinate, the defect this whole function exists under.
+    A container over two lanes is refused at load, but a Pipeline built in Python can still have one; each
+    half is then placed in its own lane, so two steps are never drawn at one spot.
     """
     split: list[tuple[int, tuple[str, ...]]] = []
     for group in spec.containers:
@@ -118,73 +68,21 @@ def _group_parts(spec: Pipeline, lanes: dict[str, int]) -> list[tuple[int, tuple
 
 
 def _claimed_slots(base: int, deep: int) -> int:
-    """The slots a container claims outright, as a bit per slot: its own ``deep`` rows from ``base``,
-    and the empty row above them that its header is written in.
+    """The slots a container claims, as a bit per slot: its `deep` rows from `base`, and the row above for its header.
 
-    Named for the slots rather than for the band it is drawn as, because a *band* on this page is
-    already the horizontal stripe a lane is drawn as -- `<rect class="band">` -- and these are slots
-    of one column inside one of those, the same slots `_slots` hands out.
-
-    The header row is the whole reason a container claims more than its members. `GROUP_HEAD` is 46
-    and a slot's pitch is `NODE_H + STACK_GAP` = 80, so the band the title is written in reaches 46px
-    up into a slot 80px tall -- past the bottom 18px of gap and 28px into the box of whatever sits in
-    the slot above. There is no arrangement in which a header shares a slot with a step; it either
-    has the slot or is written across a step's own box.
-
-    Except at the top of a lane, where the room is already there and reserving a slot for it would
-    waste a row on every container that starts at slot 0. Above slot 0 sits LANE_PAD and then either
-    the page's own PAD (28 + 22 = 50) or LANE_GAP and the lane before's LANE_PAD (22 + 26 + 22 = 70),
-    and both are more than GROUP_HEAD. That space holds no step by construction, so a header at slot
-    0 is drawn in a gap that was already empty.
-
-    Empty of *steps*, which is not the same as empty. The lane writes its own label in that gap, at
-    x=6 above the band, so a container that both starts at slot 0 and reaches column 0 writes its
-    title across the lane's name. That is an older and smaller thing than the three this layout was
-    built for: on the dense flow it happens to 1 container of 150, where the layout this replaced --
-    which drew a header GROUP_HEAD above whatever its topmost member was -- did it to 4. It is also
-    not a layout fault and has no layout fix: the header is where it has to be, and what is wrong is
-    that the label shares the space. Moving the label, or drawing it over the containers with
-    something behind it, is a change to the drawing order and belongs with whoever next touches the
-    lane bands.
+    A header (46px) reaches into the slot above (80px pitch), so it needs that slot, except at slot 0,
+    where the gap above the lane already has room. Why: docs/design/viewer.md#the-canvas
     """
     return (1 << (base + deep)) - (1 << (base - 1 if base else 0))
 
 
 def _slots(spec: Pipeline, depth: dict[str, int], lanes: dict[str, int]) -> dict[str, int]:
-    """Where each step sits *within* its lane-and-depth cell, so two steps never share a spot.
+    """Where each step sits within its lane-and-depth cell, so no two steps share a spot.
 
-    Depth and lane alone do not place a step uniquely: two sources read at the same moment into the
-    same lane, which is the ordinary shape of a flow rather than an edge case. Drawing both at one
-    coordinate puts one exactly on top of the other, and the canvas then shows fewer tools than the
-    pipeline has -- with the hidden one's data still appearing below, which reads as data arriving
-    from nowhere.
-
-    Containers are placed first, and they are placed by claiming grid cells rather than by being
-    drawn round wherever their members landed. A container spanning columns c0..c1 whose busiest
-    column holds ``deep`` of its members takes the rectangle c0..c1 x base..base+deep-1, plus the
-    slot above for its header, and nothing else is ever put in it. That rectangle *is* the outline
-    `_group_box` draws: the topmost member is at ``base`` in every column that has one, the lowest is
-    at ``base + deep - 1``, so the bounding box of the members is the bounding box of the claim. So
-    "no stranger inside the outline" and "no two outlines crossing" both reduce to "no two claims
-    share a cell", which is the one thing the loop below has to get right.
-
-    That the outline stops at the claim, rather than spilling into the cells beside it, is what the
-    two margin bounds above pay for: GROUP_PAD keeps it inside its own columns and GROUP_PAD +
-    GROUP_HEAD keeps it inside its own lane. The one direction with no margin at all is downwards
-    into the next slot -- an outline ends GROUP_PAD = 12 below its last member, and the next slot
-    starts 18px below that -- so a step directly under a container is fine and needs no reservation.
-
-    Widest first, because a container's claim is a horizontal interval and the wide ones are what
-    every later interval has to fit around. Left to right instead costs six rows on the flow this
-    page is for: a container spanning seventy columns placed last has to clear seventy columns'
-    worth of whatever has already been put down, and it ends up alone at the top of the lane. The
-    order is a tie-broken total order rather than a sort by width alone, so that two renders of one
-    file draw the same page.
-
-    Then the ungrouped steps, each into the lowest slot of its own cell that no container claimed.
-    On a flow with no containers nothing is claimed and this is exactly the sequential fill it has
-    always been -- same steps, same declaration order, same slots, which is why a page that declares
-    no group does not move.
+    Containers are placed first, widest first in a fixed order, each claiming a rectangle of its lane's grid
+    that nothing else may use; that rectangle is the outline drawn. Then each loose step takes the lowest
+    free slot in its cell. With no containers this is the plain sequential fill.
+    Why: docs/design/viewer.md#the-canvas
     """
     slot: dict[str, int] = {}
     # Which slots of each (lane, column) cell are taken, as one integer per cell with a bit per
@@ -272,12 +170,7 @@ def canvas(spec: Pipeline, trace: PipelineTrace) -> str:
         f'<rect class="band" x="0" y="{top[lanes[lane.id]]}" width="{width}" height="{tall[lanes[lane.id]]}"/>'
         for lane in spec.lanes
     )
-    # The lane's name is drawn separately from its band, and last of everything, because the strip
-    # of canvas it sits in -- the gap above the band -- is also where a container starting at the
-    # first column puts its header. One container in a hundred and fifty lands there. Painted with
-    # the bands, the name goes under that header and cannot be read at all; painted last, over a
-    # halo, both read, and the name wins the few characters they share. The name is the one label
-    # on the canvas a reader cannot recover from anything else on screen, so it is the one to keep.
+    # The lane's name is drawn last, over a halo, so a container header in the same gap cannot hide it.
     lane_names = "".join(
         f'<text class="lane" x="6" y="{top[lanes[lane.id]] - 7}">{_e(lane.title)}</text>' for lane in spec.lanes
     )
@@ -295,37 +188,8 @@ def canvas(spec: Pipeline, trace: PipelineTrace) -> str:
             # turns its `&` into `&amp;` and the reader is shown the entity's source text.
             label = f"{_e(ref.port)} &middot; {rows:,}" if rows is not None else _e(ref.port)
             curve = f"M{x1},{y1} C{mid},{y1} {mid},{y2} {x2},{y2}"
-            # One group per connection, naming its two ends as the ids the nodes answer to. A line
-            # drawn as two anonymous siblings is a line no script can ask a question about: to light
-            # what feeds a step you have to know which lines land on it, and the only place that can
-            # be read off is the drawing itself. Naming the ends here is what makes the canvas a
-            # graph rather than a picture of one.
-            #
-            # The second path is the same curve, fourteen pixels wide and transparent. A stroked
-            # path with no fill takes clicks on its stroke alone -- 1.4 pixels of it -- and picking
-            # one line out of six that cross is not something a hand can do at that width. The twin
-            # has to follow the same `d`: a target beside the line lights its neighbour, which is
-            # worse than no target at all.
-            #
-            # Each end also names the container it sits in, as the empty string where there is
-            # none. Stated at both ends rather than worked out when a container closes, because that
-            # is the fact a closed container re-wires itself from: one end inside and one outside is
-            # a connection that has to land on the box, both ends inside is the box's own plumbing.
-            # Written as "" rather than left off, because `undefined === undefined` is true in a
-            # browser -- two ungrouped ends would compare equal, every connection between two
-            # ordinary steps would read as the internals of a container that does not exist, and all
-            # of them would go out the moment any container was closed.
-            #
-            # And the two ends' own coordinates, so that re-opening a container puts its connections
-            # back where they were drawn. Re-deriving them in the browser means going two ways, and
-            # both are worse than four numbers. Measuring the node is out on its face: while a
-            # container is shut its steps are display:none, and a display:none node measures as
-            # nothing. Reading the node's rectangle off its attributes does survive being hidden --
-            # but the point a connection leaves from is not the rectangle, it is `x + NODE_W` and
-            # `y + NODE_H / 2`, so that route restates this file's geometry in a second language and
-            # every future change to a node's shape has to be made in both. Four numbers per
-            # connection is 765 of them on the real flow and a few tens of KB on a page that already
-            # embeds its own data; the arithmetic staying in one language is worth that.
+            # One group per connection, naming its two end steps, their containers ("" for none) and their
+            # coordinates, with a 14px transparent twin path to click on. Why: docs/design/viewer.md#the-canvas
             edges.append(
                 f'<g class="edge" data-from="{_e(ref.step)}" data-to="{_e(step.id)}" data-port="{_e(ref.port)}"'
                 f' data-from-group="{_e(spec.step(ref.step).container or "")}"'
@@ -384,33 +248,11 @@ def _group_box(
     box: Callable[[str], tuple[float, float]],
     nodes: Mapping[str, str],
 ) -> str:
-    """One container: the outline round its steps, the bar it becomes when closed, and its steps.
+    """One container: the outline round its steps, the bar it becomes when closed, and the steps inside it.
 
-    The steps are written *inside* the container element rather than beside it, and the rest follows
-    from that. Enclosure becomes something the document states rather than something the coordinates
-    imply, and closing a container becomes one class on one element instead of a pass over six
-    hundred nodes asking each whether it belongs to the box being closed.
-
-    Two rectangles, because a container makes the same claim in two states and they are different
-    shapes. ``gbox`` is the outline round exactly its own steps, drawn while it is open. ``gpill`` is
-    the bar it shrinks to when it is closed -- the header alone, which is the whole point: a
-    container that kept its expanded footprint when shut would free no space, and space is the only
-    reason a reader shuts one. Both start at the same corner, so the sentence written in the header
-    sits on whichever of the two is being drawn.
-
-    It shrinks in one direction only. The bar keeps the container's full width, because the width is
-    what the sentence is written across -- a bar one node wide would truncate every title, which is
-    to say it would put away the only thing a closed container has to say. So what closing actually
-    gives back, measured on the real flow with its steps boxed six at a time, is 154px of height at
-    the median against a width of 1,360px that does not move. The reader's real gain is the steps and
-    their internal connections going away in a section they have finished with -- 483 of that flow's
-    765 connections, 63%, are internal to a six-step container and go out with it -- and the height is
-    a bonus; a closed container is not a way to make a 35,292px canvas narrower.
-
-    The connections are *not* in here. They stay at the root of the drawing, because a lit connection
-    is lifted above the steps with ``appendChild`` -- a connection living inside a container would be
-    lifted out of its box the first time a reader followed it, and never come back. Each names its
-    container at each end instead, which is what the collapse handler re-points from.
+    The steps are inside the element, so closing is one class. The bar keeps the full width, so the title
+    fits. Connections stay at the root of the drawing and name their containers at both ends.
+    Why: docs/design/viewer.md#the-canvas
     """
     members = spec.container_members(group.id)
     corners = [box(member) for member in members]
@@ -426,46 +268,15 @@ def _group_box(
         f'data-rows-in="{rows_in}" data-rows-out="{rows_out}">'
         f'<rect class="gbox" x="{left}" y="{top}" width="{width}" height="{height}" rx="10"/>'
         f'<rect class="gpill" x="{left}" y="{top}" width="{width}" height="{GROUP_HEAD}" rx="10"/>'
-        # Something to click. The outline is `fill:none`, and an SVG shape is a target only where
-        # it is actually painted, so until this rect existed a container's inside was not a target
-        # at all -- a click there went through it to the lane stripe behind, and the one part a
-        # reader could actually hit was 1.2 pixels of dashed line. This covers the header strip: the
-        # bar the title is written on, which the layout already keeps clear of steps.
-        #
-        # Its width is the title's, estimated from the character count rather than measured, because
-        # the width of a run of text is only known in a browser and this is written on a machine
-        # with none. An estimate is the right tool for a hit area and would be the wrong one for
-        # anything drawn -- a few pixels either way moves where a click stops working, and nothing
-        # a reader can see. It is deliberately not the whole box: a target that covered a container
-        # end to end would sit over every connection that crosses it and take the clicks that light
-        # those, which is the one thing on this canvas that already worked well.
+        # A click target over the header strip, sized from the title's length; not the whole box, which
+        # would take clicks from the connections crossing it.
         f'<rect class="ghit" x="{left}" y="{top}" width="{12 + len(group.title) * 7.0 + 8}"'
         f' height="{GROUP_HEAD}"/>'
-        # The plate the raised title sits on. Drawn here, hidden, rather than built when a reader
-        # clicks: a rectangle sized to a run of text can only be measured in a browser, and this
-        # page is written on a machine with none -- but the same character-count estimate that
-        # places the hit area above places this, and it is the same sentence in the same face. The
-        # estimate is safe for both because a few pixels either way moves an edge nobody measures.
-        #
-        # A rectangle rather than a heavier halo on the glyphs, because a border is what was asked
-        # for and a border around a halo follows the outline of the letters -- which reads as a
-        # smudge round the words rather than as a label the sentence is printed on.
+        # The plate the raised title sits on, sized by the same character-count estimate.
         f'<rect class="gplate" x="{left + 5}" y="{top + 4}"'
         f' width="{len(group.title) * 7.0 + 14}" height="22" rx="4"/>'
         f'<text class="gtitle" x="{left + 12}" y="{top + 18}">{_e(group.title)}</text>'
-        # Grouped digits, because the figure is read at a glance and `11834 in` is not read at a
-        # glance -- it is counted, a digit at a time, which is exactly the work this feature exists
-        # to spare a reader. Grouped is also what the rest of the page already does: every edge
-        # label, every "N rows" under a port and every "showing N of M" is written `{n:,}`, and a
-        # container reporting its rows in the one unpunctuated style on the page would read as a
-        # different kind of number rather than as the same rows counted at a different place.
-        #
-        # The plain figure is not thrown away -- it is put where the reader who wants it goes. The
-        # tooltip is the container's accessible name and the string a reader copies, so it carries
-        # the two figures unpunctuated and says which of them is which, which `in &middot; out` in a
-        # 10px header has no room to. The two are the same rows said twice, once to be read and once
-        # to be taken, and `data-rows-in`/`data-rows-out` above are the same figures again for the
-        # script -- three spellings, one sum each, all computed in one place a line above.
+        # Grouped digits like every count on the page; the tooltip and data attributes carry the plain figures.
         f'<text class="gcount" x="{left + 12}" y="{top + 34}">'
         f"<title>{rows_in} rows came in from outside this container, {rows_out} rows left it</title>"
         f"{rows_in:,} in &middot; {rows_out:,} out</text>"

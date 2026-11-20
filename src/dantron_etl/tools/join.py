@@ -1,45 +1,10 @@
-"""Join: two input ports, three output ports, and one pairing behind them.
+"""Join: pair the rows of two tables on a key.
 
-**`how` chooses between inner and left; the ports do the rest.** This tool does the pairing once
-and hands back all three of its results on named ports -- `joined` for the pairs, `left_only` and
-`right_only` for the rows of each side that found nobody. `how: left` also keeps every left row on
-`joined`, with the right-hand columns null where nothing paired. A right join is the same join with
-the inputs swapped, an outer join reads all three ports, and an anti-join reads `left_only` alone,
-so none of those is an option. What the ports buy is the orphan check for free:
-the rows a pairing failed to account for are an edge a flow can route to a report or an assertion,
-rather than a number someone reconstructs afterwards with a second join they have to remember to
-write.
+One pairing gives three outputs: `joined` for the pairs, and `left_only` and `right_only` for the
+rows of each side that found no partner. A null key never pairs, as in SQL. A key repeated on the
+right gives a left row one copy per match.
 
-**Fan-out is real, and it is not a defect.** A key that appears twice on the right turns one left row
-into two output rows, so `joined.height` is unrelated to either input's height, and a fanned-out
-amount is *repeated* rather than apportioned. Any other behaviour would require this tool to pick
-one of the matches, and nothing in its configuration gives it a basis to pick. Uniqueness of a key
-is the caller's business, guarded upstream -- with RemoveDuplicates, or with an assertion -- and the
-reason the repetition is left visible is that a reader has to see it before deciding whether their
-downstream total is legitimate.
-
-**A null key never pairs**, so such a row leaves on its own side's orphan port. This is deliberately
-the *opposite* of the ruling RemoveDuplicates makes on the same-looking question, and both are
-right: SQL's `DISTINCT` treats two nulls as one group, SQL's `JOIN` treats them as unpairable. A
-missing key is an absence of information, and pairing two absences would invent a relationship out
-of nothing -- worse, on dirty data it would fan every null-keyed row on one side across every
-null-keyed row on the other, turning a small missing number into a large wrong one.
-
-**Row accounting is stated over rows, not counts.** Fan-out breaks addition, so
-`joined.height + left_only.height == left.height` is simply false and is not the promise. The
-promise is that every row of a side is either in `joined` at least once or in its own orphan port
-exactly once, never both and never neither.
-
-**Row order is deterministic and nothing more.** `joined` comes back in left-input order, with one
-left row's fan-out copies in right-input order; each orphan port comes back in its own side's input
-order. That costs an explicit order-maintaining join, and the parallelism it gives up, and it is
-worth paying because a flow that writes a file needs a diff that does not churn between runs. It is
-not a licence to depend on order for correctness: a step that needs a meaningful order still needs a
-Sort in front of it.
-
-**A collision the suffix cannot settle is refused here, off the schema, before any row moves.** Left
-to the query engine it arrives as an error about a duplicate column, from a library the author has
-never heard of, naming neither the field to change nor the fact that changing `suffix` is the fix.
+Why: docs/design/tools.md#join
 """
 
 from collections.abc import Mapping, Sequence
@@ -57,8 +22,7 @@ from ..authoring import (
     require_columns,
 )
 
-# The key fields, in the order a refusal quotes them. Named once so the cross-field rule below and
-# the messages it raises cannot drift apart from the template.
+# The key fields, in the order a refusal quotes them.
 _KEY_FIELDS: Final[tuple[str, str, str]] = ("keys", "left_keys", "right_keys")
 
 
@@ -66,10 +30,10 @@ _HOW_ENUM: Final[tuple[str, ...]] = ("inner", "left")
 
 
 class Join:
-    """Pair `left` to `right` on a key, and hand back the pairs and both sides' orphans."""
+    """Pair `left` to `right` on a key, and hand back the pairs and both sides' unpaired rows."""
 
     name = "join"
-    description = "Pair `left` to `right` on a key, reporting the pairs and each side's unpaired rows."
+    description = "Match the rows of two tables on a key column, and keep the rows that found no match."
     category = "combine"
     input_ports = ("left", "right")
     output_ports = ("joined", "left_only", "right_only")
@@ -78,38 +42,33 @@ class Join:
         return {
             "keys": ConfigField(
                 type="array",
-                description="Key columns spelled the same on both sides; give this or both of "
-                "'left_keys' and 'right_keys', never both forms.",
+                description="The key columns, when both sides use the same names for them.",
                 required=False,
                 non_empty=True,
-                items=ConfigField(type="string", description="One key column name, present on both sides."),
+                items=ConfigField(type="string", description="One key column, found on both sides."),
             ),
             "left_keys": ConfigField(
                 type="array",
-                description="The left side's key columns, when the two sides spell the key "
-                "differently; requires 'right_keys' of the same length.",
+                description="The left side's key columns, when the two sides name the key differently.",
                 required=False,
                 non_empty=True,
-                items=ConfigField(type="string", description="One key column name on the left side."),
+                items=ConfigField(type="string", description="One key column on the left side."),
             ),
             "right_keys": ConfigField(
                 type="array",
-                description="The right side's key columns, paired position by position with "
-                "'left_keys'; requires 'left_keys' of the same length.",
+                description="The right side's key columns, matched in order with 'left_keys'.",
                 required=False,
                 non_empty=True,
-                items=ConfigField(type="string", description="One key column name on the right side."),
+                items=ConfigField(type="string", description="One key column on the right side."),
             ),
             "suffix": ConfigField(
                 type="string",
-                description="What a right-hand non-key column takes when its name collides with a "
-                "left-hand one; key columns never double up.",
+                description="Added to a right-hand column whose name is already used on the left.",
                 default="_right",
             ),
             "how": ConfigField(
                 type="string",
-                description="Whether `joined` carries only the rows that paired ('inner') or every "
-                "left row, with the right-hand columns null where none paired ('left').",
+                description="Which rows go to `joined`: only the pairs ('inner'), or every left row ('left').",
                 default="inner",
                 enum=_HOW_ENUM,
             ),
@@ -118,66 +77,55 @@ class Join:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "One pairing, three ports: `joined` carries a row per pair, so a key repeated on the "
-                "right fans one left row into a copy per match, and `left_only` / `right_only` carry "
-                "the rows of each side that paired with nothing. 'how' chooses between an inner "
-                "and a left join. An outer or anti join is read from the ports instead, and a right "
-                "join is this join with the inputs swapped. An "
-                "orphan port carries its own side's columns exactly as "
-                "they arrived: no suffix, no columns from the other side, because an unpaired row is "
-                "an input row, not a join result with nulls in it."
+                "Use join to bring columns from one table onto the rows of another, matching on a key "
+                "such as a customer id. `joined` has one row for each pair: the left row's columns, "
+                "then the right row's. `left_only` and `right_only` hold the rows of each side that "
+                "found no partner, with their own columns exactly as they came in. "
+                "For an outer join read all three ports; for an anti join read `left_only`; "
+                "for a right join swap the two inputs."
             ),
             examples=(_fan_out_example(), _differently_named_key_example()),
             notes=(
-                "`how` decides only which rows reach `joined`; the orphan ports answer their own "
-                "question either way. Under 'left' an unmatched left row appears on both -- carried "
-                "in `joined` with its right-hand columns null, and reported on `left_only` -- "
-                "because one port is the result and the other is the diagnostic.",
-                "A right join is this join with the two inputs swapped, which is why 'right' is not "
-                "offered: the same result under two spellings is a thing to get wrong.",
-                "A null key never pairs, so a row whose key is missing leaves on its own side's "
-                "orphan port. This is the opposite of RemoveDuplicates, where two nulls are one "
-                "group: sameness there follows DISTINCT, sameness here follows JOIN. Reading the two "
-                "tools side by side, that difference is deliberate in both.",
-                "Fan-out is not a defect: a fanned-out amount is repeated on every copy, never "
-                "apportioned between them, so a total taken downstream of a join is only meaningful "
-                "if the key is unique on the side being joined to. Guard that upstream.",
-                "Row order is deterministic -- left-input order, with one left row's copies in "
-                "right-input order, and each orphan port in its own side's order -- so a flow that "
-                "writes files gets diffs that do not churn. It is not a semantic guarantee: a step "
-                "that needs a meaningful order still needs a Sort in front of it.",
-                "Each key pair must hold types that can be compared: whole numbers of two widths "
-                "pair, but a whole number against a decimal, or a date against a timestamp, is "
-                "refused before any row moves. Use cast_columns first. A key column typed Null, "
-                "as an empty branch gives, takes the other side's type, and none of its rows pair.",
-                "A Float key pairs only on exact equality. 0.1 + 0.2 and 0.3 print alike and do "
-                "not pair, so both rows land on the orphan ports. Float keys straight from a "
-                "source pair as expected; a key computed with arithmetic is safer rounded or cast "
-                "to text first.",
+                "'how' only decides which rows go to `joined`. With 'left', a left row that found no "
+                "partner is on `joined` with empty right-hand columns, and also on `left_only`.",
+                "There is no 'right' option: a right join is this join with the inputs swapped.",
+                "A row whose key is null never pairs, as with SQL's JOIN, so it goes to its own "
+                "side's unpaired port.",
+                "remove_duplicates treats null keys the opposite way: two nulls count as the same value "
+                "there, as with SQL's DISTINCT.",
+                "A key that appears twice on the right gives each matching left row two copies.",
+                "A copied amount is repeated on each copy, never split, so a total after a join is "
+                "right only if the key is unique on the right. Check that before the join.",
+                "Rows come out in a fixed order: left order, a left row's copies in right order, and "
+                "each unpaired port in its own side's order.",
+                "That order keeps written files stable between runs; a step that needs a meaningful "
+                "order still needs a sort.",
+                "The two columns of a key pair must hold comparable types. Whole numbers of different "
+                "sizes pair; a whole number against a decimal, or a date against a timestamp, is "
+                "refused before any row moves. Use cast_columns first.",
+                "A key column of type Null, as an empty branch gives, takes the other side's type, "
+                "and none of its rows pair.",
+                "Decimal (Float) keys pair only when exactly equal: 0.1 + 0.2 and 0.3 look alike but "
+                "do not pair. Round a calculated key, or cast it to text, first.",
             ),
             field_help={
-                "how": "'inner' keeps only the rows that paired. 'left' keeps every left row, "
-                "nulling the right-hand columns where nothing paired -- the commonest join a flow "
-                "asks for. The column set is identical either way, so a later step naming a column "
-                "does not depend on which was chosen.",
-                "keys": "Key columns shared by both sides; use 'left_keys'/'right_keys' instead when the "
-                "spellings differ, never both forms at once.",
-                "left_keys": "The left spelling of each key column, and the spelling that survives on "
-                "'joined'; must be the same length as 'right_keys'.",
-                "right_keys": "The right spelling of each key column, paired by position with "
-                "'left_keys'; the right key column itself does not appear on 'joined' at all.",
-                "suffix": "Applied only to a colliding right-hand non-key column; if the suffixed "
-                "name is taken as well, the join is refused rather than guessing another suffix.",
+                "how": "Write 'left' to keep every left row, which is the usual choice. Either way "
+                "`joined` has the same columns, so later steps work with both.",
+                "keys": "For example ['customer_id']. Give either 'keys', or both 'left_keys' and "
+                "'right_keys', never both.",
+                "left_keys": "For example ['period_start']. These names are the ones kept on `joined`. "
+                "Give the same number of columns as 'right_keys'.",
+                "right_keys": "For example ['period']. Matched by position with 'left_keys'. These "
+                "columns are dropped from `joined`, since they repeat the left ones.",
+                "suffix": "For example '_order'. Key columns never get it. If the new name is taken "
+                "too, the step is refused.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """The one rule a per-field template cannot express: which key fields may be given together.
+        """Refuse a configuration that gives the key both ways, neither way, or half of the two-field way.
 
-        Each of the three key fields is individually optional and individually valid, so only the
-        *combination* can be wrong. The configuration arrives with its defaults already filled, so
-        every template key is present and a membership test is always true: ``config["keys"] is
-        None`` is the only spelling that asks whether a field was given.
+        The defaults are already filled in, so `config["keys"] is None` is how to ask whether a field was given.
         """
         keys, left_keys, right_keys = (config[field] for field in _KEY_FIELDS)
 
@@ -210,17 +158,10 @@ class Join:
         return None
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """The two rules that need the schemas: keys where promised, and no unsettled collision.
+        """Refuse a missing key, a key pair that cannot be compared, or a clash of column names.
 
-        Both are read off the schemas alone, so a configuration that cannot work is refused whether
-        the frames carry a million rows or none at all -- and refused as a configuration problem
-        rather than as a tool that failed while running, which is what an author can act on.
-
-        Each key is checked against the schema of *its own* side. A column that is on the right and
-        not on the left would pass a check that merely looked for the name somewhere, and fail
-        inside the query engine instead; a two-input tool gives an author two places to look, so
-        each refusal says which one. The collision rule is the one check here that no single-input
-        tool could ever need: it is a question about a *pair* of schemas together.
+        All three are read from the column types, so an empty frame is refused the same way. Each key
+        is checked on its own side, so the refusal says which side lacks it.
         """
         left, right = inputs["left"], inputs["right"]
         left_keys, right_keys = _key_columns(config)
@@ -242,10 +183,8 @@ class Join:
         right_names = _joined_right_names(left.columns, right.columns, right_keys, suffix)
 
         if _a_key_is_typed_null(left, right, left_keys, right_keys):
-            # A key column typed Null holds nothing but missing values, and a missing value never
-            # pairs. So no row pairs, and each side's rows are all its own orphans, exactly as they
-            # arrived. The Null column takes the other side's type for the join itself, as union
-            # does, so 'joined' has the columns and types it has on any other run.
+            # A Null-typed key holds only nulls, so nothing pairs. It takes the other side's type so
+            # `joined` keeps its usual columns and types.
             left_typed, right_typed = _null_keys_typed(left, right, left_keys, right_keys)
             joined = left_typed.join(
                 right_typed,
@@ -258,12 +197,7 @@ class Join:
             ).select(*left.columns, *right_names.values())
             return Ports({"joined": joined, "left_only": left, "right_only": right})
 
-        # `maintain_order` is what turns three query-engine artefacts into the documented order; the
-        # inputs themselves are never touched, so a frame fanning out to two branches is safe.
-        # 'left' keeps every left row and nulls the right-hand columns where nothing paired, which
-        # is the commonest join a flow asks for and the one this tool used to make a reader build out
-        # of two steps. The column set and its order are the same either way, so the two modes differ
-        # in which rows arrive and never in what a downstream step may name.
+        # maintain_order gives the documented row order. Both modes give the same columns.
         joined = left.join(
             right,
             left_on=left_keys,
@@ -274,9 +208,7 @@ class Join:
             maintain_order="left_right",
         ).select(*left.columns, *right_names.values())
 
-        # An orphan port is an anti-join rather than a left join filtered on a null, because a
-        # matched row may legitimately hold a null in a non-key column and the two are not the same
-        # question. Only the key columns of the other side are read: nothing else can affect pairing.
+        # Why an anti join: docs/design/tools.md#join
         left_only = left.join(
             right.select(right_keys),
             left_on=left_keys,
@@ -298,12 +230,7 @@ class Join:
 
 
 def _key_columns(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
-    """Each side's key columns, whether the configuration spelled the key once or twice.
-
-    One reading of the two valid forms, used by both the check and the work, so that the shared
-    spelling cannot be resolved one way before the run and another way during it. The cross-field
-    rule has already refused everything except those two forms by the time this is reached.
-    """
+    """Each side's key columns, whichever of the two forms the configuration used."""
     shared = config["keys"]
     if shared is not None:
         return list(shared), list(shared)
@@ -317,11 +244,10 @@ def _refuse_keys_that_cannot_be_compared(
     right_keys: Sequence[str],
     shared: bool,
 ) -> None:
-    """Refuse a key pair whose two types the engine will not compare, naming both columns.
+    """Refuse a key pair whose two types cannot be compared, naming both columns.
 
-    The engine is asked directly, with two empty one-column frames, so this check accepts exactly
-    the pairs a join accepts (Int32 against Int64 is fine; Int64 against Float64 is not). A side
-    typed Null is left out: it takes the other side's type when the join runs.
+    It asks polars directly with two empty frames, so it accepts exactly what a join accepts. A side
+    typed Null is skipped: it takes the other side's type when the join runs.
     """
     for left_key, right_key in zip(left_keys, right_keys, strict=True):
         left_type, right_type = left.schema[left_key], right.schema[right_key]
@@ -371,12 +297,9 @@ def _joined_right_names(
     right_keys: Sequence[str],
     suffix: str,
 ) -> dict[str, str]:
-    """Every right-hand column that reaches `joined`, mapped to the name it arrives under.
+    """Each right-hand column that goes to `joined`, with the name it gets there.
 
-    The key columns are absent by design: a pair of key columns is one column after the join, and
-    keeping both would leave `joined` carrying two columns of identical values that every
-    downstream step would then have to choose between. Under `left_keys`/`right_keys` that means the
-    left spelling is the one that survives, which is not something a reader can guess.
+    The right key columns are left out: after the join a key pair is one column, under the left name.
     """
     return {
         name: (f"{name}{suffix}" if name in left_columns else name) for name in right_columns if name not in right_keys
@@ -384,12 +307,7 @@ def _joined_right_names(
 
 
 def _refuse_unsettled_collision(left_columns: Sequence[str], right_names: Mapping[str, str]) -> None:
-    """Refuse a collision the suffix cannot settle, in this library's own words.
-
-    Reached when the *suffixed* name is taken too. The query engine would refuse it as well, but as
-    an error about a duplicate column that names neither this tool's configuration nor the fact that
-    a different `suffix` is the fix -- and it would only do so once rows were already moving.
-    """
+    """Refuse a right-hand column whose suffixed name is also taken."""
     taken = set(left_columns)
     for source, target in right_names.items():
         if target in taken:
@@ -436,13 +354,11 @@ def _fan_out_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="pair rows to a group whose key the other side carries twice",
+        scenario="match each entry to its group, where one group is on the right twice",
         configuration={"keys": ["group_id"]},
-        explanation="Group 'G1' is on the right twice, so each of the two left rows carrying it fans "
-        "into two matched rows -- four rows out of three in, with each amount repeated rather than "
-        "split. Group 'G4' pairs with nothing and leaves on 'left_only'; 'G3' pairs with nothing on "
-        "the other side and leaves on 'right_only'. The row order shown is the order produced: left "
-        "order, and right order within one left row's copies.",
+        explanation="G1 is on the right twice, so each G1 entry comes out twice: four rows from three. "
+        "The amount is repeated on each copy, not split. G4 has no partner, so it goes to 'left_only'. "
+        "G3 has no partner on the left, so it goes to 'right_only'.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -484,13 +400,11 @@ def _differently_named_key_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="pair two sides whose key column is spelled differently, over a colliding amount",
+        scenario="match two tables whose key column has a different name on each side",
         configuration={"left_keys": ["period_start"], "right_keys": ["period"]},
-        explanation="Only the left spelling 'period_start' survives on 'joined'; the right's "
-        "'period' does not appear at all, suffixed or otherwise, because the pair is one column "
-        "after the join. 'amount' is on both sides and is not a key, so the right's value survives "
-        "under the default suffix as 'amount_right'. Each orphan port keeps its own side's own "
-        "spelling, including the 'period' the join dropped.",
+        explanation="The key keeps its left name, 'period_start', on 'joined'; the right's 'period' "
+        "is dropped there. Both sides have an 'amount' column, so the right one becomes "
+        "'amount_right'. The unpaired ports keep each side's own columns, 'period' included.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

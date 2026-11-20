@@ -1,14 +1,10 @@
-"""Reading a pipeline file into a ``Pipeline``, and refusing everything wrong with it first.
+"""Read a pipeline file into a ``Pipeline``, refusing anything wrong with it before a run starts.
 
-``read_pipeline(path)`` parses a YAML file; ``load_pipeline(mapping)`` takes a document already in
-memory. Both refuse every fault that can be found before a single frame exists, by name, and in a
-fixed order. A pipeline that loads is one whose wiring and configuration are known to be sound.
-
-The loader refuses: a duplicate id, a parameter nobody defined, a tool nobody registered, an edge
-that names a port that was never declared, a cycle, a configuration a tool's own rules refuse, and
-a step whose output nothing reads and which has no effect of its own. Nothing here moves a row;
-running a step still belongs to :func:`~.boundary.run_tool`, once a runner holds real frames to
-check the column references the loaded pipeline publishes but cannot itself resolve.
+``read_pipeline(path)`` reads a YAML file. ``load_pipeline(mapping)`` takes a document already in
+memory. Both refuse, by name: an unknown or missing key, a duplicate id, an unknown tool, an
+undefined rule, a bad lane or container, an edge to a port that does not exist, a cycle, settings
+the tool refuses, and a step whose output nothing reads. Loading reads no data; checks that need
+the frames happen when the step runs.
 """
 
 import difflib
@@ -35,24 +31,20 @@ def load_pipeline(
     rules: Mapping[str, Any] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Pipeline:
-    """Build a :class:`Pipeline` from ``document``, refusing everything reachable without a frame.
+    """Build a :class:`Pipeline` from a pipeline document already in memory.
 
-    Refused in this order, because each phase needs the one before it to have already succeeded:
-    a key the file format does not have, or a required one missing (see :func:`_refuse_bad_shape`), a duplicate id (an edge cannot name its far end unambiguously otherwise), a tool nobody
-    registered (its template is what says how a rule value is spelled into each field, and a port
-    check needs a tool to ask), a parameter nobody defined (a configuration cannot be read until it
-    is resolved, and resolution still finishes before anything validates it), a lane nobody
-    declared, a container that is mis-declared or mis-named (both spellings of the same typo, since
-    either one draws a box that is silently wrong rather than one that is missing), a port or edge
-    that does not exist, a cycle (reachability is meaningless in a graph
-    with one), a configuration its own tool refuses, and finally a step nothing consumes and that
-    has no effect of its own.
+    - ``document``: the parsed file, a mapping with ``name``, ``steps`` and optionally ``lanes`` and
+      ``containers``.
+    - ``rules``: the values ``${rules.*}`` references are filled from.
+    - ``registry``: the tools to look names up in. Defaults to the shipped ``REGISTRY``.
 
-    ``document`` is a plain mapping because a file format is not part of what a pipeline *is* --
-    see :func:`read_pipeline` for the file-reading convenience built on top of this.
+    Raises a :class:`ToolError` (usually :class:`PipelineError` or :class:`ConfigError`) naming the
+    first fault found. The checks run in a fixed order: the file's keys, duplicate ids, unknown
+    tools, rule references, lanes, containers, edges, cycles, each step's settings, dead ends. If
+    the document still uses names from before a rename, the refusal says which, and gives the
+    command that rewrites the file.
 
-    When the document is refused and it still uses names that were renamed, the refusal says so in a
-    few lines: the command that rewrites the file, and the old names it uses, grouped by rename.
+    Why: docs/design/loading-and-running.md#the-order-of-the-loaders-checks
     """
     return _load_explained(document, rules, registry, source=None)
 
@@ -63,12 +55,12 @@ def _load_explained(
     registry: ToolRegistry | None,
     source: str | None,
 ) -> Pipeline:
-    """:func:`_load_pipeline`, with a refusal rewritten when the document uses names that were renamed.
+    """Load the document. If it is refused and uses retired names, explain that instead.
 
-    The refusal itself is about an old name more often than not, so it is replaced by a short
-    account: one sentence, the command (naming ``source`` when the file is known), and one line per
-    kind of rename. The renamed document is then loaded too. When that is refused as well, the
-    problem is not an old name, and its own refusal is shown after the account.
+    The explanation gives the migrate command (naming ``source`` when known) and one line per kind
+    of rename. The renamed document is then tried too; if that is also refused, its refusal is added.
+
+    Why: docs/design/loading-and-running.md#a-refusal-that-mentions-old-names
     """
     try:
         return _load_pipeline(document, rules, registry)
@@ -103,17 +95,13 @@ def _load_pipeline(
 
     _refuse_duplicate_ids(raw_steps)
 
-    # The tool is looked up before the rules are resolved, because its template is what says which
-    # of its fields are expressions and which are patterns, paths and names. The lookup reads only
-    # the step's 'tool' and 'id', neither of which sits inside a configuration a rule could reach.
+    # Tools first: a tool's template says how a rule value is written into each field.
     tools_by_step = {raw["id"]: _resolve_tool(active_registry, raw) for raw in raw_steps}
 
     resolved_steps = [
         {
             **raw,
-            # config_template() takes no configuration, and must keep taking none: it is read here,
-            # before the configuration is final, so a template that consulted its own config would
-            # be a cycle rather than an ordering to get right.
+            # config_template() must take no settings: it is read before the settings are final.
             "config": resolve_rules(
                 _template(raw["id"], tools_by_step[raw["id"]]),
                 raw.get("config", {}) or {},
@@ -133,7 +121,7 @@ def _load_pipeline(
     step_ids = tuple(raw["id"] for raw in resolved_steps)
     inputs_by_step = {raw["id"]: _resolve_edges(raw, tools_by_step) for raw in resolved_steps}
 
-    toposort(step_ids, inputs_by_step)  # raises PipelineError by naming the cycle, if there is one
+    toposort(step_ids, inputs_by_step)  # refuses a cycle, naming it
 
     for raw in resolved_steps:
         _validate_config(raw["id"], tools_by_step[raw["id"]], raw["config"])
@@ -163,11 +151,11 @@ def read_pipeline(
     rules: Mapping[str, Any] | None = None,
     registry: ToolRegistry | None = None,
 ) -> Pipeline:
-    """:func:`load_pipeline`, for a document read from a YAML file.
+    """Read a pipeline from a YAML file and build a :class:`Pipeline`.
 
-    PyYAML is imported here, inside the call, so that importing the library does not import it. Its
-    C parser is used when PyYAML was built with it, which reads a large file about eight times
-    faster; otherwise the pure-Python parser reads the same document.
+    Call it as ``read_pipeline("pipelines/sales.yaml", rules=...)``. It takes the same keyword
+    arguments as :func:`load_pipeline`, returns the same thing, and refuses the same faults. A
+    refusal about retired names names this file in the migrate command it suggests.
     """
     import yaml
 
@@ -176,9 +164,9 @@ def read_pipeline(
 
 
 def yaml_loader() -> Any:
-    """PyYAML's C safe loader when it is there, and its Python safe loader when it is not.
+    """Return PyYAML's fast C safe loader if it is installed, otherwise its Python safe loader.
 
-    Both read the same document; the C one is much faster on a file of a thousand steps.
+    Why: docs/design/loading-and-running.md#yaml-is-read-with-the-c-loader-when-there-is-one
     """
     import yaml
 
@@ -189,14 +177,13 @@ def yaml_loader() -> Any:
 # The shape of the file
 # ---------------------------------------------------------------------------
 
-# The keys each part of a pipeline file may hold. A key outside these is refused, because the loader
-# reads only the keys it knows: a misspelt one would otherwise be dropped without a word.
+# The keys each part of a pipeline file may hold. Any other key is refused, so a misspelling is caught.
 _DOCUMENT_KEYS: tuple[str, ...] = ("name", "steps", "lanes", "containers")
 _STEP_KEYS: tuple[str, ...] = ("id", "tool", "config", "inputs", "lane", "stage", "container", "why")
 _LANE_KEYS: tuple[str, ...] = ("id", "title", "order")
 _CONTAINER_KEYS: tuple[str, ...] = ("id", "title")
 
-# The keys that must be there. A container's title is checked by _read_containers, which says why it matters.
+# The keys that must be there. A container's title is checked by _read_containers.
 _DOCUMENT_REQUIRED: tuple[str, ...] = ("name", "steps")
 _STEP_REQUIRED: tuple[str, ...] = ("id", "tool")
 _LANE_REQUIRED: tuple[str, ...] = ("id", "title", "order")
@@ -204,10 +191,11 @@ _CONTAINER_REQUIRED: tuple[str, ...] = ("id",)
 
 
 def _refuse_bad_shape(document: Any) -> None:
-    """Refuse a file whose keys are not the ones this format has, before anything else is read.
+    """Refuse a file whose keys or value types are wrong, before anything else is read.
 
-    Checks the top level, every step, every lane and every container: no unknown key, no missing
-    required key. Also refuses a flow with no steps, and two lanes or two containers sharing an id.
+    Checks the top level, every step, lane and container for unknown keys, missing keys and values
+    of the wrong type. Also refuses a flow with no steps, a bad step id, and two lanes or two
+    containers sharing an id.
     """
     if not isinstance(document, Mapping):
         raise PipelineError(
@@ -241,8 +229,7 @@ def _refuse_bad_shape(document: Any) -> None:
             _refuse_wrong_types(entry, _VALUE_TYPES[kind], where)
             if kind == "steps":
                 _refuse_bad_step_id(entry["id"], where)
-            # Duplicate step ids are refused by _refuse_duplicate_ids, with the reason that matters
-            # for steps. A lane or container with a second definition would never be drawn.
+            # Duplicate step ids are refused later, by _refuse_duplicate_ids.
             if kind != "steps" and entry["id"] in seen:
                 raise PipelineError(
                     f"duplicate {singular} id {entry['id']!r}: only the first would be used, so the "
@@ -251,8 +238,7 @@ def _refuse_bad_shape(document: Any) -> None:
             seen.add(entry["id"])
 
 
-# What each key's value must be. A value of another type would otherwise escape later as a raw
-# Python error (a KeyError, a TypeError) that names neither the step nor the key.
+# What each key's value must be. Checked here so a wrong type is refused by name, not as a raw TypeError.
 _TEXT_OR_NONE: tuple[type, ...] = (str, type(None))
 _VALUE_TYPES: dict[str, dict[str, tuple[type, ...]]] = {
     "steps": {
@@ -292,7 +278,7 @@ def _refuse_wrong_types(entry: Mapping[str, Any], expected: Mapping[str, tuple[t
 
 
 def _refuse_bad_step_id(step_id: str, where: str) -> None:
-    """A step id is the text an edge names it by, so it may not be blank or hold a dot."""
+    """Refuse a blank step id, or one with a dot in it, which no ``step.port`` edge could reach."""
     if not step_id.strip():
         raise PipelineError(f"{where}: a step id may not be blank")
     if "." in step_id:
@@ -303,7 +289,7 @@ def _refuse_bad_step_id(step_id: str, where: str) -> None:
 
 
 def _entries(document: Mapping[str, Any], kind: str) -> list[Any]:
-    """The list under ``kind``. An empty or absent one is an empty list; anything else is refused."""
+    """Return the list under ``kind``, or an empty list if it is absent. Refuse anything but a list."""
     value = document.get(kind)
     if value is None:
         return []
@@ -378,11 +364,9 @@ def _refuse_undeclared_lanes(resolved_steps: list[Mapping[str, Any]], lanes: tup
 
 
 def _read_containers(raw_containers: Any) -> tuple[Container, ...]:
-    """The declared containers, refusing any that offers no sentence to write on itself.
+    """Return the declared containers. Refuse one with no title, or a blank one.
 
-    Blank counts as missing. A title of spaces satisfies every check that asks whether the key is
-    there and draws a box with nothing written on it, which is the same silent failure as falling
-    back on the id: the container looks finished and nothing says a sentence was owed.
+    Why: docs/design/loading-and-running.md#a-container-must-have-a-title
     """
     containers: list[Container] = []
     for raw in raw_containers:
@@ -398,22 +382,12 @@ def _read_containers(raw_containers: Any) -> tuple[Container, ...]:
 
 
 def _refuse_bad_containers(resolved_steps: list[Mapping[str, Any]], containers: tuple[Container, ...]) -> None:
-    """Both spellings of a mis-boxed step, and a container a lane band cannot be drawn round.
+    """Refuse a step in an undeclared container, a container with no steps, and a container
+    whose steps sit in more than one lane.
 
-    The first two are mirrors of each other and the pair is the point: a container named by a step and
-    not declared leaves a container one step short with a stray node beside it, and a container declared
-    and named by no step draws an empty rectangle with a title over nothing. Neither says anything is
-    wrong, and on six hundred steps nobody finds either by looking.
+    The steps of a container do not have to be connected to each other.
 
-    The third is about the drawing. A lane is a horizontal band, and a box across two of them is a
-    lie whichever way it is drawn: stretched over both it swallows every step of the intervening lane
-    that is not in it, and drawn round one it leaves a member outside the box that claims to hold it.
-    Refused rather than silently redrawn, because the fix is one line -- move the step, or split the
-    container -- and only the author knows which of the two they meant.
-
-    Connectedness is deliberately not checked. The commonest container there is -- *read the three
-    workbooks* -- is three reads that touch nothing of each other and meet in a join outside the box,
-    and a connectedness rule refuses exactly it.
+    Why: docs/design/loading-and-running.md#what-the-loader-checks-about-containers
     """
     declared = {container.id for container in containers}
     joined: dict[str, list[Mapping[str, Any]]] = {}
@@ -452,21 +426,14 @@ def _resolve_edges(raw: Mapping[str, Any], tools_by_step: Mapping[str, Any]) -> 
     step_id = raw["id"]
     tool = tools_by_step[step_id]
     raw_inputs: Mapping[str, str] = raw.get("inputs", {}) or {}
-    # The ports this step declares, which for some tools is a question about this step's own
-    # configuration. The configuration is the one written in the file: edges are resolved before
-    # the configuration is validated, so no default has been filled in yet. The runner reads the
-    # same configuration, so both get the same answer.
+    # The ports this step reads. Some tools work them out from the settings as written (no defaults).
     try:
         declared_inputs = input_ports_for(tool, raw.get("config", {}) or {})
     except ToolError as error:
         raise PipelineError(f"step {step_id!r}: {error}") from error
 
-    # Refuse a port this step names twice, before anything else is compared. A port carries one
-    # frame, so the second part on a port would quietly take the place of the first. The checks
-    # below both work over sets, where a repeated name disappears, so neither of them would say a
-    # word. This one runs first for a second reason: an unwired duplicate also trips the "nothing
-    # feeds this port" refusal underneath, which would send the author to the arrows when the thing
-    # to fix is the configuration.
+    # A port named twice is refused first; the checks below work on sets and would miss it.
+    # Why: docs/design/loading-and-running.md#a-port-named-twice-is-refused-first
     duplicated = sorted({port for port in declared_inputs if declared_inputs.count(port) > 1})
     if duplicated:
         raise PipelineError(
@@ -521,7 +488,7 @@ def _resolve_edges(raw: Mapping[str, Any], tools_by_step: Mapping[str, Any]) -> 
 
 
 def _template(step_id: str, tool: Any) -> Mapping[str, Any]:
-    """The tool's configuration template, with a failure in the tool's own code naming the step."""
+    """Return the tool's configuration template. A failure in the tool's code names the step."""
     try:
         return call_tool_code(tool, "config_template", tool.config_template)
     except ToolError as error:
@@ -529,10 +496,10 @@ def _template(step_id: str, tool: Any) -> Mapping[str, Any]:
 
 
 def _validate_config(step_id: str, tool: Any, config: Mapping[str, Any]) -> None:
-    """Both halves a tool can refuse without a frame, delegated rather than re-implemented here.
+    """Check a step's settings against the tool's template, then with the tool's ``validate_config``.
 
-    A stray exception from the tool's own ``validate_config`` comes out as an
-    :class:`~.errors.ExecutionError`, and every refusal names the step.
+    Defaults are filled in before ``validate_config`` sees the settings. Every refusal names the
+    step. An unexpected exception from the tool becomes an :class:`~.errors.ExecutionError`.
     """
     template = _template(step_id, tool)
     try:
@@ -556,20 +523,19 @@ def dead_ends(
     registry: ToolRegistry | None = None,
     without: Collection[str] = (),
 ) -> tuple[str, ...]:
-    """Every step of ``document`` that would be refused as a dead end, all at once.
+    """Return every step of ``document`` that is a dead end, including the chains behind them.
 
-    A dead end is a step whose output nothing reads and whose tool has no effect beyond its ports
-    (an ``output`` writes somewhere, an ``assert`` checks; anything else is computing rows for
-    nobody). Removing a dead end can leave the steps that fed it with no reader, so the rule is
-    applied again until nothing more dies. The answer lists the steps nothing reads first, then the
-    ones that feed only those, round by round, each round in the order the file declares them.
+    A dead end is a step whose output nothing reads and whose tool is not an ``output`` or an
+    ``assert``. Removing one can leave the steps that fed it unread, so those are listed too: first
+    the steps nothing reads, then the ones that feed only those, and so on.
 
-    ``without`` asks "what if": input edges to drop first, each written ``"step.port"`` naming the
-    reading step and its input port, as in ``without=["report.summary"]``. A name the document does
-    not have is refused.
+    - ``document``: the parsed pipeline file. Rules are not resolved, so a file the loader refuses
+      for its dead ends can still be asked.
+    - ``without``: input edges to remove first, to ask "what if". Each is ``"step.port"``, naming
+      the reading step and its input port, as in ``without=["report.summary"]``. An edge the
+      document does not have is refused.
 
-    Works on the raw document, before rules are resolved, so it answers for a file the loader would
-    refuse because of its dead ends. It runs no step and touches no data.
+    Runs no step and reads no data.
     """
     active_registry = registry if registry is not None else REGISTRY
     _refuse_bad_shape(document)
@@ -591,7 +557,7 @@ def _dead_rounds(
     reads: Mapping[str, Mapping[str, Any]],
     tools_by_step: Mapping[str, Any],
 ) -> list[list[str]]:
-    """The dead steps, round by round: those nothing reads, then those that fed only them, and so on."""
+    """Return the dead steps round by round: those nothing reads, then those that fed only them."""
     alive = list(reads)
     rounds: list[list[str]] = []
     while True:
@@ -609,7 +575,7 @@ def _dead_rounds(
 
 
 def _source_step(source: Any) -> str:
-    """The step an edge reads from: ``"step.port"`` before the dot, or a :class:`PortRef`'s step."""
+    """Return the step an edge reads from, given ``"step.port"`` text or a :class:`PortRef`."""
     return source.step if isinstance(source, PortRef) else str(source).split(".", 1)[0]
 
 
@@ -618,7 +584,7 @@ def _refuse_dead_ends(
     tools_by_step: Mapping[str, Any],
     inputs_by_step: Mapping[str, Mapping[str, PortRef]],
 ) -> None:
-    """Refuse a flow with dead ends, naming every one, and the steps that would die with them."""
+    """Refuse a flow with dead ends, naming each one and the steps that feed only them."""
     rounds = _dead_rounds(inputs_by_step, tools_by_step)
     if not rounds:
         return

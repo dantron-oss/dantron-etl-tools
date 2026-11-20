@@ -10,6 +10,7 @@ checked, loaded or run. Several tests below pin that line from both sides.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import textwrap
@@ -442,14 +443,18 @@ class TestTheOlderPerPipelineSettingsFile:
         assert project.pipelines["other"].problem is None
 
 
-_CLIENT_FOLDER = Path("/workspace")
+# A real project with large pipelines, named by a local setting so the repository names none.
+_LARGE_PROJECT = os.environ.get("ETL_LARGE_PROJECT", "")
 
 
-@pytest.mark.skipif(not (_CLIENT_FOLDER / "pipelines").is_dir(), reason="no client project on this machine")
-def test_a_real_client_folder_lists_its_large_pipelines_read_only() -> None:
+@pytest.mark.skipif(
+    not _LARGE_PROJECT or not (Path(_LARGE_PROJECT) / "pipelines").is_dir(),
+    reason="set ETL_LARGE_PROJECT to a project folder with large pipelines to run this",
+)
+def test_a_real_project_lists_its_large_pipelines_read_only() -> None:
     """Reads the YAML only. Never loads or runs these flows."""
-    project = load_project(_CLIENT_FOLDER)
+    project = load_project(Path(_LARGE_PROJECT))
 
-    for name in ("mrr", "master_report", "float_browser"):
-        assert name in project.pipelines, f"{name} not found; listed: {sorted(project.pipelines)}"
-        assert project.pipelines[name].steps > 100
+    assert project.pipelines, f"no pipelines listed in {_LARGE_PROJECT}"
+    assert all(entry.steps > 0 for entry in project.pipelines.values()), sorted(project.pipelines)
+    assert max(entry.steps for entry in project.pipelines.values()) > 100

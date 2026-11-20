@@ -32,32 +32,14 @@ from .formatting import written_as_text
 
 @dataclass(frozen=True)
 class Function:
-    """Everything about one function, in one place.
+    """Everything about one function: its arguments, its result, its builder, its summary and example.
 
-    ``params`` lists the arguments in order. Their number is fixed, with no defaulted arguments:
-    one spelling per call keeps a configuration file reviewable, and a reviewer should not have to
-    know a default to know what a line does. A ``variadic`` function has a single entry, which
-    every argument it is given must meet, and it needs at least two.
-
-    ``result`` is the family the function hands back, so that nesting is checked rather than
-    assumed. Without it, ``upper(len([label]))`` compiles and fails in the engine. ``"common"``
-    means the family its arguments agree on, which is what coalesce() gives.
-
-    ``result_dtype`` is what the result holds exactly, beside the family, where that is known.
-    year() and len() always give a whole number, so a count of months may be built out of either,
-    and format_number() and uuid5() always give a plain string. ``"subject"`` means whatever the
-    first argument holds, which is what abs() and round() give. ``"common"`` means worked out from
-    all the arguments, which is what coalesce() gives.
-
-    ``to_polars`` builds the column expression. It is given a column expression for each value
-    argument and the Python value for each argument written in the file, in order.
-
-    ``summary`` says in one line what the function gives. ``example`` is one call, as an author
-    would write it.
-
-    ``typed`` says the builder also wants the first argument's type, as ``dtype=`` (None when the
-    expression was compiled without a schema). round() and format_number() need it, because a
-    whole number, a decimal and an exact decimal type round in three different ways.
+    `params` lists the arguments in order; there are no defaults. A `variadic` function has one entry that
+    every argument must meet, and needs at least two. `result` is the family returned ("common": the
+    family the arguments agree on). `result_dtype` is the exact type where known ("subject": the first
+    argument's; "common": worked out from all). `to_polars` builds the column from a polars expression
+    per value argument and the Python value per literal argument. `typed` passes the first argument's
+    dtype as `dtype=` (None without a schema), for round() and format_number().
     """
 
     name: str
@@ -76,39 +58,21 @@ def _coalesce(*parts: pl.Expr) -> pl.Expr:
 
 
 def _concat(*parts: pl.Expr) -> pl.Expr:
-    """Null in, null out, like everything else here -- and the safer of the two behaviours.
-
-    Where a joined value is a key for matching, dropping a missing part builds a *shorter* key
-    that matches the wrong rows, whereas a null key matches nothing and shows up as a null in
-    a count. An author who wants the other behaviour writes it: concat(coalesce([code], ''), '-x').
-    """
+    """Join the pieces; null if any piece is null. Why: docs/design/expressions.md#the-function-table"""
     return pl.concat_str(list(parts), separator="", ignore_nulls=False)
 
 
-# How many significant digits a decimal is read to before round() decides whether it is a half.
-# Fifteen is the most a 64-bit double always carries faithfully from decimal and back, and what a
-# spreadsheet works to and shows; six is the same for a 32-bit one.
+# Significant digits a decimal is read to before round() decides whether it is a half.
 _READ_DIGITS: Final[dict[pl.DataType, int]] = {pl.Float64(): 15, pl.Float32(): 6}
 
 
 def _round(subject: pl.Expr, digits: int, *, dtype: pl.DataType | None = None) -> pl.Expr:
-    """A number rounded to ``digits`` places, a half going away from zero, as a spreadsheet's ROUND.
+    """A number rounded to `digits` places, halves away from zero, like a spreadsheet's ROUND.
 
-    **A half is decided on the number as a person reads it, not on the binary fraction held.**
-    1.005 is held as 1.00499999999999989..., below the half, yet it is written 1.005 and a
-    spreadsheet rounds it to 1.01. So a decimal is read to 15 significant digits (6 for a 32-bit
-    one): a value that differs from a half only past its fifteenth digit is a half. In practice
-    the value is moved away from zero by half a unit of its fifteenth digit and then rounded half
-    away from zero. That move is far too small to change any value that is not within noise of a
-    half.
-
-    When the digit rounded on lies past the fifteenth, nothing the reading can see is past the
-    place asked for, so the value comes back as it is. A whole number is already whole. An exact
-    decimal type holds no binary noise, so it is rounded on its own digits. Null, NaN and infinity
-    pass through.
-
-    Without a schema the type is not known when the expression is built, so the choice is made per
-    batch, on the whole column at once.
+    A Float64 is read to 15 significant digits (Float32: 6), so 1.005 rounds to 1.01 as written, though
+    its binary value is just below the half. Whole numbers come back as they are; an exact Decimal is
+    rounded on its own digits; null, NaN and infinity pass through. Without a schema, the choice is made
+    per batch. Why: docs/design/expressions.md#rounding-like-a-spreadsheet-15-significant-digits
     """
     if dtype is None:
         return subject.map_batches(lambda series: _rounded_series(series, digits), is_elementwise=True)
@@ -145,15 +109,10 @@ def _year(subject: pl.Expr) -> pl.Expr:
 
 
 def _add_months(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
-    """Move a date by a count of months, landing on the last day of a month that is too short.
+    """Move a date by a count of months, clamped to the end of a short month (31 Jan + 1 = 28 Feb).
 
-    The count is built into the engine's own offset text -- '3mo', '-1mo' -- rather than
-    passed as a number, because the count can come out of a column and so is not known here.
-    The engine clamps in both directions, which is the behaviour wanted: 31 January plus one
-    month is 28 February, not 3 March.
-
-    A null on either side gives a null. The offset text is null when the count is null, and an
-    offset of null leaves a null date behind.
+    The count may come from a column, so it is built into polars' offset text ('3mo'). A null on either
+    side gives null.
     """
     offset = pl.concat_str([count.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
     return subject.dt.offset_by(offset)
@@ -185,28 +144,13 @@ def _month_end(subject: pl.Expr) -> pl.Expr:
 def _format_number(
     subject: pl.Expr, decimals: int, thousands: str, point: str, *, dtype: pl.DataType | None = None
 ) -> pl.Expr:
-    """A number written as text: grouped in threes, to exactly ``decimals`` places.
+    """A number written as text, digits grouped in threes, to exactly `decimals` places.
 
-    **It writes what round() gives.** The value is rounded by round()'s own rule first, a half
-    going away from zero, and then written out. So -15.215 at two places is -15.22 from both, and
-    the two can never disagree in the last place. A negative value that rounds to zero keeps its
-    minus sign: -0.004 reads -0.00, while a value that is zero reads 0.00.
-
-    **The writing works a row at a time.** No kernel in the engine groups digits in threes with
-    stated separators. What makes the cost payable is where this belongs: it writes a figure for
-    somebody to read, so it runs at the end of a flow on the rows that reach a report, not in the
-    middle of one on a million rows.
-
-    A null is left null, the way it is everywhere else here: a formatted 0.00 where nothing was
-    measured cannot be told from a real zero by whoever reads the column.
-
-    The width and both separators are read out of the file and never out of a row. How many
-    places a figure is written to is a decision a reviewer reads in the line, the way round()'s
-    digits and regex_extract()'s group are -- a width that varied row by row would not be a width
-    at all.
+    The value is rounded by round()'s rule first, so the two never disagree; a negative value that rounds
+    to zero keeps its minus sign (-0.004 reads -0.00). A null stays null. Written row by row, since polars
+    has no kernel for grouping digits. The width and separators come from the file, never from a row.
     """
-    # The value is written from round()'s answer, and its sign from the value itself: -0.004 at two
-    # places rounds to zero, and the minus sign is the one thing left saying the figure was below it.
+    # Digits from round()'s answer; the sign from the value itself, so -0.004 reads -0.00.
     return pl.struct(value=subject, rounded=_round(subject, decimals, dtype=dtype)).map_elements(
         lambda row: None
         if row["rounded"] is None
@@ -224,31 +168,10 @@ def _below_zero(value: object) -> bool:
 
 
 def _uuid5(namespace: uuid.UUID, subject: pl.Expr) -> pl.Expr:
-    """A stable id derived from a namespace and a value: RFC 4122 version 5, verbatim.
+    """A stable id from a namespace and a value: Python's own uuid.uuid5, row by row.
 
-    The whole worth of this function is that the derivation is not this library's, so it is the
-    standard library's own that runs, rather than a SHA-1 and a bit-twiddle written out here
-    that would have to be kept equal to it by review. A hand-rolled digest measured 2.4x
-    quicker and was refused at that price: an id only this library can reproduce is not a key,
-    and the contract here is equality with uuid.uuid5 rather than resemblance to it.
-
-    **This works a row at a time, like format_number, and here the engine leaves no choice.**
-    There is no SHA-1 in it -- its hash() is a fast non-cryptographic one, which is a different
-    number -- so there is no kernel to vectorise against. A batch-at-a-time map measured 6%
-    quicker and would have to skip the nulls by hand, which is not a trade worth making. The
-    cost is about 5 microseconds a row, so a build over tens of thousands of rows spends a
-    fraction of a second here. Derive the id once, where the key is built, rather than
-    recomputing it in each step that joins on it.
-
-    A null value gives a null id, left to the engine's own skipping rather than written here. A
-    missing value hashed as some stand-in would put every row that is missing a part under one
-    real-looking id, which reads downstream as a legitimate key with several rows behind it
-    instead of as data that was never there. An author who wants the other behaviour writes
-    uuid5('...', coalesce([code], 'missing')), where the choice is visible.
-
-    The namespace is read first, and out of the file rather than out of a row, so that a
-    malformed one is refused in the line the author wrote instead of inside a select that has
-    already written ids for every row before it.
+    polars has no SHA-1, so there is no column kernel; about 5 microseconds a row. A null value gives a
+    null id. Why: docs/design/expressions.md#the-function-table
     """
     return subject.map_elements(
         lambda value: str(uuid.uuid5(namespace, value)),
@@ -269,8 +192,7 @@ def _trim(subject: pl.Expr) -> pl.Expr:
 
 
 def _len(subject: pl.Expr) -> pl.Expr:
-    # Characters in a piece of text, not rows in a frame: an expression here is one column's
-    # worth of values, so a row count would have no meaning an author could use.
+    # Characters in the text, not rows.
     return subject.str.len_chars()
 
 
@@ -283,24 +205,19 @@ def _ends_with(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
 
 
 def _contains(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
-    # literal=True, deliberately. A substring test that quietly accepted patterns would make a
-    # dot in an account code mean "any character", and the wrong rows would match without
-    # anyone noticing. The regex functions are the only door to regular expressions.
+    # literal=True: a dot in a code must not mean "any character". Patterns go through regex_match().
     return subject.str.contains(needle, literal=True)
 
 
 def _regex_match(subject: pl.Expr, pattern: str) -> pl.Expr:
-    # Unanchored, like the extract beside it: does the pattern occur anywhere. contains()
-    # cannot answer this, because contains() is literal by design, which leaves no way at all
-    # to ask a pattern question and get a truth value back -- and a filter needs one.
+    # Unanchored: does the pattern occur anywhere.
     return subject.str.contains(pattern)
 
 
 def _regex_extract(subject: pl.Expr, pattern: str, group: int) -> pl.Expr:
     """The text one group matched. A group the pattern does not have is refused, not left null.
 
-    Group 0 is the whole match. The pattern's groups are counted by the engine itself, with no row
-    read, so a pattern written without parentheses and asked for group 1 is caught in the file.
+    Group 0 is the whole match. polars counts the groups with no row read.
     """
     groups = len(pl.select(pl.lit("", dtype=pl.String).str.extract_groups(pattern)).to_series().struct.fields)
     if group > groups:
@@ -313,15 +230,10 @@ def _regex_extract(subject: pl.Expr, pattern: str, group: int) -> pl.Expr:
 
 
 def _regex_replace(subject: pl.Expr, pattern: str, replacement: str) -> pl.Expr:
-    """A rewrite whose replacement is text, verbatim, whatever the engine reads into it.
+    """Replace every match with the replacement text exactly as written.
 
-    The engine underneath reads '$name' in a replacement as a capture group and deletes it
-    when no such group exists, so a replacement of '$5.00' lands as '.00' -- a hidden
-    mini-language inside a string literal, in a language for amounts. Doubling the sign is how
-    that engine spells a literal one. The pattern is wrapped so the engine takes its expansion
-    path for every pattern rather than only for some, which keeps the doubling meaning one
-    thing: a single-character pattern is otherwise handled by a fast path that would leave the
-    doubled sign in the result.
+    polars reads '$name' in a replacement as a group, so '$' is doubled; the pattern is wrapped in (?:...)
+    so polars always takes the path where doubling means one thing.
     """
     engine_pattern = f"(?:{pattern})"
     engine_replacement = replacement.replace("$", "$$")
@@ -339,11 +251,8 @@ _ON_NUMBERS: Final[Value] = Value(Family.NUMBER, "works on numbers")
 
 _AGAINST_TEXT: Final[Value] = Value(Family.TEXT, "compares text against text")
 
-# The table. Adding a function to the language means adding one entry here, and the function that
-# builds it above. It never means adding grammar: an author-facing operator has to be spelled,
-# documented, reviewed in a file and read by a non-developer, whereas one more named function is
-# free of all of that. The manual's list of functions (MANUAL.md section 4.2) is checked against
-# this table by a test.
+# The table. To add a function, add one entry here and its builder above; never add grammar.
+# A test checks the manual's list of functions (section 4.2) against this table.
 DEFINITIONS: Final[tuple[Function, ...]] = (
     Function(
         "coalesce",
@@ -352,7 +261,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result="common",
         result_dtype="common",
         to_polars=_coalesce,
-        summary="The first of its arguments that is not null.",
+        summary="The first value that is not null: coalesce([discount], 0.0) gives 0.0 where discount is blank.",
         example="coalesce([discount], 0.0)",
     ),
     Function(
@@ -362,7 +271,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result_dtype="subject",
         to_polars=_round,
         typed=True,
-        summary="A number rounded to a given number of decimal places, a half going away from zero.",
+        summary="A number rounded to some decimal places, halves away from zero like a spreadsheet: 2.5 gives 3.",
         example="round([amount], 2)",
     ),
     Function(
@@ -382,7 +291,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         ),
         result=Family.DATE,
         to_polars=_add_months,
-        summary="A date moved by a whole number of months, kept inside a month that is too short.",
+        summary="A date moved by whole months; 31 January plus one month is 28 February.",
         example="add_months([starts_on], [months] - 1)",
     ),
     Function(
@@ -395,7 +304,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int64(),
         to_polars=_months_between,
-        summary="Whole months from the first date to the second, signed; 'inclusive' or 'elapsed', as date_diff counts.",
+        summary="Whole months from the first date to the second, counted 'inclusive' or 'elapsed' as date_diff counts.",
         example="months_between([starts_on], [ends_on], 'inclusive')",
     ),
     Function(
@@ -408,7 +317,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int64(),
         to_polars=_days_between,
-        summary="Days from the first date to the second, signed; 'inclusive' or 'elapsed', as date_diff counts.",
+        summary="Days from the first date to the second, counted 'inclusive' or 'elapsed' as date_diff counts.",
         example="days_between([ordered_on], [paid_on], 'elapsed')",
     ),
     Function(
@@ -417,7 +326,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.DATE,
         result_dtype=pl.Date(),
         to_polars=_make_date,
-        summary="The date a year, a month and a day name, or null when they name no date (30 February).",
+        summary="A date built from a year, a month and a day; null when they make no date, such as 30 February.",
         example="make_date([year], [month], 1)",
     ),
     Function(
@@ -459,7 +368,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         params=(_ON_TEXT,),
         result=Family.TEXT,
         to_polars=_trim,
-        summary="Text without the whitespace at its start and end.",
+        summary="Text without the spaces at its start and end.",
         example="trim([name])",
     ),
     Function(
@@ -476,7 +385,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         params=(_ON_TEXT, _AGAINST_TEXT),
         result=Family.BOOLEAN,
         to_polars=_starts_with,
-        summary="Whether text starts with other text, matched exactly.",
+        summary="Whether text starts with other text, matched exactly, case included.",
         example="starts_with([code], 'AB-')",
     ),
     Function(
@@ -484,7 +393,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         params=(_ON_TEXT, _AGAINST_TEXT),
         result=Family.BOOLEAN,
         to_polars=_ends_with,
-        summary="Whether text ends with other text, matched exactly.",
+        summary="Whether text ends with other text, matched exactly, case included.",
         example="ends_with([file_name], '.csv')",
     ),
     Function(
@@ -492,7 +401,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         params=(_ON_TEXT, _AGAINST_TEXT),
         result=Family.BOOLEAN,
         to_polars=_contains,
-        summary="Whether text contains other text, matched exactly rather than as a pattern.",
+        summary="Whether text contains other text, matched exactly; a dot is a dot, not a pattern.",
         example="contains([note], 'refund')",
     ),
     Function(
@@ -500,7 +409,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         params=(_ON_TEXT, Pattern(), WholeNumber()),
         result=Family.TEXT,
         to_polars=_regex_extract,
-        summary="The part of text that one group of a regular expression matched, or null.",
+        summary="The part of text matched by one bracketed group of a regular expression, or null if no match.",
         example="regex_extract([reference], '([0-9]+)', 1)",
     ),
     Function(
@@ -516,7 +425,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         params=(_ON_TEXT, Pattern()),
         result=Family.BOOLEAN,
         to_polars=_regex_match,
-        summary="Whether a regular expression matches anywhere in text.",
+        summary="Whether a regular expression matches anywhere in the text.",
         example="regex_match([code], '^[A-Z]{3}$')",
     ),
     Function(
@@ -540,7 +449,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result_dtype=pl.String(),
         to_polars=_format_number,
         typed=True,
-        summary="A number written as text, to a fixed number of places, with the separators stated.",
+        summary="A number written as text: decimal places, then the thousands and decimal separators.",
         example="format_number([total], 2, ',', '.')",
     ),
     Function(
@@ -549,7 +458,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.TEXT,
         result_dtype=pl.String(),
         to_polars=_uuid5,
-        summary="A stable id (RFC 4122 version 5) derived from a namespace and a piece of text.",
+        summary="A stable id (RFC 4122 version 5) from a namespace and some text; the same text, the same id.",
         example="uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))",
     ),
 )

@@ -1,29 +1,9 @@
-"""WriteTable: truncate-and-load or append into a named table, all of the rows or none of them.
+"""WriteTable: load one frame into one existing table, replacing or appending, all rows or none.
 
-The catalog's first sink. Two rulings carry the whole design.
+`replace` empties and loads in one transaction, so a failed load leaves the old rows. The tool never
+creates a table. When the database refuses rows, the step names the rows that offended.
 
-**Truncate-and-load is one transaction.** A ``replace`` empties the table and loads the frame as a
-single unit, so a write that fails part way -- a ``NOT NULL`` column fed a missing value, two rows
-claiming the same key -- leaves the previous figures standing rather than an empty table. That is
-the one property worth protecting above all others here: the failure mode it excludes is a build
-that deletes yesterday's numbers, falls over on row four hundred, and reports an error over a table
-that is now empty.
-
-**This tool never creates a table.** A table created from whatever the frame happened to infer this
-run has types decided by one day's data, no key, no not-null and no index -- the very constraints
-that make truncate-and-load safe -- and a typo in ``table`` would quietly create a second table,
-report success, and leave the real one going stale. DDL belongs in a migration somebody reviewed, so
-there is no field here to turn that on.
-
-``mode`` carries no default: ``replace`` and ``append`` differ in whether running the flow twice is
-safe, and defaulting to either would silently choose it for an author who meant the other one. The
-rows must supply exactly the table's columns, order-insensitively -- an extra column would be
-dropped, a missing one would be filled with a null where a figure belongs, and a case-only
-difference is refused rather than guessed. An empty frame stops the run unless ``allow_empty`` says
-otherwise, because a replace of nothing is the loudest and most expensive silence a nightly build
-can leave behind. The output port is a pass-through of the rows just written, not a receipt: the
-receipt loses the data a flow might want to write twice or assert on, and every one of its
-interesting fields would drift between runs in a way a documented example cannot survive.
+Why: docs/design/tools.md#write_table
 """
 
 import logging
@@ -62,10 +42,10 @@ _EXAMPLE_URI = "file:write_table_example?mode=memory&cache=shared"
 
 
 class WriteTable:
-    """Load `rows` into a named table by `mode`, and hand the same rows on unchanged."""
+    """Load `rows` into a named table by `mode`, and pass the same rows on."""
 
     name = "write_table"
-    description = "Truncate-and-load or append `rows` into a named table."
+    description = "Save rows to one database table, replacing what is there or adding to it."
     category = "output"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -74,33 +54,35 @@ class WriteTable:
         return {
             "connection": ConfigField(
                 type="string",
-                description="The name of an environment variable holding the connection URI; never the URI itself.",
+                description="The name of the environment variable that holds the database address, "
+                "such as 'TARGET_DATABASE_URL'. Never the address itself.",
                 required=True,
                 non_empty=True,
             ),
             "schema": ConfigField(
                 type="string",
-                description="The schema the table sits in; left out, the table is named unqualified.",
+                description="The schema the table is in, such as 'reporting'. Left out, the table name "
+                "is used on its own.",
                 required=False,
                 default=None,
             ),
             "table": ConfigField(
                 type="string",
-                description="The table to write; a plain identifier, and one this tool never creates.",
+                description="The table to write, such as 'monthly_sales'. It must already exist.",
                 required=True,
                 non_empty=True,
             ),
             "mode": ConfigField(
                 type="string",
-                description="'replace' empties the table before loading; 'append' loads without "
-                "emptying it. Required, with no default: the two differ in whether running the "
-                "flow twice is safe.",
+                description="'replace' empties the table and loads the rows; 'append' adds the rows to "
+                "what is there.",
                 required=True,
                 enum=_MODE_ENUM,
             ),
             "allow_empty": ConfigField(
                 type="boolean",
-                description="Whether a frame with no rows is written instead of stopping the run.",
+                description="Set true to allow writing a table with no rows. Left out, an empty table "
+                "stops the run.",
                 default=False,
             ),
         }
@@ -108,44 +90,46 @@ class WriteTable:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "'rows' is loaded into the named table: 'replace' empties it first, inside the "
-                "same transaction as the load, so a write that fails part way leaves the previous "
-                "contents standing rather than an empty table; 'append' loads without emptying it. "
-                "The table must already exist and its columns must exactly match the frame's, "
-                "order-insensitively -- this tool runs no DDL of its own."
+                "Use write_table to save rows into one existing database table. 'replace' empties "
+                "it and loads the rows in one transaction, so a load that fails part way leaves the "
+                "old rows in place, never an empty table. 'append' adds the rows. The same rows pass "
+                "on through `rows`. To load several related tables together, use publish_tables."
             ),
             examples=(_replace_example(), _append_example()),
             notes=(
-                "'mode' has no default: 'replace' and 'append' differ in whether re-running the "
-                "flow is safe, and either default would choose one of them silently.",
-                "An empty frame stops the run unless 'allow_empty' says otherwise: a replace of "
-                "nothing empties the table, the loudest silence an upstream step can leave behind.",
-                "A column whose values will not fit the type the table declares for it is refused "
-                "before anything is written, naming the column: text in a whole-number column, or "
-                "a fraction. These are the same checks publish_tables runs.",
-                "The output port hands the same rows on unchanged, so this sink is composable "
-                "rather than terminal by construction.",
+                "'mode' has no default: 'replace' can be run twice safely and 'append' cannot, so the "
+                "flow must say which it means.",
+                "The table must already exist. This tool never creates or changes a table; that "
+                "belongs in a reviewed database migration.",
+                "The table's columns and the rows' columns must match exactly, in any order. An extra "
+                "or missing column is refused, and so is a name that differs only in case.",
+                "A table with no rows stops the run unless 'allow_empty' is true, because a replace "
+                "with nothing empties the table.",
+                "A column whose values will not fit the table's column type is refused before anything "
+                "is written, naming the column: text in a whole-number column, or a fraction. "
+                "publish_tables runs the same checks.",
+                "If the database refuses rows during the load (a missing required value, a repeated "
+                "key), the step stops, names the table and shows the rows that were refused.",
+                "The same rows pass on through `rows`, so the flow can continue after the write.",
             ),
             field_help={
-                "mode": "Required; 'replace' or 'append', with no default, so a run always says which one it means.",
-                "allow_empty": "Defaults to false: an empty frame stops the run until a flow says "
-                "in writing that this branch may be empty.",
+                "connection": "For example 'TARGET_DATABASE_URL'. Set that variable in the environment "
+                "the flow runs in.",
+                "mode": "Use 'replace' for a table rebuilt on every run, 'append' for a log that grows.",
+                "allow_empty": "Set it when an empty result is normal for this table.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse a schema or a table that is not a plain identifier, before any connection opens."""
+        """Refuse a schema or table that is not a plain name, before any connection opens."""
         if config["schema"] is not None:
             validate_identifier(config["schema"], "schema")
         validate_identifier(config["table"], "table")
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a table that is not there, a column disagreement, an unwelcome empty frame, or a
-        column whose values will not fit the column the table declares.
+        """Refuse a missing table, a column mismatch, an unallowed empty frame, and values that will not fit.
 
-        All of them are checked here, ahead of ``execute``, so nothing is emptied or loaded on the
-        strength of a configuration that was already wrong. They are the same checks publish_tables
-        runs, from the same module.
+        All are checked before anything is emptied or loaded; publish_tables runs the same checks.
         """
         frame = inputs["rows"]
         uri = resolve_connection_uri(config["connection"], "connection")
@@ -167,18 +151,10 @@ class WriteTable:
 
 @dataclass(frozen=True)
 class _Load:
-    """One attempted write, in the terms every question asked about it afterwards is asked in.
+    """One attempted write: the loader, connection, names, mode, frame and its rows as tuples.
 
-    These nine values travelled as nine parameters through five functions, four of which did
-    nothing with most of them but pass them on. Threading them by hand is also the shape in which
-    ``schema``, ``table`` and ``qualified`` -- three strings in a row, no two of them
-    interchangeable and no type able to tell them apart -- get handed over in the wrong order. They
-    are settled once, at the top of the write, and everything downstream asks this instead.
-
-    ``rows`` is materialised here rather than where it is needed because the load itself needs it
-    and a failure may want it a second time to replay. That holds the whole frame as Python tuples,
-    which is fine at the hundred thousand rows a publish writes and is where to look first if that
-    ever stops being true.
+    Gathered once so schema, table and qualified name cannot be passed in the wrong order. `rows` holds
+    the whole frame as tuples, needed by the load and by a replay.
     """
 
     loader: RowLoader
@@ -200,13 +176,10 @@ def _write_rows(
     mode: str,
     frame: pl.DataFrame,
 ) -> None:
-    """Truncate (if replacing) and load ``frame`` in one transaction, naming ``qualified`` on failure.
+    """Empty (when replacing) and load `frame` in one transaction, naming the table on failure.
 
-    Nothing here is written in one driver's dialect. The loader is asked for first, before a single
-    statement runs, so a connection from a driver this library does not know is refused by name
-    rather than reached into -- and the unit of work, the bulk load and the exception types that
-    mean "the rows were wrong" all come from that loader. A caller asking which rows offended, out
-    of how many, gets the same answer whichever engine the table happened to live on.
+    The driver's loader supplies the transaction, the bulk load and the errors meaning "the rows were
+    wrong", so an unknown driver is refused by name and every engine reports the same way.
     """
     loader = driver_for(connection)
     load = _Load(
@@ -242,19 +215,10 @@ def _write_rows(
 
 
 def _offending_rows(load: _Load) -> pl.DataFrame:
-    """Which rows offend: read the table's rules and judge the frame, or replay the load row by row.
+    """Which rows offend: judged in memory from the table's rules, or else by replaying the load.
 
-    Both routes answer the same question and must answer it identically, because a reader fixing a
-    bad night reads the answer and never the route. The difference is only what it costs: replaying
-    a hundred and thirty thousand rows one at a time is three round trips per row, spent after the
-    load has already failed and while its transaction is still open, so a build that hit one bad row
-    looks wedged rather than failed.
-
-    The catalogued route is tried first and is allowed to decline. It declines when the table
-    carries a rule the rows cannot be judged against, when it cannot read the rules at all, and --
-    the important one -- when it finds nothing wrong with a load the server has just refused, which
-    means it was missing something whatever it thought it understood. Declining costs the slow
-    answer; giving the empty one would cost a reader the night.
+    Both must give the same answer. The judged route is tried first and may decline; declining costs time,
+    an empty answer would cost a reader the night. Why: docs/design/tools.md#write_table
     """
     catalogued = _catalogued_offenders(load)
     if catalogued is not None:
@@ -263,14 +227,10 @@ def _offending_rows(load: _Load) -> pl.DataFrame:
 
 
 def _catalogued_offenders(load: _Load) -> list[int] | None:
-    """The rows the table's own rules refuse, judged in memory, or ``None`` if they cannot be.
+    """The rows the table's rules refuse, judged in memory, or None if they cannot be judged.
 
-    The rules come out of the catalog in a handful of statements, none of them against the table, and
-    the frame is judged against them without attempting a single row. What counts as offending is
-    unchanged: a row missing a value the table demands, and the second and later rows claiming a key
-    -- never the first, which a sequential load would have got in. In an append the keys the table
-    already holds count too, and they are asked for in one statement, because a frame read against
-    itself alone cannot see them.
+    Offending means a missing required value, or the second and later rows claiming a key (never the
+    first). When appending, keys the table already holds count too.
     """
     try:
         rules = load.loader.table_rules(load.connection, load.schema, load.table)
@@ -280,17 +240,9 @@ def _catalogued_offenders(load: _Load) -> list[int] | None:
             return None
         offenders = _refused_rows(load, rules)
     except Exception as failure:  # noqa: BLE001 - any doubt about the rules means the slow answer, never the empty one
-        # Said out loud, unlike the declines above it. Those are the rules this route cannot judge --
-        # an expression, a key in another table -- and they are the ordinary case, expected on tables
-        # that carry them and silent for that reason. This one is a reading that broke, and catching
-        # it as widely as trustworthiness demands is exactly what would hide it: the refusal still
-        # names the right rows by the slow route, so the only symptom is a diagnosis that used to
-        # take a second taking a minute, which reads as a slow server rather than as a fault here.
+        # Logged, unlike the declines above: a reading that broke, which would otherwise show only
+        # as a slow diagnosis.
         logging.getLogger(__name__).warning(
-            # Says the rows could not be judged, not that the rules could not be read: the reading
-            # is only one of the things under this handler. A value the server returned that will
-            # not convert to the frame's own type lands here too, and pointing a reader at the
-            # catalog for a comparison that failed sends them to the wrong file.
             "the rows for table %r could not be judged against its rules, so the ones that offended "
             "were found by attempting them one at a time instead, which is correct but far slower: %s",
             load.qualified,
@@ -302,13 +254,7 @@ def _catalogued_offenders(load: _Load) -> list[int] | None:
 
 
 def _roll_back_quietly(connection: Any) -> None:
-    """Undo whatever a declined reading left open, so the route that replaces it starts from a usable connection.
-
-    Nothing was written -- this route only reads -- but on one of the two drivers a statement that
-    failed leaves the transaction refusing every statement after it, and the replay is about to open
-    one. Its own failure would surface in place of the refusal the caller is owed -- which is also
-    why this cannot be allowed to raise on its own account.
-    """
+    """Roll back what a declined reading left open, so the replay starts clean. Never raises."""
     try:
         connection.rollback()
     except Exception:  # noqa: BLE001 - the answer being salvaged is the one worth reporting, not this
@@ -323,30 +269,19 @@ def _rules_cover_the_frame(rules: TableRules, frame: pl.DataFrame) -> bool:
 
 
 def _carries_a_null_the_engine_would_settle(rules: TableRules, frame: pl.DataFrame) -> bool:
-    """Whether the frame leaves a key for the engine to decide, which the rows cannot then be judged on.
+    """Whether a key column the engine fills itself (SQLite's rowid alias) holds a null.
 
-    SQLite fills a null in a rowid-alias key with a number of its own, and a later row holding that
-    number collides with a value that was never in the frame. Reading the rows would find nothing
-    wrong with either of them. It is only ever a null that does this, so a frame without one in those
-    columns -- which is nearly all of them -- takes the quick route as before.
+    SQLite would number that row itself, and a later row could collide with a value never in the frame,
+    so such a frame takes the slow route.
     """
     return any(frame[column].null_count() for column in rules.settled_by_the_engine if column in frame.columns)
 
 
 def _refused_rows(load: _Load, rules: TableRules) -> list[int]:
-    """The row numbers a sequential load would have refused, in frame order.
+    """The row numbers a load done row by row would have refused, in frame order.
 
-    A missing value is a property of the row alone, so those are found in one pass per column. A
-    repeated key is not: it is a disagreement between a row and everything that got in ahead of it,
-    and which rows those are depends on the answer being computed. A row already refused never
-    reaches the table, so its key is still free for a later row to take -- which is why the keys are
-    walked in order, carrying forward only what was actually accepted, rather than judged against the
-    frame as written. Judging the frame as written is right whenever one key rule is in play and
-    wrong as soon as two are: a row refused for its key would still be blamed for the second key it
-    was carrying, and an innocent row behind it blamed for repeating it.
-
-    The walk costs no statement and no round trip, which is the whole point of this route; it runs
-    only after a load has already failed.
+    Missing values are found per column. Repeated keys are walked in order, keeping only accepted rows'
+    keys, because a refused row never reaches the table and its key stays free for a later row.
     """
     frame = load.frame
     offenders: set[int] = set()
@@ -371,13 +306,10 @@ def _refused_rows(load: _Load, rules: TableRules) -> list[int]:
 
 
 def _held_values(load: _Load, column: str) -> set[Any]:
-    """Which of the frame's keys ``column`` already holds -- none, when the table is being emptied.
+    """Which of the frame's keys the table already holds in `column`; none when replacing.
 
-    Asked in one statement for all of them, and only for the keys the frame actually carries, so a
-    table of millions is not read to judge a frame of thousands. What comes back is spelled the
-    server's way and has to be compared against the frame's own values, so it is read through the
-    frame's type for that column: a strict conversion, because a value that will not convert means
-    the comparison about to be made is not one to trust, and the slow route is right there.
+    One statement, asking only for the frame's keys. Read through the frame's type, strictly, so a value
+    that will not convert sends the check to the slow route.
     """
     if load.mode != "append":
         return set()
@@ -397,17 +329,10 @@ def _indices_where(frame: pl.DataFrame, mask: pl.Expr) -> list[int]:
 
 
 def _replayed_offenders(load: _Load) -> pl.DataFrame:
-    """Which rows offend, found by re-running the load row by row in a transaction that is discarded.
+    """Which rows offend, found by loading row by row in a transaction that is then discarded.
 
-    The fallback, and the only route that can answer for a rule the frame cannot be judged against:
-    a check expression, a key whose answer lives in another table. It costs an attempt per row, which
-    is why it is no longer the first thing tried, and it is kept because the alternative for those
-    rules is reporting that nothing offended over a load that was refused.
-
-    Every row is attempted regardless of an earlier failure, so more than one offender is reported at
-    once rather than one per run, and each attempt sits inside the loader's own undo, because on one
-    of the two drivers a failed statement poisons every statement after it in the same transaction.
-    The whole of it is rolled back at the end: this pass exists to look, not to write.
+    The only route for rules the frame cannot be judged against (a check expression, a foreign key). Every
+    row is attempted, so all offenders are reported at once.
     """
     loader, connection = load.loader, load.connection
     offending_indices = []
@@ -438,10 +363,10 @@ def _replace_example() -> WorkedExample:
     inputs = Ports({"rows": pl.DataFrame({"key": [3, 4], "label": ["third", "fourth"]})})
     outputs = Ports({"rows": pl.DataFrame({"key": [3, 4], "label": ["third", "fourth"]})})
     return WorkedExample(
-        scenario="replace empties the table before loading the new rows",
+        scenario="replace a table's rows with new ones",
         configuration={"connection": _EXAMPLE_CONNECTION, "table": "sample", "mode": "replace"},
-        explanation="The two rows already in 'sample' are gone afterwards, replaced by exactly the "
-        "rows on 'rows'; the same rows leave on the output port unchanged.",
+        explanation="The two rows already in 'sample' are removed and the two new rows loaded. The same rows pass "
+        "on through 'rows'.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -453,10 +378,10 @@ def _append_example() -> WorkedExample:
     inputs = Ports({"rows": pl.DataFrame({"key": [3, 4], "label": ["third", "fourth"]})})
     outputs = Ports({"rows": pl.DataFrame({"key": [3, 4], "label": ["third", "fourth"]})})
     return WorkedExample(
-        scenario="append adds to what the table already holds",
+        scenario="add rows to a table",
         configuration={"connection": _EXAMPLE_CONNECTION, "table": "sample", "mode": "append"},
-        explanation="The two rows already in 'sample' stay; the rows on 'rows' are added beside "
-        "them, and those same rows leave on the output port unchanged.",
+        explanation="The two rows already in 'sample' stay, and the new rows are added. The same rows pass on "
+        "through 'rows'.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

@@ -1,59 +1,12 @@
-"""WriteExcel: one frame per named port, one tab each, in one load and one save.
+"""WriteExcel: write each named frame to its own tab of one XLSX workbook.
 
-This tool writes one XLSX workbook: the tabs it is given, on top of a template if one is named.
-A delivered pack is usually curated. Somebody built the charts, the formats and the notes by hand.
-That curated workbook is the template, and only the tabs holding figures that change every run are
-written into it.
+The workbook starts from a template, if one is named, or from nothing. It is opened once and saved
+once, however many tabs there are. The parts live in sibling modules: `_workbook_checks` (refusals
+before the workbook opens), `_workbook_rules` (which columns a rule applies to), `_workbook_file`
+(opening it), `_workbook_cells` (values and number formats), `_workbook_layout` (headings, widths,
+wrapping, tables) and `_workbook_examples`. What a cell can hold is in `_spreadsheet.py`.
 
-Rewritten is not the same as preserved. The template is read into an object model and a new file
-is written from it, so every part comes back as that model spells it rather than as the bytes it
-arrived as. Most of a pack survives that trip: tabs, formats, formulas, charts, pivot tables and the
-cached values behind a pivot's filter dropdowns were all measured coming through. Two things do
-not. The result stored with each formula is cleared, so the file recalculates when a spreadsheet
-opens it, and a program reading it before then sees blanks. And the extension block on a pivot
-cache is lost. That block holds the parts of a pivot added after the original file format, a slicer
-link among them, and a test in this package records the loss. Write one pack and open it before
-pointing this at a workbook nobody could rebuild.
-
-It reads one input port per tab its configuration names. Eleven tabs is one step, not eleven. That
-is not only faster. The workbook is opened once and saved once.
-
-It produces nothing at all, so a flow ends here. Handing eleven frames back out would be a fan-out
-this tool invented, and handing back a receipt is shape without information.
-
-The template is read and never written. A ``path`` equal to the template is refused. A template
-overwritten by its own first run is gone, and the run after it has nothing to start from.
-
-The file already at ``path`` is never read. Each run builds the workbook from the template, or from
-nothing, so a run writes the same file whatever an earlier run left there, and a tab the flow stops
-writing does not linger. ``overwrite`` is the one permission for replacing something that is
-already there: the file at ``path`` (refused when the flow loads), and a tab of the template that a
-sheet entry names (refused when the template is opened).
-
-How a column's figures are *shown* is stated per tab, in ``formats``, and is stated or it does not
-happen. A rule names either a type -- reaching every column of it, including the ones named by the
-data -- or one column, which beats the rule about its type. Nothing is read off a column's name: a
-writer deciding for itself that a decimal column was money is wrong the first time somebody puts a
-reference number in one, and a writer deciding from the heading is wrong the first time somebody
-renames it. The format code goes to the spreadsheet as written, unparsed and unchecked.
-
-What a cell can hold is not this tool's ruling to make. Those rules belong to the destination, and
-they live in ``_spreadsheet.py``. A whole number past 2**53 - 1
-is refused rather than rounded. A frame taller than a sheet is refused rather than truncated. A date
-column gets a number format, because that format is the only thing telling a cell it holds a date
-rather than a count of days.
-
-The work is split across sibling modules, one job each: ``_workbook_checks`` (refusals answerable
-before the workbook opens), ``_workbook_rules`` (which columns a type-or-column rule reaches),
-``_workbook_file`` (opening the workbook once), ``_workbook_cells`` (values and number formats),
-``_workbook_layout`` (headings, widths, wrapping, tables) and ``_workbook_examples``.
-
-The refusals are split across three places, and the split is deliberate. Anything answerable from
-the configuration and the disk is refused in :meth:`WriteExcel.validate_config`. Anything answerable
-from the frames is refused in :meth:`WriteExcel.validate_inputs`. One rule is left to
-:meth:`WriteExcel.execute`: whether a tab is already in the template. That is the only question
-here that cannot be answered without the template open, and asking it any earlier would cost a
-second load of a file that can be megabytes.
+Why: docs/design/tools.md#write_excel
 """
 
 from collections.abc import Mapping
@@ -97,23 +50,20 @@ from ._workbook_rules import format_rules
 
 
 class WriteExcel:
-    """Write each named frame to its own tab of one XLSX workbook, and produce nothing."""
+    """Write each named frame to its own tab of one XLSX workbook. Produces nothing."""
 
     name = "write_excel"
-    description = "Write one frame per named port to its own tab of one XLSX workbook."
+    description = "Write tables to the tabs of one Excel workbook, optionally into a template."
     category = "output"
-    # Empty on purpose: the ports come from 'sheets', through input_ports_for below. A tool answers
-    # that question one way or the other, never both.
+    # Empty: the ports come from 'sheets', through input_ports_for.
     input_ports = ()
     output_ports = ()
 
     def input_ports_for(self, config: Mapping[str, Any]) -> tuple[str, ...]:
-        """One port per sheet entry, in the order the entries were written.
+        """One input port per sheet entry, in the order written.
 
-        The configuration handed over here is the one a person wrote. No blank in it has been filled
-        in yet, and it has not been checked against the config template. So anything malformed is
-        passed over rather than refused here. The config check runs a moment later and says what is
-        wrong, in words about the field that is wrong.
+        This sees the configuration before it is checked, so it skips anything malformed. The config check
+        that follows refuses it by name.
         """
         entries = config.get("sheets")
         if not isinstance(entries, list):
@@ -128,70 +78,64 @@ class WriteExcel:
         return {
             "path": ConfigField(
                 type="string",
-                description="Where the workbook is written; must end in .xlsx.",
+                description="The workbook file to write. It must end in .xlsx.",
                 required=True,
                 non_empty=True,
                 file_path=True,
             ),
             "sheets": ConfigField(
                 type="array",
-                description="One entry per tab: which input port it reads, which tab it is "
-                "written to, and how its figures are shown. These entries are also what say which "
-                "ports this step reads.",
+                description="One entry per tab: the input port to read, the tab to write it to, "
+                "and how the tab looks.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="object",
-                    description="One tab: the port the rows arrive on, and the tab they are written to.",
+                    description="One tab: the port its rows come from, the tab name, and its layout.",
                     fields={
                         "port": ConfigField(
                             type="string",
-                            description="The input port carrying the rows for this tab.",
+                            description="The input port whose rows go on this tab, such as 'summary'.",
                             required=True,
                             non_empty=True,
                         ),
                         "sheet": ConfigField(
                             type="string",
-                            description="The tab the rows are written to; at most 31 characters, "
+                            description="The tab name, such as 'Summary'. At most 31 characters, "
                             "and none of '[' ']' ':' '*' '?' '/' '\\'.",
                             required=True,
                             non_empty=True,
                         ),
                         "allow_empty": ConfigField(
                             type="boolean",
-                            description="Whether a port with no rows is written, as a tab with its "
-                            "headings and nothing under them, instead of stopping the run. Left out, "
-                            "it is false.",
+                            description="Set true to write a port with no rows as a tab of headings "
+                            "only. Left out, an empty port stops the run.",
                         ),
                         "formats": ConfigField(
                             type="array",
-                            description="How this tab's figures are shown: one rule per entry, "
-                            "each naming either a type or a single column, and the format code "
-                            "that column is shown under. Leave it out and nothing is formatted "
-                            "beyond the date format this tool always writes.",
+                            description="Number formats for this tab, one rule per entry, each for "
+                            "a type or one column. Left out, only dates are formatted.",
                             required=False,
                             items=ConfigField(
                                 type="object",
-                                description="One rule: what it applies to, and the format code it applies.",
+                                description="One rule: a type or a column, and its format code.",
                                 fields={
                                     "type": ConfigField(
                                         type="string",
-                                        description="Show every column of this type under the "
-                                        "format; this is what reaches a column the configuration "
-                                        "could not have named.",
+                                        description="Apply the format to every column of this type, "
+                                        "such as Float64.",
                                         enum=DECLARED_TYPES,
                                     ),
                                     "column": ConfigField(
                                         type="string",
-                                        description="Show this one column under the format; it "
-                                        "beats any rule about the column's type.",
+                                        description="Apply the format to this one column. It beats a "
+                                        "rule about the column's type.",
                                         non_empty=True,
                                     ),
                                     "format": ConfigField(
                                         type="string",
-                                        description="The spreadsheet's own format code, passed "
-                                        "through as written: '#,##0.00' for money, '0.000' for a "
-                                        "proportion read to three places.",
+                                        description="The spreadsheet's format code, such as '#,##0.00' "
+                                        "for money or '0.0%' for a percentage.",
                                         required=True,
                                         non_empty=True,
                                     ),
@@ -200,9 +144,8 @@ class WriteExcel:
                         ),
                         "widths": ConfigField(
                             type="array",
-                            description="How wide this tab's columns are: one rule per entry, each "
-                            "naming either a type or a single column, and the width. A column rule "
-                            "beats a type rule. Leave it out and no width is set.",
+                            description="Column widths, one rule per entry, each for a type or one "
+                            "column. Left out, no width is set.",
                             required=False,
                             items=ConfigField(
                                 type="object",
@@ -229,20 +172,18 @@ class WriteExcel:
                         ),
                         "fit_widths": ConfigField(
                             type="boolean",
-                            description="Size every column to its heading and its longest value as "
-                            "shown, up to a cap of 60 characters. A width stated in 'widths' beats "
-                            "the fit. Leave it out and nothing is fitted.",
+                            description="Set true to size each column to fit its heading and values, "
+                            "up to 60 characters wide.",
                             required=False,
                         ),
                         "wrap": ConfigField(
                             type="array",
-                            description="Which columns wrap their text: one rule per entry, naming "
-                            "either a type or a single column. Wrapped cells sit at the top of the "
-                            "row. The heading is never wrapped.",
+                            description="Columns whose text wraps onto several lines, one rule per "
+                            "entry, each for a type or one column.",
                             required=False,
                             items=ConfigField(
                                 type="object",
-                                description="One rule: the type or the column whose data cells wrap.",
+                                description="One rule: the type or the column to wrap.",
                                 fields={
                                     "type": ConfigField(
                                         type="string",
@@ -259,27 +200,26 @@ class WriteExcel:
                         ),
                         "table": ConfigField(
                             type="object",
-                            description="Make the tab's rows a spreadsheet table, with filter "
-                            "dropdowns on the headings. Write {} to take the name from the tab.",
+                            description="Turn the rows into a spreadsheet table with filter "
+                            "dropdowns. Write {} to name it after the tab.",
                             required=False,
                             fields={
                                 "name": ConfigField(
                                     type="string",
-                                    description="The table's name. Leave it out and it is made from the tab name.",
+                                    description="The table's name, such as 'Sales'. Left out, it is made from the tab name.",
                                     non_empty=True,
                                 ),
                                 "style": ConfigField(
                                     type="string",
-                                    description="One of the spreadsheet's built-in table styles, such "
-                                    "as 'TableStyleLight1'. Leave it out for a plain table.",
+                                    description="A built-in table style, such as 'TableStyleLight1'. "
+                                    "Left out, the table is plain.",
                                     non_empty=True,
                                 ),
                             },
                         ),
                         "header": ConfigField(
                             type="object",
-                            description="How the headings look: bold, a size, or both. What is not "
-                            "stated keeps the cell's own font.",
+                            description="How the headings look: bold, a font size, or both.",
                             required=False,
                             fields={
                                 "bold": ConfigField(
@@ -297,15 +237,14 @@ class WriteExcel:
             ),
             "template": ConfigField(
                 type="string",
-                description="A workbook to start from. It is read and never written: the tool "
-                "copies it to 'path' and writes there. Leave it out to start from nothing.",
+                description="A workbook to start from. It is only read. Left out, the workbook starts empty.",
                 required=False,
                 file_path=True,
             ),
             "overwrite": ConfigField(
                 type="boolean",
-                description="Whether something already there may be replaced: a file at 'path', or "
-                "a tab of the template that a sheet entry names. Leave it out and either is refused.",
+                description="Set true to allow replacing a file already at 'path', or a template "
+                "tab that a sheet entry names.",
                 default=False,
             ),
         }
@@ -313,130 +252,96 @@ class WriteExcel:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Each entry in 'sheets' names an input port and the tab its rows are written to. "
-                "Those entries are also what say which ports this step reads: two steps of this "
-                "tool with different 'sheets' read different frames. Every tab goes into one "
-                "workbook, which is opened once and saved once. Give a 'template' and that workbook "
-                "is loaded, the named tabs are written into it, and the whole thing is saved to "
-                "'path'. A tab nobody named comes back with its values, its formulas, its "
-                "formatting and its column widths. The rest of the workbook is rewritten, not "
-                "copied across byte for byte: the whole file is read into memory and a new file is "
-                "written out. Pivot tables, charts and named ranges come through, and so do the "
-                "cached values behind a pivot's filter dropdowns. One thing is known to be lost. A "
-                "pivot cache's extension block is dropped, which is where a slicer link and the "
-                "newer formatting options are kept, so a slicer can come back disconnected. Write "
-                "one pack and open it before pointing this at a workbook you could not rebuild. "
-                "The template itself is never written to, and a 'path' naming the same file is "
-                "refused. The file already at 'path' is never read: each run builds the workbook "
-                "from the template, or from nothing, so a tab the flow stops writing does not "
-                "linger. A file already at 'path', or a template tab a sheet entry names, is "
-                "refused until 'overwrite' says in writing that replacing it is intended. A "
-                "replaced template tab keeps its place among the others. Nothing leaves on an "
-                "output port: a flow ends here."
+                "Use write_excel to deliver results as a spreadsheet. Each entry in 'sheets' names an "
+                "input port and the tab its rows go to, so one step can write many tabs. Name a "
+                "'template' to write the tabs into a workbook you have already laid out, with its "
+                "charts, notes and formatting; the other tabs come through as they were. The "
+                "workbook is saved to 'path'. This step has no output ports: a flow ends here."
             ),
             examples=(plain_write_example(), template_example(), laid_out_example()),
             notes=(
-                "Every formula on a template tab comes through, but its stored result is cleared. A "
-                "spreadsheet recalculates the file when it opens it, so a person sees the right "
-                "figures. A program that reads the file before then, read_excel among them, sees "
-                "blanks where the formulas are.",
-                "A port with no rows stops the run unless its sheet entry says allow_empty: true, "
-                "as on the table sinks: a tab that is empty because something upstream failed looks "
-                "exactly like a quiet month. Allowed, it gets its tab, with the header and nothing "
-                "under it: a missing tab reads as a broken report, where an empty one reads as "
-                "'nothing this month'.",
-                "A whole number past 2**53 - 1 in either direction is refused rather than rounded "
-                "or silently written as text. A cell holds a double, so exactness past that point "
-                "is a promise this tool cannot keep, and the fix is one explicit cast upstream "
-                "where the next reader can see it.",
-                "A Time, a Duration, a Decimal, a list or a nested record is refused rather than "
-                "stringified: each has a plausible-looking wrong answer in a cell, and none of them "
-                "is the value it started as.",
-                "Text longer than 32,767 characters, the most a cell holds, is refused naming the "
-                "column, rather than cut short.",
+                "The template is only read. A 'path' naming the same file as the template is refused.",
+                "The file already at 'path' is never read. Each run builds the workbook again from "
+                "the template, or from nothing, so a tab the flow stops writing does not linger.",
+                "A file already at 'path', or a template tab that a sheet entry names, is refused "
+                "unless 'overwrite' is true.",
+                "A template tab that is replaced keeps its place among the other tabs.",
+                "The whole template is read into memory and written out again, not copied byte for "
+                "byte. Pivot tables, charts, named ranges and the values behind a pivot's filter "
+                "dropdowns come through.",
+                "One thing is known to be lost: a pivot cache's extension block, where a slicer link "
+                "and newer formatting options live. A slicer can come back disconnected.",
+                "Write one workbook and open it before using a template you could not rebuild.",
+                "Formulas on a template tab come through, but their stored results are cleared. A "
+                "spreadsheet recalculates when it opens the file, so a person sees the right figures.",
+                "A program that reads the file before a spreadsheet has opened it, read_excel "
+                "included, sees blanks where the formulas are.",
+                "A port with no rows stops the run, because an empty tab caused by a failure upstream "
+                "looks like a quiet month. Set allow_empty: true on its sheet entry to allow it.",
+                "An allowed empty port gets its tab with the headings and nothing under them, never "
+                "a missing tab and never a phrase such as '(no rows)'.",
+                "A whole number beyond 2**53 - 1, either way, is refused, because a cell cannot hold "
+                "it exactly. Cast it to text upstream if that is what you want.",
+                "A Time, Duration, Decimal, list or nested record column is refused, not turned "
+                "into text.",
+                "Text longer than 32,767 characters, the most a cell holds, is refused, naming the "
+                "column. It is never cut short.",
                 "Not-a-number or infinity in a decimal column is refused, naming the tab, the column "
-                "and the rows, rather than written as a blank: a blank reads as no figure, where "
-                "these mean a figure went wrong upstream. A null is written as the empty cell it is.",
-                "A frame taller than a tab -- more than 1,048,575 rows of data -- is refused rather "
-                "than truncated, because a truncated total is the worst outcome a delivered figure "
-                "can have.",
+                "and the rows, because a cell would show it as a blank. A null is written as an "
+                "empty cell.",
+                "A frame with more than 1,048,575 rows, more than a tab holds, is refused, never cut short.",
                 "Every frame is checked before the workbook is opened, so a refusal leaves no "
-                "half-written pack behind and never touches the template.",
-                "A date column gets a date number format, because that format is what tells a "
-                "person's spreadsheet the cell holds a date rather than a count of days. Nothing "
-                "else is formatted until a tab's 'formats' says so: an unasked-for format is a "
-                "claim about how the pack should be read that this tool is not entitled to make.",
-                "A rule in 'formats' names either a type or one column, never both and never "
-                "neither. A type rule reaches every column of that type, which is the only thing "
-                "that reaches a column named by the data -- a cross-tab gains one per period. A "
-                "column rule names one column and beats the rule about its type, whichever order "
-                "the two were written in. A rule about Int64 reaches a whole number of any width, "
-                "Int32 included, since a formula makes a whole-number literal 32-bit. Nothing is "
-                "read off a column's name.",
-                "A format code is passed to the spreadsheet as written: this library does not parse "
-                "it and does not check it. It is in no position to know what a future spreadsheet "
-                "accepts, a code wrongly rejected would block a pack for no reason, and a code that "
-                "is wrong shows visibly in the file rather than corrupting a figure.",
-                "A rule about a type this tool cannot write -- Time is the one -- is accepted and "
-                "does nothing, because no column of that type ever reaches a cell: such a column is "
-                "refused outright, well before its format would matter. Refusing the rule as well "
-                "would tie this field to the list of types a cell cannot hold, and the two would "
-                "have to be kept in step for no gain.",
-                "A rule about a type or column formats the data cells, and only those. A format set "
-                "on the whole column instead would run to the bottom of the tab, so a figure typed "
-                "in underneath the data would be shown as money too. Harmless in a delivered pack, "
-                "and visible to anybody comparing this pack's cell styles against one written that "
-                "way.",
-                "A frame with no rows is written as its header with nothing under it, so the tab "
-                "carries no formatted cell at all. A writer that instead put a phrase like "
-                "'(no rows)' in the first cell would be writing a word where a reader's formula "
-                "expects a heading.",
-                "The layout options -- 'widths', 'fit_widths', 'wrap', 'table' and 'header' -- change "
-                "how a tab looks and never what it holds. No value, cell kind or number format is "
-                "different with them than without them. A tab that states none of them is written "
-                "as before.",
-                "A width rule and a wrap rule name a type or one column, like a format rule, and a "
-                "column rule beats a type rule. A rule naming a column the frame does not carry is "
-                "refused.",
-                "'fit_widths' sizes each column to its heading and its longest value as it is shown, "
-                "so a money column is measured as '1,234,567.00', not as the stored digits. A fitted "
-                "column is at most 60 characters wide. A width stated in 'widths' beats the fit, and "
-                "is how a column gets wider than that.",
-                "'wrap' wraps the data cells of the columns it reaches and sits them at the top of "
-                "the row, empty cells included. The heading is left alone.",
-                "'table' makes the tab's rows a spreadsheet table, with filter dropdowns on the "
-                "headings. Its name is stated, or made from the tab name: a character a table name "
-                "cannot hold becomes an underscore. It has no colour style unless a built-in one is "
-                "named. A port with no rows gets a table over its headings and one empty row, the "
-                "smallest table a spreadsheet accepts.",
-                "Two tables of one name are refused, ignoring case, as a spreadsheet compares them. "
-                "So is a name a template already uses on a tab this step leaves alone, before "
-                "anything is saved. A tab this step replaces loses its old table with it.",
-                "'header' makes the headings bold, a stated size, or both. What it does not state "
+                "half-written file and never touches the template.",
+                "A date column always gets a date format, so the spreadsheet shows a date, not a "
+                "count of days. Nothing else is formatted unless 'formats' says so.",
+                "A rule in 'formats' names either a type or one column, never both and never neither.",
+                "A type rule applies to every column of that type, including columns whose names "
+                "come from the data, such as one per month after a cross_tab.",
+                "A column rule beats a type rule for that column, whichever is written first.",
+                "A rule about Int64 also applies to the other whole-number types, such as Int32.",
+                "Nothing is decided from a column's name.",
+                "A format code goes to the spreadsheet exactly as written. It is not checked here.",
+                "A format rule about Time is accepted but does nothing, because a Time column is "
+                "refused anyway.",
+                "Formats, widths and wrapping apply to the data cells only, not to the whole column, "
+                "so a figure typed in below the data is not formatted.",
+                "The layout settings 'widths', 'fit_widths', 'wrap', 'table' and 'header' change how "
+                "a tab looks, never what it holds. A tab that uses none of them is written plain.",
+                "A width or wrap rule names a type or one column, and a column rule beats a type rule. "
+                "A rule naming a column the frame does not have is refused.",
+                "'fit_widths' sizes each column to its heading and its longest value as shown, so "
+                "money is measured as '1,234,567.00'. A fitted column is at most 60 characters wide.",
+                "A width in 'widths' beats the fit, and is how a column gets wider than 60.",
+                "'wrap' wraps the data cells of the columns it names and aligns them to the top of "
+                "the row, empty cells included. The heading is not wrapped.",
+                "'table' turns the tab's rows into a spreadsheet table with filter dropdowns. Its name "
+                "is the one given, or the tab name with unusable characters turned into underscores.",
+                "A table has no colour style unless a built-in style is named.",
+                "A table on a port with no rows covers the headings and one empty row, the smallest "
+                "table a spreadsheet accepts.",
+                "Two tables with the same name, ignoring case, are refused. So is a table name the "
+                "template already uses on a tab this step does not replace. A replaced tab loses its "
+                "old table.",
+                "'header' makes the headings bold, a given size, or both. Anything it does not set "
                 "keeps the cell's own font.",
             ),
             field_help={
-                "overwrite": "Defaults to false. A file already at 'path' is refused when the flow "
-                "loads, and a template tab a sheet entry names is refused when the template is "
-                "opened, until an author says in writing that replacing it is intended. A flow that "
-                "runs every night needs it from its first night.",
-                "template": "Read, never written. The tool writes to 'path' instead, so the same "
-                "template can be used again next run.",
+                "path": "For example 'output/monthly_report.xlsx'. The folder must already exist.",
+                "sheets": "For example {port: summary, sheet: Summary}. Each port named here becomes "
+                "an input of this step.",
+                "overwrite": "Set it to true for a flow that runs again and again: without it, the "
+                "second run is refused because the file is already there.",
+                "template": "For example 'templates/report.xlsx'. It is never written to, so the "
+                "same template works again next run.",
             },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse the wrong file format, a tab a workbook cannot carry, a repeat of any of tab, port
-        or format rule, or a template it cannot use.
+        """Refuse what the configuration and the disk can show is wrong, before any workbook opens.
 
-        Every one of these is answerable from the configuration and the filesystem alone. So every
-        one of them is refused here, before a workbook is opened and long before anything is saved.
-
-        The repeated port is checked here as well as by the loader, which is deliberate rather than
-        duplication. The loader only speaks when there is a pipeline. A tool driven directly -- from
-        a test, from a worked example, from anything running one step -- would otherwise stack one
-        frame onto two tabs and report success, because two entries naming the same port arrive as
-        one entry of the envelope long before this tool sees them.
+        That is: a path that is not .xlsx, a bad tab name, a tab or port named twice, a bad format or layout
+        rule, a missing template or one equal to `path`, and a file already at `path` without `overwrite`.
+        A port named twice is also refused by the loader; it is checked here too for a tool run on its own.
         """
         path = config["path"]
         require_xlsx_path("write_excel", path)
@@ -487,16 +392,10 @@ class WriteExcel:
         refuse_to_overwrite("write_excel", path, "overwrite", config["overwrite"])
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse any frame a tab cannot hold, before the workbook is opened.
+        """Refuse any frame a tab cannot hold, before the workbook opens.
 
-        Every frame is checked, not only the first, and every check reads a schema or a column's
-        extremes rather than writing anything. That is what lets a refusal about the last of eleven
-        frames leave no pack on disk and no mark on the template.
-
-        A format rule naming a column is checked here for the same reason, and this is the earliest
-        phase that can answer it: a schema is the first thing in the run that knows which columns
-        arrived. A frame with no rows has one like any other, so an empty period is not the month a
-        renamed column slips through.
+        Every frame is checked first, so a refusal about the last tab leaves no file and an untouched
+        template. A rule naming a missing column is refused here, the first point the columns are known.
         """
         for entry in config["sheets"]:
             validate_formatted_columns(entry, inputs[entry["port"]])
@@ -580,18 +479,10 @@ class WriteExcel:
                     )
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
-        """Open one workbook, write every tab into it, and save it once.
+        """Open the workbook once, write every tab, and save it once.
 
-        One load and one save is the tool's central claim, so the whole of it is in plain sight here.
-        One ``with`` opens the workbook. The loop only writes tabs into the open book. One ``save``
-        is the last thing that happens inside it, and it is the only save on the way to a written
-        pack. No branch below reaches a second load.
-
-        One refusal lives here rather than in a validate step: a tab already in the template, with
-        no permission to overwrite it. That is the only rule in this tool that cannot be answered
-        without the workbook open, and answering it earlier would mean loading a file that can be
-        megabytes a second time. Because it is raised before the save, a refused run still leaves
-        nothing behind.
+        One refusal happens here: a template tab named by a sheet entry without `overwrite`. Only the open
+        workbook can answer it, and it comes before the save, so a refused run leaves nothing behind.
         """
         path = config["path"]
         with opened_once(path, config["template"]) as book:
@@ -599,8 +490,7 @@ class WriteExcel:
             for entry in config["sheets"]:
                 worksheet = empty_tab(book, entry["sheet"], replace=config["overwrite"])
                 frame = inputs[entry["port"]]
-                # Two passes, in this order. The first writes every value and number format. The
-                # second only changes how the tab looks, and must never set a value or a format.
+                # Values and number formats first; then layout, which must never change either.
                 write_tab(worksheet, frame, format_rules(entry))
                 lay_out_tab(worksheet, frame, entry)
             book.save(path)
@@ -609,7 +499,7 @@ class WriteExcel:
 
 
 def _entries(config: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    """The ``(port, tab)`` pairs of a checked configuration, in the order they were written."""
+    """The `(port, tab)` pairs of a checked configuration, in the order written."""
     return tuple((entry["port"], entry["sheet"]) for entry in config["sheets"])
 
 

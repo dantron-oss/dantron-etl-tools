@@ -1,20 +1,9 @@
-"""NormalizeText: a match key from a human-entered name, in a published, not caller-chosen, order.
+"""NormalizeText: turn a typed name into a matching key for a join.
 
-This tool exists to be the step before a join, and the join is only as good as the key produced
-here. ``operations`` says *which* of five reductions run -- fold accents, lower-case, remove
-punctuation, strip configured suffixes, collapse whitespace -- and :data:`OPERATION_ORDER` says the
-order they run in, which is not the order the list names them. The operations form an enabling
-chain: folding accents is what lets ``SARL`` be recognised as the configured suffix ``sarl``, and
-removing punctuation is what lets ``Ltd.`` be recognised as ``ltd``. A caller-chosen order could run
-an enabling step after the one it enables, and the tool would stop being idempotent -- the same
-configuration would then produce two different keys depending on how many times it had already run,
-which is exactly the failure a join run on either side by a different step, at a different time,
-cannot afford.
+`operations` chooses which clean-ups run; `OPERATION_ORDER` fixes the order they run in, so the
+step gives the same key however often it runs. A name that cleans to nothing becomes null.
 
-The suffix words themselves are configuration and never a built-in list, because a jurisdiction's
-company suffixes are not this library's business to know. A blank key -- a name that reduces to
-nothing but whitespace, punctuation or suffixes -- comes back null rather than ``""``, because a
-column of empty strings would join every unusable name to every other one.
+Why: docs/design/tools.md#normalize_text
 """
 
 import re
@@ -36,12 +25,7 @@ from ..authoring import (
     refuse_division_by_zero,
 )
 
-# The sequence every selected operation runs in, regardless of the order ``operations`` names them.
-# Accent folding and punctuation removal come before suffix stripping because each is what makes a
-# suffix recognisable in the first place -- folded, ``SARL`` reads as the configured word ``sarl``;
-# with its stop removed, ``Ltd.`` reads as ``ltd``. Whitespace collapsing runs last because removing
-# a suffix leaves the whitespace that separated it from the rest of the name, and collapsing before
-# that point would have nothing yet to clean up.
+# The order the selected operations always run in. Why: docs/design/tools.md#normalize_text
 OPERATION_ORDER: Final[tuple[str, ...]] = (
     "fold_accents",
     "lower",
@@ -50,33 +34,24 @@ OPERATION_ORDER: Final[tuple[str, ...]] = (
     "collapse_whitespace",
 )
 
-# Every mark a decomposition can produce: nonspacing, spacing-combining and enclosing. Stripped after
-# NFKD decomposition, which is what turns an accented letter into the plain letter plus the mark that
-# is then removed -- and, being a compatibility decomposition, also what turns a full-width or
-# ligature spelling into its plain letters, with nothing transliterated.
+# Every combining mark. Removed after NFKD splits an accented letter into letter plus mark.
 _MARKS: Final[str] = r"\p{M}"
 
-# Every Unicode punctuation category, deleted rather than replaced with a space: an initialism's
-# stops and a name's apostrophe both disappear, which is what makes ``A.B.C.`` meet ``ABC`` and an
-# apostrophe typed as ``'`` meet one a word processor curled into ``'``.
+# Every Unicode punctuation character, deleted, so 'A.B.C.' meets 'ABC' and curly apostrophes meet straight ones.
 _PUNCTUATION: Final[str] = r"\p{P}"
 
-# The Unicode whitespace property, not one character: a non-breaking space is what a name pasted out
-# of a spreadsheet carries routinely, and an ASCII-only class would leave it in.
+# Any Unicode space, including the non-breaking space pasted names often carry.
 _WHITESPACE_RUN: Final[str] = r"\s+"
 
-# A generous ceiling on how many times a suffix can be stripped from the same value before giving up
-# on convergence. Each pass removes at least one trailing word, so a value with this many words would
-# be an extraordinary input; the loop itself exits the moment a pass changes nothing; the cap is a
-# safety margin for the vectorized loop below, not the property that makes stripping idempotent.
+# A safety cap on suffix-stripping passes. The loop stops as soon as a pass changes nothing.
 _MAX_SUFFIX_PASSES: Final[int] = 64
 
 
 class NormalizeText:
-    """Reduce ``source`` to a match key in ``output``, in the published operation order."""
+    """Clean `source` into a matching key in `output`, in the fixed operation order."""
 
     name = "normalize_text"
-    description = "Reduce a name to a join-ready match key: fold accents, case, punctuation, suffixes, spacing."
+    description = "Clean up names into a matching key: lower case, no punctuation, accents or suffixes."
     category = "text"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -85,52 +60,64 @@ class NormalizeText:
         return {
             "source": ConfigField(
                 type="expression",
-                description="The name to reduce to a match key.",
+                description="The text to clean, such as '[customer_name]'.",
                 required=True,
             ),
             "output": ConfigField(
                 type="string",
-                description="The column the match key is written to.",
+                description="The name of the new column for the cleaned key, such as 'name_key'.",
                 required=True,
                 non_empty=True,
             ),
             "operations": ConfigField(
                 type="array",
-                description="Which reductions run; the order they run in is OPERATION_ORDER, not "
-                "this list's own order.",
+                description="Which clean-ups to apply. They always run in a fixed order, whatever "
+                "order you list them in.",
                 required=True,
                 non_empty=True,
                 items=ConfigField(
                     type="string",
-                    description="One of the published operations.",
+                    description="One clean-up, such as 'lower' or 'remove_punctuation'.",
                     enum=OPERATION_ORDER,
                 ),
             ),
             "suffixes": ConfigField(
                 type="array",
-                description="Whole trailing words to strip, case-insensitively and repeatedly; "
-                "required when 'strip_suffixes' is selected, and only then.",
-                items=ConfigField(type="string", description="One suffix word, as the caller spells it."),
+                description="Words to remove from the end, such as 'ltd' or 'inc'. Needed with "
+                "'strip_suffixes', and only then.",
+                items=ConfigField(type="string", description="One word to remove from the end, such as 'ltd'."),
             ),
         }
 
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every selected operation runs in OPERATION_ORDER, never in the order 'operations' "
-                "names them, because the operations enable one another: accent folding and "
-                "punctuation removal are what make a configured suffix recognisable, so both have to "
-                "run before suffix stripping for the tool to stay idempotent. A value that reduces to "
-                "nothing is written as null, never as an empty string."
+                "Use normalize_text to make a matching key from names people typed, so that "
+                "'ACME Ltd.' and 'acme' can be joined. It adds the cleaned key as a new column at the "
+                "end of `rows`. The clean-ups are, in the order they always run: fold_accents (é to "
+                "e), lower, remove_punctuation, strip_suffixes (the words you list) and "
+                "collapse_whitespace."
             ),
-            examples=(_party_example(), _plain_case_example()),
+            examples=(_plain_case_example(), _party_example()),
             notes=(
-                "'suffixes' carries no built-in words: a jurisdiction's company suffixes are "
-                "the caller's data, not this library's.",
+                "The clean-ups always run in the fixed order above, not the order listed, so running "
+                "the step twice gives the same key as running it once.",
+                "Accents and punctuation go before suffixes so that 'SARL' and 'Ltd.' are recognised "
+                "as the suffixes 'sarl' and 'ltd'.",
+                "There is no built-in suffix list. Company suffixes differ by country, so you list them.",
+                "Suffixes are whole words at the end, matched ignoring case, and removed again until "
+                "none is left: 'Acme Pty Ltd' loses both.",
+                "Punctuation is deleted, not replaced by a space, so 'A.B.C.' becomes 'abc'.",
+                "Any kind of space counts, including the non-breaking space common in pasted text.",
+                "A name that cleans down to nothing is null, not empty text, so it never matches "
+                "another empty name.",
+                "Listing a clean-up twice is refused. 'suffixes' without 'strip_suffixes', or the "
+                "other way round, is refused.",
+                "The source must be text, and the output name must be new.",
             ),
             field_help={
-                "operations": "Selects which reductions run; OPERATION_ORDER decides the sequence.",
-                "suffixes": "The caller's own suffix words; there is no default list.",
+                "operations": "For example ['lower', 'remove_punctuation', 'collapse_whitespace'].",
+                "suffixes": "For example ['ltd', 'limited', 'inc'].",
             },
         )
 
@@ -202,12 +189,9 @@ def _collapse_whitespace(values: pl.Series, _suffixes: Sequence[str] | None) -> 
 
 
 def _strip_suffixes(values: pl.Series, suffixes: Sequence[str] | None) -> pl.Series:
-    """Strip every configured word that trails the value, case-insensitively and repeatedly.
+    """Remove every listed word from the end of the value, ignoring case, until none is left.
 
-    One pass removes at most one trailing word -- ``"Acme Pty Ltd"`` genuinely carries two -- so the
-    pass repeats until a pass changes nothing, which is also what keeps the operation idempotent on
-    its own: run again on an already-stripped value, the first pass finds nothing to remove and the
-    loop exits immediately.
+    One pass removes one trailing word ('Acme Pty Ltd' has two), so passes repeat until nothing changes.
     """
     alternatives = "|".join(re.escape(word) for word in suffixes or ())
     pattern = rf"(?i)(?:^|\s)(?:{alternatives})\s*$"
@@ -251,16 +235,15 @@ def _party_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="two spellings of one party meet, and pure punctuation reduces to nothing",
+        scenario="make two spellings of one company match, with every clean-up",
         configuration={
             "source": "[party]",
             "output": "party_key",
             "operations": list(OPERATION_ORDER),
             "suffixes": ["ltd", "pty"],
         },
-        explanation="A shouted spelling with a stop and its plain lowercase equivalent both reduce to "
-        "'acme'; a name that is nothing but punctuation reduces to nothing, and is written null "
-        "rather than ''.",
+        explanation="'ACME Ltd.' and 'acme' both become 'acme'. A name of nothing but punctuation cleans down to "
+        "nothing, so it is null, not empty text.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -278,10 +261,9 @@ def _plain_case_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="only case and spacing are asked for, with no suffix list at all",
+        scenario="lower-case names and tidy their spaces",
         configuration={"source": "[party]", "output": "party_key", "operations": ["lower", "collapse_whitespace"]},
-        explanation="'strip_suffixes' is absent from the operation list and 'suffixes' from the configuration, "
-        "which is allowed: the two travel together only when suffix stripping is actually selected.",
+        explanation="Only 'lower' and 'collapse_whitespace' are used, so no 'suffixes' list is needed.",
         inputs=inputs,
         outputs=outputs,
     )

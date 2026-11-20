@@ -1,13 +1,8 @@
 """What a loaded flow is: its steps, the edges between them, and the order they run in.
 
 ``Pipeline`` is the whole flow and ``Step`` is one step as the file wrote it. An edge is a
-``PortRef``: a step id and one of that step's output ports. ``Lane`` and ``Container`` are how the flow
-is drawn and change nothing it computes. The loader in ``loader.py`` builds these; nothing here
-moves a row.
-
-A flow as a data file says *which* tools are wired *how* for a given flow -- a document a person can
-read and change, where changing it changes what a runner actually does. A flow written as functions
-can only be edited by generating functions; a flow written as data is edited by editing it.
+``PortRef``: a step id and one of that step's output ports. ``Lane`` and ``Container`` only change
+how the flow is drawn. The loader builds these objects; nothing here reads or changes data.
 """
 
 import hashlib
@@ -29,7 +24,7 @@ __all__ = ["Container", "Lane", "Pipeline", "PortRef", "Step"]
 
 @dataclass(frozen=True, slots=True)
 class PortRef:
-    """One end of an edge: a step id and one of that step's declared ports, never a step alone."""
+    """One end of an edge: a step id and one of that step's ports. ``str()`` gives ``"step.port"``."""
 
     step: str
     port: str
@@ -40,7 +35,7 @@ class PortRef:
 
 @dataclass(frozen=True, slots=True)
 class Lane:
-    """A swimlane a step may sit in, carried in the same document as the wiring it lays out."""
+    """A horizontal band on the drawn page that steps may sit in, shown in ``order``."""
 
     id: str
     title: str
@@ -49,16 +44,12 @@ class Lane:
 
 @dataclass(frozen=True, slots=True)
 class Container:
-    """A line drawn round some of a lane's steps, with one sentence written on it.
+    """A box drawn round steps that do one job, with a sentence (``title``) saying what the job is.
 
-    Six hundred boxes cannot be read by following them, and a reader after "where does the extract
-    get its header row back" is looking for a job rather than for a tool. So a container says
-    which steps do one job, and the ``title`` says what that job is -- a sentence, because the whole
-    value of the feature is a reader getting one instead of the six boxes it stands over. An id is
-    not a title, and the loader refuses a container that offers only the former.
+    It only changes the drawing, never a frame or a fingerprint. The loader refuses a container
+    with no title.
 
-    It reaches no tool and changes no frame: see :meth:`Pipeline.fingerprint` for why that has to
-    stay true.
+    Why: docs/design/loading-and-running.md#containers
     """
 
     id: str
@@ -67,13 +58,13 @@ class Container:
 
 @dataclass(frozen=True, slots=True)
 class Step:
-    """One step, as authored: its tool, its configuration with parameters resolved and nothing else
-    added, and its inputs as port-to-port edges rather than bare step names.
+    """One step as the file wrote it.
 
-    ``config`` holds no default a template could have filled in: the file a person edits and the
-    object a canvas draws have to stay the same artefact, and a reader seeing a field nobody wrote
-    is how a UI starts lying about what is actually there. Filling defaults is :func:`~.boundary.run_tool`'s
-    job, done at the one moment they are needed.
+    ``config`` has its ``${rules.*}`` references filled in and no defaults added; defaults are
+    filled in when the step runs. ``inputs`` maps each input port to the :class:`PortRef` it reads.
+    ``lane``, ``stage``, ``why`` and ``container`` only affect how the step is shown.
+
+    Why: docs/design/loading-and-running.md#a-step-holds-no-defaults
     """
 
     id: str
@@ -83,20 +74,19 @@ class Step:
     lane: str | None = None
     stage: str | None = None
     why: str | None = None
-    #: The container this step is drawn inside, or ``None`` for a step in none -- which is the state
-    #: every step starts in, and the reason containers can be adopted a stage at a time.
+    #: The container this step is drawn inside, or ``None``.
     container: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Pipeline:
-    """A whole flow: its steps in the order they were authored, its lanes, and the registry it was
-    checked against -- needed by :meth:`column_references`, :meth:`container_outputs` and
-    :meth:`fingerprint`, which have to ask a tool for its template and its ports. A pipeline built in
-    code without a registry is given the shipped one.
+    """A whole loaded flow: its steps in file order, its lanes, containers, and tool registry.
 
-    ``registry`` does not participate in equality: two specs loaded from the same document against
-    the same catalog are the same pipeline, whatever registry object happened to answer for it.
+    Get one from :func:`read_pipeline` or :func:`load_pipeline` and pass it to
+    :func:`run_pipeline`. Its methods answer questions about the wiring: :meth:`step`,
+    :meth:`order`, :meth:`consumers`, :meth:`fingerprint`, the container methods and more. A
+    pipeline built in code without a registry uses the shipped one. Two pipelines are equal when
+    their steps, lanes and containers are; the registry is not compared.
     """
 
     name: str
@@ -104,13 +94,13 @@ class Pipeline:
     lanes: tuple[Lane, ...] = ()
     containers: tuple[Container, ...] = ()
     registry: ToolRegistry | None = field(default=None, compare=False, repr=False)
-    # Two lookups built once, so finding a step or the readers of a port does not scan every step.
+    # Lookups built once: step by id, and the readers of each port.
     _by_id: Mapping[str, Step] = field(init=False, compare=False, repr=False)
     _readers: Mapping[PortRef, tuple[PortRef, ...]] = field(init=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.registry is None:
-            # Built in code without a registry: use the shipped catalog, as the loader does.
+            # Built in code without a registry: use the shipped one.
             object.__setattr__(self, "registry", REGISTRY)
         by_id: dict[str, Step] = {}
         for step in self.steps:
@@ -123,14 +113,14 @@ class Pipeline:
         object.__setattr__(self, "_readers", MappingProxyType({ref: tuple(found) for ref, found in readers.items()}))
 
     def step(self, step_id: str) -> Step:
-        """The step named ``step_id``, or a refusal naming the closest ids there are."""
+        """Return the step named ``step_id``. Refuse an unknown id, suggesting the closest ones."""
         found = self._by_id.get(step_id)
         if found is not None:
             return found
         raise PipelineError(f"no step {step_id!r}; {name_choices(step_id, self._by_id)}")
 
     def container(self, container_id: str) -> Container:
-        """The container named ``container_id``, or a refusal naming the ones there actually are."""
+        """Return the container named ``container_id``. Refuse an unknown id, listing the real ones."""
         for candidate in self.containers:
             if candidate.id == container_id:
                 return candidate
@@ -138,21 +128,15 @@ class Pipeline:
         raise PipelineError(f"no container {container_id!r}; {name_choices(container_id, declared, 'containers')}")
 
     def container_members(self, container_id: str) -> tuple[str, ...]:
-        """The steps in ``container_id``, in the order they were declared.
-
-        Declaration order, because that is the order the file reads in and the only order a
-        container has. A set would draw the same container over a different arrangement on every
-        render, and a reader comparing two renders would be comparing two drawings.
-        """
+        """Return the ids of the steps in ``container_id``, in file order, so every drawing is the same."""
         self.container(container_id)
         return tuple(step.id for step in self.steps if step.container == container_id)
 
     def container_inputs(self, container_id: str) -> tuple[PortRef, ...]:
-        """Every port produced outside ``container_id`` and read inside it, named once.
+        """Return every port made outside ``container_id`` and read inside it, each listed once.
 
-        Once however many members read it: two steps taking the same upstream port are one lot of
-        rows arriving, and counting it twice reports a container that invented rows. A port produced
-        by a member is the container's own plumbing and is no part of what entered it.
+        A port read by two steps in the container is still one set of rows coming in, so it is
+        listed once. Ports made by steps inside the container are not inputs to it.
         """
         members = set(self.container_members(container_id))
         entered: list[PortRef] = []
@@ -165,14 +149,10 @@ class Pipeline:
         return tuple(entered)
 
     def container_outputs(self, container_id: str) -> tuple[PortRef, ...]:
-        """Every port of a member read by a non-member, or by nobody at all.
+        """Return every port of a step in ``container_id`` that a step outside reads, or nothing reads.
 
-        The second half is the one that is easy to leave out and wrong to leave out: rows that stop
-        at a member's port have still left the container -- they went to a file, to a report, or
-        nowhere -- and a container whose last step is a write would otherwise claim nothing came out
-        of it. What is excluded is the ports used up inside, which is the difference between a figure
-        a reader can check a closed container against and a bigger number that answers to
-        nothing.
+        A port nothing reads still counts as leaving the container, so a container that ends in a
+        write still shows what came out of it. Ports used only inside are left out.
         """
         registry = self.registry if self.registry is not None else REGISTRY
         members = set(self.container_members(container_id))
@@ -187,46 +167,23 @@ class Pipeline:
         return tuple(left)
 
     def fingerprint(self, target: "str | PortRef") -> str:
-        """One string answering "is the configuration that produced this port still the
-        configuration in the file?" -- taken over the step and every step behind it.
+        """Return a hash of the settings that produce ``target``: the step and every step before it.
 
-        ``target`` is a step id, a :class:`PortRef`, or the text ``"step.port"``. A port's
-        fingerprint also covers the port's name, so a cached frame put on the wrong port of a split
-        (its ``true`` frame under ``false``) does not match. For a step with one output port there is
-        nothing to mix up, and the step's fingerprint and its port's are the same string.
+        ``target`` is a step id, a :class:`PortRef`, or ``"step.port"``. If the fingerprint saved
+        with a cached frame still matches, the flow that made the frame has not changed. For a step
+        with several output ports the port name is included too. Each step's ``id``, ``tool``,
+        ``config`` and ``inputs`` are covered; ``lane``, ``stage``, ``why`` and ``container`` are not.
+        Refuses an unknown step or port.
 
-        The closure, not the step alone, because the rows on a port are the product of everything
-        upstream of them: a step whose own config block is untouched produces different rows the
-        moment a filter feeding it keeps different ones, and a hash that could not see that would
-        report a match and hand back yesterday's numbers under today's rules. Four things per step
-        are covered -- ``id``, ``tool``, ``config`` and ``inputs`` -- and ``lane``, ``stage``,
-        ``why`` and ``container`` deliberately are not. None of the four reaches a tool, so a frame
-        produced under one ``why`` is the identical frame under another, and a cache invalidated by
-        an improved comment is a cache nobody trusts, which is to say one everybody works around.
-        ``container`` joins that list for the same reason and one of its own: boxing three steps together
-        is a line drawn on the canvas, and if it threw away every cached frame behind them the first
-        person to tidy the canvas would pay for it with an hour of re-running -- and the second
-        person would not tidy the canvas.
+        It covers the settings, never the data: a frame cached before the source data changed
+        still matches.
 
-        Hashed over a canonical JSON serialisation rather than through :func:`hash`, which is
-        salted per process for strings: the whole use of this string is that it is written down
-        beside a frame in one run and compared in another, and those are two processes. Sorting the
-        keys is what makes a configuration whose keys were retyped in a different order the same
-        configuration, which a mapping has no order to disagree about.
-
-        The limit is the thing to say plainly: this covers configuration, not data. It cannot cover
-        data -- the expensive reads are exactly the ones an author wants to skip, so hashing what
-        they returned would mean performing them, which is the work being avoided. A frame kept from
-        yesterday's database pull matches this fingerprint against today's database, and the number
-        it produces is wrong in a way nothing here can see. See :func:`~.runner.run_pipeline` for
-        what follows from that.
+        Why: docs/design/loading-and-running.md#fingerprints
         """
         step_id, port = self._fingerprint_target(target)
         closure = self.ancestor_closure((step_id,))
 
-        # Sorted by id rather than taken in declaration or dependency order: where a step sits in
-        # the file changes nothing about what it computes, and a hash that moved when somebody
-        # reordered two independent steps would go stale on a tidy-up.
+        # Sorted by id, so reordering steps in the file does not change the fingerprint.
         payload = [
             {
                 "id": step.id,
@@ -241,9 +198,9 @@ class Pipeline:
         return hashlib.sha256(serialised.encode("utf8")).hexdigest()
 
     def _fingerprint_target(self, target: "str | PortRef") -> tuple[str, str | None]:
-        """``(step id, port name to mix in)`` for :meth:`fingerprint`; no port for a one-port step."""
+        """Return ``(step id, port name or None)`` for :meth:`fingerprint`. A one-port step gives None."""
         if isinstance(target, str) and "." not in target:
-            self.step(target)  # a name this pipeline does not have is refused here, in one wording
+            self.step(target)  # refuses an unknown step
             return target, None
         if isinstance(target, str):
             step_id, port = target.split(".", 1)
@@ -260,11 +217,7 @@ class Pipeline:
         return step_id, (port if len(ports) > 1 else None)
 
     def ancestor_closure(self, step_ids: Iterable[str]) -> frozenset[str]:
-        """``step_ids`` and every step that feeds them, however far back, followed through ``inputs``.
-
-        This is what a fingerprint covers and what a run stopped by ``until`` walks. A step id this
-        pipeline does not have is refused by :meth:`step`.
-        """
+        """Return ``step_ids`` and every step that feeds them, however far back. Refuses an unknown id."""
         closure: set[str] = set()
         pending = list(step_ids)
         while pending:
@@ -276,17 +229,17 @@ class Pipeline:
         return frozenset(closure)
 
     def order(self) -> tuple[str, ...]:
-        """Dependency order, ties broken by the order the steps were declared in."""
+        """Return the step ids in the order they run: each after what it reads, otherwise file order."""
         step_ids = tuple(step.id for step in self.steps)
         inputs_by_step = {step.id: step.inputs for step in self.steps}
         return toposort(step_ids, inputs_by_step)
 
     def consumers(self, source: "PortRef") -> tuple["PortRef", ...]:
-        """Every input that is wired to ``source``, in the order the consuming steps were declared."""
+        """Return every input port wired to ``source``, in file order of the reading steps."""
         return self._readers.get(source, ())
 
     def stages(self) -> tuple[str, ...]:
-        """Distinct stages, in the order each is first seen among the steps as declared."""
+        """Return each stage name once, in the order it first appears in the file."""
         seen: list[str] = []
         for step in self.steps:
             if step.stage is not None and step.stage not in seen:
@@ -294,11 +247,9 @@ class Pipeline:
         return tuple(seen)
 
     def column_references(self) -> Mapping[str, Mapping[str, frozenset[str]]]:
-        """``step id -> config field path -> column names``, for whoever holds the frames to check.
+        """Return the columns each step's expressions name: ``{step id: {field path: column names}}``.
 
-        Lifted through :func:`~.config.expression_values` and :func:`~.expr.references`, and nothing
-        more: a step whose template has no expression field, or whose expression fields carry no
-        value, is simply absent -- there is nothing here to publish about it.
+        A step with no expressions is left out.
         """
         registry = self.registry if self.registry is not None else REGISTRY
         result: dict[str, dict[str, frozenset[str]]] = {}
@@ -316,22 +267,11 @@ class Pipeline:
 
 
 def _canonical_scalar(value: Any) -> str:
-    """A configuration value the standard library's JSON encoder has no spelling for, given one.
+    """Write a date or timestamp in a configuration as ISO text for the fingerprint. Refuse anything else.
 
-    Reached for a date or a timestamp, which is what YAML hands back for an unquoted ``2026-04-01``.
-    That cannot arrive through :func:`load_pipeline` today -- measured: every field the catalog
-    declares is typed, none of them is a date, and a bare date in a pipeline or rules file is
-    refused as the wrong type long before anything is fingerprinted. The branch is here for a
-    :class:`Pipeline` assembled in code, which is a published way to build one, and for the day
-    a tool declares a field that is a date. Handling it costs two lines; the alternative is a
-    fingerprint that raises on a spec nothing else objects to.
-
-    Anything else is refused rather than handed to ``str``: ``str`` of an arbitrary object is a repr
-    carrying a memory address, which would differ between the run that wrote a fingerprint down and
-    the run that compares it -- so every cache would report itself stale, and the failure would look
-    like the feature not working rather than like a value nobody can canonically write down.
+    Why: docs/design/loading-and-running.md#values-json-cannot-write
     """
-    if isinstance(value, date):  # a datetime is one of these too; isoformat tells the two apart
+    if isinstance(value, date):  # covers datetime too
         return value.isoformat()
     raise PipelineError(
         f"a configuration holds {type(value).__name__} {value!r}, which has no canonical text form, "
@@ -349,14 +289,13 @@ def toposort(
     step_ids: tuple[str, ...],
     inputs_by_step: Mapping[str, Mapping[str, PortRef]],
 ) -> tuple[str, ...]:
-    """Dependency order over ``step_ids``, ties broken by declaration order; a cycle is refused."""
+    """Return ``step_ids`` in the order they can run, ties in file order. Refuse a cycle, naming it."""
     position = {step_id: index for index, step_id in enumerate(step_ids)}
     dependents: dict[str, list[str]] = {step_id: [] for step_id in step_ids}
     remaining_deps: dict[str, set[str]] = {step_id: set() for step_id in step_ids}
     for step_id in step_ids:
         for edge in inputs_by_step.get(step_id, {}).values():
-            # A step can read two ports of one upstream step. That is one dependency, not two, so
-            # it is recorded once. Recording it twice would put this step in the walk twice.
+            # Two ports read from one step are one dependency; counted twice, the step would run twice.
             if edge.step in position and edge.step not in remaining_deps[step_id]:
                 remaining_deps[step_id].add(edge.step)
                 dependents[edge.step].append(step_id)
@@ -393,11 +332,10 @@ def toposort(
 
 
 def _one_loop(unplaced: list[str], inputs_by_step: Mapping[str, Mapping[str, PortRef]]) -> list[tuple[str, PortRef]]:
-    """One loop among the steps the sort could not place, as ``(step, the edge it reads)`` pairs.
+    """Return one loop among the steps the sort could not place, as ``(step, edge it reads)`` pairs.
 
-    Every unplaced step reads at least one other unplaced step (that is why it could not be placed),
-    so walking upstream along such edges must come back to a step already seen. The steps from that
-    point on are the loop, and nothing that merely depends on it.
+    Each unplaced step reads another unplaced step, so walking upstream must revisit a step. The
+    steps from there on are the loop.
     """
     stuck = set(unplaced)
     seen: dict[str, int] = {}
@@ -409,5 +347,5 @@ def _one_loop(unplaced: list[str], inputs_by_step: Mapping[str, Mapping[str, Por
         walk.append((current, edge))
         current = edge.step
     loop = walk[seen[current] :]
-    # Written in the direction the rows flow: from the step read to the step reading it.
+    # In the direction the rows flow.
     return list(reversed(loop))

@@ -390,7 +390,7 @@ class TestThereIsAWayBackToTheWholeCanvas:
 # The panel is built for the step being opened, not for all six hundred and seventy-two
 # ---------------------------------------------------------------------------
 #
-# Measured on the real page -- 672 steps, output_files/runs/mrr/page.html -- the data panels were
+# Measured on a real client's page of 672 steps, the data panels were
 # 7.76 MB of an 8.98 MB document: 24,937 search boxes and 52,654 header cells, every one of them
 # laid out by the browser before it could paint a single pixel, for the 671 steps the reader was not
 # looking at. The table BODIES were already fetched on demand; the headers and the per-column search
@@ -560,7 +560,7 @@ class TestThePageNoLongerCarriesEveryPanel:
 # Containers: a few dozen titled boxes instead of six hundred and seventy-two
 #
 # The flow this page is really for draws 672 steps. Nobody follows that by reading it. What a reader
-# can follow is a few dozen boxes with sentences on them -- "fetch the crm accounts and put
+# can follow is a few dozen boxes with sentences on them -- "fetch the account list and put
 # the header row back" over the six tools that do it -- opened only when the sentence is not enough.
 #
 # The markup contract these tests pin:
@@ -591,7 +591,7 @@ class TestThePageNoLongerCarriesEveryPanel:
 # the second half matters, because a container ending in a write would otherwise report that nothing
 # came out of it. A port used up inside the box is the container's own plumbing and is counted at
 # neither end, which is the difference between a reader checking a section without opening it and a
-# reader being handed a number that reconciles with nothing.
+# reader being handed a number that agrees with nothing.
 # ---------------------------------------------------------------------------
 
 #: The containers the cases below declare over the fixture flow. Two of its six steps are left in no

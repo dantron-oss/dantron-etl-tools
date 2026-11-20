@@ -1,11 +1,5 @@
-/* Scrollbars, in both spellings: the standard properties, which Firefox honours, and the WebKit
-   pseudo-elements, which Chromium and Safari honour. Neither alone covers a browser a reader might
-   actually be using, and the two cannot express quite the same thing -- so the colours are shared
-   through the same tokens as everything else, and the sizes are stated twice on purpose.
-
-   Deliberately quiet rather than invisible: a pane whose content runs past its edge has to say so,
-   and on a laptop screen with four scrollable regions on it at once, four loud bars are the loudest
-   thing on the page. They darken on hover, which is when a reader is looking for one. */
+/* Scrollbars, in both spellings: the standard properties (Firefox) and the WebKit pseudo-elements
+   (Chromium, Safari). Quiet, darker on hover. */
 * { scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
 *:hover { scrollbar-color:var(--muted) transparent; }
 ::-webkit-scrollbar { width:7px; height:7px; }
@@ -100,38 +94,25 @@ header.top b { color:var(--accent); }
 
 .canvas { background:transparent; border:0; padding:0; margin:0; }
 .band { fill:var(--accent-soft); opacity:.4; }
-/* Drawn last, so the same halo the edge captions use keeps it legible over whatever it lands on
-   -- a container header reaching the first column is the case that made this necessary. */
+/* Drawn last, with the caption halo, so a container header in the same gap cannot hide it. */
 .lane { fill:var(--muted); font:600 9px var(--sans); letter-spacing:.11em; text-transform:uppercase;
   paint-order:stroke; stroke:var(--surface); stroke-width:3px; stroke-linejoin:round; }
-/* A connection is a group, and the group carries the line's colour and weight rather than the paths
-   doing it themselves: a state class on the group then restyles the curve, its hit target and its
-   caption in one place, and they can never light apart. `.wire` declares nothing of its own so that
-   stroke and width inherit -- a declaration on the path would beat anything inherited from the
-   group, and the highlight would silently do nothing. */
+/* The group carries the line's colour and weight, so one state class restyles the line, its hit
+   target and its caption together. `.wire` declares nothing, so it inherits. */
 .edge { fill:none; stroke:var(--muted); stroke-width:1.4; opacity:.75; }
-/* Hidden until its connection is lit. 765 captions at rest is a canvas nobody can read, and
-   most of them answer a question nobody is asking; the row count matters at the moment a
-   reader is following one line, and then it matters a lot. */
+/* Hidden until its connection is lit; hundreds of captions at rest are unreadable. */
 .elab { fill:var(--muted); font:500 9px var(--mono); text-anchor:middle; visibility:hidden; }
 .edge.direct .elab, .edge.upstream .elab, .edge.downstream .elab { visibility:visible; }
 .hit { fill:none; stroke:transparent; stroke-width:14; pointer-events:stroke; cursor:pointer; }
 
-/* Four states, not two. At 672 steps, lighting the lines that touch the chosen tool answers "what
-   is it wired to" and leaves the actual question -- where does this run, three tools further on --
-   as unreadable as before. And the two directions are drawn differently because which way the data
-   runs is what a reader follows a line to find out; three states in one colour light the same
-   pixels as one state would. */
+/* Four states: the chosen step's direct wiring, upstream, downstream, and faded. Direction gets its
+   own colour because which way data runs is what a reader follows a line to learn. */
 .edge.direct { stroke:var(--ink); stroke-width:3.2; opacity:1; }
 .edge.upstream { stroke:var(--accent); stroke-width:2.2; opacity:.95; }
 .edge.downstream { stroke:var(--warn); stroke-width:2.2; opacity:.95; }
 .edge.dim { opacity:.1; }
-/* A lit line is drawn thick and in the same ink the caption is written in, so a caption sitting
-   on top of it disappears into it -- reported from the real canvas as numbers that could not be
-   made out. The fix is contrast, not weight: the caption keeps its ordinary weight and is given
-   a halo of the surface colour, painted UNDER the glyphs (paint-order), so it punches out of
-   whatever runs beneath it. Bolding it made it heavier against a line of the same colour, which
-   is the one change that could not help. */
+/* A caption on a lit line gets a halo of the surface colour painted under the glyphs, so it stays
+   readable on a thick line of the same ink. */
 .edge.direct .elab, .edge.upstream .elab, .edge.downstream .elab {
   fill:var(--ink); paint-order:stroke; stroke:var(--surface); stroke-width:3.5px;
   stroke-linejoin:round; }
@@ -141,71 +122,44 @@ header.top b { color:var(--accent); }
 .node.direct rect { stroke:var(--ink); stroke-width:3; }
 .node.upstream rect { stroke:var(--accent); stroke-width:2.4; }
 .node.downstream rect { stroke:var(--warn); stroke-width:2.4; }
-/* Warning and error are written last on purpose, so that at equal specificity they beat a trace
-   state: what the run had to say about a step is a fact about the data, and a highlight is a
-   question the reader asked a second ago. A warning hidden under a highlight is the swap in the
-   wrong direction, and the reader has no way of knowing anything was covered up.
-   The cost is that a warning node in the upstream chain wears the downstream colour, both being
-   --warn. That is a collision worth carrying rather than solving with a third hue: direction is
-   carried by the CONNECTIONS, which are what a reader follows to ask the question in the first
-   place -- every lit line around a node in the upstream chain is teal, every one around a node in
-   the downstream chain is rust -- and the node's own stroke only confirms what they already say.
-   The stroke width, which a warning leaves alone, still says the node is in the chain at all. */
+/* Warning and error come last so they beat a trace state at equal specificity: what the run said
+   about a step must not be hidden by a highlight. A warning node upstream shares the downstream
+   colour; the connections around it still show direction. */
 .node.warning rect { stroke:var(--warn); }
 .node.error rect { stroke:var(--warn); stroke-width:2.5; }
 .node:hover rect { fill:var(--accent-soft); }
 .node.chosen rect { fill:var(--accent-soft); stroke-width:3; }
 .node { cursor:pointer; }
 
-/* Containers. Open, the outline is a dashed hint round steps a reader is still reading one at a
-   time -- a solid box at the weight of a node would read as another tool. It draws no fill at all,
-   because the connections are written before it and a filled rectangle would paint over every line
-   that crosses the section.
-
-   Closed, the same container is the header bar alone: its steps are put away, the outline goes with
-   them, and the bar takes a fill because it now stands for what is underneath it rather than round
-   it. The sentence and the counts are drawn in the header, which is inside both rectangles, so they
-   survive whichever state the container is in -- a box with nothing written on it is a section of
-   the flow that has become unreadable, and that is the failure this arrangement exists to avoid. */
+/* Containers. Open: a dashed outline with no fill, so it neither looks like a tool nor paints over
+   connections. Closed: the header bar alone, filled. The title and counts are in the header, so
+   they show in both states. */
 .gbox { fill:none; stroke:var(--accent); stroke-width:1.2; stroke-dasharray:5 4; opacity:.7; }
 .gpill { fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.2; }
 .gtitle { fill:var(--ink); font:600 12px var(--sans); cursor:pointer; }
-/* Painted, therefore clickable, and transparent, therefore invisible. `fill:none` would look
-   identical and take no clicks at all, which is what the container's own outline does. */
+/* Painted, so clickable; transparent, so invisible. `fill:none` would take no clicks. */
 .ghit { fill:transparent; cursor:pointer; }
-/* The title of the container a reader has clicked into. The backing is a halo on the glyphs
-   themselves -- the same one the lane names and the connection captions already earn -- so it
-   covers the sentence for its whole length, including the part that runs past the container's own
-   box, which most titles do: a one-column container is 200px wide and its title is routinely twice
-   that. A rectangle would have to be measured in the browser and would still have to be told where
-   the sentence ends. Nothing here restates the font or moves the text: a title that changed size or
-   jumped a pixel on its way forward would read as a different title. */
-/* Nothing until a reader clicks into the container. `display` rather than an opacity, so a hidden
-   plate is not a target sitting over the connections that pass behind it. */
+/* A raised container title: a halo on the glyphs covers the whole sentence, even past the box,
+   without measuring it. Font and position do not change. */
+/* Hidden with `display`, so a hidden plate takes no clicks from the connections behind it. */
 .gplate { display:none; }
 .gplate.lifted { display:block; fill:var(--surface); stroke:var(--accent); stroke-width:1.3; }
-/* A halo as well as the plate, kept small. The plate is the block; this only covers the few pixels
-   where the estimate that sized it might fall short of a wide letter, and being the plate's own
-   fill colour it disappears into it rather than reading as a second edge. */
+/* A small halo in the plate's colour covers where the size estimate falls short of a wide letter. */
 .gtitle.lifted { paint-order:stroke; stroke:var(--surface); stroke-width:5px;
   stroke-linejoin:round; stroke-linecap:round; }
-/* The container being read. Its outline goes solid and full strength while every other one stays
-   dashed and faint, so the box the raised sentence belongs to is obvious -- a title lifted clear of
-   a crowded canvas otherwise floats with nothing saying which box it came off. No fill: a filled
-   container would sit over every connection crossing it and take the clicks that light those. */
+/* The container being read gets a solid outline, so the raised title's box is obvious. No fill, so
+   connections crossing it stay clickable. */
 .group.reading .gbox { stroke-width:2.4; stroke-dasharray:none; opacity:1; }
 .gcount { fill:var(--muted); font:500 10px var(--mono); }
 .gctl { cursor:pointer; }
 .gctl rect { fill:var(--surface); stroke:var(--accent); stroke-width:1.2; }
 .gctl text { fill:var(--accent); font:700 13px var(--sans); text-anchor:middle; }
-/* Which of the two states is drawn, said in the sheet rather than by moving anything on the canvas:
-   the steps are children of the container, so closing one is a single class on a single element. */
+/* Open or closed is one class on the container, since its steps are its children. */
 .group .gpill, .group .gshut { display:none; }
 .group.collapsed .gbox, .group.collapsed .node, .group.collapsed .gopen { display:none; }
 .group.collapsed .gpill, .group.collapsed .gshut { display:block; }
-/* A connection with both ends inside a closed container is that container's own plumbing, and goes
-   away with it. One with an end outside is how the rest of the flow reaches the section: it stays,
-   re-pointed at the bar. */
+/* A connection with both ends inside a closed container goes away with it; one with an end outside
+   stays, re-pointed at the bar. */
 .edge.gone { display:none; }
 .nid { fill:var(--ink); font:600 12px var(--mono); }
 .ntool { fill:var(--muted); font:500 10px var(--sans); }
@@ -257,17 +211,11 @@ table.data input.flt { width:100%; min-width:5.5rem; box-sizing:border-box; font
 table.data input.flt:focus { outline:2px solid var(--accent); outline-offset:-1px; }
 table.data tr.flts th { padding:.2rem .5rem .4rem; border-bottom:1px solid var(--line); }
 table.data tbody tr.hide { display:none; }
-/* The status column. Narrow, because it is one mark per row and the data is what the reader came
-   for; centred, because a column of single marks read down the edge of a table is how a reader
-   finds the flagged rows without reading any of them. */
+/* The status column: narrow and centred, so flagged rows can be found by scanning down its edge. */
 table.data th.lvl, table.data td.lvl { width:1%; text-align:center; white-space:nowrap; }
 table.data th.lvl select { font:400 .72rem var(--mono); color:var(--ink); background:var(--ground);
   border:1px solid var(--line); border-radius:4px; padding:.12rem .3rem; }
-/* Three levels, drawn three ways, and never by the glyph alone: a tick and a cross at 12px on a
-   dense table are two marks of the same weight in the same colour, and the row that matters is the
-   one a reader has to be able to pick out while scrolling. The cell also carries the level and its
-   reason as text a browser can announce, which is the same distinction made for a reader who is not
-   looking at the screen at all. */
+/* Three levels drawn three ways, not by glyph alone, and announced as text for screen readers. */
 table.data td.lvl.ok { color:var(--muted); }
 table.data td.lvl.warning { color:var(--warn); font-weight:700; background:var(--warn-soft); }
 table.data td.lvl.error { color:var(--surface); font-weight:700; background:var(--warn); }

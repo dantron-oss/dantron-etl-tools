@@ -1,30 +1,9 @@
-"""Filter: one input port, two output ports, and nothing dropped between them.
+"""Filter: split rows onto `true` and `false` by a condition, keeping every row.
 
-A step that only ever produced the rows that matched would make the rows it discarded stop being
-data at all -- a number a downstream reader reconstructs afterwards with an anti-join, if they
-remember to. So Filter routes every row onto exactly one of two named ports, ``true`` and ``false``,
-after the value the predicate took, and the row-conservation invariant this buys --
-``true.height + false.height == rows.height``, always -- is the reason there are two output ports
-here rather than one.
+A row whose condition is null goes to `false` unless `nulls: include`. A condition that does not
+give true or false is refused before any row is read.
 
-A predicate is three-valued, not two: a comparison against a missing value is null, matching the
-query engine underneath rather than folk intuition, and a null row goes to ``false`` by default
-because that is the choice that surprises nobody reading a plain filter. ``nulls: "include"`` sends
-it to ``true`` instead. There is no third port for it -- the distinction is one step away downstream,
-``[column] is null`` against the ``false`` port, and a third output would put an edge that is almost
-always empty on every flow that uses this tool. The enum is spelled ``"exclude"`` / ``"include"``
-rather than the more obvious ``"false"`` / ``"true"``, because a configuration is a YAML file, and
-YAML turns an unquoted ``true`` or ``false`` into a boolean before this module ever sees it -- an
-author writing ``nulls: true`` would be refused with a type error that has nothing to do with what
-they meant.
-
-A predicate that is not a condition is refused before a row is read, and the refusal names the
-column: ``[amount]`` on a numeric column compiles as an expression -- it is exactly how a column
-reference is written -- but it is not something a row can leave on ``true`` or ``false`` for, and
-handed to the query engine as a filter it would raise about a dtype from a library the author has
-never heard of. A bare boolean column, by contrast, *is* a valid predicate as written, because a
-plain status filter is one of the real uses of this tool; the check is on the dtype the predicate
-produces, not on the shape of the expression that produced it.
+Why: docs/design/tools.md#filter
 """
 
 from collections.abc import Mapping
@@ -46,12 +25,11 @@ _NULLS_ENUM: Final[tuple[str, ...]] = ("exclude", "include")
 
 
 class Filter:
-    """Route every row of ``rows`` onto ``true`` or ``false`` by a predicate; nothing is dropped."""
+    """Send each row of `rows` to `true` or `false` by a condition. No row is dropped."""
 
     name = "filter"
-    description = "Split rows onto `true` and `false` ports by a predicate, keeping every row."
-    # "preparation" rather than "transform": this tool selects among the rows it was given
-    # and computes nothing, which is what it shares with the two tools it sits beside.
+    description = "Split rows in two by a condition: rows that meet it, and rows that do not."
+    # It selects rows and computes nothing, like the other preparation tools.
     category = "preparation"
     input_ports = ("rows",)
     output_ports = ("true", "false")
@@ -60,14 +38,13 @@ class Filter:
         return {
             "predicate": ConfigField(
                 type="expression",
-                description="The whole condition a row is tested against; no column/operator/value "
-                "structure sits beside it.",
+                description="The condition each row is tested against, such as '[amount] > 0'.",
                 required=True,
             ),
             "nulls": ConfigField(
                 type="string",
-                description="Where a row whose predicate is null goes: 'exclude' (default, joins "
-                "'false') or 'include' (joins 'true').",
+                description="Where a row goes when a null leaves the condition undecided: "
+                "'exclude' sends it to `false`, 'include' to `true`.",
                 default="exclude",
                 enum=_NULLS_ENUM,
             ),
@@ -76,32 +53,35 @@ class Filter:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every row leaves on exactly one of `true` or `false`, so the pair of ports together "
-                "is always the input: nothing a flow routes downstream from here needs an anti-join "
-                "to recover what this tool discarded."
+                "Use filter to split a table by a condition, such as amount above zero or status equal "
+                "to 'active'. Rows that meet the condition go to `true`; all the others go to `false`. "
+                "No row is dropped, so the two ports together always hold every input row. Use "
+                "`false` to check or report what was left out."
             ),
             examples=(_plain_example(), _null_routing_example()),
             notes=(
-                "A null predicate is not the same as a false one: 'nulls' decides where the "
-                "could-not-tell rows go, and defaults to the false port so a plain filter behaves the "
-                "way the query engine already does.",
-                "A not-a-number value (what 0/0 gives) compares as larger than every number and "
-                "equal to itself, so '[ratio] > 0.5' sends it to 'true'. Guard a division with "
-                "case_when if that matters.",
+                "A condition on a null value is neither true nor false. 'nulls' decides where those "
+                "rows go, and by default they go to `false`, as with SQL's WHERE.",
+                "To route null rows separately, filter the `false` port again on '[column] is null'.",
+                "A true/false column can be the whole condition, such as '[is_active]'.",
+                "A condition that does not give true or false, such as '[amount]' on a number "
+                "column, is refused before any row is read.",
+                "A not-a-number value (what 0/0 gives) counts as larger than every number and equal to "
+                "itself, so '[ratio] > 0.5' sends it to `true`. Guard a division with case_when if "
+                "that matters.",
             ),
+            field_help={
+                "predicate": "For example: [status] = 'active' and [amount] > 0. It is one "
+                "expression; the command's 'functions' list shows what it may use.",
+                "nulls": "Leave it as 'exclude' unless rows with a missing value should be kept.",
+            },
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
         return None
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Compile the predicate against the incoming schema, and refuse it if it is not a condition.
-
-        Both refusals a predicate can earn -- a column that is not there, and an expression that
-        does not produce a truth value -- are answers the schema alone can give, so they belong
-        here rather than in ``execute``: an author is told before any row moves, and told it as a
-        problem with their configuration rather than as a tool that failed while running.
-        """
+        """Refuse a condition that names a missing column or does not give true or false."""
         compile_predicate_for(inputs["rows"], config["predicate"], "predicate")
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
@@ -123,7 +103,7 @@ def _plain_example() -> WorkedExample:
     return WorkedExample(
         scenario="keep only rows with a positive amount",
         configuration={"predicate": "[amount] > 0"},
-        explanation="Every row with a positive amount joins 'true'; the rest, including a zero amount, join 'false'.",
+        explanation="Rows with a positive amount go to 'true'. The rest, including the zero, go to 'false'.",
         inputs=inputs,
         outputs=outputs,
     )
@@ -138,10 +118,10 @@ def _null_routing_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="a missing status is routed to 'true' by request",
+        scenario="keep rows with a missing status along with the active ones",
         configuration={"predicate": "[status] = 'active'", "nulls": "include"},
-        explanation="The row with no status cannot be tested, so it would join 'false' by default; "
-        "'nulls: include' sends it to 'true' instead, without moving the row that is genuinely closed.",
+        explanation="The row with no status cannot be tested, so by default it would go to 'false'. "
+        "'nulls: include' sends it to 'true' instead. The closed row still goes to 'false'.",
         inputs=inputs,
         outputs=outputs,
     )

@@ -20,7 +20,7 @@ def _refusal(text: str, columns=None) -> str:
 
 class TestAHashIsNotAComment:
     def test_a_note_after_a_hash_is_refused_instead_of_dropping_the_rest(self) -> None:
-        message = _refusal("[status] = 'PAID'      # only settled invoices and [amount] > 0")
+        message = _refusal("[status] = 'PAID'      # only settled bills and [amount] > 0")
         assert "'#' is not a comment" in message and "why" in message
 
     def test_a_hash_inside_quotes_or_a_column_name_is_kept(self) -> None:

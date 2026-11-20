@@ -203,7 +203,7 @@ class TestRoutes:
         from dantron_etl.preview import PAGE_NAME, persist_panels, serve
 
         root = tmp_path_factory.mktemp("served") / "runs"
-        for name, title in (("mrr", "Monthly recurring revenue"), ("loads", "Nightly load")):
+        for name, title in (("sales", "Monthly sales"), ("loads", "Nightly load")):
             persist_ports({"read.rows": _entries()}, root / name)
             persist_panels({step: _panel(name, step) for step in ("read", "shape")}, root / name)
             (root / name / PAGE_NAME).write_text(f"<title>{title}</title>", encoding="utf-8")
@@ -217,7 +217,7 @@ class TestRoutes:
         """The whole point: two flows for one client, read side by side, from one service."""
         import urllib.request
 
-        for name, title in (("mrr", "Monthly recurring revenue"), ("loads", "Nightly load")):
+        for name, title in (("sales", "Monthly sales"), ("loads", "Nightly load")):
             with urllib.request.urlopen(f"{served}/{name}/", timeout=5) as answer:
                 assert answer.status == 200
                 assert title.encode() in answer.read()
@@ -241,9 +241,9 @@ class TestRoutes:
         """
         import urllib.request
 
-        with urllib.request.urlopen(f"{served}/mrr", timeout=5) as answer:
+        with urllib.request.urlopen(f"{served}/sales", timeout=5) as answer:
             assert answer.status == 200
-            assert answer.url.endswith("/mrr/")
+            assert answer.url.endswith("/sales/")
 
     def test_the_root_lists_every_run_that_has_been_written(self, served: str) -> None:
         """A reader who arrives without a flow in mind is shown what there is rather than a refusal."""
@@ -252,9 +252,9 @@ class TestRoutes:
         with urllib.request.urlopen(served + "/", timeout=5) as answer:
             page = answer.read().decode()
 
-        assert "Monthly recurring revenue" in page
+        assert "Monthly sales" in page
         assert "Nightly load" in page
-        assert 'href="/mrr/"' in page
+        assert 'href="/sales/"' in page
 
     def test_an_unknown_run_says_which_runs_there_are(self, served: str) -> None:
         import json
@@ -266,7 +266,7 @@ class TestRoutes:
 
         body = json.loads(caught.value.read())
         assert "nowhere" in body["error"]
-        assert "mrr" in body["error"] and "loads" in body["error"]
+        assert "sales" in body["error"] and "loads" in body["error"]
 
     def test_a_steps_panel_is_handed_over_as_the_markup_it_was_written_as(self, served: str) -> None:
         """The reason the route exists: the page asks for one step's panel and puts it straight in.
@@ -277,10 +277,10 @@ class TestRoutes:
         """
         import urllib.request
 
-        with urllib.request.urlopen(f"{served}/mrr/api/panel?step=read", timeout=5) as answer:
+        with urllib.request.urlopen(f"{served}/sales/api/panel?step=read", timeout=5) as answer:
             assert answer.status == 200
             assert "text/html" in answer.headers["Content-Type"]
-            assert answer.read().decode("utf-8") == _panel("mrr", "read")
+            assert answer.read().decode("utf-8") == _panel("sales", "read")
 
     def test_a_panel_is_answered_by_the_run_it_was_asked_of(self, served: str) -> None:
         """Two flows sharing a step name is ordinary; one answering for the other is not.
@@ -291,7 +291,7 @@ class TestRoutes:
         """
         import urllib.request
 
-        for name in ("mrr", "loads"):
+        for name in ("sales", "loads"):
             with urllib.request.urlopen(f"{served}/{name}/api/panel?step=read", timeout=5) as answer:
                 assert answer.read().decode("utf-8") == _panel(name, "read")
 
@@ -307,7 +307,7 @@ class TestRoutes:
         import urllib.request
 
         with pytest.raises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(f"{served}/mrr/api/panel?step=nowhere", timeout=5)
+            urllib.request.urlopen(f"{served}/sales/api/panel?step=nowhere", timeout=5)
 
         assert 400 <= caught.value.code < 500, "a step that does not exist is the caller's mistake, not a fault"
         body = json.loads(caught.value.read())
@@ -330,7 +330,7 @@ class TestRoutes:
         import urllib.request
 
         try:
-            with urllib.request.urlopen(f"{served}/mrr/api/panel?step=../loads/read", timeout=5) as answer:
+            with urllib.request.urlopen(f"{served}/sales/api/panel?step=../loads/read", timeout=5) as answer:
                 served_back = answer.read().decode("utf-8")
         except urllib.error.HTTPError as refused:
             assert 400 <= refused.code < 500, "a step id that climbs out of the run is a refusal, not a fault"
@@ -371,10 +371,10 @@ class TestDiscovery:
         from dantron_etl.preview import PAGE_NAME, discover
 
         root = tmp_path / "runs"
-        persist_ports({"read.rows": _entries()}, root / "mrr")
-        (root / "mrr" / PAGE_NAME).write_text("<title>Monthly recurring revenue</title>", encoding="utf-8")
+        persist_ports({"read.rows": _entries()}, root / "sales")
+        (root / "sales" / PAGE_NAME).write_text("<title>Monthly sales</title>", encoding="utf-8")
 
-        assert discover(root)[0].title == "Monthly recurring revenue"
+        assert discover(root)[0].title == "Monthly sales"
 
     def test_a_run_with_no_page_falls_back_to_its_directory_name(self, tmp_path: Path) -> None:
         """Ports written without a page are still reachable through the API rather than invisible."""
@@ -494,16 +494,16 @@ class TestAStepIdIsNotAFilename:
 
         steps = ["totals & rest", "totals", "a+b", "hash#mark"]
         root = tmp_path / "runs"
-        persist_ports({"read.rows": _entries()}, root / "mrr")
-        persist_panels({step: _panel("mrr", step) for step in steps}, root / "mrr")
+        persist_ports({"read.rows": _entries()}, root / "sales")
+        persist_panels({step: _panel("sales", step) for step in steps}, root / "sales")
 
         server = serve(root, host="127.0.0.1", port=0)
         try:
-            served = f"http://127.0.0.1:{server.server_address[1]}/mrr/api/panel?step="
+            served = f"http://127.0.0.1:{server.server_address[1]}/sales/api/panel?step="
             for step in steps:
                 asked = served + urllib.parse.quote(step, safe="")
                 with urllib.request.urlopen(asked, timeout=5) as answer:
-                    assert answer.read().decode("utf-8") == _panel("mrr", step), (
+                    assert answer.read().decode("utf-8") == _panel("sales", step), (
                         f"{step!r} was answered with another step's panel"
                     )
         finally:

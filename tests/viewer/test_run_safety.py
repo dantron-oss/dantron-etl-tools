@@ -562,16 +562,16 @@ class TestEntitiesRoundTrip:
 # 7. A related-key port that cannot be narrowed is refused, not shown whole
 # ---------------------------------------------------------------------------
 
-LINES = pl.DataFrame({"party": ["P1", "P2", "P1"], "invoice": ["I1", "I2", "I3"]})
-NO_PARTY = pl.DataFrame({"invoice": ["I1", "I2", "I3"], "amount": [1, 2, 3]})
-INVOICES = pl.DataFrame({"invoice": ["I1", "I2", "I3"], "total": [10, 20, 30]})
-NO_INVOICE = pl.DataFrame({"total": [10, 20, 30]})
+LINES = pl.DataFrame({"party": ["P1", "P2", "P1"], "bill": ["I1", "I2", "I3"]})
+NO_PARTY = pl.DataFrame({"bill": ["I1", "I2", "I3"], "amount": [1, 2, 3]})
+BILLS = pl.DataFrame({"bill": ["I1", "I2", "I3"], "total": [10, 20, 30]})
+NO_BILL = pl.DataFrame({"total": [10, 20, 30]})
 
 
 @pytest.fixture
 def related_store(tmp_path: Path) -> PortStore:
     persist_ports(
-        {"lines.rows": LINES, "loose.rows": NO_PARTY, "invoices.rows": INVOICES, "bare.rows": NO_INVOICE}, tmp_path
+        {"lines.rows": LINES, "loose.rows": NO_PARTY, "bills.rows": BILLS, "bare.rows": NO_BILL}, tmp_path
     )
     return PortStore(tmp_path)
 
@@ -580,9 +580,9 @@ class TestRelatedKeyRefusals:
     @pytest.mark.parametrize(
         ("port", "origin", "key"),
         [
-            ("invoices.rows", "loose.rows", "invoice"),  # the origin names no party
-            ("invoices.rows", "lines.rows", "number"),  # the key is missing at the origin
-            ("bare.rows", "lines.rows", "invoice"),  # the key is missing at the port itself
+            ("bills.rows", "loose.rows", "bill"),  # the origin names no party
+            ("bills.rows", "lines.rows", "number"),  # the key is missing at the origin
+            ("bare.rows", "lines.rows", "bill"),  # the key is missing at the port itself
         ],
     )
     def test_a_via_port_that_cannot_be_narrowed_refuses_naming_the_port(

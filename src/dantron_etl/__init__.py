@@ -1,17 +1,13 @@
-"""A generic, client-agnostic data-transformation tool library.
+"""A library of generic data transformation tools, wired together by a YAML pipeline file.
 
-This package provides small, composable transformation tools (filter, join, group-by, and similar
-building blocks) that any pipeline can assemble into a larger data-transformation flow, regardless
-of which system produced the data or which system consumes it. It is destined to be extracted into
-its own standalone distribution, installable and reusable outside of the repository it started in.
+Everything needed to load and run a flow is importable from here::
 
-The one rule that governs everything in this package: it must never depend on code belonging to
-the application that happens to house it today, because this package is meant to ship, unmodified,
-into other, unrelated repositories.
+    flow = read_pipeline("pipelines/sales.yaml")
+    trace = run_pipeline(flow)
+    trace.frame("total_by_month.rows")
 
-Everything needed to load and run a flow is importable from here: ``read_pipeline``,
-``run_pipeline``, what a run hands back, the catalog, and the errors. A tool author imports from
-the ``authoring`` module instead.
+You also get what a run hands back, the tool catalog (``REGISTRY``, ``get_tool``), focus on one
+entity, and the errors, all under ``ToolError``. A tool author imports from ``authoring`` instead.
 """
 
 from . import tools
@@ -36,7 +32,7 @@ from .runner import run_pipeline
 from .spec import Pipeline, PortRef, Step
 from .trace import CachedFrame, ColumnCheckError, PipelineTrace, StepEvent, StepFailedError
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",

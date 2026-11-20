@@ -1,18 +1,9 @@
-"""RegexExtractGroups: every named part of one pattern, read from one column in a single pass.
+"""RegexExtractGroups: read every named group of one pattern out of a text column.
 
-Extracting a single group out of a piece of text is already ``regex_extract()`` in the expression
-language, and a tool that only did that would be a worse spelling of a function that already
-exists. What earns this tool its place is a property an expression cannot have: a pattern with
-several named groups produces several columns from one pass over the text, and therefore makes one
-decision per row rather than one decision per group. A row that does not match the whole pattern is
-null in every group, never in some: a pattern that half-matched does not leave half its groups
-filled. On a match, a group the pattern itself makes optional (with `?`, or as one side of an
-alternative) can still be null, because the match did not need it.
+Each named group becomes a text column. A row that does not match is null in every group. With
+`all_matches`, every match becomes its own row.
 
-The output columns are never configured separately from the pattern: they are the pattern's own
-named groups, read off the engine that will actually run it, in the order the pattern declares them.
-Two places to write the same names is two places for them to disagree, and the pattern is the one
-that decides.
+Why: docs/design/tools.md#regex_extract_groups
 """
 
 import re
@@ -41,10 +32,10 @@ _ROW_COLUMN: Final[str] = "__regex_extract_groups_row__"
 
 
 class RegexExtractGroups:
-    """Extract every named group of ``pattern`` out of ``source``, appended as text columns."""
+    """Extract every named group of `pattern` from `source` into new text columns."""
 
     name = "regex_extract_groups"
-    description = "Extract a pattern's named groups from one column at once, all null together on a miss."
+    description = "Pull several pieces out of a text column into new columns, using a pattern."
     category = "text"
     input_ports = ("rows",)
     output_ports = ("rows",)
@@ -53,35 +44,32 @@ class RegexExtractGroups:
         return {
             "source": ConfigField(
                 type="expression",
-                description="The text the pattern is matched against.",
+                description="The text to search, such as '[note]'.",
                 required=True,
             ),
             "pattern": ConfigField(
                 type="string",
-                description="A regular expression whose named groups become the output columns, in "
-                "pattern order. An unnamed capturing group is refused; write (?:...) for one that "
-                "need not be captured.",
+                description="A regular expression with named groups, written (?P<name>...). Each "
+                "group becomes a column of that name.",
                 required=True,
                 non_empty=True,
             ),
             "position_column": ConfigField(
                 type="string",
-                description="Name for an extra column carrying how far into the text the pattern "
-                "matched, counted from zero, and null where it did not. Left out, no such column.",
+                description="Optional: the name of a column for where the match starts in the text, "
+                "counted from 0, or null where nothing matched.",
                 required=False,
                 default=None,
             ),
             "all_matches": ConfigField(
                 type="boolean",
-                description="When true, every match in the text becomes its own row, not only the "
-                "first. A row whose text matches nothing is kept once, with every group null.",
+                description="Set true to give every match in the text its own row, not only the first.",
                 required=False,
                 default=False,
             ),
             "match_number_column": ConfigField(
                 type="string",
-                description="Name for the column numbering each match from 1, in the order the text "
-                "states them. Required with all_matches, and refused without it.",
+                description="With all_matches: the name of a column numbering each match from 1.",
                 required=False,
                 default=None,
             ),
@@ -90,44 +78,48 @@ class RegexExtractGroups:
     def help(self) -> ToolHelp:
         return ToolHelp(
             detailed_description=(
-                "Every named group of `pattern` becomes a text column, appended after the input "
-                "columns in the order the pattern declares them. A row that does not match the "
-                "whole pattern is null in every group, never in some. On a match, a group the "
-                "pattern makes optional (with '?', or as one side of an alternative) can still be "
-                "null, because the match did not need it. "
-                "With `all_matches`, every match in the text becomes its own row."
+                "Use regex_extract_groups to pull several pieces out of one text column at once, "
+                "such as a prefix and a number from 'INV-1042', or the months and years from 'Jan "
+                "2026 to Mar 2026'. Each named group in the pattern becomes a new text column at the "
+                "end of `rows`, in the pattern's order. With all_matches, every match in the text "
+                "becomes its own row. For one piece, regex_extract in a formula is simpler."
             ),
-            examples=(_period_example(), _code_example(), _every_match_example()),
+            examples=(_code_example(), _period_example(), _every_match_example()),
             notes=(
-                "There is no field listing the output column names beside the pattern: they are read "
-                "off the pattern's own named groups, so there is nowhere for the two to disagree.",
-                "'position_column' exists for flows that try several patterns and keep whichever "
-                "matched earliest in the text. Without it, a flow can tell that two patterns both "
-                "matched but not which one the text states first, and 'first stated' is usually what "
-                "a reader means: a line names the term it is billing for before it names any other.",
-                "The offset counts bytes, not characters, so on text carrying anything outside plain "
-                "ASCII it is larger than the position a person would count to. Compare two offsets "
-                "against each other, which is what it is for and is always right; do not read one as "
-                "'the Nth character', and do not slice text with it.",
+                "A row that does not match the whole pattern is null in every group, never in some.",
+                "On a match, a group the pattern makes optional (with '?', or one side of an '|') can "
+                "still be null, because the match did not need it.",
+                "The new columns are always text, even when they look like numbers. Use cast_columns "
+                "afterwards.",
+                "The column names come only from the pattern's named groups; there is no separate "
+                "list to keep in step.",
+                "An unnamed group is refused; write (?:...) for a group that should not become a "
+                "column. A pattern with no named group is refused, and so is a group name already on "
+                "the input.",
+                "The pattern is checked by polars, the engine that runs it, before any row is read.",
+                "'position_column' is for flows that try several patterns and keep whichever matched "
+                "earliest in the text.",
+                "The position counts bytes, not characters, so on text with accents or other "
+                "non-ASCII characters it is larger than a person would count. Compare two positions; "
+                "do not use one to cut text.",
                 "With all_matches, each match becomes a row: the input row repeated, that match's "
-                "groups, and its number counted from 1. Matches are found left to right and do not "
-                "overlap. A row with no match, an empty text or a missing text is kept once, with the "
-                "groups and the number null. No input row is lost.",
-                "With all_matches, Python's own regular expressions find the matches, one distinct "
-                "text at a time. This is a known exception to working on whole columns. The engine can "
-                "list every match, but not every match's groups. Cutting each match out and reading it "
-                "again on its own gives wrong groups when the pattern looks at the text beside the "
-                "match, as \\b and \\B do. So each match is read where it sits in the full text.",
-                "The engine's list of matches is still checked against Python's for every text. A text "
-                "where the two find different matches is refused, not given rows. A pattern that can "
-                "match empty text, such as a*, is the usual cause.",
-                "position_column is refused with all_matches: the match number already says which "
-                "match comes first, and one offset for several matches would be wrong for all but one.",
+                "groups, and its number from 1. Matches are found left to right and do not overlap.",
+                "With all_matches, a row with no match, empty text or no text is kept once, with "
+                "nulls. No input row is lost.",
+                "With all_matches, Python's regular expressions find the groups, one distinct text at "
+                "a time, a known exception to whole-column work. Patterns using \\b or \\B read the "
+                "text around a match, so each match is read in its full text.",
+                "With all_matches, polars' list of matches is checked against Python's for each text, "
+                "and a text where they differ is refused. A pattern that can match empty text, such as "
+                "a*, is the usual cause. A spelling Python does not accept, such as (?<name>...), is "
+                "refused before any row is read.",
+                "With all_matches, 'match_number_column' is required, and 'position_column' is refused: "
+                "one position cannot describe several matches.",
             ),
             field_help={
-                "source": "An expression, so the text matched need not already be a stored column.",
-                "pattern": "Judged by the engine that will run it, not by a second regular-expression "
-                "library that agrees with it only most of the time.",
+                "source": "Any expression giving text, so the text need not be a stored column.",
+                "pattern": "For example (?P<prefix>[A-Z]+)-(?P<number>\\d+). In YAML, put it in double "
+                "quotes and double each backslash.",
             },
         )
 
@@ -152,11 +144,9 @@ class RegexExtractGroups:
             )
 
     def validate_inputs(self, inputs: Ports, config: Mapping[str, Any]) -> None:
-        """Refuse a bad `source` or a bad `pattern` before any row is read.
+        """Refuse a source that is not text, and a pattern polars rejects or that names no usable group.
 
-        `source` has to give text, or the pattern has nothing to run against; `pattern` has to
-        compile in the engine that will actually run it and has to name at least one group that is
-        not already a column, or it would silently produce nothing useful.
+        Also refuses a position or match-number column that clashes with an input column or a group.
         """
         frame = inputs["rows"]
         column, dtype = compiled_dtype(frame, config["source"], "source")
@@ -170,8 +160,7 @@ class RegexExtractGroups:
 
         position = config["position_column"]
         if position is not None:
-            # Held to the same rule as a group name: an output column may not quietly replace an
-            # input, and it may not collide with a group this very pattern is about to produce.
+            # Like a group name, it must be new and must not clash with a group.
             check_output_column(frame, position, "position_column", replace=None)
             if position in names:
                 raise ConfigError(
@@ -204,20 +193,15 @@ class RegexExtractGroups:
         )
         position = config["position_column"]
         if position is not None:
-            # The same pattern against the same text, so the offset belongs to the very match whose
-            # groups were just unnested. It is asked for separately rather than derived, because a
-            # struct of captures has nowhere to put a number that is about the match rather than
-            # about any one group.
+            # Same pattern, same text, so the position belongs to the match whose groups were read.
             extracted = extracted.with_columns(source_expr.str.find(pattern).alias(position))
         return Ports({"rows": extracted})
 
 
 def _group_names(frame: pl.DataFrame, source_expr: pl.Expr, pattern: str) -> tuple[str, ...]:
-    """The pattern's named groups, in pattern order, refusing every way a pattern fails to name its output.
+    """The pattern's named groups, in order, read from polars, which will run the pattern.
 
-    Read off the engine that will actually run the pattern rather than out of Python's own regular
-    expression library, because the two do not judge the same pattern the same way -- a look-behind
-    is exactly the case that decides it, compiling in one and not the other.
+    polars and Python's `re` do not accept the same patterns (look-behind differs), so polars decides.
     """
     try:
         schema = frame.lazy().select(source_expr.str.extract_groups(pattern).alias(_STRUCT_COLUMN)).collect_schema()
@@ -254,10 +238,9 @@ def _group_names(frame: pl.DataFrame, source_expr: pl.Expr, pattern: str) -> tup
 
 
 def _python_pattern(pattern: str, names: tuple[str, ...]) -> re.Pattern[str]:
-    """The pattern compiled by Python's own regular expressions, which all_matches runs it with.
+    """The pattern compiled by Python's `re`, which all_matches uses.
 
-    The engine accepts some spellings Python does not, such as (?<name>...) or a flag in the middle
-    of a pattern. Those are refused here, before any row is read, rather than failing mid-run.
+    polars accepts some spellings Python does not, such as (?<name>...); those are refused here, before any row.
     """
     try:
         compiled = re.compile(pattern)
@@ -277,11 +260,10 @@ def _python_pattern(pattern: str, names: tuple[str, ...]) -> re.Pattern[str]:
 
 
 def _every_match(frame: pl.DataFrame, source_expr: pl.Expr, pattern: str, number: str) -> pl.DataFrame:
-    """One row per match, the input row repeated; one row with nulls where nothing matches.
+    """One row per match, the input row repeated; one row of nulls where nothing matches.
 
-    Each distinct text is searched once with ``re.finditer``, over the whole text, so a group that
-    depends on the text around its match is read correctly. The engine's own list of whole matches
-    is the check: a text where Python finds different matches is refused, not given wrong rows.
+    Each distinct text is searched once with `re.finditer` over the whole text. polars' list of matches
+    is the check: a text where Python finds different matches is refused.
     """
     names = _group_names(frame, source_expr, pattern)
     compiled = _python_pattern(pattern, names)
@@ -363,8 +345,8 @@ def _every_match_example() -> WorkedExample:
             "all_matches": True,
             "match_number_column": "match",
         },
-        explanation="The first note names two references, so it becomes two rows, numbered 1 and 2. "
-        "The second names none and is kept once, with nulls. The third names one.",
+        explanation="The first note names two references, so it becomes two rows, numbered 1 and 2. The second "
+        "names none and is kept once, with nulls. The third names one.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -406,15 +388,14 @@ def _period_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="read a service period out of a free-text note",
+        scenario="read a period out of a free-text note",
         configuration={
             "source": "[note]",
             "pattern": r"(?P<start_month>[A-Za-z]{3}) (?P<start_year>\d{4}) to "
             r"(?P<end_month>[A-Za-z]{3}) (?P<end_year>\d{4})",
         },
-        explanation="The first note matches the whole pattern and fills all four groups. The second "
-        "has a month nobody recognises, so the whole pattern fails to match and all four groups come "
-        "back null together, rather than a start with no end.",
+        explanation="The first note matches the whole pattern, so all four groups are filled. The second has a "
+        "month the pattern does not accept, so nothing matches and all four groups are null together.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,
@@ -436,10 +417,10 @@ def _code_example() -> WorkedExample:
         }
     )
     return WorkedExample(
-        scenario="split a party code into its prefix and its number",
+        scenario="split a code into its prefix and its number",
         configuration={"source": "[code]", "pattern": r"(?P<code_prefix>[A-Z]+)-(?P<code_number>\d+)"},
-        explanation="Both groups are text, even though the number looks numeric: a group is the text "
-        "that matched, and guessing a dtype would make a column's type depend on which rows arrived.",
+        explanation="Both new columns are text, even though the number looks like a number. Use cast_columns "
+        "afterwards if you need a number.",
         inputs=inputs,
         outputs=outputs,
     )

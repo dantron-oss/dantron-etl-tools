@@ -19,12 +19,7 @@ _TEMPLATE_PATH: Final[str] = f"{SCRATCH_TOKEN}/template.xlsx"
 
 @contextmanager
 def _template_setup() -> Iterator[None]:
-    """A curated workbook already on disk, standing in for the pack somebody built by hand.
-
-    Planted with :func:`scratch_path`, which resolves the same ``{scratch}`` token the example's own
-    configuration holds, into the directory :func:`check_tool` opens for the run. Nothing here tears
-    the file back down: the directory is the checker's, and it takes whatever a setup left inside it.
-    """
+    """Put a small hand-made workbook in the example's scratch folder, for the template example."""
     import openpyxl
 
     book = openpyxl.Workbook()
@@ -38,7 +33,7 @@ def _template_setup() -> Iterator[None]:
 
 def plain_write_example() -> WorkedExample:
     return WorkedExample(
-        scenario="write a pack of two tabs where no workbook exists yet",
+        scenario="write two tables to a new workbook, one tab each",
         configuration={
             "path": _PLAIN_PATH,
             "sheets": [
@@ -50,12 +45,10 @@ def plain_write_example() -> WorkedExample:
                 {"port": "detail", "sheet": "Detail"},
             ],
         },
-        explanation="The two entries in 'sheets' are what say this step reads 'figures' and "
-        "'detail'. Each frame lands on its own tab, in the order the entries name them, and "
-        "nothing leaves on an output port. The first tab states one format rule, so every decimal "
-        "column on it is shown as money -- 'amount' reads 10.25 and would read 1,234.57 for a "
-        "figure that long, while the cell keeps every digit that went in. The second tab states "
-        "none, so its cells are shown however the workbook shows them.",
+        explanation="This step reads the two ports named in 'sheets', 'figures' and 'detail', and "
+        "writes each to its own tab in that order. The Figures tab has one format rule, so every "
+        "decimal column shows as money: 'amount' reads 10.25, and the cell keeps every digit. The "
+        "Detail tab has no rules, so the workbook's own formatting applies.",
         inputs=Ports(
             {
                 "figures": pl.DataFrame({"key": ["r1", "r2"], "amount": [10.25, -5.5]}),
@@ -68,15 +61,15 @@ def plain_write_example() -> WorkedExample:
 
 def template_example() -> WorkedExample:
     return WorkedExample(
-        scenario="refresh one tab of a workbook somebody built by hand",
+        scenario="refresh one tab of a workbook someone built by hand",
         configuration={
             "path": _FROM_TEMPLATE_PATH,
             "template": _TEMPLATE_PATH,
             "sheets": [{"port": "figures", "sheet": "Figures"}],
         },
-        explanation="The template already holds a 'Notes' tab. It is loaded, the 'Figures' tab is "
-        "written into it, and the whole workbook is saved to 'path' -- so 'Notes' arrives in the "
-        "pack exactly as it was, and the template itself is untouched and ready for the next run.",
+        explanation="The template already has a Notes tab. The Figures tab is written into a copy of "
+        "the template, saved to 'path', so Notes comes through unchanged and the template itself is "
+        "untouched for the next run.",
         inputs=Ports({"figures": pl.DataFrame({"key": ["r1", "r2"], "amount": [10.25, -5.5]})}),
         outputs=Ports(),
         setup=_template_setup,
@@ -85,7 +78,7 @@ def template_example() -> WorkedExample:
 
 def laid_out_example() -> WorkedExample:
     return WorkedExample(
-        scenario="lay out a figures tab as a table and a notes tab as a title over paragraphs",
+        scenario="lay out one tab as a filterable table and another as a title over paragraphs",
         configuration={
             "path": _LAID_OUT_PATH,
             "sheets": [
@@ -106,11 +99,10 @@ def laid_out_example() -> WorkedExample:
                 },
             ],
         },
-        explanation="The 'Figures' tab becomes a table called 'Figures', with filter dropdowns on "
-        "its bold headings, and each column is as wide as its heading or its longest figure as "
-        "shown. The 'Notes' tab has one column 100 characters wide, a bold 14-point heading that "
-        "reads as its title, and paragraphs that wrap. Every value and number format is the same "
-        "as it would be without these options.",
+        explanation="The Figures tab becomes a table called 'Figures', with filter dropdowns on bold "
+        "headings, and each column fits its heading or its longest figure as shown. The Notes tab has "
+        "one column 100 characters wide, a bold 14-point heading as its title, and wrapped paragraphs. "
+        "The values and number formats are the same as without these settings.",
         inputs=Ports(
             {
                 "figures": pl.DataFrame({"key": ["r1", "r2"], "amount": [1234567.0, -5.5]}),

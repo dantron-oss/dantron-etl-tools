@@ -1,17 +1,10 @@
-"""``Ports``: the named frames a step reads and the named frames it hands back.
+"""``Ports``: the named frames a step reads, and the named frames it returns.
 
-Every input and every output of a tool travels in a ``Ports`` envelope. Each frame has a name, the
-envelope cannot be changed once built, and asking for a name that is not there is refused by name.
-A step's notes and its per-row status ride in the same envelope, beside the frames.
+Every input and output of a tool travels in a ``Ports``. Each frame has a name, a ``Ports`` cannot be
+changed once built, and asking for a missing name is refused with the names that are there. A
+step's notes and per-row status travel in the same ``Ports``, beside the frames.
 
-**Ports** replace a bare ``dict`` of frames in and out. A step may have more than one output -- the
-rows that matched a condition and the rows that did not, say -- and a side output that a caller
-forgets to read should not surface three steps later as a bare ``KeyError``. So every input and
-output is named, the set of names a step declares is fixed at authoring time, and the envelope is
-checked at the boundary of every call: a declared port that a step forgot to produce, an output
-nobody declared, an output with no columns at all (which would make a downstream check that depends
-on the column existing fail for the wrong reason), a step that handed back something other than
-ports, and a step that wrote into one of its own inputs are all refused right there, by name.
+Why: docs/design/core.md#named-ports
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -25,18 +18,13 @@ __all__ = ["Ports"]
 
 
 class Ports:
-    """An ordered, read-only set of named frames -- a step's inputs, or its outputs.
+    """An ordered, read-only set of named frames: a step's inputs, or its outputs.
 
-    Deliberately not a :class:`collections.abc.Mapping`: ``Mapping.get`` is built on
-    ``__getitem__`` catching ``KeyError``, and looking up a port that is not there raises
-    :class:`PortError` here instead, so inheriting the mixin would hand back a ``get`` that is
-    broken in a way nothing would notice until it silently swallowed the wrong exception. A small,
-    closed surface is easier to trust than a partially-working abstract base.
+    Build one with ``Ports({"rows": frame})``, optionally with ``notes=[...]`` and
+    ``status={"rows": status_frame}``. Read a frame with ``ports["rows"]``; a missing name raises
+    :class:`PortError`. The constructor refuses a value that is not a polars ``DataFrame``.
 
-    The source mapping is copied at construction, and ``__slots__`` together with a read-only
-    ``names`` property is what keeps an instance immutable afterwards: there is nowhere on the
-    object for a new attribute to land, and the one property that looks like an attribute has no
-    setter.
+    Why: docs/design/core.md#ports-is-a-closed-read-only-class
     """
 
     __slots__ = ("_frames", "_notes", "_status")
@@ -67,39 +55,24 @@ class Ports:
 
     @property
     def notes(self) -> tuple[str, ...]:
-        """What the step wants a reader to know, short of refusing.
+        """Messages for a reader about something the step did, short of refusing.
 
-        The channel between "this ran" and "this failed", which nothing else here provides. A tool
-        that quietly dropped three values out of forty-six thousand has done something a reader
-        would want to know the size of, and an exception is the wrong way to say it -- the run
-        should carry on and the fact should travel with it. The runner raises a step carrying notes
-        to a warning, which is what puts it in the log and marks it on the canvas.
+        For example, "3 values could not be read as dates and were left empty". The runner turns a
+        step with notes into a warning on the log and the canvas. Nothing downstream may read them.
 
-        Frames only in the data plane, as everywhere else: a note is for a person, and nothing
-        downstream may read one.
+        Why: docs/design/core.md#notes-and-per-row-status
         """
         return self._notes
 
     @property
     def status(self) -> Mapping[str, pl.DataFrame]:
-        """What the step did to each row of a port it degraded, keyed by port name.
+        """Which rows a step changed, per output port that has any. Empty for most steps.
 
-        Beside the frame and never inside it. A column named ``status`` would be a column: it flows
-        into the next join, survives a ``select_columns`` that never heard of it, turns up in a
-        schema comparison against somebody else's engine, and lands in the published workbook -- so
-        it would have to be carried and stripped at every one of those places, and the first place
-        that forgot would ship it. What a step did is not a fact about the data, so it travels where
-        ``notes`` travels.
+        Each status frame has one row per data row, in the same order. A note says how many values
+        were changed; the status says which rows. It travels beside the frame, never as a column
+        in it.
 
-        The pair is the point: a note says *how many* values a step emptied, which is a quantity and
-        nothing more, and this says *which rows* -- one row per data row, in the same order, never
-        re-derived afterwards. A reader given only the count cannot tell a figure the run destroyed
-        from text that was never a figure, and that is the difference between a broken pipeline and
-        a correctly reported one.
-
-        Empty for almost every step, and deliberately so: a step that degraded nothing says nothing,
-        the boundary refuses an inert status, and the presence of a status on a port is itself the
-        signal.
+        Why: docs/design/core.md#notes-and-per-row-status
         """
         return self._status
 

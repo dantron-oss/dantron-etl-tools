@@ -30,27 +30,11 @@ WINDOW = 100
 EVERYONE = {"all": None}
 
 def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -> str:
-    """One port's rows, with a box under each column heading that narrows to matching rows.
+    """One port's rows, with a search box under each column heading.
 
-    The search is per column rather than one box over the whole table, because the question a
-    reader actually arrives with is about a column -- which rows carry this account code, which
-    carry this status -- and a single box would match that text anywhere in the row and answer a
-    different question. Filtering is over the rows drawn, which the note beneath already says is a
-    window onto a larger frame: this narrows what is on the page, it does not re-run the step.
-
-    ``marked`` draws the status column: one cell per row, first, saying what the step that made
-    these rows said about that row. First because that is where an eye picks a row up and because it
-    is what the reader asked for, and set apart in the markup rather than by its name -- a column
-    headed ``level`` sitting among a client's own columns reads as something the step computed, gets
-    searched with the box under it, and travels into whatever the reader copies out. It carries no
-    dtype, which every real column's header does, and it is drawn only for a port some step actually
-    marked: almost every port in a flow degraded nothing, and a column of ticks on all of them is a
-    column a reader stops looking at.
-
-    Its control is a choice rather than a box, because three words are a vocabulary and not a
-    search: typed, ``warn`` would narrow to warnings on the page and be refused by the service. The
-    options come from :data:`STATUS_LEVELS` itself, so a level added to the library cannot end up
-    with no way to filter to it.
+    Search is per column, since a reader's question is about a column. `marked` adds the status column
+    first: a mark per row saying what the step said about it, with a choice of levels as its filter, drawn
+    only for ports a step marked. Why: docs/design/viewer.md#keeping-the-page-small
     """
     if not frame.columns:
         return '<p class="more">no columns</p>'
@@ -71,12 +55,8 @@ def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -
         f'aria-label="filter {_e(c)}"></th>'
         for i, c in enumerate(frame.columns)
     )
-    # A port the service can serve carries no rows in the page at all: the header and the search
-    # boxes are the whole of it until a reader opens it, and then a window is fetched. The page has
-    # to stay the same size as the flow grows, and a flow grows by steps -- every table embedded
-    # here is multiplied by however many steps the pipeline ends up having.
-    #
-    # A slice of one entity is not a port the service knows, so those still carry their rows.
+    # A served port carries no rows in the page; a window is fetched when it is opened. A slice of
+    # one entity is not a served port, so it still carries its rows.
     lazy = port is not None
     shown = frame.head(0) if lazy else frame.head(MAX_ROWS)
     body = "".join(
@@ -107,12 +87,7 @@ def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -
 
 
 def _scalar(value: Any) -> str:
-    """One configured value, drawn so that what it *is* survives being read.
-
-    An empty string and an absent value are one character apart in JSON and look identical on a
-    page, so each says its own name; a boolean stays lower case, the way a definition file spells
-    it, rather than becoming Python's True.
-    """
+    """One configured value, drawn so an empty string, a missing value and a boolean each stay recognisable."""
     if value is None:
         return '<span class="nul">not set</span>'
     if isinstance(value, bool):
@@ -147,13 +122,7 @@ def _value(value: Any) -> str:
 
 
 def _config(config: Mapping[str, Any]) -> str:
-    """A step's configuration as the fields it sets, rather than as the JSON it is stored in.
-
-    The JSON was honest and unreadable: a reader after "which column becomes which name" had to
-    parse punctuation to find two strings. Drawn from the value's own shape rather than from the
-    tool's template, so a tool this renderer has never heard of still draws, and a field the
-    template forgot is still shown rather than silently dropped.
-    """
+    """A step's configuration as the fields it sets, drawn from the value's own shape so any tool draws."""
     if not config:
         return '<p class="more">nothing to configure</p>'
     return "".join(
@@ -165,20 +134,13 @@ def _config(config: Mapping[str, Any]) -> str:
 def _event_if_ran(trace: PipelineTrace, step_id: str) -> Any:
     """The step's event, or None when the run stopped before reaching it.
 
-    A run stops at the first step that fails, and that is when its page is most wanted: the rows
-    that went into the failing step are the first thing to look at. So every part of the page draws a
-    step that never ran, as one that did not run, rather than refusing to draw the run at all.
+    A failed run's page is drawn too, since that is when it is most wanted; a step that never ran is shown as not run.
     """
     return trace.event(step_id) if any(event.step_id == step_id for event in trace.events) else None
 
 
 def _index(spec: Pipeline, trace: PipelineTrace) -> str:
-    """Every step as a line, grouped by lane, in the order the run took them.
-
-    Fifty-three nodes is more than a canvas can be scanned for, and a reader looking for one by name
-    should not have to pan a drawing to find it. Ordered by the run rather than by the file, because
-    that is the order a reader is thinking in when they are following a figure.
-    """
+    """Every step as a line, grouped by lane, in the order the run took them, for finding a step by name."""
     lanes: dict[str, list[str]] = {}
     for step_id in spec.order():
         step = spec.step(step_id)
@@ -235,13 +197,8 @@ def _step_data(
 ) -> str:
     step = spec.step(step_id)
     event = _event_if_ran(trace, step_id)
-    # What left, and what arrived. A step's inputs are upstream output ports, so both sides are
-    # frames this run already produced and the service already serves by name -- which is what makes
-    # searching and paging work on an input exactly as it does on an output.
-    #
-    # Reading a step used to mean holding its output in your head and scrolling to the step before it
-    # to see what went in. The comparison a reader actually wants -- what did this step DO -- is
-    # between two frames that were never on the screen together.
+    # What went in and what came out, side by side, both served by name so search and paging work on
+    # each.
     leaving = [(shape.port, shape.rows, _e(shape.port.port)) for shape in event.outputs] if event is not None else []
     arriving = [
         (ref, trace.shapes[ref].rows if ref in trace.shapes else None, f"{_e(name)} &larr; {_e(ref.port)}")
@@ -295,15 +252,10 @@ def _step_data(
 
 
 def build_panels(spec: Pipeline, trace: PipelineTrace, focus: FocusSpec | None) -> dict[str, str]:
-    """Every step's data panel, keyed by the step. They are saved beside the run and fetched one at a time.
+    """Every step's data panel, keyed by step, saved beside the run and fetched one at a time.
 
-    The panels are kept out of the page because, on a large flow, they made up most of its size.
-
-    There is one panel for every step in ``spec.order()``, including steps that never ran. So every
-    step a reader can click, on the canvas or in the step list, has a panel behind it.
-
-    Only the view of every row is drawn. One entity's rows are fetched from the server when asked for.
-    ``focus`` is not used.
+    One panel per step in `spec.order()`, including steps that never ran. Only the all-rows view is drawn;
+    one entity's rows are fetched when asked for. `focus` is not used.
     """
     return {step_id: _step_data(spec, trace, step_id, EVERYONE) for step_id in spec.order()}
 
@@ -336,15 +288,11 @@ def build(
     focus: FocusSpec | None,
     run: Mapping[str, Any] | None = None,
 ) -> str:
-    """The run as a page: the flow, every step's configuration, and the data of the step being read.
+    """The run as a page: the flow, every step's configuration, and the first step's data.
 
-    The page holds the canvas, the step list and each step's configuration. Opened as a plain file,
-    it still says what every step does. The rows need the server.
-
-    Each step's data panel is fetched when it is opened (see :func:`build_panels`). The one exception
-    is the first step: the page opens on it before any fetch can answer, so its panel is in the page.
-
-    ``run`` is the saved run's record. It goes into the page data and decides the banner.
+    Opened as a plain file it still shows every step and its settings; the rows need the server. Other
+    steps' panels are fetched when opened (see `build_panels`). `run` is the saved run's record; it goes
+    into the page data and decides the banner.
     """
     total_in = sum(s.rows for r, s in trace.shapes.items() if not spec.step(r.step).inputs)
     published = [r for r in trace.shapes if not spec.consumers(r)]
