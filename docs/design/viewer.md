@@ -55,6 +55,14 @@ refused a second start.
 
 `save_run` lets a project's own script save a run it made, so the viewer lists it like its own.
 
+**A saved run is for its owner only.** The hidden folder a run is written into is made `0700` before
+anything goes in, so no other user can open a file in it while it fills; every folder and file in it
+is then set to `0700` and `0600` before it is renamed into place, and the runs folder and any folder
+above it that the run had to make are `0700` too. `chmod` is used, so the umask cannot loosen it.
+Folders that already existed, older runs and the files a pipeline's output steps write are not
+touched. A system that refuses the change (Windows keeps only a read-only flag; some mounted drives
+refuse) does not fail the run.
+
 ## A local-only server with a token
 
 The server binds 127.0.0.1 by default (finding G-01) and answers only this machine:

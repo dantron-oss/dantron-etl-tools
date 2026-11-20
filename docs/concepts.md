@@ -152,6 +152,14 @@ A run is saved in `output_files/runs/<pipeline>/`. A run that fails is saved bes
 one, as `<pipeline>.failed/`, and the viewer shows the failing step and its error. The last good run
 is kept.
 
+A saved run holds real rows, which can be personal or financial data. On Linux and macOS, each
+folder a run makes is readable by its owner only (`0700`), and so is each file in it (`0600`),
+whatever the umask. A folder that was already there, such as the project folder or a runs folder you
+made, keeps its permissions; so do older runs, and the files your pipeline's output steps write. On
+Windows, and on a drive that refuses the change, nothing is changed: the run is still saved, and its
+files are only as private as the folder they are in, so keep the runs folder somewhere only you can
+read.
+
 From Python, `run_pipeline` returns the same evidence as a **trace**:
 
 ```python

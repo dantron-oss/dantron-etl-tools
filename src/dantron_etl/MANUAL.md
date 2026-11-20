@@ -791,6 +791,19 @@ The fingerprint does not cover the library either: a cache taken before you upgr
 edit it in place, still matches afterwards even when a tool now computes something different. Take
 a fresh cache after changing the library.
 
+### What the viewer keeps of a run
+
+The viewer and `dantron-etl run` save the rows at every port of each run in the project's runs
+folder (`runs_folder` in `etl-project.yaml`, by default `output_files/runs`), so the page can show
+them. Those rows can be personal or financial data.
+
+- On Linux and macOS, each folder a run makes is for its owner only (`0700`), and so is each file
+  in it (`0600`), whatever the umask. Folders that were already there keep their permissions, and so
+  do older runs and the files your output steps write.
+- On Windows, and on a drive that refuses the change, the permissions are not changed. The run is
+  still saved, and its files are as private as the folder they sit in. Keep the runs folder
+  somewhere only you can read.
+
 ---
 
 ## 8. When a tool really is missing

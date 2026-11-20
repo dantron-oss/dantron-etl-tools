@@ -2,7 +2,9 @@
 
 import contextlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +282,91 @@ class TestExecuteReal:
         assert (project_root / TARGET).is_file()
         written = json.loads((project.runs_folder / NAME / RUN_FILE).read_text(encoding="utf8"))
         assert written["kind"] == "real"
+
+
+# ---------------------------------------------------------------------------
+# A saved run is for its owner only
+# ---------------------------------------------------------------------------
+
+POSIX = pytest.mark.skipif(os.name != "posix", reason="permission bits are a POSIX idea")
+
+
+def mode(path: Path) -> int:
+    return stat.S_IMODE(path.lstat().st_mode)
+
+
+@pytest.fixture
+def open_umask() -> Any:
+    """A process umask that takes nothing away, so a file is readable by everyone unless the run says otherwise."""
+    before = os.umask(0)
+    try:
+        yield
+    finally:
+        os.umask(before)
+
+
+def made_by(paths: set[Path], before: set[Path]) -> tuple[list[Path], list[Path]]:
+    created = sorted(paths - before)
+    return [p for p in created if p.is_dir()], [p for p in created if p.is_file()]
+
+
+@POSIX
+@pytest.mark.usefixtures("open_umask")
+class TestSavedRunsAreForTheirOwnerOnly:
+    @pytest.mark.parametrize("how", ["preview", "failed", "refused"])
+    def test_every_folder_a_run_makes_is_0700_and_every_file_0600(self, project_root: Path, how: str) -> None:
+        if how == "failed":
+            (project_root / DATA).write_text("party,qty\n1,2\n", encoding="utf8")
+        elif how == "refused":
+            (project_root / "pipelines" / f"{NAME}.yaml").write_text("name: x\nsteps: []\nnot_a_key: 1\n", encoding="utf8")
+        before = every_path(project_root)
+
+        record = run(project_root)
+
+        assert record.outcome == ("finished" if how == "preview" else how)
+        folders, files = made_by(every_path(project_root), before)
+        assert runs_folder(project_root).parent in folders, "the run made the runs folder and the folder above it"
+        assert files, "the run saved something"
+        assert {str(p): oct(mode(p)) for p in folders if mode(p) != 0o700} == {}
+        assert {str(p): oct(mode(p)) for p in files if mode(p) != 0o600} == {}
+
+    def test_folders_made_by_someone_else_and_older_runs_keep_their_permissions(self, project_root: Path) -> None:
+        project_root.chmod(0o755)
+        folder = runs_folder(project_root)
+        folder.mkdir(parents=True)
+        folder.chmod(0o755)
+        older = folder / "another" / MANIFEST
+        older.parent.mkdir(mode=0o755)
+        older.write_text("{}", encoding="utf8")
+        older.chmod(0o644)
+
+        run(project_root)
+
+        assert (mode(project_root), mode(folder), mode(older.parent), mode(older)) == (0o755, 0o755, 0o755, 0o644)
+        assert mode(folder / NAME) == 0o700
+
+    def test_the_file_a_real_run_delivers_keeps_the_permissions_it_was_written_with(self, project_root: Path) -> None:
+        project = load_project(project_root)
+        entry = project.pipelines[NAME]
+        digest = writes_digest(writes(load_entry(project, entry), project.root))
+
+        execute(project, entry, "real", confirm_digest=digest)
+
+        assert mode(project_root / TARGET) == 0o666, "a deliverable is the user's; the umask decides, not the run"
+        assert mode(project.runs_folder / NAME / RUN_FILE) == 0o600
+
+    def test_a_filesystem_that_refuses_the_change_still_saves_the_run(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(*_: Any, **__: Any) -> None:
+            raise PermissionError("this filesystem does not keep permissions")
+
+        monkeypatch.setattr(os, "chmod", refuse)
+
+        record = run(project_root)
+
+        assert record.outcome == "finished"
+        assert (runs_folder(project_root) / NAME / MANIFEST).is_file()
 
 
 # ---------------------------------------------------------------------------

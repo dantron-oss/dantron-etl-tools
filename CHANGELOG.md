@@ -18,6 +18,13 @@ things; each such release says how to upgrade.
   `dantron-etl run --write`. It never shows the user or the password. If the connection points at
   another database by the time you confirm, the run is refused.
 
+### Security
+
+- **Saved runs are readable by their owner only** on Linux and macOS. Each folder a run makes is
+  `0700` and each file in it `0600`, whatever the umask. Folders you made, older runs and the files
+  your output steps write are left as they are. On Windows, and on a drive that refuses the change,
+  the run is saved without it.
+
 ### Changed
 
 - The package's **Documentation** and **Changelog** links, and the README's Postgres install line,

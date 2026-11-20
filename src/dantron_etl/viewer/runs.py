@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import secrets
 import shutil
 import threading
@@ -62,6 +63,10 @@ KINDS = ("preview", "real")
 #: Held while a slot folder is moved aside and replaced, so a reader never puts back a folder a
 #: save in this process has only just moved aside.
 _SWAP_LOCK = threading.Lock()
+
+#: A saved run can hold personal or financial rows, so what a run makes is for its owner only.
+_OWNER_ONLY_FOLDER = 0o700
+_OWNER_ONLY_FILE = 0o600
 
 
 # ---------------------------------------------------------------------------
@@ -390,16 +395,59 @@ def _clear_incoming(folder: Path, name: str) -> None:
             shutil.rmtree(stale, ignore_errors=True)
 
 
+def _owner_only(path: Path, mode: int) -> None:
+    """Set ``path``'s permissions to ``mode``, or leave them where a system will not change them.
+
+    Windows keeps only a read-only flag, and some shared or mounted drives refuse the change. A run
+    is saved either way; docs/concepts.md says what is and is not done there.
+    """
+    with contextlib.suppress(OSError):
+        os.chmod(path, mode)
+
+
+def _make_folder(folder: Path) -> None:
+    """Make ``folder`` and any folder above it that is missing, each for the owner only.
+
+    A folder that is already there, made by the user or by an earlier run, is left as it is.
+    """
+    missing = []
+    at = folder
+    while not at.exists():
+        missing.append(at)
+        at = at.parent
+    for one in reversed(missing):
+        try:
+            one.mkdir(mode=_OWNER_ONLY_FOLDER)
+        except FileExistsError:
+            continue  # made by another save at the same moment; left as it is
+        _owner_only(one, _OWNER_ONLY_FOLDER)
+
+
+def _keep_for_owner(incoming: Path) -> None:
+    """Make every folder in a run being saved owner-only, and every file in it owner-only too."""
+    for parent, folders, files in os.walk(incoming):
+        for name in folders:
+            _owner_only(Path(parent) / name, _OWNER_ONLY_FOLDER)
+        for name in files:
+            _owner_only(Path(parent) / name, _OWNER_ONLY_FILE)
+
+
 def _save(project: Project, name: str, good: bool, fill: Callable[[Path], None]) -> Path:
-    """Write a run into a hidden folder, then move it into the good or the failed slot."""
+    """Write a run into a hidden folder, then move it into the good or the failed slot.
+
+    The hidden folder is made for the owner only before anything is written into it, so no one else
+    can open a file in it at any point. Everything in it is made owner-only before it moves into place.
+    """
     folder = project.runs_folder
-    folder.mkdir(parents=True, exist_ok=True)
+    _make_folder(folder)
     failed_slot = folder / f"{name}{FAILED_SUFFIX}"
     target = folder / name if good else failed_slot
     incoming = folder / f".{name}.incoming-{secrets.token_hex(6)}"
-    incoming.mkdir()
+    incoming.mkdir(mode=_OWNER_ONLY_FOLDER)
+    _owner_only(incoming, _OWNER_ONLY_FOLDER)
     try:
         fill(incoming)
+        _keep_for_owner(incoming)
         _swap_in(incoming, target)
     except BaseException:
         shutil.rmtree(incoming, ignore_errors=True)
