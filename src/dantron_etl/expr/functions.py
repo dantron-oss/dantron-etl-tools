@@ -13,8 +13,10 @@ from typing import Final, Literal
 import polars as pl
 
 from .arguments import (
+    LARGEST_COUNT,
     REWRITE_REASON,
     SEPARATOR_REASON,
+    Characters,
     Choice,
     DateFormat,
     Namespace,
@@ -50,8 +52,9 @@ class NoAnswer:
 class Function:
     """Everything about one function: its arguments, its result, its builder, its summary and example.
 
-    `params` lists the arguments in order; there are no defaults. A `variadic` function has one entry that
-    every argument must meet, and needs at least two. `result` is the family returned ("common": the
+    `params` lists the arguments in order. The last `optional` of them may be left out, and the builder
+    is then given fewer. A `variadic` function has one entry that every argument must meet, and needs at
+    least two. `result` is the family returned ("common": the
     family the arguments agree on). `result_dtype` is the exact type where known ("subject": the first
     argument's; "common": worked out from all). `to_polars` builds the column from a polars expression
     per value argument and the Python value per literal argument. `typed` passes the first argument's
@@ -66,6 +69,7 @@ class Function:
     summary: str
     example: str
     variadic: bool = False
+    optional: int = 0
     result_dtype: pl.DataType | Literal["subject", "common"] | None = None
     typed: bool = False
     no_answer: NoAnswer | None = None
@@ -321,6 +325,38 @@ def _ends_with(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
 def _contains(subject: pl.Expr, needle: pl.Expr) -> pl.Expr:
     # literal=True: a dot in a code must not mean "any character". Patterns go through regex_match().
     return subject.str.contains(needle, literal=True)
+
+
+def _left(subject: pl.Expr, count: int) -> pl.Expr:
+    # A negative count is PostgreSQL's: all but the last that many. The engine counts the same way.
+    return subject.str.head(count)
+
+
+def _right(subject: pl.Expr, count: int) -> pl.Expr:
+    return subject.str.tail(count)
+
+
+def _substr(subject: pl.Expr, start: int, length: int | None = None) -> pl.Expr:
+    # `start` counts from 1, as SQL does; the engine counts from 0. No length runs to the end.
+    return subject.str.slice(start - 1, length)
+
+
+def _split_part(subject: pl.Expr, delimiter: str, part: int) -> pl.Expr:
+    """The `part`th piece of text split at `delimiter`, from 1; negative counts from the end.
+
+    A part past the last is empty text, as PostgreSQL gives it; a null is null.
+    """
+    pieces = subject.str.split(delimiter).list.get(part - 1 if part > 0 else part, null_on_oob=True)
+    return pl.when(subject.is_not_null()).then(pieces.fill_null(""))
+
+
+def _pad_left(subject: pl.Expr, length: int, fill: str) -> pl.Expr:
+    # Never cuts: text already longer than `length` is left as it is.
+    return subject.str.pad_start(length, fill)
+
+
+def _pad_right(subject: pl.Expr, length: int, fill: str) -> pl.Expr:
+    return subject.str.pad_end(length, fill)
 
 
 def _regex_match(subject: pl.Expr, pattern: str) -> pl.Expr:
@@ -653,6 +689,55 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_len,
         summary="The number of characters in a piece of text.",
         example="len([code])",
+    ),
+    Function(
+        "left",
+        params=(_ON_TEXT, WholeNumber(least=-LARGEST_COUNT)),
+        result=Family.TEXT,
+        to_polars=_left,
+        summary="The first characters of text; a negative count gives all but the last that many, as in SQL.",
+        example="left([code], 3)",
+    ),
+    Function(
+        "right",
+        params=(_ON_TEXT, WholeNumber(least=-LARGEST_COUNT)),
+        result=Family.TEXT,
+        to_polars=_right,
+        summary="The last characters of text; a negative count gives all but the first that many, as in SQL.",
+        example="right([account], 4)",
+    ),
+    Function(
+        "substr",
+        params=(_ON_TEXT, WholeNumber(least=1), WholeNumber()),
+        optional=1,
+        result=Family.TEXT,
+        to_polars=_substr,
+        summary="Part of text: from a start counted from 1, for a length of characters, or to the end if none.",
+        example="substr([reference], 4, 2)",
+    ),
+    Function(
+        "split_part",
+        params=(_ON_TEXT, Characters(), WholeNumber(least=-LARGEST_COUNT, nonzero=True)),
+        result=Family.TEXT,
+        to_polars=_split_part,
+        summary="One part of text split at a delimiter, counted from 1; past the last part gives empty text.",
+        example="split_part([reference], '-', 2)",
+    ),
+    Function(
+        "pad_left",
+        params=(_ON_TEXT, WholeNumber(), Characters(exactly_one=True)),
+        result=Family.TEXT,
+        to_polars=_pad_left,
+        summary="Text padded at the start to a length with one character; longer text is never cut.",
+        example="pad_left([account], 6, '0')",
+    ),
+    Function(
+        "pad_right",
+        params=(_ON_TEXT, WholeNumber(), Characters(exactly_one=True)),
+        result=Family.TEXT,
+        to_polars=_pad_right,
+        summary="Text padded at the end to a length with one character; longer text is never cut.",
+        example="pad_right([name], 20, ' ')",
     ),
     Function(
         "starts_with",

@@ -15,6 +15,9 @@ things; each such release says how to upgrade.
 - **Number functions** `floor`, `ceil`, `sign`, `mod`, `least`, `greatest` and `nullif`. `mod`
   keeps the sign of the first number, as SQL does, and `mod` by zero stops the step, as `/` by zero
   does.
+- **Text functions** `left`, `right`, `substr`, `split_part`, `pad_left` and `pad_right`. They count
+  characters, not bytes. `pad_left` and `pad_right` never cut a longer value. `substr`'s length may
+  be left out, the first argument in the language that may be.
 
 ## [0.2.0] - 2026-11-20
 

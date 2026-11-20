@@ -241,8 +241,9 @@ uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '|', [period]))
 Available functions: `coalesce`, `round`, `year`, `month`, `day`, `quarter`, `day_of_week`,
 `add_months`, `add_days`, `months_between`, `days_between`, `make_date`, `month_end`, `month_start`,
 `parse_date`, `abs`, `floor`, `ceil`, `sign`, `mod`, `least`, `greatest`, `nullif`, `lower`,
-`upper`, `trim`, `len`, `starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`,
-`regex_match`, `concat`, `format_number`, `uuid5`.
+`upper`, `trim`, `len`, `left`, `right`, `substr`, `split_part`, `pad_left`, `pad_right`,
+`starts_with`, `ends_with`, `contains`, `regex_extract`, `regex_replace`, `regex_match`, `concat`,
+`format_number`, `uuid5`.
 
 **Dates.** `months_between(start, end, counting)` and `days_between(start, end, counting)` count
 whole months or days between two dates, signed, with `counting` either `'inclusive'` (both ends
@@ -272,6 +273,14 @@ the step and names the values: it never becomes a blank date. A format without a
 first. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
 only all nulls give null. `nullif(a, b)` is null where `a` equals `b`, otherwise `a`;
 `nullif([code], '')` turns empty text into a null.
+
+**Text.** `left`, `right`, `substr`, `split_part`, `pad_left` and `pad_right` count characters, so an
+accented letter or an emoji is one. Every count is a whole number written in the file, never a
+column. `left([code], -2)` is all but the last two characters, as in SQL. `substr(text, start,
+length)` counts `start` from 1; leave out `length` to run to the end. `split_part([ref], '-', 2)` is
+the second part; past the last part it gives empty text, and a negative number counts from the
+end. `pad_left([account], 6, '0')` pads to six characters with zeros and never cuts a longer value,
+which is why it is not SQL's `lpad`, which does.
 
 `trim` removes the spaces at the start and end of text. Unlike Excel's `TRIM`, it leaves the spaces
 inside the text alone.

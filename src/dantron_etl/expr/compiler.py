@@ -423,7 +423,13 @@ class _Compiler:
                     self._text,
                     f"{name}() takes at least 2 arguments, but was given {len(arguments)}",
                 )
-        elif len(arguments) != len(function.params):
+        elif function.optional and not len(function.params) - function.optional <= len(arguments) <= len(
+            function.params
+        ):
+            fewest, most = len(function.params) - function.optional, len(function.params)
+            between = f"{fewest} or {most}" if most == fewest + 1 else f"{fewest} to {most}"
+            raise error(self._text, f"{name}() takes {between} arguments, but was given {len(arguments)}")
+        elif not function.optional and len(arguments) != len(function.params):
             arity = len(function.params)
             raise error(
                 self._text,
@@ -450,7 +456,7 @@ class _Compiler:
                 for argument in arguments:
                     self._require(argument, param.family, f"{name}() {param.requirement}")
         else:
-            params = list(function.params)
+            params = list(function.params[: len(node.args)])
             arguments = [
                 self._argument(name, param, argument, position)
                 for position, (param, argument) in enumerate(zip(params, node.args, strict=True))

@@ -309,6 +309,8 @@ class TestTheFunctionTable:
             problems.append("lists no arguments")
         if function.variadic and len(function.params) != 1:
             problems.append("is variadic, so it must list exactly one argument for all of them to meet")
+        if function.optional and (function.variadic or function.optional >= len(function.params)):
+            problems.append("leaves out more arguments than it has, or is variadic, so cannot say which")
         if function.result != "common" and not isinstance(function.result, Family):
             problems.append(f"gives {function.result!r}, which is neither a family nor 'common'")
         if function.result == "common" and not all(
@@ -348,6 +350,7 @@ class TestTheFunctionTable:
             ({"result": "text"}, "neither a family"),
             ({"result": "common"}, "agree on"),
             ({"to_polars": None}, "build"),
+            ({"optional": 1}, "leaves out more"),
         ],
     )
     def test_the_check_refuses_an_entry_with_a_part_missing(self, change: dict[str, Any], expected: str) -> None:
@@ -719,7 +722,9 @@ class TestSecurity:
 
         ``month``, ``day``, ``quarter``, ``day_of_week``, ``add_days``, ``month_start`` and
         ``parse_date`` were asked for by a second project, and complete the dates; ``floor``,
-        ``ceil``, ``sign``, ``mod``, ``least``, ``greatest`` and ``nullif`` came with them.
+        ``ceil``, ``sign``, ``mod``, ``least``, ``greatest`` and ``nullif`` came with them, and
+        ``left``, ``right``, ``substr``, ``split_part``, ``pad_left`` and ``pad_right`` for text.
+        ``substr`` is the first function whose last argument may be left out.
         """
         assert isinstance(ALLOWED_FUNCTIONS, frozenset)
         assert ALLOWED_FUNCTIONS == {
@@ -753,6 +758,12 @@ class TestSecurity:
             "starts_with",
             "ends_with",
             "contains",
+            "left",
+            "right",
+            "substr",
+            "split_part",
+            "pad_left",
+            "pad_right",
             "regex_extract",
             "regex_replace",
             "regex_match",
