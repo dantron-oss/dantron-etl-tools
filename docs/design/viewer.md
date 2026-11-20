@@ -37,6 +37,16 @@ changed since, the digests differ and the run is refused with "what this pipelin
 since it was shown. Look again.", and the new plan is returned. A run is refused before anything runs
 or is saved.
 
+**A table write names its database, and the digest covers it.** The words for a table write say which
+database the connection's environment variable points at when the list is made: host, port when
+stated, and database name (`describe_connection` in `db.py`, used by both the page and the command).
+They are part of what the digest covers, so pointing the variable at another database between looking
+and confirming refuses the run. A change of password alone leaves the digest as it was: the target is
+the same. The user and password are never shown. An address is read the way the Postgres driver reads
+it, and if that reading would put any part of the password into the host, port or database name (an
+`@` or `/` not written as `%40` or `%2F`, or a password that is also the database name), nothing of
+the address is shown and the words say why.
+
 **A run never loses the last good one.** A run is written into a hidden folder first and then renamed
 into place. A run that fails or is refused goes into `<name>.failed`, leaving `<name>` (the last good
 run) as it was. A later good run deletes the stale failed one. A lock is held while slot folders are

@@ -13,6 +13,10 @@ things; each such release says how to upgrade.
   same rows, types and refusals in both, whichever day an `.xls` counts its dates from. A file named
   `.xls` that holds a web page or delimited text is refused, saying so. The viewer's **Show file**
   previews an `.xls` as a workbook.
+- **The confirmation before a real run names the database.** For each table it lists the host, the
+  port when one is stated, and the database name the connection points at now, in the viewer and in
+  `dantron-etl run --write`. It never shows the user or the password. If the connection points at
+  another database by the time you confirm, the run is refused.
 
 ### Changed
 

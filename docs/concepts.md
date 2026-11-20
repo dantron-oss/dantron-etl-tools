@@ -136,6 +136,12 @@ A **real run** runs every step, writers included. `dantron-etl run <pipeline> --
 every file and table it will write, and asks you to type the pipeline's name. The viewer's
 **Real run…** asks the same. `--yes` skips the question, for scheduled jobs.
 
+For a table, the list says which database the step's connection points at as you look: the host,
+the port when the address states one, and the database name, so you can tell the test database from
+the live one. It never shows the password or the user. If the environment variable is not set, or
+its address cannot be read without risking the password, the list says so instead. If the
+connection points somewhere else by the time you confirm, the run is refused and you look again.
+
 ## A run is evidence
 
 Every run leaves behind the rows on every port, one event per step (rows in and out, time taken),

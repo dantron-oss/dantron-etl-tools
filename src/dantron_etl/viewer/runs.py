@@ -23,6 +23,7 @@ from typing import Any
 
 import polars as pl
 
+from ..db import describe_connection
 from ..errors import ToolError
 from ..expr import ExpressionError
 from ..focus import EntityOption, FocusError, FocusSpec, available_entities
@@ -202,9 +203,9 @@ def _detail(config: Mapping[str, Any], template: Mapping[str, Any], *, file: boo
     parts += _sheets(config)
     parts += _table_mode(config)
     parts += _when_empty(config, template, file=file)
-    connection = config.get("connection")
-    if connection:
-        parts.append(f"in the database named by {connection}")
+    if "connection" in config:
+        # Which database the variable points at now, so a change of target before the run is a change of digest.
+        parts.append(f"in {describe_connection(config['connection'])}")
     return "; ".join(parts)
 
 
