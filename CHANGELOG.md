@@ -28,6 +28,11 @@ things; each such release says how to upgrade.
 - **`mod` of the most negative whole number** (-9223372036854775808, or a 32-bit column's
   -2147483648) now gives the right remainder, with the sign of the first number: `mod` of it by 3 is
   -2, where it gave -1.
+- **A null with no type gives a null answer** in `year`, `month`, `day`, `quarter`, `day_of_week`,
+  `add_months`, `add_days` and `abs`, instead of an engine error. That is the literal `null`, or a
+  column whose every value is missing and which was read with no type. `year` and the other parts
+  of a date give a null whole number (Int32); `abs`, `add_months` and `add_days` give a null with no
+  type, as `round` already did, since their answer takes the type of what went in.
 
 ## [0.2.0] - 2026-11-20
 

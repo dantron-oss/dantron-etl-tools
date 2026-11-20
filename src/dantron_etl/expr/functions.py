@@ -58,8 +58,9 @@ class Function:
     family the arguments agree on). `result_dtype` is the exact type where known ("subject": the first
     argument's; "common": worked out from all). `to_polars` builds the column from a polars expression
     per value argument and the Python value per literal argument. `typed` passes the first argument's
-    dtype as `dtype=` (None without a schema), for round(), format_number(), floor(), ceil() and
-    sign(). `no_answer` names the rows the function has no answer for; a tool stops the step on them.
+    dtype as `dtype=` (None without a schema): round() and format_number() need it, and every function
+    that meets a typeless null (pl.Null) with it, to answer null instead of an engine error. `no_answer`
+    names the rows the function has no answer for; a tool stops the step on them.
     """
 
     name: str
@@ -129,8 +130,9 @@ def _rounded_series(series: pl.Series, digits: int) -> pl.Series:
     return series.to_frame("value").select(_rounded(pl.col("value"), digits, series.dtype)).to_series().alias(series.name)
 
 
-def _abs(subject: pl.Expr) -> pl.Expr:
-    return subject.abs()
+def _abs(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    # A typeless null has nothing to take the sign off, and stays a typeless null, as in round().
+    return subject if dtype == pl.Null else subject.abs()
 
 
 def _without_negative_zero(value: pl.Expr) -> pl.Expr:
@@ -179,43 +181,47 @@ def _nullif(subject: pl.Expr, other: pl.Expr) -> pl.Expr:
     return pl.when(subject == other).then(None).otherwise(subject)
 
 
-def _year(subject: pl.Expr) -> pl.Expr:
-    return subject.dt.year()
+# year(), month() and the rest give Int32, so month([d]) * 100 cannot wrap round. A typeless null
+# gives a null of that type: the table promises a whole number, and the answer keeps the promise.
+def _year(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject.cast(pl.Int32) if dtype == pl.Null else subject.dt.year()
 
 
-# month(), day() and the rest give Int32, as year() does, so month([d]) * 100 cannot wrap round.
-def _month(subject: pl.Expr) -> pl.Expr:
-    return subject.dt.month().cast(pl.Int32)
+def _month(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject.cast(pl.Int32) if dtype == pl.Null else subject.dt.month().cast(pl.Int32)
 
 
-def _day(subject: pl.Expr) -> pl.Expr:
-    return subject.dt.day().cast(pl.Int32)
+def _day(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject.cast(pl.Int32) if dtype == pl.Null else subject.dt.day().cast(pl.Int32)
 
 
-def _quarter(subject: pl.Expr) -> pl.Expr:
-    return subject.dt.quarter().cast(pl.Int32)
+def _quarter(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
+    return subject.cast(pl.Int32) if dtype == pl.Null else subject.dt.quarter().cast(pl.Int32)
 
 
-def _day_of_week(subject: pl.Expr) -> pl.Expr:
+def _day_of_week(subject: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
     # The engine counts as ISO does: Monday is 1, Sunday is 7.
-    return subject.dt.weekday().cast(pl.Int32)
+    return subject.cast(pl.Int32) if dtype == pl.Null else subject.dt.weekday().cast(pl.Int32)
 
 
 # The engine counts a move of days in nanoseconds, and a move longer than this wraps round to a wrong date.
 _MOST_DAYS: Final[int] = 106_751
 
 
-def _add_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+def _add_days(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
     """Move a date by a count of days, built as add_months() builds its offset ('3d').
 
     A day is a calendar day, so a timestamp keeps its time of day when the clocks change.
     """
+    if dtype == pl.Null:
+        return subject
     offset = pl.concat_str([count.cast(pl.String), pl.lit("d")], ignore_nulls=False)
     return subject.dt.offset_by(offset)
 
 
 def _too_many_days(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
-    return ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
+    # A null date moves nowhere, so no count is too large for it.
+    return subject.is_not_null() & ~count.is_between(-_MOST_DAYS, _MOST_DAYS)
 
 
 def _month_start(subject: pl.Expr) -> pl.Expr:
@@ -232,12 +238,14 @@ def _unreadable(text: pl.Expr, format_: str) -> pl.Expr:
     return text.is_not_null() & _parse_date(text, format_).is_null()
 
 
-def _add_months(subject: pl.Expr, count: pl.Expr) -> pl.Expr:
+def _add_months(subject: pl.Expr, count: pl.Expr, *, dtype: pl.DataType | None = None) -> pl.Expr:
     """Move a date by a count of months, clamped to the end of a short month (31 Jan + 1 = 28 Feb).
 
     The count may come from a column, so it is built into polars' offset text ('3mo'). A null on either
-    side gives null.
+    side gives null; a typeless null date stays typeless, since the answer takes the date's type.
     """
+    if dtype == pl.Null:
+        return subject
     offset = pl.concat_str([count.cast(pl.String), pl.lit("mo")], ignore_nulls=False)
     return subject.dt.offset_by(offset)
 
@@ -436,6 +444,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int32(),
         to_polars=_year,
+        typed=True,
         summary="The year of a date, as a whole number.",
         example="year([starts_on])",
     ),
@@ -445,6 +454,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int32(),
         to_polars=_month,
+        typed=True,
         summary="The month of a date, 1 to 12.",
         example="month([starts_on])",
     ),
@@ -454,6 +464,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int32(),
         to_polars=_day,
+        typed=True,
         summary="The day of the month of a date, 1 to 31.",
         example="day([starts_on])",
     ),
@@ -463,6 +474,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int32(),
         to_polars=_quarter,
+        typed=True,
         summary="The quarter of the year a date falls in, 1 to 4; January to March is 1.",
         example="quarter([starts_on])",
     ),
@@ -472,6 +484,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype=pl.Int32(),
         to_polars=_day_of_week,
+        typed=True,
         summary="The day of the week of a date, counted the ISO way: Monday is 1 and Sunday is 7.",
         example="day_of_week([ordered_on])",
     ),
@@ -483,6 +496,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         ),
         result=Family.DATE,
         to_polars=_add_months,
+        typed=True,
         summary="A date moved by whole months; 31 January plus one month is 28 February.",
         example="add_months([starts_on], [months] - 1)",
     ),
@@ -495,6 +509,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.DATE,
         result_dtype="subject",
         to_polars=_add_days,
+        typed=True,
         summary="A date moved by whole days; a negative count goes back.",
         example="add_days([ordered_on], 30)",
         no_answer=NoAnswer(
@@ -584,6 +599,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         result=Family.NUMBER,
         result_dtype="subject",
         to_polars=_abs,
+        typed=True,
         summary="A number without its sign.",
         example="abs([amount])",
     ),
