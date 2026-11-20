@@ -529,7 +529,7 @@ gone, but its columns are still worth drawing, and a width alone cannot be drawn
 
 ## Focus
 
-**Decided.** `slice_trace` narrows a finished run to one entity (one client, one invoice) and returns
+**Decided.** `slice_trace` narrows a finished run to one entity (one customer, one order) and returns
 a view of every port filtered to that entity's rows. It reads the run; it never re-runs it.
 
 **Why.** A run re-run over one entity's rows answers a different question. A total sums over every

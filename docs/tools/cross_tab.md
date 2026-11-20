@@ -2,9 +2,9 @@
 
 # `cross_tab`
 
-*transform tool.* Turn `rows` wide: one row per combination of 'by', one column per value of a key column.
+*transform tool.* Turn a long table into a grid, with one column per value, such as one column per month.
 
-One output row per distinct combination of 'by', in the order each combination first appeared. One new column per distinct value of 'names_from', in sorted order, because a reader scans those columns across a page. Each cell holds the chosen aggregate of 'values_from' over the rows that landed in it. The 'by' columns come first and keep their types; the new columns take their type from the aggregate. Every other column disappears, so a cross tab is usually the last shaping step before a report.
+Use cross_tab to turn a long table into a grid, like a pivot table: one row per customer and one column per month, say. `rows` has the 'by' columns first, in the order each combination first appears, then one column per value of 'names_from', sorted as text. Each cell holds the 'function' of 'values_from' over its rows. Every other column is dropped, so this is usually the last step before a report.
 
 ## Ports
 
@@ -15,31 +15,36 @@ One output row per distinct combination of 'by', in the order each combination f
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `by` | array | required |  | The column names that stay as rows. One output row per distinct combination of them, in the order each combination first appeared. |
-| `by[]` | string | optional |  | One column name; naming the same column twice counts it once. |
-| `names_from` | string | required |  | The column whose values become the new columns. It has to hold text already, and no row may leave it empty. |
-| `values_from` | string | required |  | The column each cell is computed from. Required whichever aggregate is chosen; 'count' counts rows and ignores it. |
-| `function` | string | required | `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `max`, `min`, `sum` | How the rows that land in one cell become one value, drawn from the aggregates that ship. |
+| `by` | array | required |  | The columns that stay as rows, such as ['customer']. |
+| `by[]` | string | optional |  | One column that stays as a row label. Naming it twice counts it once. |
+| `names_from` | string | required |  | The column whose values become the new column headings, such as 'month'. It must hold text. |
+| `values_from` | string | required |  | The column that fills the cells, such as 'amount'. Needed even for 'count', which ignores it. |
+| `function` | string | required | `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `max`, `min`, `sum` | How the rows in one cell become one value, such as 'sum' or 'count'. |
 
 More on some settings:
 
-- `by`: What stays as rows. Repeating a column counts it once.
-- `names_from`: What becomes columns. Its values are the new column names, sorted.
-- `values_from`: What fills the cells, before the aggregate is applied to it.
-- `function`: How several rows in one cell become one value.
+- `by`: For example ['customer_id']. Each different combination becomes one row.
+- `names_from`: For example 'month', holding text such as '2026-01'.
+- `values_from`: For example 'amount'.
+- `function`: For example 'sum'. The list is the same as group_by's.
 
 ## Notes
 
-- A cell with no row under it is null, and there is no way to make it zero. Zero is a measured amount and null is the absence of one, and nothing downstream can tell a fabricated zero from a real one.
-- The values of 'names_from' become column names, so that column has to hold text already. Format a number or a date into text in the step before this one, where the formatting is written down.
-- 'join_text' fills a cell the way it fills a group: the rows in the order they arrived, joined by GroupBy's separator, with the missing values skipped. A cell whose values are all missing joins to the empty string, and a cell with no row under it stays null, which is the one distinction this tool has to make and GroupBy never does.
-- A row whose 'names_from' value is missing or blank stops the run. It cannot be given a column without inventing a name the data could also carry, and dropping it would take its figures out of the tab in silence. A blank is refused with the null because they are the same fact written two ways.
-- 'first' is the first row's value in a cell as the rows arrive, null included; 'first_non_null' is the first value that is there. 'count_distinct' skips nulls, as SQL's COUNT(DISTINCT) does. These are GroupBy's rules, for the same reason.
-- A 'sum' cell keeps the type of 'values_from'. A total of Int32 or UInt32 values that does not fit in that type stops the run rather than wrapping round to a wrong number. Cast the column to Int64 first if totals can be that large.
+- A cell with no rows under it is null, and there is no setting to make it zero. A zero would look like a measured amount.
+- 'sum' of a cell whose values are all null is null too, as in group_by.
+- 'names_from' must hold text, because its values become column names. Format a number or date as text in an earlier step. The new columns are sorted as text.
+- A row whose 'names_from' value is null or blank stops the run, naming the column and counting the rows. Label or drop those rows in an earlier step.
+- A null and a blank are refused together, as the same missing fact written two ways. A value of only spaces counts as blank.
+- A 'names_from' value that equals a 'by' column's name is refused, because one of the two columns would be lost. A clash with any other input column is fine, since it is dropped.
+- A column cannot be both in 'by' and the 'names_from' or 'values_from' column.
+- The functions are group_by's, with group_by's rules: 'first' takes the first row's value even when null, 'first_non_null' the first value there is, and 'count_distinct' skips nulls, as SQL's COUNT(DISTINCT) does.
+- 'join_text' fills a cell as it fills a group: values in arrival order, joined with a comma and a space, nulls skipped. A cell whose values are all null is empty text.
+- So with 'join_text', a cell with rows but no values is empty text, while a cell with no rows is null. group_by never has the second case.
+- 'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that type, the run stops instead of giving a wrong number. Cast to Int64 first if totals can be that large.
 
 ## Example 1
 
-a total per code and period, with one cell holding nothing
+total amount per code and period
 
 ```yaml fragment
 tool: cross_tab
@@ -70,11 +75,11 @@ Rows out:
 | A | 10.0 | 5.0 |
 | B | 7.0 | null |
 
-'period' first appears as p2 and then p1, and the columns still come back sorted, p1 before p2. Code B has no row in p2, so that cell is null. It is not zero: nobody measured anything there.
+The periods arrive as p2 then p1, but the columns are sorted: p1, then p2. Code B has no row in p2, so that cell is null, not zero.
 
 ## Example 2
 
-how many rows landed in each cell, rather than what they add up to
+count the rows in each cell
 
 ```yaml fragment
 tool: cross_tab
@@ -106,11 +111,11 @@ Rows out:
 | A | 2 | 1 |
 | B | null | 1 |
 
-Two rows share code A in p1, so that cell holds 2. Code B has no row in p1 at all, so its cell is null rather than 0. There was nothing there to count. 'count' reads no column, but 'values_from' is still written down, because every cell here uses one aggregate.
+Two rows have code A in p1, so that cell is 2. Code B has no row in p1, so its cell is null, not 0. 'count' ignores 'values_from', but it is still written.
 
 ## Example 3
 
-a grid of notes, showing the two empty cells that do not mean the same thing
+a grid of notes, where two empty-looking cells mean different things
 
 ```yaml fragment
 tool: cross_tab
@@ -141,7 +146,7 @@ Rows out:
 | A | late | "" |
 | B | checked | null |
 
-Both empty-looking cells of the p2 column are the point. Code A has a row in p2 whose note is missing, so there was something there and it said nothing: the missing value is skipped rather than joined in as a gap, nothing is left to join, and the cell is the empty string. Code B has no row in p2 at all, so the cell is null -- this tool's ruling everywhere, and the only reason the two differ, because joining the values of an empty cell would otherwise give the empty string as well.
+Code A has a row in p2 with no note, so its cell is empty text: there was a row, with nothing to join. Code B has no row in p2 at all, so its cell is null.
 
 ---
 

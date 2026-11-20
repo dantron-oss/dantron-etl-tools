@@ -2,9 +2,9 @@
 
 # `publish_tables`
 
-*output tool.* Write one frame per named port to its own table, all of them in one transaction.
+*output tool.* Save several tables to a database together: all of them, or none if any fails.
 
-Each entry in 'tables' reads one input port and writes one table: 'replace' empties it first, 'append' adds to what it already holds, 'merge' upserts on 'keys'. Every table is written inside one transaction, so a publish that fails on any of them leaves all of them exactly as the last publish left them. The tables must already exist -- this tool runs no DDL of its own -- and each frame's columns must be exactly its table's, apart from the 'stamp_column' column, which the frames never carry and this tool writes. The one output port is a receipt: the instant this publish carried, and the number of rows written to each table.
+Use publish_tables to update several related tables together, such as a summary and its detail, so they always agree. Each entry in 'tables' reads one input port and writes one existing table. All the tables are written in one transaction: if any fails, every table stays as the last publish left it. `receipt` is one row with the publish time (when 'stamp_column' is set) and the number of rows written to each table.
 
 ## Ports
 
@@ -16,36 +16,41 @@ Each entry in 'tables' reads one input port and writes one table: 'replace' empt
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `connection` | string | required |  | The name of an environment variable holding the connection URI; never the URI itself. |
-| `schema` | string | optional |  | The schema every table sits in; left out, the tables are named unqualified. |
-| `stamp_column` | string | optional |  | A column every one of these tables carries, written with this publish's own instant -- one value, onto every table. Left out, nothing is stamped and the frames alone say what lands. |
-| `tables` | array | required |  | One entry per table: which input port it reads, which table it is written to, and how. These entries are also what say which ports this step reads. |
-| `tables[].port` | string | required |  | The input port carrying the rows for this table. |
-| `tables[].table` | string | required |  | The table to write; a plain identifier, and one this tool never creates. |
-| `tables[].mode` | string | required | `replace`, `append`, `merge` | 'replace' empties the table before loading; 'append' adds without emptying it; 'merge' upserts on 'keys', and 'when_incoming_is_null' says what a null does. Required, with no default. |
-| `tables[].keys` | array | optional |  | The columns a merge matches a published row on; required by 'merge' and read by no other mode. |
-| `tables[].keys[]` | string | optional |  | One column of the merge key. |
-| `tables[].when_incoming_is_null` | string | optional | `keep_published`, `overwrite` | For a merge: what a null in an incoming row does. 'keep_published' leaves the published value standing; 'overwrite' writes the null. Required by 'merge', with no default, and read by no other mode. |
-| `tables[].allow_empty` | boolean | optional |  | Whether a frame with no rows is written for this table instead of stopping the publish. Left out, it is false. |
+| `connection` | string | required |  | The name of the environment variable that holds the database address, such as 'TARGET_DATABASE_URL'. Never the address itself. |
+| `schema` | string | optional |  | The schema every table is in, such as 'reporting'. Left out, the table names are used on their own. |
+| `stamp_column` | string | optional |  | Optional: a column every table has, which this step fills with the time of this publish, the same value on every table. |
+| `tables` | array | required |  | One entry per table: the input port to read, the table to write, and how. |
+| `tables[].port` | string | required |  | The input port whose rows go to this table, such as 'totals'. |
+| `tables[].table` | string | required |  | The table to write, such as 'monthly_totals'. It must already exist. |
+| `tables[].mode` | string | required | `replace`, `append`, `merge` | 'replace' empties the table and loads; 'append' adds rows; 'merge' updates rows matching 'keys' and inserts the rest. |
+| `tables[].keys` | array | optional |  | For 'merge' only: the columns that identify a row, such as ['customer_id']. |
+| `tables[].keys[]` | string | optional |  | One key column. |
+| `tables[].when_incoming_is_null` | string | optional | `keep_published`, `overwrite` | For 'merge' only: when a new row has a null, 'keep_published' keeps the value already in the table; 'overwrite' writes the null. |
+| `tables[].allow_empty` | boolean | optional |  | Set true to allow this table's rows to be empty. Left out, an empty port stops the whole publish. |
 
 More on some settings:
 
-- `connection`: The name of an environment variable, so a definition file that is committed and handed on never holds a credential.
-- `stamp_column`: Optional; a column every table named here carries, one no frame may, and one no table here may be named after -- the receipt gives it a column of its own beside one per table.
-- `tables`: Also what says which input ports this step reads: one port per entry, in the order the entries are written.
+- `connection`: For example 'TARGET_DATABASE_URL'. Set that variable in the environment the flow runs in.
+- `stamp_column`: For example 'published_at'. Every table here must have it, and no frame may.
+- `tables`: For example {port: totals, table: monthly_totals, mode: replace}. Each port named here becomes an input of this step.
 
 ## Notes
 
-- The tables commit together or not at all. That is the whole reason this tool exists rather than a chain of write_table steps, which is one transaction each.
-- The stamp is one instant, read once and written identically onto every table, so the tables of one build can be selected afterwards as one build.
-- A merge entry must say what a null in tonight's row does. 'when_incoming_is_null: keep_published' writes coalesce(incoming, published): a value overwrites, a gap is filled, and a null leaves the published value standing. 'overwrite' writes the null, as SQL's MERGE does. There is no default, because the two publish different figures.
-- A merge needs one row per key. A frame with a null in a key column, or the same key twice, is refused before anything is written, naming the key and the rows.
-- 'mode' has no default: the three differ in whether re-running the flow is safe, and an append-only log is the one table a rebuild must never rewrite.
-- An empty frame stops the whole publish -- not merely its own table -- unless that entry says in writing that it may be empty.
+- All the tables are saved together or none are. That is why this tool exists instead of several write_table steps, which are one transaction each.
+- The stamp time is read once and written identically onto every table, so the tables of one publish can be picked out together later. It is in UTC, without a zone.
+- A merge entry must set 'when_incoming_is_null'. 'keep_published' writes coalesce(incoming, published): a value overwrites, a gap is filled, and a null leaves the published value standing.
+- 'overwrite' writes the null, as SQL's MERGE does. There is no default, because the two publish different figures.
+- A merge needs one row per key. A null in a key column, or the same key twice, is refused before anything is written, naming the key and the rows.
+- 'mode' has no default: the three differ in whether running the flow twice is safe, and an append-only log is the one table a rebuild must never rewrite.
+- An empty port stops the whole publish, not only its own table, unless that entry has 'allow_empty: true'.
+- The tables must already exist; this tool never creates one. Each frame's columns must match its table's exactly, apart from 'stamp_column', which the frames never carry.
+- A column whose values will not fit the table's column type is refused before anything is written. write_table runs the same checks.
+- A port or table named by two entries is refused, and so is a 'stamp_column' named like one of the tables.
+- A merge loads its rows into a temporary table named _etl_merge_staging first. A permanent table of that name is hidden while a merge runs.
 
 ## Example 1
 
-two related tables are replaced and appended to in one transaction
+replace one table and add to another, together
 
 ```yaml fragment
 tool: publish_tables
@@ -83,11 +88,11 @@ Rows out:
 |---|---|
 | 2 | 1 |
 
-'totals' is emptied and reloaded with the two rows on its port; 'movements' keeps the row it already held and gains the one on 'log'. Both happen inside one transaction, so a failure on either would leave both exactly as they were. The receipt is one row carrying the number of rows written to each table.
+'totals' is emptied and reloaded with the two rows on its port. 'movements' keeps its row and gains the one on 'log'. Both happen in one transaction, so a failure on either leaves both as they were. The receipt counts the rows written to each table.
 
 ## Example 2
 
-a merge fills a gap, overwrites a value, and leaves what it is silent about standing
+merge new rows into a table, keeping published values where the new row is blank
 
 ```yaml fragment
 tool: publish_tables
@@ -119,7 +124,7 @@ Rows out:
 |---|
 | 2 |
 
-Party 'a' is already published as ('Alpha', 10.0). Tonight's row carries a new amount and no label, so afterwards it reads ('Alpha', 11.0): the amount moves and the published label survives, because 'when_incoming_is_null: keep_published' reads a null as the build having nothing to report. With 'overwrite' the label would be written empty. Party 'c' is new and is inserted. The receipt counts the two incoming rows.
+Party 'a' is published as ('Alpha', 10.0). Tonight's row has a new amount and no label, so it becomes ('Alpha', 11.0): 'keep_published' keeps the label. With 'overwrite' the label would become null. Party 'c' is new and is inserted. The receipt counts the two incoming rows.
 
 ---
 

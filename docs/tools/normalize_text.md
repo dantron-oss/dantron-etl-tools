@@ -2,9 +2,9 @@
 
 # `normalize_text`
 
-*text tool.* Reduce a name to a join-ready match key: fold accents, case, punctuation, suffixes, spacing.
+*text tool.* Clean up names into a matching key: lower case, no punctuation, accents or suffixes.
 
-Every selected operation runs in OPERATION_ORDER, never in the order 'operations' names them, because the operations enable one another: accent folding and punctuation removal are what make a configured suffix recognisable, so both have to run before suffix stripping for the tool to stay idempotent. A value that reduces to nothing is written as null, never as an empty string.
+Use normalize_text to make a matching key from names people typed, so that 'ACME Ltd.' and 'acme' can be joined. It adds the cleaned key as a new column at the end of `rows`. The clean-ups are, in the order they always run: fold_accents (é to e), lower, remove_punctuation, strip_suffixes (the words you list) and collapse_whitespace.
 
 ## Ports
 
@@ -15,25 +15,65 @@ Every selected operation runs in OPERATION_ORDER, never in the order 'operations
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `source` | expression | required |  | The name to reduce to a match key. |
-| `output` | string | required |  | The column the match key is written to. |
-| `operations` | array | required |  | Which reductions run; the order they run in is OPERATION_ORDER, not this list's own order. |
-| `operations[]` | string | optional | `fold_accents`, `lower`, `remove_punctuation`, `strip_suffixes`, `collapse_whitespace` | One of the published operations. |
-| `suffixes` | array | optional |  | Whole trailing words to strip, case-insensitively and repeatedly; required when 'strip_suffixes' is selected, and only then. |
-| `suffixes[]` | string | optional |  | One suffix word, as the caller spells it. |
+| `source` | expression | required |  | The text to clean, such as '[customer_name]'. |
+| `output` | string | required |  | The name of the new column for the cleaned key, such as 'name_key'. |
+| `operations` | array | required |  | Which clean-ups to apply. They always run in a fixed order, whatever order you list them in. |
+| `operations[]` | string | optional | `fold_accents`, `lower`, `remove_punctuation`, `strip_suffixes`, `collapse_whitespace` | One clean-up, such as 'lower' or 'remove_punctuation'. |
+| `suffixes` | array | optional |  | Words to remove from the end, such as 'ltd' or 'inc'. Needed with 'strip_suffixes', and only then. |
+| `suffixes[]` | string | optional |  | One word to remove from the end, such as 'ltd'. |
 
 More on some settings:
 
-- `operations`: Selects which reductions run; OPERATION_ORDER decides the sequence.
-- `suffixes`: The caller's own suffix words; there is no default list.
+- `operations`: For example ['lower', 'remove_punctuation', 'collapse_whitespace'].
+- `suffixes`: For example ['ltd', 'limited', 'inc'].
 
 ## Notes
 
-- 'suffixes' carries no built-in words: a jurisdiction's company suffixes are the caller's data, not this library's.
+- The clean-ups always run in the fixed order above, not the order listed, so running the step twice gives the same key as running it once.
+- Accents and punctuation go before suffixes so that 'SARL' and 'Ltd.' are recognised as the suffixes 'sarl' and 'ltd'.
+- There is no built-in suffix list. Company suffixes differ by country, so you list them.
+- Suffixes are whole words at the end, matched ignoring case, and removed again until none is left: 'Acme Pty Ltd' loses both.
+- Punctuation is deleted, not replaced by a space, so 'A.B.C.' becomes 'abc'.
+- Any kind of space counts, including the non-breaking space common in pasted text.
+- A name that cleans down to nothing is null, not empty text, so it never matches another empty name.
+- Listing a clean-up twice is refused. 'suffixes' without 'strip_suffixes', or the other way round, is refused.
+- The source must be text, and the output name must be new.
 
 ## Example 1
 
-two spellings of one party meet, and pure punctuation reduces to nothing
+lower-case names and tidy their spaces
+
+```yaml fragment
+tool: normalize_text
+config:
+  source: '[party]'
+  output: party_key
+  operations:
+  - lower
+  - collapse_whitespace
+```
+
+Rows in:
+
+`rows`
+
+| party |
+|---|
+| Acme Holdings |
+
+Rows out:
+
+`rows`
+
+| party | party_key |
+|---|---|
+| Acme Holdings | acme holdings |
+
+Only 'lower' and 'collapse_whitespace' are used, so no 'suffixes' list is needed.
+
+## Example 2
+
+make two spellings of one company match, with every clean-up
 
 ```yaml fragment
 tool: normalize_text
@@ -71,39 +111,7 @@ Rows out:
 | 2 | acme pty ltd | acme |
 | 3 | ... | null |
 
-A shouted spelling with a stop and its plain lowercase equivalent both reduce to 'acme'; a name that is nothing but punctuation reduces to nothing, and is written null rather than ''.
-
-## Example 2
-
-only case and spacing are asked for, with no suffix list at all
-
-```yaml fragment
-tool: normalize_text
-config:
-  source: '[party]'
-  output: party_key
-  operations:
-  - lower
-  - collapse_whitespace
-```
-
-Rows in:
-
-`rows`
-
-| party |
-|---|
-| Acme Holdings |
-
-Rows out:
-
-`rows`
-
-| party | party_key |
-|---|---|
-| Acme Holdings | acme holdings |
-
-'strip_suffixes' is absent from the operation list and 'suffixes' from the configuration, which is allowed: the two travel together only when suffix stripping is actually selected.
+'ACME Ltd.' and 'acme' both become 'acme'. A name of nothing but punctuation cleans down to nothing, so it is null, not empty text.
 
 ---
 

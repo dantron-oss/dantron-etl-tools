@@ -10,63 +10,63 @@ The same text is in the terminal: `dantron-etl tools` and `dantron-etl help <too
 
 | tool | what it does |
 |---|---|
-| [`read_csv`](read_csv.md) | Read a delimited text file onto the `rows` port, inferring types by column. |
-| [`read_excel`](read_excel.md) | Read one named sheet of an XLSX workbook, or stack every sheet whose name matches a pattern. |
-| [`read_table`](read_table.md) | Read a named table from a database onto the `rows` port. |
+| [`read_csv`](read_csv.md) | Read a CSV or other delimited text file into a table. |
+| [`read_excel`](read_excel.md) | Read a sheet of an Excel workbook into a table, or stack several matching sheets. |
+| [`read_table`](read_table.md) | Read every row of one database table. |
 
 ## preparation
 
 | tool | what it does |
 |---|---|
-| [`cast_columns`](cast_columns.md) | Read named columns of `rows` as the types the flow states, leaving every row where it is. |
-| [`filter`](filter.md) | Split rows onto `true` and `false` ports by a predicate, keeping every row. |
-| [`limit_rows`](limit_rows.md) | Keep the first `count` rows of `rows`, and send the rest out by `dropped`. |
-| [`match_one_to_one`](match_one_to_one.md) | Pair left keys with right keys one to one, taking the best candidates first. |
-| [`record_id`](record_id.md) | Add a column numbering the rows of `rows`, counting up from a starting number. |
-| [`remove_duplicates`](remove_duplicates.md) | Split `rows` into one member of each identical group and the members left over. |
-| [`rename_columns`](rename_columns.md) | Rename columns of `rows` in place, leaving every column where it already sat. |
-| [`select_columns`](select_columns.md) | Keep or drop the columns of `rows` a pattern list names, in the order asked for. |
-| [`sort`](sort.md) | Order the rows of `rows` by one or more keys, keeping tied rows in their arrival order. |
+| [`cast_columns`](cast_columns.md) | Change the type of columns, such as text to number or text to date. |
+| [`filter`](filter.md) | Split rows in two by a condition: rows that meet it, and rows that do not. |
+| [`limit_rows`](limit_rows.md) | Keep the first rows of a table, and set the rest aside on a second port. |
+| [`match_one_to_one`](match_one_to_one.md) | Pair items one to one from a list of possible pairs, taking the best pairs first. |
+| [`record_id`](record_id.md) | Number the rows 1, 2, 3 and so on, in a new column. |
+| [`remove_duplicates`](remove_duplicates.md) | Keep one row of each group of matching rows, and set the repeats aside. |
+| [`rename_columns`](rename_columns.md) | Give columns new names, keeping each column where it is. |
+| [`select_columns`](select_columns.md) | Keep or remove columns by name, and put the kept ones in the order you list. |
+| [`sort`](sort.md) | Put rows in order by one or more columns, each ascending or descending. |
 
 ## transform
 
 | tool | what it does |
 |---|---|
-| [`assemble_date`](assemble_date.md) | Assemble year, month and day parts into one real date column, appended to the input. |
-| [`case_when`](case_when.md) | Add a column labelling each row by the first case it satisfies in an ordered ladder. |
-| [`cross_tab`](cross_tab.md) | Turn `rows` wide: one row per combination of 'by', one column per value of a key column. |
-| [`date_diff`](date_diff.md) | Count the whole months or days between two dates, appended as a signed integer. |
-| [`expand_date_range`](expand_date_range.md) | Expand each row into one row per period between two dates; set the rest aside. |
-| [`formula`](formula.md) | Add or replace named columns, each computed by an expression against the input alone. |
-| [`group_by`](group_by.md) | Collapse `rows` to one row per distinct key, carrying only what is named. |
-| [`make_groups`](make_groups.md) | Group records linked by a chain of pairs, however long, naming each group by its smallest record. |
-| [`unpivot`](unpivot.md) | Turn `rows` long: every column outside `by` becomes a row naming it and holding its cell. |
+| [`assemble_date`](assemble_date.md) | Build a date from separate year, month and day columns. |
+| [`case_when`](case_when.md) | Set a column by rules: if this, then that; else something else. |
+| [`cross_tab`](cross_tab.md) | Turn a long table into a grid, with one column per value, such as one column per month. |
+| [`date_diff`](date_diff.md) | Count the months or days between two dates, in a new column. |
+| [`expand_date_range`](expand_date_range.md) | Turn each row with a start and end date into one row per month between them. |
+| [`formula`](formula.md) | Add a calculated column, or change one, using an expression such as [price] * [quantity]. |
+| [`group_by`](group_by.md) | Make one row per group, with totals, counts or other summaries for each group. |
+| [`make_groups`](make_groups.md) | Put records that are linked, directly or through others, into the same group. |
+| [`unpivot`](unpivot.md) | Turn columns into rows, such as one column per month into one row per month. |
 
 ## combine
 
 | tool | what it does |
 |---|---|
-| [`join`](join.md) | Pair `left` to `right` on a key, reporting the pairs and each side's unpaired rows. |
-| [`union`](union.md) | Stack the rows of `bottom` under the rows of `top`, keeping duplicates and matching columns by name (SQL's UNION ALL BY NAME). |
+| [`join`](join.md) | Match the rows of two tables on a key column, and keep the rows that found no match. |
+| [`union`](union.md) | Stack two tables with the same columns, one under the other, keeping every row (SQL's UNION ALL BY NAME). |
 
 ## text
 
 | tool | what it does |
 |---|---|
-| [`normalize_text`](normalize_text.md) | Reduce a name to a join-ready match key: fold accents, case, punctuation, suffixes, spacing. |
-| [`regex_extract_groups`](regex_extract_groups.md) | Extract a pattern's named groups from one column at once, all null together on a miss. |
+| [`normalize_text`](normalize_text.md) | Clean up names into a matching key: lower case, no punctuation, accents or suffixes. |
+| [`regex_extract_groups`](regex_extract_groups.md) | Pull several pieces out of a text column into new columns, using a pattern. |
 
 ## assert
 
 | tool | what it does |
 |---|---|
-| [`assert_rows`](assert_rows.md) | Stop the run unless every row of `rows` satisfies a predicate. |
+| [`assert_rows`](assert_rows.md) | Check that every row meets a condition, and stop the run if any does not. |
 
 ## output
 
 | tool | what it does |
 |---|---|
-| [`publish_tables`](publish_tables.md) | Write one frame per named port to its own table, all of them in one transaction. |
-| [`write_csv`](write_csv.md) | Write `rows` to a delimited text file, and hand the same rows on. |
-| [`write_excel`](write_excel.md) | Write one frame per named port to its own tab of one XLSX workbook. |
-| [`write_table`](write_table.md) | Truncate-and-load or append `rows` into a named table. |
+| [`publish_tables`](publish_tables.md) | Save several tables to a database together: all of them, or none if any fails. |
+| [`write_csv`](write_csv.md) | Write a table to a CSV file. |
+| [`write_excel`](write_excel.md) | Write tables to the tabs of one Excel workbook, optionally into a template. |
+| [`write_table`](write_table.md) | Save rows to one database table, replacing what is there or adding to it. |

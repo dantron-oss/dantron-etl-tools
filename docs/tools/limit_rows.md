@@ -2,9 +2,9 @@
 
 # `limit_rows`
 
-*preparation tool.* Keep the first `count` rows of `rows`, and send the rest out by `dropped`.
+*preparation tool.* Keep the first rows of a table, and set the rest aside on a second port.
 
-Takes the first 'count' rows of 'rows' in the order they arrived, and sends everything after them out by 'dropped'. Nothing is sorted here: put a Sort in front when the order matters, so the ordering is written down where a reader can see it. Nothing else about the frame changes. Both ports carry the same columns, in the same order, holding the same types. Stack the two ports back up and you have the input, in order, with nothing lost and nothing duplicated.
+Use limit_rows to keep the first rows of a table, for example the first 10. The kept rows go to `rows`; everything after them goes to `dropped`. It does not sort: put a sort in front for a top 10 by amount. Both ports keep the input's columns and types, and together they hold every input row, in order.
 
 ## Ports
 
@@ -15,21 +15,22 @@ Takes the first 'count' rows of 'rows' in the order they arrived, and sends ever
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `count` | integer | required |  | How many rows to keep, counted from the first row as it arrived. Zero keeps none. A count past the height of the frame keeps all of it. |
+| `count` | integer | required |  | How many rows to keep, from the top, in the order they arrived. |
 
 More on some settings:
 
-- `count`: How many rows travel on. It is a whole number, and there is no default: a limit nobody wrote is not a limit.
+- `count`: A whole number, for example 10. There is no default: a limit nobody wrote is not a limit.
 
 ## Notes
 
-- Nothing is discarded. The rows past the limit leave by 'dropped', so a flow that wants to count them, log them or write them out can, and a flow that ignores them is ignoring them on purpose.
-- 'count: 0' runs and keeps nothing. It is a limit like any other, and every row still leaves by 'dropped'.
-- A count past the height of the frame keeps the whole frame. 'dropped' is then empty, and still carries the columns and their types, so a later step compiles against it either way.
+- No row is thrown away. The rows past the limit go to `dropped`, so a flow can count, log or write them.
+- 'count: 0' keeps no rows and sends them all to `dropped`.
+- A count larger than the table keeps every row. `dropped` is then empty but still has the columns and their types.
+- A negative count is refused.
 
 ## Example 1
 
-keep the first two rows as they arrived, and see the other two
+keep the first two rows, as they arrived
 
 ```yaml fragment
 tool: limit_rows
@@ -64,11 +65,11 @@ Rows out:
 | c | 90.0 |
 | b | 30.0 |
 
-The first two rows are 'd' and 'a' because that is the order they arrived in. They are neither the first two codes alphabetically nor the two largest amounts: this step does not sort. The other two rows are not gone, they leave by 'dropped'.
+The first two rows are 'd' and 'a' because that is the order they arrived in. The step does not sort. The other two rows go to 'dropped'.
 
 ## Example 2
 
-a frame shorter than the limit comes back whole
+a table shorter than the limit comes back whole
 
 ```yaml fragment
 tool: limit_rows
@@ -99,7 +100,7 @@ Rows out:
 | code | amount |
 |---|---|
 
-There are fewer rows than the limit, so every row travels on and 'dropped' is empty. It still carries both columns and their types, so a step reading it compiles whether or not a row ever reaches it.
+There are fewer rows than the limit, so every row is kept. 'dropped' is empty, but still has both columns and their types.
 
 ---
 

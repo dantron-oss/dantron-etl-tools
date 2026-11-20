@@ -2,9 +2,9 @@
 
 # `assert_rows`
 
-*assert tool.* Stop the run unless every row of `rows` satisfies a predicate.
+*assert tool.* Check that every row meets a condition, and stop the run if any does not.
 
-Every row of 'rows' is tested against 'predicate'; if every row satisfies it, 'rows' passes through unchanged. If any row does not -- including a row whose result is null, which is never treated as a pass -- the run stops with a DataError naming the assertion, how many rows failed out of how many, and a handful of the offending rows. An empty frame fails by default, because every row of it vacuously satisfies any predicate; 'allow_empty' is how a flow whose branch is legitimately sometimes empty says so.
+Use assert_rows to check a rule that must always hold, such as no negative amounts or every row having a customer. If every row meets the condition, `rows` passes through unchanged. If any row does not, the run stops with a message naming the check, how many rows failed out of how many, and some of the failing rows.
 
 ## Ports
 
@@ -15,23 +15,24 @@ Every row of 'rows' is tested against 'predicate'; if every row satisfies it, 'r
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `predicate` | expression | required |  | The invariant every row must satisfy; a null result counts as a failure. |
-| `label` | string | optional |  | What a reader recognises the assertion by in a log; optional. |
-| `allow_empty` | boolean | default `false` |  | Whether a frame with no rows passes instead of failing. |
+| `predicate` | expression | required |  | The condition every row must meet, such as '[amount] >= 0'. |
+| `label` | string | optional |  | A short name for the check, shown in the message when it fails. |
+| `allow_empty` | boolean | default `false` |  | Set true to let a table with no rows pass. Left out, an empty table fails. |
 
 More on some settings:
 
-- `label`: Shown in the failure message alongside the predicate text; the predicate itself is always shown, labelled or not.
-- `allow_empty`: Defaults to false: an empty frame fails until a flow says in writing that this branch may be empty.
+- `label`: For example 'no negative amounts'. The condition itself is always shown too.
+- `allow_empty`: Set it on a branch that is sometimes empty for a good reason.
 
 ## Notes
 
-- A null predicate result is a failure with no knob to change it: an invariant has no legitimate 'could not tell', unlike Filter's selection, which has a 'nulls' option for exactly that reason.
-- An empty frame fails unless 'allow_empty' says otherwise, because a filter that matched nothing leaves an empty frame behind and every assertion on it would otherwise pass in silence.
+- A row whose condition is null fails. There is no setting to change that: a check that could not tell has not passed. (filter has a 'nulls' setting because choosing rows is different.)
+- A table with no rows fails unless 'allow_empty' is true, because an empty table meets every condition, and an upstream filter that matched nothing would otherwise pass in silence.
+- To keep the failing rows as data instead of stopping, use filter.
 
 ## Example 1
 
-every row satisfies the predicate, so it passes through unchanged
+check that every amount is positive
 
 ```yaml fragment
 tool: assert_rows
@@ -58,11 +59,11 @@ Rows out:
 | r1 | 10.0 |
 | r2 | 20.5 |
 
-Both rows have a positive amount, so nothing stops the run and 'rows' arrives on the other side exactly as it came in.
+Both rows have a positive amount, so the run carries on and 'rows' passes through unchanged.
 
 ## Example 2
 
-an empty frame passes because the flow says in writing that it may be
+let an empty table pass, because this branch is sometimes empty
 
 ```yaml fragment
 tool: assert_rows
@@ -85,7 +86,7 @@ Rows out:
 | key | amount |
 |---|---|
 
-An empty frame would otherwise fail, since every row of it vacuously satisfies the predicate; 'allow_empty: true' is how this branch declares that emptiness is expected.
+An empty table would fail by default. 'allow_empty: true' says that an empty table is expected here.
 
 ---
 

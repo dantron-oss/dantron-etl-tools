@@ -161,7 +161,7 @@ class PipelineTrace:
     events: tuple[StepEvent, ...]
     shapes: Mapping[PortRef, FrameShape]
     frames: Mapping[PortRef, pl.DataFrame]
-    status: Mapping[PortRef, pl.DataFrame] = MappingProxyType({})
+    status: Mapping[PortRef, pl.DataFrame] = field(default_factory=lambda: MappingProxyType({}))
     until: tuple[str, ...] = ()
     cached: tuple[PortRef, ...] = ()
     run_id: str | None = None

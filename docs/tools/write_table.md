@@ -2,9 +2,9 @@
 
 # `write_table`
 
-*output tool.* Truncate-and-load or append `rows` into a named table.
+*output tool.* Save rows to one database table, replacing what is there or adding to it.
 
-'rows' is loaded into the named table: 'replace' empties it first, inside the same transaction as the load, so a write that fails part way leaves the previous contents standing rather than an empty table; 'append' loads without emptying it. The table must already exist and its columns must exactly match the frame's, order-insensitively -- this tool runs no DDL of its own.
+Use write_table to save rows into one existing database table. 'replace' empties it and loads the rows in one transaction, so a load that fails part way leaves the old rows in place, never an empty table. 'append' adds the rows. The same rows pass on through `rows`. To load several related tables together, use publish_tables.
 
 ## Ports
 
@@ -15,27 +15,31 @@
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `connection` | string | required |  | The name of an environment variable holding the connection URI; never the URI itself. |
-| `schema` | string | optional |  | The schema the table sits in; left out, the table is named unqualified. |
-| `table` | string | required |  | The table to write; a plain identifier, and one this tool never creates. |
-| `mode` | string | required | `replace`, `append` | 'replace' empties the table before loading; 'append' loads without emptying it. Required, with no default: the two differ in whether running the flow twice is safe. |
-| `allow_empty` | boolean | default `false` |  | Whether a frame with no rows is written instead of stopping the run. |
+| `connection` | string | required |  | The name of the environment variable that holds the database address, such as 'TARGET_DATABASE_URL'. Never the address itself. |
+| `schema` | string | optional |  | The schema the table is in, such as 'reporting'. Left out, the table name is used on its own. |
+| `table` | string | required |  | The table to write, such as 'monthly_sales'. It must already exist. |
+| `mode` | string | required | `replace`, `append` | 'replace' empties the table and loads the rows; 'append' adds the rows to what is there. |
+| `allow_empty` | boolean | default `false` |  | Set true to allow writing a table with no rows. Left out, an empty table stops the run. |
 
 More on some settings:
 
-- `mode`: Required; 'replace' or 'append', with no default, so a run always says which one it means.
-- `allow_empty`: Defaults to false: an empty frame stops the run until a flow says in writing that this branch may be empty.
+- `connection`: For example 'TARGET_DATABASE_URL'. Set that variable in the environment the flow runs in.
+- `mode`: Use 'replace' for a table rebuilt on every run, 'append' for a log that grows.
+- `allow_empty`: Set it when an empty result is normal for this table.
 
 ## Notes
 
-- 'mode' has no default: 'replace' and 'append' differ in whether re-running the flow is safe, and either default would choose one of them silently.
-- An empty frame stops the run unless 'allow_empty' says otherwise: a replace of nothing empties the table, the loudest silence an upstream step can leave behind.
-- A column whose values will not fit the type the table declares for it is refused before anything is written, naming the column: text in a whole-number column, or a fraction. These are the same checks publish_tables runs.
-- The output port hands the same rows on unchanged, so this sink is composable rather than terminal by construction.
+- 'mode' has no default: 'replace' can be run twice safely and 'append' cannot, so the flow must say which it means.
+- The table must already exist. This tool never creates or changes a table; that belongs in a reviewed database migration.
+- The table's columns and the rows' columns must match exactly, in any order. An extra or missing column is refused, and so is a name that differs only in case.
+- A table with no rows stops the run unless 'allow_empty' is true, because a replace with nothing empties the table.
+- A column whose values will not fit the table's column type is refused before anything is written, naming the column: text in a whole-number column, or a fraction. publish_tables runs the same checks.
+- If the database refuses rows during the load (a missing required value, a repeated key), the step stops, names the table and shows the rows that were refused.
+- The same rows pass on through `rows`, so the flow can continue after the write.
 
 ## Example 1
 
-replace empties the table before loading the new rows
+replace a table's rows with new ones
 
 ```yaml fragment
 tool: write_table
@@ -63,11 +67,11 @@ Rows out:
 | 3 | third |
 | 4 | fourth |
 
-The two rows already in 'sample' are gone afterwards, replaced by exactly the rows on 'rows'; the same rows leave on the output port unchanged.
+The two rows already in 'sample' are removed and the two new rows loaded. The same rows pass on through 'rows'.
 
 ## Example 2
 
-append adds to what the table already holds
+add rows to a table
 
 ```yaml fragment
 tool: write_table
@@ -95,7 +99,7 @@ Rows out:
 | 3 | third |
 | 4 | fourth |
 
-The two rows already in 'sample' stay; the rows on 'rows' are added beside them, and those same rows leave on the output port unchanged.
+The two rows already in 'sample' stay, and the new rows are added. The same rows pass on through 'rows'.
 
 ---
 

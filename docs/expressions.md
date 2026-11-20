@@ -47,28 +47,28 @@ who does not program.
 
 | function | arguments, in order | what it gives | example |
 |---|---|---|---|
-| `coalesce` | two or more, each any value | The first of its arguments that is not null. | `coalesce([discount], 0.0)` |
-| `round` | a number; a whole number written in the file | A number rounded to a given number of decimal places, a half going away from zero. | `round([amount], 2)` |
+| `coalesce` | two or more, each any value | The first value that is not null: coalesce([discount], 0.0) gives 0.0 where discount is blank. | `coalesce([discount], 0.0)` |
+| `round` | a number; a whole number written in the file | A number rounded to some decimal places, halves away from zero like a spreadsheet: 2.5 gives 3. | `round([amount], 2)` |
 | `year` | a date | The year of a date, as a whole number. | `year([starts_on])` |
-| `add_months` | a date; a whole number (a number) | A date moved by a whole number of months, kept inside a month that is too short. | `add_months([starts_on], [months] - 1)` |
-| `months_between` | a date; a date; 'inclusive' or 'elapsed' | Whole months from the first date to the second, signed; 'inclusive' or 'elapsed', as date_diff counts. | `months_between([starts_on], [ends_on], 'inclusive')` |
-| `days_between` | a date; a date; 'inclusive' or 'elapsed' | Days from the first date to the second, signed; 'inclusive' or 'elapsed', as date_diff counts. | `days_between([ordered_on], [paid_on], 'elapsed')` |
-| `make_date` | a whole number (a number); a whole number (a number); a whole number (a number) | The date a year, a month and a day name, or null when they name no date (30 February). | `make_date([year], [month], 1)` |
+| `add_months` | a date; a whole number (a number) | A date moved by whole months; 31 January plus one month is 28 February. | `add_months([starts_on], [months] - 1)` |
+| `months_between` | a date; a date; 'inclusive' or 'elapsed' | Whole months from the first date to the second, counted 'inclusive' or 'elapsed' as date_diff counts. | `months_between([starts_on], [ends_on], 'inclusive')` |
+| `days_between` | a date; a date; 'inclusive' or 'elapsed' | Days from the first date to the second, counted 'inclusive' or 'elapsed' as date_diff counts. | `days_between([ordered_on], [paid_on], 'elapsed')` |
+| `make_date` | a whole number (a number); a whole number (a number); a whole number (a number) | A date built from a year, a month and a day; null when they make no date, such as 30 February. | `make_date([year], [month], 1)` |
 | `month_end` | a date | The last day of the month a date falls in. | `month_end([ordered_on])` |
 | `abs` | a number | A number without its sign. | `abs([amount])` |
 | `lower` | text | Text in lower case. | `lower([name])` |
 | `upper` | text | Text in upper case. | `upper([code])` |
-| `trim` | text | Text without the whitespace at its start and end. | `trim([name])` |
+| `trim` | text | Text without the spaces at its start and end. | `trim([name])` |
 | `len` | text | The number of characters in a piece of text. | `len([code])` |
-| `starts_with` | text; text | Whether text starts with other text, matched exactly. | `starts_with([code], 'AB-')` |
-| `ends_with` | text; text | Whether text ends with other text, matched exactly. | `ends_with([file_name], '.csv')` |
-| `contains` | text; text | Whether text contains other text, matched exactly rather than as a pattern. | `contains([note], 'refund')` |
-| `regex_extract` | text; a quoted pattern; a whole number written in the file | The part of text that one group of a regular expression matched, or null. | `regex_extract([reference], '([0-9]+)', 1)` |
+| `starts_with` | text; text | Whether text starts with other text, matched exactly, case included. | `starts_with([code], 'AB-')` |
+| `ends_with` | text; text | Whether text ends with other text, matched exactly, case included. | `ends_with([file_name], '.csv')` |
+| `contains` | text; text | Whether text contains other text, matched exactly; a dot is a dot, not a pattern. | `contains([note], 'refund')` |
+| `regex_extract` | text; a quoted pattern; a whole number written in the file | The part of text matched by one bracketed group of a regular expression, or null if no match. | `regex_extract([reference], '([0-9]+)', 1)` |
 | `regex_replace` | text; a quoted pattern; quoted text written in the file | Text with every match of a regular expression replaced by fixed text. | `regex_replace(lower([name]), '[^a-z0-9]+', ' ')` |
-| `regex_match` | text; a quoted pattern | Whether a regular expression matches anywhere in text. | `regex_match([code], '^[A-Z]{3}$')` |
+| `regex_match` | text; a quoted pattern | Whether a regular expression matches anywhere in the text. | `regex_match([code], '^[A-Z]{3}$')` |
 | `concat` | two or more, each text | Pieces of text joined end to end; null if any piece is null. | `concat('order ', [number])` |
-| `format_number` | a number; a whole number written in the file; quoted text written in the file; quoted text written in the file | A number written as text, to a fixed number of places, with the separators stated. | `format_number([total], 2, ',', '.')` |
-| `uuid5` | a quoted UUID; text | A stable id (RFC 4122 version 5) derived from a namespace and a piece of text. | `uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '\|', [period]))` |
+| `format_number` | a number; a whole number written in the file; quoted text written in the file; quoted text written in the file | A number written as text: decimal places, then the thousands and decimal separators. | `format_number([total], 2, ',', '.')` |
+| `uuid5` | a quoted UUID; text | A stable id (RFC 4122 version 5) from a namespace and some text; the same text, the same id. | `uuid5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', concat([code], '\|', [period]))` |
 
 <!-- functions: end -->
 

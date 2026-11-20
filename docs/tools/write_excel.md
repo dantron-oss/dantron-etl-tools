@@ -2,9 +2,9 @@
 
 # `write_excel`
 
-*output tool.* Write one frame per named port to its own tab of one XLSX workbook.
+*output tool.* Write tables to the tabs of one Excel workbook, optionally into a template.
 
-Each entry in 'sheets' names an input port and the tab its rows are written to. Those entries are also what say which ports this step reads: two steps of this tool with different 'sheets' read different frames. Every tab goes into one workbook, which is opened once and saved once. Give a 'template' and that workbook is loaded, the named tabs are written into it, and the whole thing is saved to 'path'. A tab nobody named comes back with its values, its formulas, its formatting and its column widths. The rest of the workbook is rewritten, not copied across byte for byte: the whole file is read into memory and a new file is written out. Pivot tables, charts and named ranges come through, and so do the cached values behind a pivot's filter dropdowns. One thing is known to be lost. A pivot cache's extension block is dropped, which is where a slicer link and the newer formatting options are kept, so a slicer can come back disconnected. Write one pack and open it before pointing this at a workbook you could not rebuild. The template itself is never written to, and a 'path' naming the same file is refused. The file already at 'path' is never read: each run builds the workbook from the template, or from nothing, so a tab the flow stops writing does not linger. A file already at 'path', or a template tab a sheet entry names, is refused until 'overwrite' says in writing that replacing it is intended. A replaced template tab keeps its place among the others. Nothing leaves on an output port: a flow ends here.
+Use write_excel to deliver results as a spreadsheet. Each entry in 'sheets' names an input port and the tab its rows go to, so one step can write many tabs. Name a 'template' to write the tabs into a workbook you have already laid out, with its charts, notes and formatting; the other tabs come through as they were. The workbook is saved to 'path'. This step has no output ports: a flow ends here.
 
 ## Ports
 
@@ -16,64 +16,81 @@ Each entry in 'sheets' names an input port and the tab its rows are written to. 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `path` | string | required |  | Where the workbook is written; must end in .xlsx. |
-| `sheets` | array | required |  | One entry per tab: which input port it reads, which tab it is written to, and how its figures are shown. These entries are also what say which ports this step reads. |
-| `sheets[].port` | string | required |  | The input port carrying the rows for this tab. |
-| `sheets[].sheet` | string | required |  | The tab the rows are written to; at most 31 characters, and none of '[' ']' ':' '*' '?' '/' '\'. |
-| `sheets[].allow_empty` | boolean | optional |  | Whether a port with no rows is written, as a tab with its headings and nothing under them, instead of stopping the run. Left out, it is false. |
-| `sheets[].formats` | array | optional |  | How this tab's figures are shown: one rule per entry, each naming either a type or a single column, and the format code that column is shown under. Leave it out and nothing is formatted beyond the date format this tool always writes. |
-| `sheets[].formats[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Show every column of this type under the format; this is what reaches a column the configuration could not have named. |
-| `sheets[].formats[].column` | string | optional |  | Show this one column under the format; it beats any rule about the column's type. |
-| `sheets[].formats[].format` | string | required |  | The spreadsheet's own format code, passed through as written: '#,##0.00' for money, '0.000' for a proportion read to three places. |
-| `sheets[].widths` | array | optional |  | How wide this tab's columns are: one rule per entry, each naming either a type or a single column, and the width. A column rule beats a type rule. Leave it out and no width is set. |
+| `path` | string | required |  | The workbook file to write. It must end in .xlsx. |
+| `sheets` | array | required |  | One entry per tab: the input port to read, the tab to write it to, and how the tab looks. |
+| `sheets[].port` | string | required |  | The input port whose rows go on this tab, such as 'summary'. |
+| `sheets[].sheet` | string | required |  | The tab name, such as 'Summary'. At most 31 characters, and none of '[' ']' ':' '*' '?' '/' '\'. |
+| `sheets[].allow_empty` | boolean | optional |  | Set true to write a port with no rows as a tab of headings only. Left out, an empty port stops the run. |
+| `sheets[].formats` | array | optional |  | Number formats for this tab, one rule per entry, each for a type or one column. Left out, only dates are formatted. |
+| `sheets[].formats[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Apply the format to every column of this type, such as Float64. |
+| `sheets[].formats[].column` | string | optional |  | Apply the format to this one column. It beats a rule about the column's type. |
+| `sheets[].formats[].format` | string | required |  | The spreadsheet's format code, such as '#,##0.00' for money or '0.0%' for a percentage. |
+| `sheets[].widths` | array | optional |  | Column widths, one rule per entry, each for a type or one column. Left out, no width is set. |
 | `sheets[].widths[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Set this width on every column of this type. |
 | `sheets[].widths[].column` | string | optional |  | Set this width on this one column; it beats any rule about the column's type. |
 | `sheets[].widths[].width` | number | required |  | The width, in characters: more than 0, at most 255. |
-| `sheets[].fit_widths` | boolean | optional |  | Size every column to its heading and its longest value as shown, up to a cap of 60 characters. A width stated in 'widths' beats the fit. Leave it out and nothing is fitted. |
-| `sheets[].wrap` | array | optional |  | Which columns wrap their text: one rule per entry, naming either a type or a single column. Wrapped cells sit at the top of the row. The heading is never wrapped. |
+| `sheets[].fit_widths` | boolean | optional |  | Set true to size each column to fit its heading and values, up to 60 characters wide. |
+| `sheets[].wrap` | array | optional |  | Columns whose text wraps onto several lines, one rule per entry, each for a type or one column. |
 | `sheets[].wrap[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Wrap every column of this type. |
 | `sheets[].wrap[].column` | string | optional |  | Wrap this one column. |
-| `sheets[].table` | object | optional |  | Make the tab's rows a spreadsheet table, with filter dropdowns on the headings. Write {} to take the name from the tab. |
-| `sheets[].table.name` | string | optional |  | The table's name. Leave it out and it is made from the tab name. |
-| `sheets[].table.style` | string | optional |  | One of the spreadsheet's built-in table styles, such as 'TableStyleLight1'. Leave it out for a plain table. |
-| `sheets[].header` | object | optional |  | How the headings look: bold, a size, or both. What is not stated keeps the cell's own font. |
+| `sheets[].table` | object | optional |  | Turn the rows into a spreadsheet table with filter dropdowns. Write {} to name it after the tab. |
+| `sheets[].table.name` | string | optional |  | The table's name, such as 'Sales'. Left out, it is made from the tab name. |
+| `sheets[].table.style` | string | optional |  | A built-in table style, such as 'TableStyleLight1'. Left out, the table is plain. |
+| `sheets[].header` | object | optional |  | How the headings look: bold, a font size, or both. |
 | `sheets[].header.bold` | boolean | optional |  | Whether the headings are bold. |
 | `sheets[].header.size` | number | optional |  | The headings' font size in points: at least 1, at most 409. |
-| `template` | string | optional |  | A workbook to start from. It is read and never written: the tool copies it to 'path' and writes there. Leave it out to start from nothing. |
-| `overwrite` | boolean | default `false` |  | Whether something already there may be replaced: a file at 'path', or a tab of the template that a sheet entry names. Leave it out and either is refused. |
+| `template` | string | optional |  | A workbook to start from. It is only read. Left out, the workbook starts empty. |
+| `overwrite` | boolean | default `false` |  | Set true to allow replacing a file already at 'path', or a template tab that a sheet entry names. |
 
 More on some settings:
 
-- `overwrite`: Defaults to false. A file already at 'path' is refused when the flow loads, and a template tab a sheet entry names is refused when the template is opened, until an author says in writing that replacing it is intended. A flow that runs every night needs it from its first night.
-- `template`: Read, never written. The tool writes to 'path' instead, so the same template can be used again next run.
+- `path`: For example 'output/monthly_report.xlsx'. The folder must already exist.
+- `sheets`: For example {port: summary, sheet: Summary}. Each port named here becomes an input of this step.
+- `overwrite`: Set it to true for a flow that runs again and again: without it, the second run is refused because the file is already there.
+- `template`: For example 'templates/report.xlsx'. It is never written to, so the same template works again next run.
 
 ## Notes
 
-- Every formula on a template tab comes through, but its stored result is cleared. A spreadsheet recalculates the file when it opens it, so a person sees the right figures. A program that reads the file before then, read_excel among them, sees blanks where the formulas are.
-- A port with no rows stops the run unless its sheet entry says allow_empty: true, as on the table sinks: a tab that is empty because something upstream failed looks exactly like a quiet month. Allowed, it gets its tab, with the header and nothing under it: a missing tab reads as a broken report, where an empty one reads as 'nothing this month'.
-- A whole number past 2**53 - 1 in either direction is refused rather than rounded or silently written as text. A cell holds a double, so exactness past that point is a promise this tool cannot keep, and the fix is one explicit cast upstream where the next reader can see it.
-- A Time, a Duration, a Decimal, a list or a nested record is refused rather than stringified: each has a plausible-looking wrong answer in a cell, and none of them is the value it started as.
-- Text longer than 32,767 characters, the most a cell holds, is refused naming the column, rather than cut short.
-- Not-a-number or infinity in a decimal column is refused, naming the tab, the column and the rows, rather than written as a blank: a blank reads as no figure, where these mean a figure went wrong upstream. A null is written as the empty cell it is.
-- A frame taller than a tab -- more than 1,048,575 rows of data -- is refused rather than truncated, because a truncated total is the worst outcome a delivered figure can have.
-- Every frame is checked before the workbook is opened, so a refusal leaves no half-written pack behind and never touches the template.
-- A date column gets a date number format, because that format is what tells a person's spreadsheet the cell holds a date rather than a count of days. Nothing else is formatted until a tab's 'formats' says so: an unasked-for format is a claim about how the pack should be read that this tool is not entitled to make.
-- A rule in 'formats' names either a type or one column, never both and never neither. A type rule reaches every column of that type, which is the only thing that reaches a column named by the data -- a cross-tab gains one per period. A column rule names one column and beats the rule about its type, whichever order the two were written in. A rule about Int64 reaches a whole number of any width, Int32 included, since a formula makes a whole-number literal 32-bit. Nothing is read off a column's name.
-- A format code is passed to the spreadsheet as written: this library does not parse it and does not check it. It is in no position to know what a future spreadsheet accepts, a code wrongly rejected would block a pack for no reason, and a code that is wrong shows visibly in the file rather than corrupting a figure.
-- A rule about a type this tool cannot write -- Time is the one -- is accepted and does nothing, because no column of that type ever reaches a cell: such a column is refused outright, well before its format would matter. Refusing the rule as well would tie this field to the list of types a cell cannot hold, and the two would have to be kept in step for no gain.
-- A rule about a type or column formats the data cells, and only those. A format set on the whole column instead would run to the bottom of the tab, so a figure typed in underneath the data would be shown as money too. Harmless in a delivered pack, and visible to anybody comparing this pack's cell styles against one written that way.
-- A frame with no rows is written as its header with nothing under it, so the tab carries no formatted cell at all. A writer that instead put a phrase like '(no rows)' in the first cell would be writing a word where a reader's formula expects a heading.
-- The layout options -- 'widths', 'fit_widths', 'wrap', 'table' and 'header' -- change how a tab looks and never what it holds. No value, cell kind or number format is different with them than without them. A tab that states none of them is written as before.
-- A width rule and a wrap rule name a type or one column, like a format rule, and a column rule beats a type rule. A rule naming a column the frame does not carry is refused.
-- 'fit_widths' sizes each column to its heading and its longest value as it is shown, so a money column is measured as '1,234,567.00', not as the stored digits. A fitted column is at most 60 characters wide. A width stated in 'widths' beats the fit, and is how a column gets wider than that.
-- 'wrap' wraps the data cells of the columns it reaches and sits them at the top of the row, empty cells included. The heading is left alone.
-- 'table' makes the tab's rows a spreadsheet table, with filter dropdowns on the headings. Its name is stated, or made from the tab name: a character a table name cannot hold becomes an underscore. It has no colour style unless a built-in one is named. A port with no rows gets a table over its headings and one empty row, the smallest table a spreadsheet accepts.
-- Two tables of one name are refused, ignoring case, as a spreadsheet compares them. So is a name a template already uses on a tab this step leaves alone, before anything is saved. A tab this step replaces loses its old table with it.
-- 'header' makes the headings bold, a stated size, or both. What it does not state keeps the cell's own font.
+- The template is only read. A 'path' naming the same file as the template is refused.
+- The file already at 'path' is never read. Each run builds the workbook again from the template, or from nothing, so a tab the flow stops writing does not linger.
+- A file already at 'path', or a template tab that a sheet entry names, is refused unless 'overwrite' is true.
+- A template tab that is replaced keeps its place among the other tabs.
+- The whole template is read into memory and written out again, not copied byte for byte. Pivot tables, charts, named ranges and the values behind a pivot's filter dropdowns come through.
+- One thing is known to be lost: a pivot cache's extension block, where a slicer link and newer formatting options live. A slicer can come back disconnected.
+- Write one workbook and open it before using a template you could not rebuild.
+- Formulas on a template tab come through, but their stored results are cleared. A spreadsheet recalculates when it opens the file, so a person sees the right figures.
+- A program that reads the file before a spreadsheet has opened it, read_excel included, sees blanks where the formulas are.
+- A port with no rows stops the run, because an empty tab caused by a failure upstream looks like a quiet month. Set allow_empty: true on its sheet entry to allow it.
+- An allowed empty port gets its tab with the headings and nothing under them, never a missing tab and never a phrase such as '(no rows)'.
+- A whole number beyond 2**53 - 1, either way, is refused, because a cell cannot hold it exactly. Cast it to text upstream if that is what you want.
+- A Time, Duration, Decimal, list or nested record column is refused, not turned into text.
+- Text longer than 32,767 characters, the most a cell holds, is refused, naming the column. It is never cut short.
+- Not-a-number or infinity in a decimal column is refused, naming the tab, the column and the rows, because a cell would show it as a blank. A null is written as an empty cell.
+- A frame with more than 1,048,575 rows, more than a tab holds, is refused, never cut short.
+- Every frame is checked before the workbook is opened, so a refusal leaves no half-written file and never touches the template.
+- A date column always gets a date format, so the spreadsheet shows a date, not a count of days. Nothing else is formatted unless 'formats' says so.
+- A rule in 'formats' names either a type or one column, never both and never neither.
+- A type rule applies to every column of that type, including columns whose names come from the data, such as one per month after a cross_tab.
+- A column rule beats a type rule for that column, whichever is written first.
+- A rule about Int64 also applies to the other whole-number types, such as Int32.
+- Nothing is decided from a column's name.
+- A format code goes to the spreadsheet exactly as written. It is not checked here.
+- A format rule about Time is accepted but does nothing, because a Time column is refused anyway.
+- Formats, widths and wrapping apply to the data cells only, not to the whole column, so a figure typed in below the data is not formatted.
+- The layout settings 'widths', 'fit_widths', 'wrap', 'table' and 'header' change how a tab looks, never what it holds. A tab that uses none of them is written plain.
+- A width or wrap rule names a type or one column, and a column rule beats a type rule. A rule naming a column the frame does not have is refused.
+- 'fit_widths' sizes each column to its heading and its longest value as shown, so money is measured as '1,234,567.00'. A fitted column is at most 60 characters wide.
+- A width in 'widths' beats the fit, and is how a column gets wider than 60.
+- 'wrap' wraps the data cells of the columns it names and aligns them to the top of the row, empty cells included. The heading is not wrapped.
+- 'table' turns the tab's rows into a spreadsheet table with filter dropdowns. Its name is the one given, or the tab name with unusable characters turned into underscores.
+- A table has no colour style unless a built-in style is named.
+- A table on a port with no rows covers the headings and one empty row, the smallest table a spreadsheet accepts.
+- Two tables with the same name, ignoring case, are refused. So is a table name the template already uses on a tab this step does not replace. A replaced tab loses its old table.
+- 'header' makes the headings bold, a given size, or both. Anything it does not set keeps the cell's own font.
 
 ## Example 1
 
-write a pack of two tabs where no workbook exists yet
+write two tables to a new workbook, one tab each
 
 ```yaml fragment
 tool: write_excel
@@ -107,11 +124,11 @@ Rows in:
 
 Rows out:
 
-The two entries in 'sheets' are what say this step reads 'figures' and 'detail'. Each frame lands on its own tab, in the order the entries name them, and nothing leaves on an output port. The first tab states one format rule, so every decimal column on it is shown as money -- 'amount' reads 10.25 and would read 1,234.57 for a figure that long, while the cell keeps every digit that went in. The second tab states none, so its cells are shown however the workbook shows them.
+This step reads the two ports named in 'sheets', 'figures' and 'detail', and writes each to its own tab in that order. The Figures tab has one format rule, so every decimal column shows as money: 'amount' reads 10.25, and the cell keeps every digit. The Detail tab has no rules, so the workbook's own formatting applies.
 
 ## Example 2
 
-refresh one tab of a workbook somebody built by hand
+refresh one tab of a workbook someone built by hand
 
 ```yaml fragment
 tool: write_excel
@@ -134,11 +151,11 @@ Rows in:
 
 Rows out:
 
-The template already holds a 'Notes' tab. It is loaded, the 'Figures' tab is written into it, and the whole workbook is saved to 'path' -- so 'Notes' arrives in the pack exactly as it was, and the template itself is untouched and ready for the next run.
+The template already has a Notes tab. The Figures tab is written into a copy of the template, saved to 'path', so Notes comes through unchanged and the template itself is untouched for the next run.
 
 ## Example 3
 
-lay out a figures tab as a table and a notes tab as a title over paragraphs
+lay out one tab as a filterable table and another as a title over paragraphs
 
 ```yaml fragment
 tool: write_excel
@@ -185,7 +202,7 @@ Rows in:
 
 Rows out:
 
-The 'Figures' tab becomes a table called 'Figures', with filter dropdowns on its bold headings, and each column is as wide as its heading or its longest figure as shown. The 'Notes' tab has one column 100 characters wide, a bold 14-point heading that reads as its title, and paragraphs that wrap. Every value and number format is the same as it would be without these options.
+The Figures tab becomes a table called 'Figures', with filter dropdowns on bold headings, and each column fits its heading or its longest figure as shown. The Notes tab has one column 100 characters wide, a bold 14-point heading as its title, and wrapped paragraphs. The values and number formats are the same as without these settings.
 
 ---
 

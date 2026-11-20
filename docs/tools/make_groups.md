@@ -2,9 +2,9 @@
 
 # `make_groups`
 
-*transform tool.* Group records linked by a chain of pairs, however long, naming each group by its smallest record.
+*transform tool.* Put records that are linked, directly or through others, into the same group.
 
-Each input row is a pair of linked records. The output has one row per distinct record, with the group it belongs to. Two records share a group when a chain of pairs links them, at any length. Only the two output columns are written; other input columns are not carried, because an output row is a record, not a pair.
+Use make_groups when records are linked in pairs, such as an account merged into another, and you want every record that is connected, however indirectly, in one group. Each input row on `pairs` links two records. `rows` has one row per distinct record with its group, named after the group's smallest record. Only those two columns are written.
 
 ## Ports
 
@@ -22,8 +22,8 @@ Each input row is a pair of linked records. The output has one row per distinct 
 
 More on some settings:
 
-- `left`: One record of each pair. Which column is 'left' and which is 'right' makes no difference.
-- `right`: The other record of each pair, in the same type as 'left'.
+- `left`: For example 'account_id'. Which column is 'left' and which is 'right' makes no difference.
+- `right`: For example 'merged_into_id', in the same type as 'left'.
 - `record_column`: The output column for the record. It may reuse an input column's name, since the output is a new frame.
 - `group_column`: The output column for the group. Its value is the smallest record in the group. Must differ from 'record_column'.
 

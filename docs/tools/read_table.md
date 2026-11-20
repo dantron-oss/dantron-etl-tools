@@ -2,9 +2,9 @@
 
 # `read_table`
 
-*input tool.* Read a named table from a database onto the `rows` port.
+*input tool.* Read every row of one database table.
 
-Every row of the named table arrives on `rows`. Each column's type is the type its values arrive as, read from every row. An empty table is typed from its definition instead. No `query` field exists: narrowing what comes back is a Filter or a SelectColumns put after this one.
+Use read_table to start a flow from a database table. Every row of the table goes to `rows`, each column typed by the values it holds. There is no query setting: to keep fewer rows or columns, put filter or select_columns after it.
 
 ## Ports
 
@@ -15,23 +15,28 @@ Every row of the named table arrives on `rows`. Each column's type is the type i
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `connection` | string | required |  | The name of an environment variable holding the connection URI; never the URI itself. |
-| `schema` | string | optional |  | The schema the table sits in; left out, the table is named unqualified. |
-| `table` | string | required |  | The table to read; a plain identifier, never a query. |
+| `connection` | string | required |  | The name of the environment variable that holds the database address, such as 'SOURCE_DATABASE_URL'. Never the address itself. |
+| `schema` | string | optional |  | The schema the table is in, such as 'sales'. Left out, the table name is used on its own. |
+| `table` | string | required |  | The table to read, such as 'orders'. A plain name, never a query. |
 
 More on some settings:
 
-- `schema`: Left out, `table` is read unqualified; given, the two compose as `schema.table`, the only form either is ever handed to the database.
+- `connection`: For example 'SOURCE_DATABASE_URL'. Set that variable in the environment the flow runs in.
+- `schema`: For example 'sales'. The table is then read as sales.orders.
+- `table`: For example 'orders'.
 
 ## Notes
 
-- An empty table has no values to type its columns by, so each column takes the type a row of it would arrive as, from the table's definition: a whole number, a figure, text, and on Postgres also a truth value, a date, a timestamp with no zone or a time. A column whose values could arrive as more than one kind (a numeric, a zone-aware timestamp, any SQLite column of another type) stays Null. A table with rows is typed by its values alone, so a column that is null in every row is Null.
-- `connection` names an environment variable holding the connection URI; the URI itself never sits in a configuration file.
-- Rows arrive in no particular order. A step that needs one puts a Sort in front of it, which is why no worked example here claims to preserve order.
+- 'connection' names an environment variable that holds the address, so the address and its password never sit in the pipeline file.
+- Each column's type comes from all its values, not a sample. A column that is null in every row has type Null.
+- An empty table is typed from its definition instead: whole numbers, decimals and text, and on Postgres also true/false, dates, timestamps without a zone and times.
+- In an empty table, a column whose values could arrive as more than one kind (a numeric, a zone-aware timestamp, any SQLite column of another type) stays Null.
+- Rows arrive in no particular order. Put a sort after it if order matters.
+- The schema and table names must be plain names. Anything else is refused before a connection opens.
 
 ## Example 1
 
-read a two-row table from an in-memory database
+read a table from a database
 
 ```yaml fragment
 tool: read_table
@@ -51,7 +56,7 @@ Rows out:
 | 1 | first |
 | 2 | second |
 
-'connection' names the environment variable the URI lives in, never the URI itself; each column arrives with the type its values have.
+'connection' names the environment variable that holds the database address. Each column comes in with the type of its values.
 
 ---
 

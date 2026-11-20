@@ -2,9 +2,9 @@
 
 # `date_diff`
 
-*transform tool.* Count the whole months or days between two dates, appended as a signed integer.
+*transform tool.* Count the months or days between two dates, in a new column.
 
-Counts the whole months or days between 'start' and 'end', appended as a signed integer after every input column. A month counts once the end's day of the month has reached the start's day -- so January 31 to February 28 is one month, not two, and January 1 to December 31 is a full twelve. A day counts each calendar date at both ends the same way, so under 'inclusive' the same day at both ends is one day and one month alike.
+Use date_diff to count the months or days between two dates, for example the length of a contract term, often to divide an amount by it. The count goes in a new whole-number column at the end of `rows`. A month counts once the end's day of the month reaches the start's: 31 January to 28 February is one month, and 1 January to 31 December is twelve, counted inclusively.
 
 ## Ports
 
@@ -15,22 +15,32 @@ Counts the whole months or days between 'start' and 'end', appended as a signed 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `start` | expression | required |  | The range's start: a column, a fixed value or a computed expression giving a date. |
-| `end` | expression | required |  | The range's end, in the same shape as 'start'. |
-| `unit` | string | required | `month`, `day` | What is counted: 'month' or 'day'. No default -- a divisor's unit is never inferred from silence. |
-| `counting` | string | required | `inclusive`, `elapsed` | Which ends contribute a unit: 'inclusive' (both ends count, the reading a stated period takes) or 'elapsed' (completed units only). No default. |
-| `output` | string | required |  | The name of the count column to add; it may not replace a column that is already there. |
+| `start` | expression | required |  | The start date: a column such as '[start_date]', or an expression giving a date. |
+| `end` | expression | required |  | The end date, written the same way as 'start'. |
+| `unit` | string | required | `month`, `day` | What to count: 'month' or 'day'. |
+| `counting` | string | required | `inclusive`, `elapsed` | 'inclusive' counts both end units (1 January to 31 January is 31 days); 'elapsed' counts completed units only (30 days). |
+| `output` | string | required |  | The name of the new count column, such as 'term_months'. |
 | `in_zone` | string | optional |  | The time zone in which a timestamp that carries a zone is read as a date, such as UTC or America/Toronto. Required when one does, refused when none does; no default. |
+
+More on some settings:
+
+- `counting`: Use 'inclusive' for a period stated first day to last day, such as a contract from 1 January to 31 December.
+- `output`: For example 'term_months'. It must be a new column name.
 
 ## Notes
 
-- 'counting' has no default, because the two readings differ by one and a default would decide every divisor silently. 'inclusive' counts the unit each end falls in and can never come out as zero; 'elapsed' counts only completed units and is exactly one less, in either direction, like SQL's DATEDIFF.
-- A backwards range counts negative and keeps its size, because which end was mistyped is a judgement for a repair step and not this tool's to make.
-- A timestamp is read as the date it falls on. When it carries a time zone, 'in_zone' must say in which zone, because 23:30 on 31 January in Toronto is 1 February in UTC; 'in_zone: UTC' reads the UTC date. There is no default.
+- 'unit' and 'counting' have no default, because the two ways of counting differ by one and a default would decide every divisor silently.
+- 'inclusive' counts the unit each end falls in, so it is never zero: the same day at both ends is one day, and one month.
+- 'elapsed' counts only completed units, exactly one less in either direction, like SQL's DATEDIFF or subtracting dates in Excel.
+- A backwards range (end before start) gives a negative count of the same size. It is not repaired or refused.
+- A missing date on either side gives a null count, never zero.
+- A timestamp is read as the date it falls on. When it has a time zone, 'in_zone' must say which, because 23:30 on 31 January in Toronto is 1 February in UTC. There is no default; 'in_zone' is refused when neither side has a zone.
+- A side that is not a date is refused, and so is an output name already in use.
+- months_between and days_between in an expression give the same counts.
 
 ## Example 1
 
-a term stated first day to last day is a full twelve months
+count the months in a one-year term
 
 ```yaml fragment
 tool: date_diff
@@ -58,11 +68,11 @@ Rows out:
 |---|---|---|---|
 | 1 | 2026-01-01 | 2026-12-31 | 12 |
 
-Both ends contribute a month under 'inclusive', and the end's day (31) has reached the start's (1), so nothing is subtracted.
+1 January to 31 December, counted inclusively, is twelve months: both ends count, and the end's day (31) has reached the start's (1).
 
 ## Example 2
 
-a mistyped end year counts negative; a missing start counts null
+a backwards range counts negative, and a missing date counts null
 
 ```yaml fragment
 tool: date_diff
@@ -92,7 +102,7 @@ Rows out:
 | 1 | 2026-01-01 | 2025-12-31 | -1 |
 | 2 | null | 2026-03-01 | null |
 
-The first row runs backwards by one month and is reported as -1, not repaired or refused; the second row has no start date at all, and counts null rather than zero.
+The first row runs backwards by one month, so it counts -1; it is not repaired. The second row has no start date, so its count is null, not zero.
 
 ---
 

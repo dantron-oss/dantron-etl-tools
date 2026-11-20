@@ -2,9 +2,9 @@
 
 # `unpivot`
 
-*transform tool.* Turn `rows` long: every column outside `by` becomes a row naming it and holding its cell.
+*transform tool.* Turn columns into rows, such as one column per month into one row per month.
 
-One output row per input row per melted column. The 'by' columns come first, in the order they were configured, keeping their types and repeating once per melted column; then 'names_to', holding the melted column's name as text; then 'values_to', holding the cell at the melted columns' own type, or at the type 'values_type' states. Rows come back column-major: all the rows of the first melted column, then all the rows of the second, in the frame's own column order. This is the inverse of 'cross_tab'.
+Use unpivot to turn a wide table into a long one, for example one column per month into one row per month, so later steps can filter, join or group by month. This is the reverse of cross_tab. Each input row gives one output row per turned column: the 'by' columns, in the order you list them, then 'names_to' holding the old heading as text, then 'values_to' holding the cell.
 
 ## Ports
 
@@ -15,38 +15,43 @@ One output row per input row per melted column. The 'by' columns come first, in 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `by` | array | required |  | The column names that stay as they are and repeat on every output row, in the order the output carries them. Every other column is melted, and there is deliberately no field listing those. |
-| `by[]` | string | optional |  | One column name; naming the same column twice counts it once. |
-| `names_to` | string | required |  | The name of the new column holding the melted column's own name. Always text, and it may not take the name of a column already present. |
-| `values_to` | string | required |  | The name of the new column holding the melted cell. It takes the melted columns' type, or the type named in 'values_type', and may not take the name of a column already present. |
-| `values_type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The type every melted column is read as, spelled the way the query engine spells it. Left out, the melted columns must already agree on a type; given, each is read as this one and a disagreement is no longer refused. |
-| `on_invalid` | string | optional | `error`, `set_null` | What a value that will not convert to 'values_type' does: 'error' stops the run (what happens when this is left out), 'set_null' leaves it null and reports how many, out of how many. Refused without 'values_type' beside it. |
-| `exclude_nulls` | boolean | default `false` |  | Whether a melted cell that is null is left out instead of becoming a row holding nothing. Only null is left out: an empty string, spaces, zero and not-a-number all come through. Left out, it is false. |
+| `by` | array | required |  | The columns that stay as they are, such as ['customer']. Every other column is turned into rows. |
+| `by[]` | string | optional |  | One column that stays as it is. Naming it twice counts it once. |
+| `names_to` | string | required |  | The name of the new column holding each old column's heading, such as 'month'. |
+| `values_to` | string | required |  | The name of the new column holding each old cell's value, such as 'amount'. |
+| `values_type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Optional: the type to read every turned column as, such as 'Float64'. Without it, those columns must already share a type. |
+| `on_invalid` | string | optional | `error`, `set_null` | With 'values_type': 'error' stops the run on a value that will not convert (the default); 'set_null' makes it null and reports how many. |
+| `exclude_nulls` | boolean | default `false` |  | Set true to leave out cells that are null, instead of making a row with no value. |
 
 More on some settings:
 
-- `by`: What stays as it is and repeats. Everything else is melted.
-- `names_to`: The new column holding the melted column's name, always text.
-- `values_to`: The new column holding the cell, at the melted columns' type.
-- `values_type`: The type every melted column is read as; without it they must agree.
-- `on_invalid`: What a value that will not convert does. Only beside 'values_type'.
-- `exclude_nulls`: Leave out melted cells that are null. Nothing else is left out.
+- `by`: For example ['customer_id']. Every other column is turned into rows.
+- `names_to`: For example 'month'. It always holds text.
+- `values_to`: For example 'amount'.
+- `values_type`: For example 'Float64', when a text column sits among the figures.
+- `on_invalid`: Use 'set_null' with 'values_type' when some cells are expected not to convert, such as notes beside figures.
+- `exclude_nulls`: Set it on a sparse sheet to skip the empty cells.
 
 ## Notes
 
-- There is no field naming the columns to melt. Every column is either in 'by' or melted, so such a list would say nothing new, could contradict 'by', and would want to be called 'on' -- a word a definition file reads as the boolean true where a column name should be.
-- The melted columns must agree on type, except that a column that is all nulls takes the others' type. That is Union's ruling about stacking frames, applied to stacking columns, for the same reason: null is the one value belonging to every family. Columns that genuinely differ are refused, naming both columns and both types.
-- By default a null in a melted cell comes back as a row holding nothing, not as no row. The row existed and the cell was empty, and both are facts about the data.
-- 'exclude_nulls: true' leaves a null melted cell out, as SQL's UNPIVOT does by default (EXCLUDE NULLS). Only null goes. An empty string, spaces, zero and not-a-number are values and come through. A null in a 'by' column drops nothing. With 'values_type', a cell is judged as it arrived, so text that fails to convert is kept as a row holding nothing, with its warning mark. The rows that are left keep the order the full melt gives them. The null rows are never built, so a sparse sheet melts in a fraction of the memory.
-- Row order is column-major and is not sorted, so a step needing another order puts a Sort after it, as everywhere else here.
-- A 'by' that covers every column is refused: the step would reshape nothing and hand a wide frame on to steps written for a long one.
-- 'values_type' states the type every melted column is read as, which is how a block whose columns disagree is melted deliberately -- the case being a block that gains a column every period, with text beside it that therefore cannot be named in 'by'. Reading it as the type it is keeps a figure a figure; reading the lot as text loses a digit to whatever shortens it later.
-- A decimal with a fraction does not convert to 'values_type: Int64': 1.99 would lose its fraction without a word, so it is treated as a value that will not convert. Round it first.
-- 'on_invalid' says what a value that will not convert to 'values_type' does: 'error' stops the run, 'set_null' leaves it null and reports how many out of how many, raising the step to a warning. It is refused without 'values_type', because there is nothing for it to govern. Reading a column as the type it already holds is ordinary here and says nothing, unlike 'cast_columns': the melt set is everything the flow did not name.
+- There is no setting listing the columns to turn. Every column not in 'by' is turned; name a column in 'by' to keep it as it is.
+- A 'by' that names every column is refused, because nothing would be turned.
+- The turned columns must share a type, or the step is refused, naming both columns and types. A column that is all null takes the others' type. This is union's rule.
+- Rows come out column by column: all the rows of the first turned column, then all of the second, in the table's order. Nothing is sorted. Sort afterwards if needed.
+- By default a null cell becomes a row with a null value, not no row: the row existed and the cell was empty.
+- 'exclude_nulls: true' leaves null cells out, as SQL's UNPIVOT does by default (EXCLUDE NULLS). Empty text, spaces, zero and not-a-number are values and are kept.
+- With 'exclude_nulls', a null in a 'by' column drops nothing, and the remaining rows keep the order the full unpivot gives. The null rows are never built, which saves memory on a sparse sheet.
+- With 'values_type' and 'exclude_nulls', a cell is judged as it arrived, so text that fails to convert under 'set_null' is kept as a row with a null value and a warning mark.
+- 'values_type' reads every turned column as one type, so columns that differ, such as a block of monthly figures with a text column beside it, can still be turned. Reading figures as text would lose digits.
+- A decimal with a fraction does not convert to a whole-number 'values_type': 1.99 is a value that will not convert. Round it first.
+- 'on_invalid: error' (the default) stops the run on a value that will not convert, naming the column and the values. 'set_null' makes it null, reports how many out of how many as a warning, and marks each row; only columns that lost a value are reported.
+- 'on_invalid' without 'values_type' is refused, because there is nothing to convert.
+- Unlike cast_columns, reading a column as the type it already has is fine here, because the turned columns are all the ones you did not name.
+- 'names_to' and 'values_to' must be two different new names, not used by 'by' or any column that is turned.
 
 ## Example 1
 
-a column per period becomes a row per period, so a period can be filtered on
+turn one column per period into one row per period
 
 ```yaml fragment
 tool: unpivot
@@ -77,11 +82,11 @@ Rows out:
 | A | p2 | 5.0 |
 | B | p2 | null |
 
-Both melted columns come back whole and in the frame's own order: all of p1, then all of p2. B's p2 cell was empty and arrives as a row holding nothing rather than as no row, because the row existed and the cell was blank and both are facts. Nothing names p1 and p2 in the configuration -- every column outside 'by' is melted.
+All of p1 comes first, then all of p2. B's p2 cell was empty, so it becomes a row with a null amount, not a missing row. p1 and p2 are not named anywhere: every column outside 'by' is turned.
 
 ## Example 2
 
-keep a descriptive column out of the reshape by naming it in 'by'
+keep a descriptive column as it is by naming it in 'by'
 
 ```yaml fragment
 tool: unpivot
@@ -113,11 +118,11 @@ Rows out:
 | A | north | closing | 12.0 |
 | B | south | closing | 6.0 |
 
-'site' is text and would be melted with the two figures -- and refused for disagreeing with them on type -- if it were not named in 'by'. Naming it there is the only way to keep a column out of the melt, which is why a 'by' that names every column is a configuration somebody stopped editing halfway.
+'site' is text. Named in 'by', it stays as it is; otherwise it would be turned with the figures and refused for having a different type.
 
 ## Example 3
 
-melt a block whose columns disagree on type by stating the type they are read as
+turn a block of figures that has a text column beside it
 
 ```yaml fragment
 tool: unpivot
@@ -152,11 +157,11 @@ Rows out:
 | A | comment | null |
 | B | comment | null |
 
-'comment' is text and cannot be named in 'by', because the number of columns in front of it changes from one load to the next and nothing written down can say where it will be. Stating 'values_type' melts the lot as figures; 'on_invalid: set_null' leaves the text holding nothing and reports how many values that was, out of how many, so the run carries on and the size of it carries on with it. A later step drops the rows whose name is not a period.
+'comment' is text and its position changes from load to load, so it cannot be named in 'by'. 'values_type: Float64' reads every turned column as a figure, and 'on_invalid: set_null' makes the text null and reports how many. A later step drops the rows whose heading is not a period.
 
 ## Example 4
 
-melt a sparse sheet and leave out the cells that hold nothing
+turn a sparse sheet into rows, leaving out the empty cells
 
 ```yaml fragment
 tool: unpivot
@@ -189,7 +194,7 @@ Rows out:
 | 2 | c2 | Total |
 | 3 | c2 | 7.5 |
 
-The two null cells are left out: record 2's c1 and record 1's c2. Record 3's c1 holds an empty string, which is a value, so it comes through. Only null is left out. The rows that are left keep the order the full melt gives them: all of c1, then all of c2.
+The two null cells are left out: record 2's c1 and record 1's c2. Record 3's c1 holds empty text, which is a value, so it is kept. The rows keep the full unpivot's order: all of c1, then all of c2.
 
 ---
 

@@ -2,9 +2,9 @@
 
 # `join`
 
-*combine tool.* Pair `left` to `right` on a key, reporting the pairs and each side's unpaired rows.
+*combine tool.* Match the rows of two tables on a key column, and keep the rows that found no match.
 
-One pairing, three ports: `joined` carries a row per pair, so a key repeated on the right fans one left row into a copy per match, and `left_only` / `right_only` carry the rows of each side that paired with nothing. 'how' chooses between an inner and a left join. An outer or anti join is read from the ports instead, and a right join is this join with the inputs swapped. An orphan port carries its own side's columns exactly as they arrived: no suffix, no columns from the other side, because an unpaired row is an input row, not a join result with nulls in it.
+Use join to bring columns from one table onto the rows of another, matching on a key such as a customer id. `joined` has one row for each pair: the left row's columns, then the right row's. `left_only` and `right_only` hold the rows of each side that found no partner, with their own columns exactly as they came in. For an outer join read all three ports; for an anti join read `left_only`; for a right join swap the two inputs.
 
 ## Ports
 
@@ -15,36 +15,40 @@ One pairing, three ports: `joined` carries a row per pair, so a key repeated on 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `keys` | array | optional |  | Key columns spelled the same on both sides; give this or both of 'left_keys' and 'right_keys', never both forms. |
-| `keys[]` | string | optional |  | One key column name, present on both sides. |
-| `left_keys` | array | optional |  | The left side's key columns, when the two sides spell the key differently; requires 'right_keys' of the same length. |
-| `left_keys[]` | string | optional |  | One key column name on the left side. |
-| `right_keys` | array | optional |  | The right side's key columns, paired position by position with 'left_keys'; requires 'left_keys' of the same length. |
-| `right_keys[]` | string | optional |  | One key column name on the right side. |
-| `suffix` | string | default `_right` |  | What a right-hand non-key column takes when its name collides with a left-hand one; key columns never double up. |
-| `how` | string | default `inner` | `inner`, `left` | Whether `joined` carries only the rows that paired ('inner') or every left row, with the right-hand columns null where none paired ('left'). |
+| `keys` | array | optional |  | The key columns, when both sides use the same names for them. |
+| `keys[]` | string | optional |  | One key column, found on both sides. |
+| `left_keys` | array | optional |  | The left side's key columns, when the two sides name the key differently. |
+| `left_keys[]` | string | optional |  | One key column on the left side. |
+| `right_keys` | array | optional |  | The right side's key columns, matched in order with 'left_keys'. |
+| `right_keys[]` | string | optional |  | One key column on the right side. |
+| `suffix` | string | default `_right` |  | Added to a right-hand column whose name is already used on the left. |
+| `how` | string | default `inner` | `inner`, `left` | Which rows go to `joined`: only the pairs ('inner'), or every left row ('left'). |
 
 More on some settings:
 
-- `how`: 'inner' keeps only the rows that paired. 'left' keeps every left row, nulling the right-hand columns where nothing paired -- the commonest join a flow asks for. The column set is identical either way, so a later step naming a column does not depend on which was chosen.
-- `keys`: Key columns shared by both sides; use 'left_keys'/'right_keys' instead when the spellings differ, never both forms at once.
-- `left_keys`: The left spelling of each key column, and the spelling that survives on 'joined'; must be the same length as 'right_keys'.
-- `right_keys`: The right spelling of each key column, paired by position with 'left_keys'; the right key column itself does not appear on 'joined' at all.
-- `suffix`: Applied only to a colliding right-hand non-key column; if the suffixed name is taken as well, the join is refused rather than guessing another suffix.
+- `how`: Write 'left' to keep every left row, which is the usual choice. Either way `joined` has the same columns, so later steps work with both.
+- `keys`: For example ['customer_id']. Give either 'keys', or both 'left_keys' and 'right_keys', never both.
+- `left_keys`: For example ['period_start']. These names are the ones kept on `joined`. Give the same number of columns as 'right_keys'.
+- `right_keys`: For example ['period']. Matched by position with 'left_keys'. These columns are dropped from `joined`, since they repeat the left ones.
+- `suffix`: For example '_order'. Key columns never get it. If the new name is taken too, the step is refused.
 
 ## Notes
 
-- `how` decides only which rows reach `joined`; the orphan ports answer their own question either way. Under 'left' an unmatched left row appears on both -- carried in `joined` with its right-hand columns null, and reported on `left_only` -- because one port is the result and the other is the diagnostic.
-- A right join is this join with the two inputs swapped, which is why 'right' is not offered: the same result under two spellings is a thing to get wrong.
-- A null key never pairs, so a row whose key is missing leaves on its own side's orphan port. This is the opposite of RemoveDuplicates, where two nulls are one group: sameness there follows DISTINCT, sameness here follows JOIN. Reading the two tools side by side, that difference is deliberate in both.
-- Fan-out is not a defect: a fanned-out amount is repeated on every copy, never apportioned between them, so a total taken downstream of a join is only meaningful if the key is unique on the side being joined to. Guard that upstream.
-- Row order is deterministic -- left-input order, with one left row's copies in right-input order, and each orphan port in its own side's order -- so a flow that writes files gets diffs that do not churn. It is not a semantic guarantee: a step that needs a meaningful order still needs a Sort in front of it.
-- Each key pair must hold types that can be compared: whole numbers of two widths pair, but a whole number against a decimal, or a date against a timestamp, is refused before any row moves. Use cast_columns first. A key column typed Null, as an empty branch gives, takes the other side's type, and none of its rows pair.
-- A Float key pairs only on exact equality. 0.1 + 0.2 and 0.3 print alike and do not pair, so both rows land on the orphan ports. Float keys straight from a source pair as expected; a key computed with arithmetic is safer rounded or cast to text first.
+- 'how' only decides which rows go to `joined`. With 'left', a left row that found no partner is on `joined` with empty right-hand columns, and also on `left_only`.
+- There is no 'right' option: a right join is this join with the inputs swapped.
+- A row whose key is null never pairs, as with SQL's JOIN, so it goes to its own side's unpaired port.
+- remove_duplicates treats null keys the opposite way: two nulls count as the same value there, as with SQL's DISTINCT.
+- A key that appears twice on the right gives each matching left row two copies.
+- A copied amount is repeated on each copy, never split, so a total after a join is right only if the key is unique on the right. Check that before the join.
+- Rows come out in a fixed order: left order, a left row's copies in right order, and each unpaired port in its own side's order.
+- That order keeps written files stable between runs; a step that needs a meaningful order still needs a sort.
+- The two columns of a key pair must hold comparable types. Whole numbers of different sizes pair; a whole number against a decimal, or a date against a timestamp, is refused before any row moves. Use cast_columns first.
+- A key column of type Null, as an empty branch gives, takes the other side's type, and none of its rows pair.
+- Decimal (Float) keys pair only when exactly equal: 0.1 + 0.2 and 0.3 look alike but do not pair. Round a calculated key, or cast it to text, first.
 
 ## Example 1
 
-pair rows to a group whose key the other side carries twice
+match each entry to its group, where one group is on the right twice
 
 ```yaml fragment
 tool: join
@@ -94,11 +98,11 @@ Rows out:
 |---|---|---|
 | 12 | G3 | open |
 
-Group 'G1' is on the right twice, so each of the two left rows carrying it fans into two matched rows -- four rows out of three in, with each amount repeated rather than split. Group 'G4' pairs with nothing and leaves on 'left_only'; 'G3' pairs with nothing on the other side and leaves on 'right_only'. The row order shown is the order produced: left order, and right order within one left row's copies.
+G1 is on the right twice, so each G1 entry comes out twice: four rows from three. The amount is repeated on each copy, not split. G4 has no partner, so it goes to 'left_only'. G3 has no partner on the left, so it goes to 'right_only'.
 
 ## Example 2
 
-pair two sides whose key column is spelled differently, over a colliding amount
+match two tables whose key column has a different name on each side
 
 ```yaml fragment
 tool: join
@@ -145,7 +149,7 @@ Rows out:
 |---|---|---|
 | 82 | 2024-02 | -20.0 |
 
-Only the left spelling 'period_start' survives on 'joined'; the right's 'period' does not appear at all, suffixed or otherwise, because the pair is one column after the join. 'amount' is on both sides and is not a key, so the right's value survives under the default suffix as 'amount_right'. Each orphan port keeps its own side's own spelling, including the 'period' the join dropped.
+The key keeps its left name, 'period_start', on 'joined'; the right's 'period' is dropped there. Both sides have an 'amount' column, so the right one becomes 'amount_right'. The unpaired ports keep each side's own columns, 'period' included.
 
 ---
 

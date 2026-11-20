@@ -2,9 +2,9 @@
 
 # `record_id`
 
-*preparation tool.* Add a column numbering the rows of `rows`, counting up from a starting number.
+*preparation tool.* Number the rows 1, 2, 3 and so on, in a new column.
 
-Adds one column to the end of the frame, holding a 64-bit integer per row. The first row gets 'start'. The next gets one more, and so on. The rows themselves do not move, so the numbering follows the order they arrived in. Put a sort in front of this step and the numbering follows the order that sort chose. A start of 0 or a negative start counts up from there. The type is declared rather than inferred, so a frame with no rows still comes back carrying the column.
+Use record_id to number rows 1, 2, 3 and so on, for example to give each row an id or a rank. The number goes in a new column at the end of `rows`; nothing else changes. The rows are numbered in the order they arrive, so put a sort in front for a meaningful order, such as a rank by amount.
 
 ## Ports
 
@@ -15,21 +15,25 @@ Adds one column to the end of the frame, holding a 64-bit integer per row. The f
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `output` | string | required |  | The name of the number column to add. It may not take the name of a column that is already there. |
-| `start` | integer | default `1` |  | The number the first row gets. Every row after it counts up by one. Left out, the numbering starts at 1. |
+| `output` | string | required |  | The name of the new number column, such as 'row_no'. |
+| `start` | integer | default `1` |  | The number the first row gets. Each row after it gets one more. |
 
 More on some settings:
 
-- `output`: The new column goes on the end. A name already in use is refused. There is no option here to overwrite one.
+- `output`: For example 'row_no'. It must be a name the table does not already have.
 - `start`: Any whole number, including 0 and negative numbers. Left out, it is 1.
 
 ## Notes
 
-- This step decides no order of its own. On an unsorted frame the numbers are only as meaningful as the order the rows happened to be in. A read_table hands rows over in no fixed order, so a Sort belongs between the two.
+- This step does not sort. Without a sort in front, the numbers follow whatever order the rows happened to be in.
+- read_table gives rows in no fixed order, so put a sort between the two.
+- The new column is a 64-bit whole number, even on a table with no rows.
+- A column name already in use is refused. There is no setting to overwrite one.
+- A 'start' too large for a 64-bit number is refused, and so is a numbering that would pass the largest 64-bit number part way down.
 
 ## Example 1
 
-number the rows from 1, in the order they arrived
+number the rows from 1
 
 ```yaml fragment
 tool: record_id
@@ -57,11 +61,11 @@ Rows out:
 | a | null | 2 |
 | b | 2.5 | 3 |
 
-The frame is in no particular order, and the numbering follows it anyway. 'c' arrived first, so 'c' gets 1. The new column goes on the end, and nothing else about the frame changes.
+The rows are numbered in the order they arrived: 'c' came first, so it gets 1. The new column goes at the end.
 
 ## Example 2
 
-number the rows from 0, for a consumer that counts from zero
+number the rows from 0
 
 ```yaml fragment
 tool: record_id
@@ -90,7 +94,7 @@ Rows out:
 | b | 1 |
 | c | 2 |
 
-'start: 0' is honoured as written. Zero reads as an absence in a lot of code, so it is worth seeing it work. The first row gets 0, not 1.
+'start: 0' gives the first row 0, not 1.
 
 ---
 

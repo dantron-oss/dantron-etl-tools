@@ -2,9 +2,9 @@
 
 # `read_excel`
 
-*input tool.* Read one named sheet of an XLSX workbook, or stack every sheet whose name matches a pattern.
+*input tool.* Read a sheet of an Excel workbook into a table, or stack several matching sheets.
 
-The named sheet arrives on `rows` with the columns and the dtypes the sheet itself holds: a column of round figures comes back whole, a column with text in its first 100 rows comes back as text, and a blank cell comes back null rather than an empty string. The sheet is always named, in `sheet`, or found by a pattern, in `sheets_matching`. It is never an index: "the first tab" silently reads the wrong sheet the moment a delivered pack puts a cover sheet in front of the figures. A row blank in every column is dropped as layout rather than kept as a row of nulls.
+Use read_excel to start a flow from an Excel workbook. Name the sheet in 'sheet', or give a pattern in 'sheets_matching' to read and stack several sheets, such as one per month. The rows go to `rows` with the types the sheet holds: whole figures come back whole, and blank cells come back null. A row blank in every column is dropped.
 
 ## Ports
 
@@ -15,37 +15,46 @@ The named sheet arrives on `rows` with the columns and the dtypes the sheet itse
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `path` | string | required |  | The workbook to read; must end in .xlsx. |
-| `sheet` | string | optional |  | The name of the one sheet to read; never an index, never guessed. Give this or sheets_matching, not both. |
-| `sheets_matching` | string | optional |  | A pattern instead of a name. Every sheet whose name contains a match is read, and the sheets are stacked in workbook order. Case-sensitive; anchor with ^ and $ to match whole names. |
-| `sheet_column` | string | optional |  | Name for the column saying which sheet each row came from. Required with sheets_matching, and refused without it. |
-| `has_header` | boolean | default `true` |  | Whether the sheet's first row (after skip_rows) names the columns. |
-| `skip_rows` | integer | default `0` |  | How many rows above the header (or the data, if has_header is false) to skip -- for a title block laid out above the table. |
-| `as_text` | boolean | default `false` |  | Read every cell as text, so a column holding figures on one sheet and text on another can be stacked and converted on purpose by cast_columns afterwards. |
+| `path` | string | required |  | The workbook to read. It must end in .xlsx. |
+| `sheet` | string | optional |  | The name of the one sheet to read, such as 'Sales'. Give this or 'sheets_matching'. |
+| `sheets_matching` | string | optional |  | A pattern instead of a name: every sheet whose name matches is read, and the sheets are stacked in workbook order. |
+| `sheet_column` | string | optional |  | With 'sheets_matching': the name of a column saying which sheet each row came from. |
+| `has_header` | boolean | default `true` |  | Whether the first row (after skip_rows) holds the column names. |
+| `skip_rows` | integer | default `0` |  | How many rows to skip before the header, such as a title block above the table. |
+| `as_text` | boolean | default `false` |  | Set true to read every cell as text, then convert columns with cast_columns. |
 
 More on some settings:
 
-- `sheet`: By name. Refused, with the sheet names present, if it does not match one of them exactly. Give this or sheets_matching.
-- `skip_rows`: Rows above the header (or the data) to skip; must not be negative.
-- `sheets_matching`: Found anywhere in the sheet name, like regex_match(). Refused if no sheet matches.
-- `sheet_column`: Comes after every column read, and holds the sheet's name as text.
-- `as_text`: Every column arrives as text; cast_columns afterwards states what each one is. Off by default.
+- `path`: For example 'data/sales.xlsx'.
+- `sheet`: For example 'Sales'. It must match exactly.
+- `skip_rows`: For example 3, to skip a title block. Not negative.
+- `sheets_matching`: For example '^[A-Z][a-z]{2} \d{4}$' for sheets named like 'Jan 2026'.
+- `sheet_column`: For example 'sheet'. It is added after the other columns and holds the sheet's name.
+- `as_text`: Use it when a column mixes figures and text, then say what each column is with cast_columns.
 
 ## Notes
 
-- Each column's type is decided from its first 100 rows. A cell that holds something but would read as null is refused, naming the column and the row: text further down a column of figures, or a word the engine treats as missing, such as n/a, #N/A or null, anywhere in it. A cell of only spaces reads as null. Set as_text to read every cell as its text and convert the columns with cast_columns after.
-- A sheet named in the configuration that is not in the workbook is refused with the sheet names that are there; a name differing only in case or a trailing space is a different name, not a near match.
-- has_header defaults to true, since a spreadsheet's first row is a header until an author says otherwise; a duplicated or a blank heading is refused rather than repaired, because a sheet's header row is its schema. Two headings that read the same (the number 2026 and the text 2026) are a duplicate, and a heading that is a date or a truth value is refused, because it cannot name a column.
-- There is no cell range: skip_rows reaches a header sitting below a title block, and everything else about narrowing a read -- which columns, which rows -- is a SelectColumns or a Filter put after this tool.
-- sheets_matching reads every sheet whose name contains a match for the pattern, the same test as regex_match() in an expression. A pattern that matches no sheet is refused with the sheets that are there. Each sheet is read exactly as naming it in 'sheet' would read it, and a sheet that does not match is never read.
-- Stacked sheets are lined up by column name. A column a sheet lacks is null on that sheet's rows, and columns come in the order they first appear. Whole and fractional figures stack as fractional figures. A sheet where a column holds no values takes the other sheets' type. Any other difference, such as text on one sheet and figures on another, is refused, naming the column and the sheets.
-- as_text makes every column text. Each cell reads as what it stores, not as Excel displays it. A whole figure has no point: 12, never 12.0. Any other figure reads as the shortest text that converts back to exactly the stored number. A date reads YYYY-MM-DD, and a date with a time of day YYYY-MM-DDTHH:MM:SS. A truth value reads true or false. A blank cell is null. In a column that mixes kinds, each cell keeps its own text.
-- as_text has two limits, both because Excel stores a date or a time as one number. A time of exactly midnight reads as a date. A cell holding only a time of day (formatted hh:mm, say) reads as that time on 31 December 1899: 14:05 reads 1899-12-31T14:05:00.
-- as_text reads the sheet four times instead of once: as text, as figures, as truth values and as dates. Each cell takes its text from the reading that suits what it holds. So a large sheet takes a few times longer to read. The text reading alone would be quicker, but it rounds figures: 99999999999.99 comes back 99999999999.990005493.
+- A sheet is always named or matched, never picked by position, so a cover sheet added in front does not change what is read.
+- A sheet name not in the workbook is refused, listing the names that are. A name that differs only in case or a trailing space is a different name.
+- Each column's type is decided from its first 100 rows. A cell that holds something but would read as null is refused, naming the column and the row.
+- That catches text further down a column of figures, and words read as missing, such as n/a, #N/A or null, anywhere in a column. Set as_text to read them.
+- A cell of only spaces reads as null.
+- The header row is refused, not repaired, if a heading is blank or repeated. The number 2026 and the text '2026' count as repeated.
+- A heading that is a date or true/false is refused, because it cannot name a column.
+- There is no cell range. skip_rows reaches a header below a title block; to narrow columns or rows, use select_columns or filter afterwards.
+- sheets_matching reads every sheet whose name contains a match, the same test as regex_match(); anchor with ^ and $ for whole names. Matching is case sensitive.
+- A pattern that matches no sheet is refused, listing the sheets. Each matched sheet is read exactly as naming it in 'sheet' would, and unmatched sheets are never read.
+- Stacked sheets are lined up by column name. A column a sheet lacks is null on that sheet's rows, and columns come in the order they first appear.
+- When stacking, whole and decimal figures become decimals, and a sheet where a column is empty takes the others' type. Any other difference, such as text on one sheet and figures on another, is refused, naming the column and the sheets.
+- as_text makes every column text, each cell as what it stores, not as Excel displays it: 12, never 12.0; other figures as the shortest text that converts back exactly.
+- With as_text, a date reads YYYY-MM-DD, a date with a time YYYY-MM-DDTHH:MM:SS, true/false as true or false, and a blank as null. In a mixed column, each cell keeps its own text.
+- Excel stores dates and times as one number, so with as_text a time of exactly midnight reads as a date, and a cell holding only a time reads as that time on 31 December 1899 (14:05 reads 1899-12-31T14:05:00).
+- as_text reads the sheet four times (as text, figures, true/false and dates) and takes each cell from the right reading, so a large sheet takes a few times longer.
+- The text reading alone would be quicker, but it rounds figures: 99999999999.99 comes back 99999999999.990005493.
 
 ## Example 1
 
-read a two-row sheet named in the configuration
+read one sheet by name
 
 ```yaml fragment
 tool: read_excel
@@ -65,11 +74,11 @@ Rows out:
 | 1 | first |
 | 2 | second |
 
-'sheet' names the tab to read; the columns and the dtypes arrive exactly as the sheet holds them.
+'sheet' names the tab to read. The columns and their types come through as the sheet holds them.
 
 ## Example 2
 
-read every month sheet of a report into one frame
+read every month sheet of a report into one table
 
 ```yaml fragment
 tool: read_excel
@@ -91,11 +100,11 @@ Rows out:
 | j1 | 10.25 | Jan 2026 |
 | j2 | 4.0 | Jan 2026 |
 
-Both month sheets match the pattern and the cover sheet does not. The months are stacked in the order the workbook holds them, and 'sheet' says which one each row came from.
+Both month sheets match the pattern and the cover sheet does not. They are stacked in workbook order, and 'sheet' says which sheet each row came from.
 
 ## Example 3
 
-read a sheet whose column mixes figures, text and a date, every cell as text
+read a sheet whose column mixes figures, text and a date
 
 ```yaml fragment
 tool: read_excel
@@ -118,7 +127,7 @@ Rows out:
 | c | n/a |
 | d | 2026-01-31 |
 
-Every column arrives as text, each cell as the text of what it stores: the whole figure without a point, the date as YYYY-MM-DD. cast_columns afterwards says what each column is.
+Every column comes in as text, each cell as the text of what it stores: the whole figure without a point, the date as YYYY-MM-DD. Use cast_columns afterwards to say what each column is.
 
 ---
 

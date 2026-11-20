@@ -2,9 +2,9 @@
 
 # `write_csv`
 
-*output tool.* Write `rows` to a delimited text file, and hand the same rows on.
+*output tool.* Write a table to a CSV file.
 
-'rows' is written to 'path' as a delimited text file with a header row and every row of data below it; the same rows leave on the output port unchanged. An existing file is never overwritten unless 'overwrite' says so in writing, though writing true when nothing occupies the path is accepted rather than refused. A null and an empty string both arrive on the page as an empty field, and the loss is one-way: the paired reader hands both back as nothing.
+Use write_csv to deliver a table as a CSV file: a header row, then every row of data. The same rows also pass on through `rows`, so the flow can continue after it.
 
 ## Ports
 
@@ -15,26 +15,32 @@
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `path` | string | required |  | Where the file is written; must end in .csv or .tsv. |
-| `delimiter` | string | default `,` |  | The one character separating fields. |
-| `overwrite` | boolean | default `false` |  | Whether a file already at 'path' may be overwritten; leave it out and an existing file is refused. |
-| `allow_empty` | boolean | default `false` |  | Whether a frame with no rows is written, as a header-only file, instead of stopping the run. |
+| `path` | string | required |  | The file to write. It must end in .csv or .tsv. |
+| `delimiter` | string | default `,` |  | The character between fields. Left out, a comma. |
+| `overwrite` | boolean | default `false` |  | Set true to allow replacing a file already at 'path'. |
+| `allow_empty` | boolean | default `false` |  | Set true to write a table with no rows as a file with only the header. |
 
 More on some settings:
 
-- `allow_empty`: Defaults to false: an empty frame stops the run until a flow says in writing that this file may be empty.
-- `overwrite`: Defaults to false: a path already occupied is refused until an author says in writing that overwriting it is intended.
+- `path`: For example 'output/orders.csv'.
+- `allow_empty`: Set it when a file may legitimately be empty, such as no refunds this month.
+- `overwrite`: Set it to true for a flow that runs again and again: without it, the second run is refused because the file is already there.
 
 ## Notes
 
-- The bytes are UTF-8 with no byte order mark, and the line ending is a line feed; neither is configurable, because a sink is choosing rather than discovering.
-- A whole number is written digit for digit, and so is a Decimal: a line of text has no cell to round either one into, which is the reason this is a separate tool from the workbook sink rather than a format switch on it.
-- A List, a Struct or a Duration is refused rather than stringified: each has a plausible-looking wrong answer as a line of text, and none of them is the value it started as.
-- A frame with no rows stops the run unless 'allow_empty' says otherwise, as on the table sinks: a file that is empty because something upstream failed looks exactly like a quiet month. Allowed, it is written as a header-only file, so whoever opens it can see the delivery was empty rather than missing.
+- A file already at 'path' is refused unless 'overwrite' is true. 'overwrite: true' with no file there is fine.
+- The file is UTF-8 with no byte order mark, and lines end with a line feed. Neither can be changed: unlike reading, writing chooses rather than discovers.
+- A null and empty text are both written as an empty field, and read_csv reads both back as null. That difference is lost.
+- A value containing the delimiter, a quote or a line break is wrapped in quotes, with inner quotes doubled. Other values are not quoted.
+- Whole numbers and Decimal values are written digit for digit; text has no limit to round them to.
+- A List, Struct or Duration column is refused rather than turned into text.
+- A table with no rows stops the run unless 'allow_empty' is true, because an empty file caused by a failure upstream looks like a quiet month.
+- Allowed, an empty table is written as a header-only file, so the delivery is visibly empty, not missing.
+- The folder must already exist. All checks happen before the file is opened, so a refusal leaves no half-written file.
 
 ## Example 1
 
-write a new file where nothing exists yet
+write a table to a new CSV file
 
 ```yaml fragment
 tool: write_csv
@@ -60,11 +66,11 @@ Rows out:
 | r1 | 10.25 |
 | r2 | -5.5 |
 
-'overwrite' is left out, and the path is empty, so no permission is needed; the same two rows leave on the output port unchanged.
+No file is at the path yet, so 'overwrite' is not needed. The same two rows pass on through 'rows'.
 
 ## Example 2
 
-overwrite a file that is already there, on purpose
+replace a file that is already there
 
 ```yaml fragment
 tool: write_csv
@@ -91,7 +97,7 @@ Rows out:
 | r1 | 10.25 |
 | r2 | -5.5 |
 
-A file already occupies the path; 'overwrite: true' says in writing that overwriting it is intended, and the same two rows leave on the output port unchanged either way.
+A file is already at the path, so 'overwrite: true' is needed to replace it. The same two rows pass on through 'rows'.
 
 ---
 

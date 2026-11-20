@@ -2,9 +2,9 @@
 
 # `union`
 
-*combine tool.* Stack the rows of `bottom` under the rows of `top`, keeping duplicates and matching columns by name (SQL's UNION ALL BY NAME).
+*combine tool.* Stack two tables with the same columns, one under the other, keeping every row (SQL's UNION ALL BY NAME).
 
-Stacks the rows, keeps duplicate rows, and matches columns by name, like SQL's UNION ALL BY NAME rather than UNION. Every row of `top` followed by every row of `bottom`, carrying the columns of `top` in `top`'s own order. The two sides must name the same columns and give each the same type; column order may differ, because that is not a fact about the data.
+Use union to put two tables with the same columns into one, for example this year's orders under last year's. `rows` has every row of `top`, then every row of `bottom`, with the columns in `top`'s order. Columns are matched by name, so their order may differ between the two. This is SQL's UNION ALL BY NAME: duplicate rows are kept.
 
 ## Ports
 
@@ -17,13 +17,14 @@ None.
 
 ## Notes
 
-- A column on one side and not the other is refused, never filled with nulls: a frame of the expected shape with a column of nothing where the data was is the hardest kind of wrong to notice. Invent the column with a Formula, where it is written down.
-- Nothing is de-duplicated. A row on both sides arrives twice, because stacking is not judging; RemoveDuplicates reports what it removes, which is the difference.
-- Rows keep their order -- all of `top`, then all of `bottom`. A step needing a meaningful order puts a Sort in front of it, as everywhere else here.
+- Both sides must have the same columns. A column on one side only is refused, never filled with nulls. Add it with a formula step, where it is visible.
+- Each column must have the same type on both sides, or the step is refused, naming both types. A column that is all null on one side takes the other side's type.
+- Nothing is de-duplicated: a row on both sides comes out twice. Use remove_duplicates after it if you want one of each.
+- Rows keep their order: all of `top`, then all of `bottom`. Sort afterwards if you need another order.
 
 ## Example 1
 
-carry two frames on as one
+stack two tables into one
 
 ```yaml fragment
 tool: union
@@ -56,11 +57,11 @@ Rows out:
 | B2 | -5.0 |
 | C3 | 7.5 |
 
-Every row of `top`, then every row of `bottom`. Nothing is removed and nothing is re-ordered, so a reader can point at any row and say which side it came from.
+Every row of 'top', then every row of 'bottom'. Nothing is removed and nothing is reordered.
 
 ## Example 2
 
-stack a frame whose columns are in a different order
+stack a table whose columns are in a different order
 
 ```yaml fragment
 tool: union
@@ -91,7 +92,7 @@ Rows out:
 | A1 | 10.0 |
 | C3 | 7.5 |
 
-The same columns written in another order are the same data, so `bottom` is read into `top`'s order rather than refused. A column one side does not have at all is a different matter and is refused.
+The columns are matched by name, so 'bottom' is read into 'top''s column order. A column that only one side has would be refused.
 
 ---
 

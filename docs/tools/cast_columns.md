@@ -2,9 +2,9 @@
 
 # `cast_columns`
 
-*preparation tool.* Read named columns of `rows` as the types the flow states, leaving every row where it is.
+*preparation tool.* Change the type of columns, such as text to number or text to date.
 
-Each named column is read as the type stated for it. Every row stays, in its own order, and every column keeps its position -- only the type changes. A value that will not convert stops the run rather than becoming a null.
+Use cast_columns to say what type a column really is: numbers that arrived as text from a CSV, dates stored as text, or a column two tables disagree about before a union. `rows` comes out with the same rows and columns in the same order; only the types change. A value that will not convert stops the run unless 'on_invalid' is 'set_null'.
 
 ## Ports
 
@@ -15,29 +15,34 @@ Each named column is read as the type stated for it. Every row stays, in its own
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `columns` | array | required |  | The columns to read as a stated type, one entry each. |
-| `columns[].column` | string | required |  | The column to read as a stated type. |
-| `columns[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The type the column is, spelled the way the query engine spells it. |
-| `columns[].in_zone` | string | optional |  | For a timestamp that carries a time zone, read as a 'Date': the zone whose calendar decides the day, such as UTC. Required then, refused anywhere else; no default. |
-| `on_invalid` | string | default `error` | `error`, `set_null` | What a value that will not convert does: 'error' stops the run (default), 'set_null' leaves it null and reports how many, out of how many. |
+| `columns` | array | required |  | The columns to change, one entry each, with the type each should be. |
+| `columns[].column` | string | required |  | The column to change, such as 'amount'. |
+| `columns[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The new type, such as 'Float64' for decimals, 'Int64' for whole numbers, 'Date' or 'String'. |
+| `columns[].in_zone` | string | optional |  | Only when turning a timestamp with a time zone into a 'Date': the zone whose calendar decides the day, such as 'UTC'. |
+| `on_invalid` | string | default `error` | `error`, `set_null` | What to do with a value that will not convert: 'error' stops the run; 'set_null' makes it null and reports how many. |
 
 More on some settings:
 
-- `columns`: Order does not matter; each entry names a different column, and a column named twice is refused rather than resolved by whichever came last.
+- `columns`: For example [{column: amount, type: Float64}, {column: opened_on, type: Date}]. The order of the entries does not matter.
+- `on_invalid`: Use 'set_null' for a large, messy source where a few bad values should not stop a nightly run.
 
 ## Notes
 
-- Put this in front of a Union whose two sides disagree about a column: the union refuses rather than choosing which side to rewrite, and this is where the flow says which one was right.
-- A value that will not convert stops the run by default. 'on_invalid: set_null' leaves it null instead and reports how many out of how many, raising the step to a warning -- the run carries on, and the size of the problem carries on with it.
-- Casting a column to the type it already has is refused: it is a declaration that does nothing, and the usual cause is a configuration edited halfway.
-- Not every pair converts. Text does not become a truth value here, because the spellings a source might use for one -- true, T, Y, 1 -- are a decision a flow should make in the open with CaseWhen rather than have a cast guess at. That pair is refused when the step runs, not when the pipeline loads.
-- A decimal becomes a whole number only when it already is one. 12.0 reads as 12, but 1.99 does not read as Int64: it stops the run, naming the column and the values, or is emptied and counted under 'set_null'. Round it first.
-- A timestamp that carries a time zone becomes a Date only with 'in_zone' beside it, because which day it falls on depends on the zone: 23:30 on 31 January in Toronto is 1 February in UTC. 'in_zone: UTC' reads the UTC date. There is no default.
-- A date cast to a number gives the days since 1 January 1970. A timestamp cast to Int64 gives a count in the column's own time unit: microseconds for a timestamp this library typed, but a source may hand over nanoseconds or milliseconds. To count the days or months between two dates, date_diff says what it counts.
+- Put this in front of a union whose two sides disagree about a column's type. union refuses rather than choosing which side to change.
+- A value that will not convert stops the run by default, naming the column, the type and the rows.
+- With 'on_invalid: set_null', such a value becomes null, and the step reports how many out of how many as a warning; the run carries on.
+- With 'set_null', each emptied row is also marked with the column and the value it held. A blank is not marked, because it did not fail.
+- Changing a column to the type it already has is refused. It usually means a configuration edited halfway.
+- A column named twice is refused.
+- Text does not become true/false here, because sources spell it many ways (true, T, Y, 1). Use case_when to decide. That pair is refused when the step runs, not when the pipeline loads.
+- A decimal becomes a whole number only when it already is one: 12.0 becomes 12, but 1.99 stops the run, or is emptied and counted under 'set_null'. Round it first.
+- A timestamp with a time zone becomes a Date only with 'in_zone', because the day depends on the zone: 23:30 on 31 January in Toronto is 1 February in UTC. There is no default.
+- A date cast to a number gives the days since 1 January 1970.
+- A timestamp cast to Int64 gives a count in the column's own time unit: microseconds for a timestamp this library made, but a source may give nanoseconds or milliseconds. To count days or months between dates, use date_diff.
 
 ## Example 1
 
-read a column of digits as the numbers they are
+turn a column of digits held as text into numbers
 
 ```yaml fragment
 tool: cast_columns
@@ -65,11 +70,11 @@ Rows out:
 | A1 | 10.5 |
 | B2 | -3.0 |
 
-`amount` arrived as text, which is what a source with no types gives. It stays the second column and every row stays where it was; only the type changes.
+'amount' arrived as text, as it does from a CSV. It becomes Float64 and stays the second column; nothing else changes.
 
 ## Example 2
 
-settle two columns in one step
+change two columns in one step
 
 ```yaml fragment
 tool: cast_columns
@@ -99,7 +104,7 @@ Rows out:
 | 2 | 2026-01-01 |
 | 5 | 2026-02-01 |
 
-Each entry names one column and the type it is. The order entries are written in does not matter, since no column is named twice. A date is read in the order the engine reads it -- a source writing its digits in another order wants AssembleDate, where the order is stated.
+Each entry names a column and its type. A date is read as year-month-day; for digits in another order, use assemble_date.
 
 ---
 

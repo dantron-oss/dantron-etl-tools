@@ -2,9 +2,9 @@
 
 # `formula`
 
-*transform tool.* Add or replace named columns, each computed by an expression against the input alone.
+*transform tool.* Add a calculated column, or change one, using an expression such as [price] * [quantity].
 
-Every entry reads the frame as it arrived, not as the entries above it left it. If one entry replaces 'amount' with '[amount] * 2' and the next computes '[amount] + 1', the second reads the old value: 10 becomes 20 and 11, not 20 and 21. An entry that reads a column an entry above it adds is refused, because that column is not on the input. To read a value this step computes, use two formula steps in sequence. A replaced column keeps the position it already had; a new one is appended in the order the list gives.
+Use formula to add a calculated column, or to change the values of one, like a spreadsheet formula filled down a column. Each entry names a column and the expression for it. `rows` comes out with the new columns at the end; a replaced column stays where it was. Every expression reads the input as it arrived, so to use a column this step works out, read it in a second formula step.
 
 ## Ports
 
@@ -15,18 +15,23 @@ Every entry reads the frame as it arrived, not as the entries above it left it. 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `columns` | array | required |  | One entry per column to write, applied together against the input frame; an empty list is refused rather than treated as a no-op step. |
-| `columns[].name` | string | required |  | The column this entry writes; blank, and a name repeated by another entry, are both refused. |
-| `columns[].value` | expression | required |  | Computed against the input frame only -- never against a column another entry in this same list is about to write. |
+| `columns` | array | required |  | The columns to work out, one entry each. At least one is needed. |
+| `columns[].name` | string | required |  | The column to write, such as 'net_amount'. |
+| `columns[].value` | expression | required |  | The expression, such as '[amount] - [discount]'. It reads the input as it arrived. |
 | `columns[].replace` | boolean | optional |  | Whether writing this column may overwrite a column of that name that is already there; leave it out and a name already in use is refused. |
 
 ## Notes
 
-- A null divisor gives null; a zero divisor gives the query engine's infinity, and 0/0 gives its not-a-number. Neither is guarded here -- keeping an infinity out of a money column is a rule an author writes with CaseWhen or Assert, not a decision this tool makes silently on every row.
+- Every entry reads the input as it arrived, not as the entries above left it. If one entry replaces 'amount' with '[amount] * 2' and the next works out '[amount] + 1', the second reads the old value: 10 gives 20 and 11, not 20 and 21.
+- An entry that reads a column added by an entry above it is refused, because that column is not on the input. Use two formula steps.
+- A name already on the input is refused unless its entry says 'replace: true'.
+- A blank name, or a name written by two entries, is refused. So is an empty list.
+- Dividing by zero stops the run and names the rows. Guard the division with case_when first if zeros are expected.
+- Dividing by a null gives null.
 
 ## Example 1
 
-a per-month figure divides by the rate, because the rate is quoted the other way round
+work out a monthly amount from a total, a rate and a number of months
 
 ```yaml fragment
 tool: formula
@@ -54,11 +59,11 @@ Rows out:
 | 1 | 1200.0 | 2.0 | 12 | 50.0 |
 | 2 | 600.0 | 1.0 | 6 | 100.0 |
 
-The amount is divided by the rate and then by the count of months, appended as a new column at the end.
+The amount is divided by the rate, then by the number of months, and the result is added as a new column at the end.
 
 ## Example 2
 
-one entry repairs 'code' in place, another appends a new column
+tidy a column in place and add a new one
 
 ```yaml fragment
 tool: formula
@@ -89,7 +94,7 @@ Rows out:
 | 1 | A1 | 1200.0 | 2400.0 |
 | 2 | B2 | 600.0 | 1200.0 |
 
-'code' is overwritten because its entry says 'replace: true' and keeps its original position; 'doubled' has no name collision to resolve and is appended.
+'code' is replaced because its entry says 'replace: true', and it keeps its position. 'doubled' is a new name, so it is added at the end.
 
 ---
 

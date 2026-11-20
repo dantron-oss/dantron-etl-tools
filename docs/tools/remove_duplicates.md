@@ -2,9 +2,9 @@
 
 # `remove_duplicates`
 
-*preparation tool.* Split `rows` into one member of each identical group and the members left over.
+*preparation tool.* Keep one row of each group of matching rows, and set the repeats aside.
 
-Sameness follows DISTINCT, not `=`: two rows whose key is null are one group, the same group a downstream group-by or join would find, rather than two rows that could not be compared. Absent 'by' means every column of the row defines the group; the members that do not join 'unique' join 'duplicate' instead of vanishing.
+Use remove_duplicates to keep one row per customer, per order, or per whole row. One row of each group of matching rows goes to `unique`; the others go to `duplicate`, so you can see what was removed. The two ports together hold every input row, each in its arrival order. Matching follows SQL's DISTINCT.
 
 ## Ports
 
@@ -15,23 +15,25 @@ Sameness follows DISTINCT, not `=`: two rows whose key is null are one group, th
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `by` | array | optional |  | Columns defining sameness; absent or empty means every column of the row. |
-| `by[]` | string | optional |  | One column name; a null value is treated as equal to another null. |
-| `keep` | string | default `first` | `first`, `last` | Which member of a group joins 'unique': 'first' (default) or 'last'. |
+| `by` | array | optional |  | The columns that decide whether two rows are the same. Left out or empty, every column is compared. |
+| `by[]` | string | optional |  | One column to compare, such as 'customer_id'. |
+| `keep` | string | default `first` | `first`, `last` | Which row of each group goes to `unique`: the 'first' or the 'last' to arrive. |
 
 More on some settings:
 
-- `by`: Absent or empty means every column; a column named more than once is counted only once.
-- `keep`: 'first' or 'last' decides which member of a group joins 'unique'; the other member of a pair always joins 'duplicate'.
+- `by`: For example ['order_id']. Leave it out to remove rows that repeat in every column.
+- `keep`: Use 'last' after sorting by date to keep each group's latest row.
 
 ## Notes
 
-- A null key is equal to another null key, never an empty string; building a text key by filling nulls first would merge a genuinely blank value into the null group.
-- 'keep' reads the order the rows arrived in. After a read_table, which hands rows over in no fixed order, put a Sort in front so the row kept is the one you chose.
+- Two null values count as the same, as with SQL's DISTINCT, so rows with a null key form one group. join treats null keys the opposite way: they never pair.
+- A null is not the same as empty text. Filling nulls with '' before comparing would merge real blanks into the null group.
+- Without 'by', every column is compared. A column named twice in 'by' counts once.
+- 'keep' goes by the order the rows arrived in. After read_table, which gives rows in no fixed order, sort first so the row kept is the one you chose.
 
 ## Example 1
 
-keep one instance of a row that repeats across every column
+remove a row that repeats in every column
 
 ```yaml fragment
 tool: remove_duplicates
@@ -64,11 +66,11 @@ Rows out:
 |---|---|---|
 | A | x | 10.0 |
 
-No 'by' at all means every column defines the group; the third row repeats the first exactly, so it joins 'duplicate' and the first instance joins 'unique'.
+With no 'by', every column is compared. The third row repeats the first exactly, so it goes to 'duplicate' and the first goes to 'unique'.
 
 ## Example 2
 
-keep the last row of a group defined by a single key column
+keep the last row for each code
 
 ```yaml fragment
 tool: remove_duplicates
@@ -103,7 +105,7 @@ Rows out:
 |---|---|
 | A | 1.0 |
 
-Sameness is judged on 'code' alone, so the two rows sharing code 'A' are one group; 'keep: last' sends the second of them to 'unique' and the first to 'duplicate'.
+Only 'code' is compared, so the two 'A' rows are one group. 'keep: last' sends the second to 'unique' and the first to 'duplicate'.
 
 ---
 

@@ -2,9 +2,9 @@
 
 # `regex_extract_groups`
 
-*text tool.* Extract a pattern's named groups from one column at once, all null together on a miss.
+*text tool.* Pull several pieces out of a text column into new columns, using a pattern.
 
-Every named group of `pattern` becomes a text column, appended after the input columns in the order the pattern declares them. A row that does not match the whole pattern is null in every group, never in some. On a match, a group the pattern makes optional (with '?', or as one side of an alternative) can still be null, because the match did not need it. With `all_matches`, every match in the text becomes its own row.
+Use regex_extract_groups to pull several pieces out of one text column at once, such as a prefix and a number from 'INV-1042', or the months and years from 'Jan 2026 to Mar 2026'. Each named group in the pattern becomes a new text column at the end of `rows`, in the pattern's order. With all_matches, every match in the text becomes its own row. For one piece, regex_extract in a formula is simpler.
 
 ## Ports
 
@@ -15,61 +15,36 @@ Every named group of `pattern` becomes a text column, appended after the input c
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `source` | expression | required |  | The text the pattern is matched against. |
-| `pattern` | string | required |  | A regular expression whose named groups become the output columns, in pattern order. An unnamed capturing group is refused; write (?:...) for one that need not be captured. |
-| `position_column` | string | optional |  | Name for an extra column carrying how far into the text the pattern matched, counted from zero, and null where it did not. Left out, no such column. |
-| `all_matches` | boolean | default `false` |  | When true, every match in the text becomes its own row, not only the first. A row whose text matches nothing is kept once, with every group null. |
-| `match_number_column` | string | optional |  | Name for the column numbering each match from 1, in the order the text states them. Required with all_matches, and refused without it. |
+| `source` | expression | required |  | The text to search, such as '[note]'. |
+| `pattern` | string | required |  | A regular expression with named groups, written (?P<name>...). Each group becomes a column of that name. |
+| `position_column` | string | optional |  | Optional: the name of a column for where the match starts in the text, counted from 0, or null where nothing matched. |
+| `all_matches` | boolean | default `false` |  | Set true to give every match in the text its own row, not only the first. |
+| `match_number_column` | string | optional |  | With all_matches: the name of a column numbering each match from 1. |
 
 More on some settings:
 
-- `source`: An expression, so the text matched need not already be a stored column.
-- `pattern`: Judged by the engine that will run it, not by a second regular-expression library that agrees with it only most of the time.
+- `source`: Any expression giving text, so the text need not be a stored column.
+- `pattern`: For example (?P<prefix>[A-Z]+)-(?P<number>\d+). In YAML, put it in double quotes and double each backslash.
 
 ## Notes
 
-- There is no field listing the output column names beside the pattern: they are read off the pattern's own named groups, so there is nowhere for the two to disagree.
-- 'position_column' exists for flows that try several patterns and keep whichever matched earliest in the text. Without it, a flow can tell that two patterns both matched but not which one the text states first, and 'first stated' is usually what a reader means: a line names the term it is billing for before it names any other.
-- The offset counts bytes, not characters, so on text carrying anything outside plain ASCII it is larger than the position a person would count to. Compare two offsets against each other, which is what it is for and is always right; do not read one as 'the Nth character', and do not slice text with it.
-- With all_matches, each match becomes a row: the input row repeated, that match's groups, and its number counted from 1. Matches are found left to right and do not overlap. A row with no match, an empty text or a missing text is kept once, with the groups and the number null. No input row is lost.
-- With all_matches, Python's own regular expressions find the matches, one distinct text at a time. This is a known exception to working on whole columns. The engine can list every match, but not every match's groups. Cutting each match out and reading it again on its own gives wrong groups when the pattern looks at the text beside the match, as \b and \B do. So each match is read where it sits in the full text.
-- The engine's list of matches is still checked against Python's for every text. A text where the two find different matches is refused, not given rows. A pattern that can match empty text, such as a*, is the usual cause.
-- position_column is refused with all_matches: the match number already says which match comes first, and one offset for several matches would be wrong for all but one.
+- A row that does not match the whole pattern is null in every group, never in some.
+- On a match, a group the pattern makes optional (with '?', or one side of an '|') can still be null, because the match did not need it.
+- The new columns are always text, even when they look like numbers. Use cast_columns afterwards.
+- The column names come only from the pattern's named groups; there is no separate list to keep in step.
+- An unnamed group is refused; write (?:...) for a group that should not become a column. A pattern with no named group is refused, and so is a group name already on the input.
+- The pattern is checked by polars, the engine that runs it, before any row is read.
+- 'position_column' is for flows that try several patterns and keep whichever matched earliest in the text.
+- The position counts bytes, not characters, so on text with accents or other non-ASCII characters it is larger than a person would count. Compare two positions; do not use one to cut text.
+- With all_matches, each match becomes a row: the input row repeated, that match's groups, and its number from 1. Matches are found left to right and do not overlap.
+- With all_matches, a row with no match, empty text or no text is kept once, with nulls. No input row is lost.
+- With all_matches, Python's regular expressions find the groups, one distinct text at a time, a known exception to whole-column work. Patterns using \b or \B read the text around a match, so each match is read in its full text.
+- With all_matches, polars' list of matches is checked against Python's for each text, and a text where they differ is refused. A pattern that can match empty text, such as a*, is the usual cause. A spelling Python does not accept, such as (?<name>...), is refused before any row is read.
+- With all_matches, 'match_number_column' is required, and 'position_column' is refused: one position cannot describe several matches.
 
 ## Example 1
 
-read a service period out of a free-text note
-
-```yaml fragment
-tool: regex_extract_groups
-config:
-  source: '[note]'
-  pattern: (?P<start_month>[A-Za-z]{3}) (?P<start_year>\d{4}) to (?P<end_month>[A-Za-z]{3}) (?P<end_year>\d{4})
-```
-
-Rows in:
-
-`rows`
-
-| key | note |
-|---|---|
-| 10 | support Jan 2026 to Dec 2026 |
-| 11 | support Jan 2026 to Smarch 2026 |
-
-Rows out:
-
-`rows`
-
-| key | note | start_month | start_year | end_month | end_year |
-|---|---|---|---|---|---|
-| 10 | support Jan 2026 to Dec 2026 | Jan | 2026 | Dec | 2026 |
-| 11 | support Jan 2026 to Smarch 2026 | null | null | null | null |
-
-The first note matches the whole pattern and fills all four groups. The second has a month nobody recognises, so the whole pattern fails to match and all four groups come back null together, rather than a start with no end.
-
-## Example 2
-
-split a party code into its prefix and its number
+split a code into its prefix and its number
 
 ```yaml fragment
 tool: regex_extract_groups
@@ -96,7 +71,38 @@ Rows out:
 | AC-1042 | AC | 1042 |
 | not a code | null | null |
 
-Both groups are text, even though the number looks numeric: a group is the text that matched, and guessing a dtype would make a column's type depend on which rows arrived.
+Both new columns are text, even though the number looks like a number. Use cast_columns afterwards if you need a number.
+
+## Example 2
+
+read a period out of a free-text note
+
+```yaml fragment
+tool: regex_extract_groups
+config:
+  source: '[note]'
+  pattern: (?P<start_month>[A-Za-z]{3}) (?P<start_year>\d{4}) to (?P<end_month>[A-Za-z]{3}) (?P<end_year>\d{4})
+```
+
+Rows in:
+
+`rows`
+
+| key | note |
+|---|---|
+| 10 | support Jan 2026 to Dec 2026 |
+| 11 | support Jan 2026 to Smarch 2026 |
+
+Rows out:
+
+`rows`
+
+| key | note | start_month | start_year | end_month | end_year |
+|---|---|---|---|---|---|
+| 10 | support Jan 2026 to Dec 2026 | Jan | 2026 | Dec | 2026 |
+| 11 | support Jan 2026 to Smarch 2026 | null | null | null | null |
+
+The first note matches the whole pattern, so all four groups are filled. The second has a month the pattern does not accept, so nothing matches and all four groups are null together.
 
 ## Example 3
 

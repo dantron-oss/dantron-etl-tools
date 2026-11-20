@@ -2,9 +2,9 @@
 
 # `filter`
 
-*preparation tool.* Split rows onto `true` and `false` ports by a predicate, keeping every row.
+*preparation tool.* Split rows in two by a condition: rows that meet it, and rows that do not.
 
-Every row leaves on exactly one of `true` or `false`, so the pair of ports together is always the input: nothing a flow routes downstream from here needs an anti-join to recover what this tool discarded.
+Use filter to split a table by a condition, such as amount above zero or status equal to 'active'. Rows that meet the condition go to `true`; all the others go to `false`. No row is dropped, so the two ports together always hold every input row. Use `false` to check or report what was left out.
 
 ## Ports
 
@@ -15,13 +15,21 @@ Every row leaves on exactly one of `true` or `false`, so the pair of ports toget
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `predicate` | expression | required |  | The whole condition a row is tested against; no column/operator/value structure sits beside it. |
-| `nulls` | string | default `exclude` | `exclude`, `include` | Where a row whose predicate is null goes: 'exclude' (default, joins 'false') or 'include' (joins 'true'). |
+| `predicate` | expression | required |  | The condition each row is tested against, such as '[amount] > 0'. |
+| `nulls` | string | default `exclude` | `exclude`, `include` | Where a row goes when a null leaves the condition undecided: 'exclude' sends it to `false`, 'include' to `true`. |
+
+More on some settings:
+
+- `predicate`: For example: [status] = 'active' and [amount] > 0. It is one expression; the command's 'functions' list shows what it may use.
+- `nulls`: Leave it as 'exclude' unless rows with a missing value should be kept.
 
 ## Notes
 
-- A null predicate is not the same as a false one: 'nulls' decides where the could-not-tell rows go, and defaults to the false port so a plain filter behaves the way the query engine already does.
-- A not-a-number value (what 0/0 gives) compares as larger than every number and equal to itself, so '[ratio] > 0.5' sends it to 'true'. Guard a division with case_when if that matters.
+- A condition on a null value is neither true nor false. 'nulls' decides where those rows go, and by default they go to `false`, as with SQL's WHERE.
+- To route null rows separately, filter the `false` port again on '[column] is null'.
+- A true/false column can be the whole condition, such as '[is_active]'.
+- A condition that does not give true or false, such as '[amount]' on a number column, is refused before any row is read.
+- A not-a-number value (what 0/0 gives) counts as larger than every number and equal to itself, so '[ratio] > 0.5' sends it to `true`. Guard a division with case_when if that matters.
 
 ## Example 1
 
@@ -58,11 +66,11 @@ Rows out:
 | 2 | -5.0 |
 | 3 | 0.0 |
 
-Every row with a positive amount joins 'true'; the rest, including a zero amount, join 'false'.
+Rows with a positive amount go to 'true'. The rest, including the zero, go to 'false'.
 
 ## Example 2
 
-a missing status is routed to 'true' by request
+keep rows with a missing status along with the active ones
 
 ```yaml fragment
 tool: filter
@@ -96,7 +104,7 @@ Rows out:
 |---|---|
 | 2 | closed |
 
-The row with no status cannot be tested, so it would join 'false' by default; 'nulls: include' sends it to 'true' instead, without moving the row that is genuinely closed.
+The row with no status cannot be tested, so by default it would go to 'false'. 'nulls: include' sends it to 'true' instead. The closed row still goes to 'false'.
 
 ---
 

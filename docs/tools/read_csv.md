@@ -2,9 +2,9 @@
 
 # `read_csv`
 
-*input tool.* Read a delimited text file onto the `rows` port, inferring types by column.
+*input tool.* Read a CSV or other delimited text file into a table.
 
-The whole file is read once to infer every column's type; 'column_types' names the columns that inference gets wrong and corrects only those, one entry at a time. A blank field arrives as null, never an empty string, and a line whose field count disagrees with the header stops the run naming the line rather than being padded or truncated.
+Use read_csv to start a flow from a .csv or .tsv file. The whole file is read to work out each column's type: whole numbers, decimals, true/false, or text. Dates stay text, because a file cannot say which order its digits are in; name them in 'column_types' with their format. The rows go to `rows`.
 
 ## Ports
 
@@ -15,31 +15,40 @@ The whole file is read once to infer every column's type; 'column_types' names t
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `path` | string | required |  | The file to read; must end in .csv or .tsv. |
-| `delimiter` | string | default `,` |  | The one character separating fields. |
-| `encoding` | string | default `utf8` | `utf8`, `utf-8`, `utf-8-sig`, `latin1`, `latin-1`, `iso-8859-1`, `cp1252`, `windows-1252`, `ascii`, `utf-16`, `utf-16-le`, `utf-16-be` | The encoding the file was written in; a fact about the file, not a choice this tool makes. |
-| `has_header` | boolean | default `true` |  | Whether the first row (after skip_rows) names the columns. |
-| `skip_rows` | integer | default `0` |  | How many lines above the header (or the data, if has_header is false) to skip. |
-| `column_types` | array | optional |  | Columns whose inferred type is wrong, corrected one entry at a time. |
-| `column_types[].column` | string | required |  | The header name this entry corrects. |
-| `column_types[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The declared type, spelled the way the query engine spells it. |
-| `column_types[].format` | string | optional |  | The order a Date, Datetime or Time is written in; ISO order if left out. |
+| `path` | string | required |  | The file to read. It must end in .csv or .tsv. |
+| `delimiter` | string | default `,` |  | The character between fields. Left out, a comma. |
+| `encoding` | string | default `utf8` | `utf8`, `utf-8`, `utf-8-sig`, `latin1`, `latin-1`, `iso-8859-1`, `cp1252`, `windows-1252`, `ascii`, `utf-16`, `utf-16-le`, `utf-16-be` | The text encoding the file was saved in. Left out, UTF-8. |
+| `has_header` | boolean | default `true` |  | Whether the first line (after skip_rows) holds the column names. |
+| `skip_rows` | integer | default `0` |  | How many lines to skip before the header, or before the data without one. |
+| `column_types` | array | optional |  | Columns whose worked-out type is wrong, with the type they should be. |
+| `column_types[].column` | string | required |  | The column name from the header, such as 'zip'. |
+| `column_types[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The type, such as 'String', 'Int64', 'Float64' or 'Date'. |
+| `column_types[].format` | string | optional |  | For a date or time: how it is written, such as '%d/%m/%Y'. Left out, year-month-day. |
 
 More on some settings:
 
-- `column_types`: Each entry names one column and the type it really is; every other column is inferred as it would have been with no entries at all.
-- `skip_rows`: Lines above the header (or the data) to skip; must not be negative.
+- `path`: For example 'data/orders.csv'. It must end in .csv or .tsv.
+- `delimiter`: For example ';' or a tab. One character.
+- `encoding`: For example 'cp1252' for a file saved by older Windows programs.
+- `column_types`: For example [{column: zip, type: String}, {column: ordered_on, type: Date, format: '%d/%m/%Y'}].
+- `skip_rows`: For example 2, to skip two title lines above the header. Not negative.
 
 ## Notes
 
-- There is no infer_schema_length: inference reads the whole file, because a sample would make a column's type depend on where this month's exception happens to sit.
-- A value that will not convert to its declared type stops the run naming the column, the value and the declared type, rather than becoming a null with no other symptom.
-- A column that would be read as numbers stops the run when a number would change a value: a leading zero (02134) or a whole number too big for 64 bits. Declare it in column_types: String keeps it as written, Int64 or Float64 reads it as a number anyway.
-- The encoding is configurable because it is a fact about a file somebody else wrote; a byte order mark is accepted and dropped, and bytes invalid in the declared encoding are refused rather than read lossily.
+- Types are worked out from the whole file, not a sample, so a column's type does not depend on where an odd value sits.
+- 'column_types' corrects only the columns you list; every other column is read as it would be without it. A column listed twice is refused, and so is one not in the header.
+- A value that will not convert to its listed type stops the run, naming the column, the value and the type. It never becomes a silent null.
+- A column that would be read as numbers stops the run when a number would change a value: a leading zero (02134) or a whole number too big for 64 bits.
+- Settle that in 'column_types': String keeps it as written, Int64 or Float64 reads it as a number anyway.
+- A line with more or fewer fields than the header stops the run, naming the line. It is never padded or cut.
+- A blank field is null, never empty text. A blank line is a row of nulls, not skipped, because write_csv writes a row of nulls that way.
+- A header with a blank or repeated name is refused. Without a header, columns are named column_1, column_2 and so on.
+- The encoding is a fact about the file. A byte order mark is accepted and dropped. Bytes that are invalid in the stated encoding are refused, never read lossily.
+- An empty file, or one with nothing left after 'skip_rows', is refused.
 
 ## Example 1
 
-read a two-row file with no columns to correct
+read a small file
 
 ```yaml fragment
 tool: read_csv
@@ -58,7 +67,7 @@ Rows out:
 | 1 | first |
 | 2 | second |
 
-Both columns are inferred from the whole file: 'key' arrives a whole number and 'label' arrives text, with no column_types entry needed for either.
+Each column's type is worked out from the whole file: 'key' is a whole number and 'label' is text.
 
 ---
 

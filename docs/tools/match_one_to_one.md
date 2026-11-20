@@ -2,9 +2,9 @@
 
 # `match_one_to_one`
 
-*preparation tool.* Pair left keys with right keys one to one, taking the best candidates first.
+*preparation tool.* Pair items one to one from a list of possible pairs, taking the best pairs first.
 
-Each row is one possible pair of a left key and a right key. The tool walks the rows from best to worst by 'priority', then by left key, then by right key. It accepts a pair when neither key has been used. Accepted pairs go to 'accepted'. Every other row goes to 'rejected'. Each row leaves on exactly one port, with all its columns, and both ports come out in the walk order.
+Use match_one_to_one when each item may be paired at most once, such as matching payments to orders where several orders could fit. Each input row is one possible pair, with columns that rank it, such as the gap in days or amount. The best pairs are taken first, and a pair is taken only if neither of its keys is used yet. Taken pairs go to `accepted`; every other row goes to `rejected`, with all its columns.
 
 ## Ports
 
@@ -24,16 +24,19 @@ Each row is one possible pair of a left key and a right key. The tool walks the 
 
 More on some settings:
 
-- `left_key`: The left key. Each left key is accepted at most once.
-- `right_key`: The right key. Each right key is accepted at most once. Must be a different column from 'left_key'.
-- `priority`: A list of ranking columns, each with an optional 'direction'. Later columns only break ties left by earlier ones.
-- `ties`: 'first' (the default) or 'refuse'.
+- `left_key`: For example 'order_id'. Each left key is accepted at most once.
+- `right_key`: For example 'payment_id'. Each right key is accepted at most once. It must be a different column from 'left_key'.
+- `priority`: For example [{column: day_gap}, {column: amount_gap}]. Later columns only break ties left by earlier ones.
+- `ties`: Use 'refuse' when an equally good second choice should be looked at by a person.
 
 ## Notes
 
-- A missing left or right key pairs with nothing, as a null key does in a SQL join. That row goes to 'rejected' and uses no key.
-- Under 'refuse', a rival is another candidate that shares a key, has the same values on every priority column, and has neither key taken or refused yet. Two missing values count as the same. A key with a rival is refused and stays unmatched. The key on the other side stays free.
-- Under 'refuse', two rows with the same keys and the same priority values are rivals of each other. Both keys are refused. Remove repeated rows first if they are copies.
+- Rows are ranked by 'priority', then by left key, then by right key, both ascending, so the result does not depend on the order the rows arrived in. Both ports come out in that order.
+- A missing left or right key pairs with nothing, as a null key does in a SQL join. That row goes to `rejected` and uses no key.
+- With 'ties: first', candidates equal on every priority column go to the smaller left key, then the smaller right key.
+- With 'ties: refuse', a key whose best candidates are equal is refused: it stays unmatched, and every candidate naming it is rejected. The key on the other side stays free for others.
+- Under 'refuse', a rival is another candidate that shares a key, has the same values on every priority column, and has neither key taken or refused yet. Two missing values count as the same.
+- Under 'refuse', two rows with the same keys and the same priority values are rivals of each other, so both keys are refused. Remove repeated rows first if they are copies.
 - Missing values in a priority column sort last, in either direction.
 - Two rows with the same keys and the same priority values come out in the order they arrived. Nothing else tells them apart.
 

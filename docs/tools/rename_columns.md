@@ -2,9 +2,9 @@
 
 # `rename_columns`
 
-*preparation tool.* Rename columns of `rows` in place, leaving every column where it already sat.
+*preparation tool.* Give columns new names, keeping each column where it is.
 
-Each column keeps its position, its dtype and every one of its values; only the name in the header changes. The renames are resolved against the incoming columns as a single mapping, so a pair of entries may exchange two names and a chain of entries may pass a name along, neither needing a temporary name to get there.
+Use rename_columns to give columns clearer or matching names, for example before a join or a union. Only the names change: each column keeps its position, type and values. All the renames happen at once, so two columns can swap names in one step.
 
 ## Ports
 
@@ -15,22 +15,23 @@ Each column keeps its position, its dtype and every one of its values; only the 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `columns` | array | required |  | The renames to apply, each naming the column to rename and its new name. Applied together, so two entries may exchange names. |
-| `columns[].from` | string | required |  | The column to rename, as it is spelled on the input port. |
-| `columns[].to` | string | required |  | The name that column carries on the output port. |
+| `columns` | array | required |  | The renames, each giving a column's current name and its new name. |
+| `columns[].from` | string | required |  | The column's current name, such as 'region'. |
+| `columns[].to` | string | required |  | The column's new name, such as 'territory'. |
 
 More on some settings:
 
-- `columns`: Order does not matter: the list is a mapping, not a sequence of steps, and the output follows the frame's own column order rather than this list's.
+- `columns`: For example [{from: region, to: territory}]. The order of the entries does not matter, and the output keeps the table's column order.
 
 ## Notes
 
-- A new name that collides with a column which is staying is refused, because writing over that column would lose it with nothing said; a name being renamed away in the same step is free to be taken.
-- Renaming a column to the name it already carries is refused, as are blank and whitespace-only names: each is a declaration that does nothing, and the usual cause is a configuration edited halfway.
+- A new name that is already used by a column that stays is refused, because that column would be lost. A name that another entry renames away in the same step is free.
+- Renaming a column to its own name is refused, as is a blank or all-space name. These usually mean the configuration was edited halfway.
+- A column to rename that is not on the input is refused.
 
 ## Example 1
 
-rename a column that sits in the middle of the frame
+rename one column
 
 ```yaml fragment
 tool: rename_columns
@@ -58,11 +59,11 @@ Rows out:
 | 11 | north | 10.0 |
 | 12 | south | -5.0 |
 
-`region` becomes `territory` and stays the second column, between `record_id` and `amount`. A formula-and-drop rename would have moved it to the end instead.
+'region' becomes 'territory' and stays the second column, between 'record_id' and 'amount'.
 
 ## Example 2
 
-exchange two column names in one step
+swap two column names in one step
 
 ```yaml fragment
 tool: rename_columns
@@ -92,7 +93,7 @@ Rows out:
 | X1 | north |
 | Y2 | south |
 
-Both renames are applied to the incoming schema at once, so each name is free to be taken by the other column; neither entry sees the other's result, and no temporary name is needed. The values do not move -- only the headers above them.
+Both renames happen at once, so each column can take the other's name without a temporary name. The values stay where they were; only the headings change.
 
 ---
 

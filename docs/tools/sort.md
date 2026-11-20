@@ -2,9 +2,9 @@
 
 # `sort`
 
-*preparation tool.* Order the rows of `rows` by one or more keys, keeping tied rows in their arrival order.
+*preparation tool.* Put rows in order by one or more columns, each ascending or descending.
 
-Orders the rows by the keys listed in 'by'. The first key decides. Each later key breaks the ties the ones before it leave. Every key carries its own direction and its own placement for missing values, so one list can sort one column ascending and the next descending. Rows that tie on every key keep the order they arrived in. That is what lets a row number generated afterwards depend on the data rather than on the engine. Nothing else about the frame changes: same rows, same columns, same column order, same types.
+Use sort to put rows in order, for example by date, or by customer and then by largest amount. Each key has its own direction and its own place for nulls. Rows that tie on every key keep the order they arrived in, so the result is the same on every run. Only the row order changes: the columns and values are untouched.
 
 ## Ports
 
@@ -15,24 +15,25 @@ Orders the rows by the keys listed in 'by'. The first key decides. Each later ke
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `by` | array | required |  | The sort keys, most important first. The first key decides. Each later key breaks the ties the ones before it leave. |
-| `by[].column` | string | required |  | The column to sort on. It has to be on the input. |
-| `by[].direction` | string | optional | `asc`, `desc` | 'asc' for smallest first, 'desc' for largest first. Left out, a key sorts ascending. |
-| `by[].nulls` | string | optional | `first`, `last` | Where missing values go: 'first' or 'last'. Left out, they go last. That holds whichever direction the key sorts in. |
+| `by` | array | required |  | The columns to sort on, most important first. Each later key only breaks ties left by the ones before it. |
+| `by[].column` | string | required |  | The column to sort on, such as 'amount'. |
+| `by[].direction` | string | optional | `asc`, `desc` | 'asc' for smallest first, 'desc' for largest first. Left out, it is 'asc'. |
+| `by[].nulls` | string | optional | `first`, `last` | Where nulls go: 'first' or 'last'. Left out, they go last, in either direction. |
 
 More on some settings:
 
-- `by`: A list of keys, most important first. Each key needs a 'column'. 'direction' and 'nulls' are optional, and each applies to its own key alone.
+- `by`: For example [{column: zone}, {column: amount, direction: desc}]: by zone, then largest amount first within each zone.
 
 ## Notes
 
-- Missing values go last by default, in either direction. Write 'nulls: first' on a key to put them on top.
-- A not-a-number value (what 0/0 gives) sorts as larger than every number: after them ascending, before them descending. It is not a missing value, so 'nulls' does not move it.
-- A direction or a placement written with no value is refused, not defaulted. A definition file spells 'direction:' when its author meant to say something.
+- Nulls go last by default, in either direction. Write 'nulls: first' on a key to put them on top.
+- A not-a-number value (what 0/0 gives) sorts as larger than every number: last when ascending, first when descending. It is not a null, so 'nulls' does not move it.
+- A 'direction' or 'nulls' written with no value, such as 'direction:' on its own, is refused, not given the default.
+- Naming the same column twice in 'by' is refused, because the second key could never decide anything.
 
 ## Example 1
 
-largest amount first, with the two rows that tie left as they arrived
+largest amount first
 
 ```yaml fragment
 tool: sort
@@ -64,11 +65,11 @@ Rows out:
 | c | 10.0 |
 | d | null |
 
-Rows 'a' and 'c' both hold 10.0, so nothing in the configuration separates them. They come back in the order they went in. The missing amount goes last, which is where missing values go unless a key says otherwise.
+Rows 'a' and 'c' both hold 10.0, so they keep the order they came in. The missing amount goes last, as nulls do by default.
 
 ## Example 2
 
-group by zone, and within a zone put the largest amount first
+by zone, then largest amount first within a zone
 
 ```yaml fragment
 tool: sort
@@ -101,7 +102,7 @@ Rows out:
 | south | 1.0 |
 | null | 7.0 |
 
-'zone' decides first and sorts ascending, so the two northern rows lead and the row with no zone goes last. 'amount' only decides between rows the first key tied. Here that is the pair of northern rows.
+'zone' sorts first, ascending, so the two north rows lead and the row with no zone goes last. 'amount' only decides between rows with the same zone: here, the two north rows.
 
 ---
 

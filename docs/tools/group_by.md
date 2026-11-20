@@ -2,9 +2,9 @@
 
 # `group_by`
 
-*transform tool.* Collapse `rows` to one row per distinct key, carrying only what is named.
+*transform tool.* Make one row per group, with totals, counts or other summaries for each group.
 
-One row per distinct key, in the order each key first appeared -- not sorted, because a key spanning several columns has no obvious total order. Every column neither named in 'by' nor produced by an aggregation disappears; 'min' and 'max' are the only way to carry one forward unchanged. A null key groups with other nulls rather than being dropped, matching what this tool is named after.
+Use group_by for subtotals: one row per customer, per month, or per any mix of columns, like a pivot table's row labels or SQL's GROUP BY. The output `rows` has the 'by' columns, then one column per aggregation. Every other column is dropped. Groups come out in the order each one first appears in the input, not sorted.
 
 ## Ports
 
@@ -15,33 +15,44 @@ One row per distinct key, in the order each key first appeared -- not sorted, be
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `by` | array | required |  | Column names forming the group key; a null value groups with other nulls. |
-| `by[]` | string | optional |  | One column name; naming the same column twice counts it once. |
-| `aggregations` | array | required |  | One element per output column beyond the key: how it is computed. |
+| `by` | array | required |  | The columns to group by. Rows with the same values here become one row. |
+| `by[]` | string | optional |  | One column to group by. Naming a column twice counts it once. |
+| `aggregations` | array | required |  | The columns to work out for each group, one entry per output column. |
 | `aggregations[].name` | string | required |  | The output column's name. |
-| `aggregations[].function` | string | required | `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `max`, `min`, `sum` | Which aggregate this element computes, drawn from the aggregates that ship. |
-| `aggregations[].value` | expression | optional |  | What is aggregated; omit it for 'count', which counts rows and reads no column at all. |
-| `aggregations[].separator` | string | optional |  | What goes between the values 'join_text' joins, defaulting to a comma and a space; only 'join_text' reads it, and giving it beside any other aggregate is refused. |
+| `aggregations[].function` | string | required | `count`, `count_distinct`, `count_non_null`, `first`, `first_non_null`, `join_text`, `max`, `min`, `sum` | What to work out, such as 'sum', 'count' or 'max'. |
+| `aggregations[].value` | expression | optional |  | The column or expression the function reads, such as '[amount]'. Leave it out for 'count', which counts rows. |
+| `aggregations[].separator` | string | optional |  | For 'join_text' only: what goes between the joined values. The default is a comma and a space. |
 
 More on some settings:
 
-- `by`: The group key; repeating a column counts it once and does not duplicate it on the output.
-- `aggregations`: Every output column beyond the key comes from here; nothing else survives the group.
+- `by`: For example ['customer_id', 'month']. Each different combination of these values becomes one output row.
+- `aggregations`: For example {name: total, function: sum, value: '[amount]'}. Only these columns and the 'by' columns are kept.
 
 ## Notes
 
-- 'sum' of an all-null group is null, not zero: zero is a measured amount and null is the absence of one, and nothing downstream can tell a fabricated zero from a real one. Nulls are still skipped within a group holding any value at all.
-- 'first' reads the order rows arrived in, so it can answer differently for the same data, as 'join_text' can. Use it for a column that is the same on every row of a group -- and count the distinct values beside it if that is an assumption rather than a certainty.
-- 'first' is the first row's value as the rows arrive, null or not: a group whose first row is blank answers null even when a later row has a value. 'first_non_null' skips the blanks and answers with the first value that is there; only a group of blanks gives null.
-- 'count' counts every row of a group and reads no column; 'count_non_null' reads one and ignores its nulls. Porting a step from a library that spells the non-null count 'count' would otherwise silently swap the two numbers.
-- 'count_distinct' counts the different values in a group and skips nulls, as SQL's COUNT(DISTINCT) does: a, a, null, b counts 2, and a group of nulls counts 0. To count a blank as a value, count coalesce([v], '(blank)') instead.
-- 'join_text' joins a group's text in the order the rows arrived, separated by 'separator' or by a comma and a space where none is given, and skips the values that are missing. A group whose values are all missing joins to the empty string, which is the opposite of the ruling 'sum' makes about the same group: joining no strings produces the empty string, while adding no numbers produces a total nobody measured. What is joined has to be text, and a separator beside any other aggregate is refused rather than ignored.
-- A 'value' that reads no column, such as '1', is refused. A fixed value is worked out once per group, not once per row, so 'sum' of 1 would not count the rows. Use 'count' for that.
-- A 'sum' keeps the type of what it adds up. A total of Int32 or UInt32 values that does not fit in that type stops the run, naming the aggregation, rather than wrapping round to a wrong number. Cast the column to Int64 first if totals can be that large.
+- Rows whose 'by' value is null form one group of their own, as in SQL's GROUP BY. They are never dropped.
+- To keep a column that is the same on every row of a group, take its 'min' or 'max'.
+- 'sum' of a group where every value is null is null, not zero. A zero would look like a measured amount.
+- 'sum' skips nulls in a group that has at least one value: 10 and null sum to 10.
+- 'first' and 'join_text' depend on the order the rows arrive in, so the same data in another order can give another answer. Sort first if that matters.
+- Use 'first' for a column that is the same on every row of a group. If you are not sure it is, add a 'count_distinct' of the same column to check.
+- 'first' takes the first row's value, even when it is null and a later row has a value.
+- 'first_non_null' skips nulls and takes the first value there is. Only a group of nulls gives null.
+- 'count' counts the rows of a group and reads no column. 'count_non_null' counts the values of one column that are not null.
+- Some other libraries call the non-null count 'count'. Check which one you mean when copying a step from them.
+- 'count_distinct' counts the different values and skips nulls, as SQL's COUNT(DISTINCT) does: a, a, null, b counts 2, and a group of nulls counts 0.
+- To count a blank as a value too, count coalesce([v], '(blank)') instead.
+- 'join_text' joins a group's text into one cell, in the order the rows arrived, with 'separator' between (a comma and a space if none is given).
+- 'join_text' skips null values. A group where every value is null gives empty text, not null.
+- That is the opposite of 'sum' on purpose: joining no text gives empty text, while adding no numbers gives a total nobody measured.
+- 'join_text' only joins text. Turn numbers or dates into text in an earlier step.
+- A 'separator' on any function other than 'join_text' is refused, not ignored.
+- A 'value' that reads no column, such as '1', is refused. It would be worked out once per group, so 'sum' of 1 would not count rows. Use 'count' for that.
+- 'sum' keeps the type of the column it adds up. If an Int32 or UInt32 total is too big for that type, the run stops and names the aggregation, instead of giving a wrong number. Cast the column to Int64 first if totals can be that large.
 
 ## Example 1
 
-a per-group total and a row count, in first-appearance order
+a total and a row count for each code
 
 ```yaml fragment
 tool: group_by
@@ -75,11 +86,11 @@ Rows out:
 | A | 15.0 | 2 |
 | B | 20.0 | 1 |
 
-'code' groups the rows in the order 'A' and 'B' first appear; 'total' adds 'amount' within each group and 'lines' counts how many rows joined it.
+The rows are grouped by 'code', in the order A and B first appear. 'total' adds up 'amount' in each group and 'lines' counts the group's rows.
 
 ## Example 2
 
-a null key is its own group, and 'min' carries a constant column forward
+a blank code is its own group, and 'min' keeps a column that does not vary
 
 ```yaml fragment
 tool: group_by
@@ -116,11 +127,11 @@ Rows out:
 | B | null | y |
 | null | 3.0 | z |
 
-The row with no 'code' is a group of its own rather than being dropped; group 'B' sums to null because its only 'amount' is missing. 'region' is constant within every group here, and 'min' is how it survives even though 'region' is neither a key nor an ordinary aggregate.
+The row with no 'code' becomes a group of its own; it is not dropped. Group B's total is null because its only amount is missing. 'region' is the same on every row of a group, so taking its 'min' keeps it on the output.
 
 ## Example 3
 
-a group's notes kept as one string, including the group that said nothing
+join each group's notes into one cell
 
 ```yaml fragment
 tool: group_by
@@ -158,7 +169,7 @@ Rows out:
 | B | checked; held | 2 |
 | C | "" | 1 |
 
-'join_text' joins each group's notes in the order the rows arrived, with the separator written down rather than assumed. Group A's missing note is skipped instead of joined in as a blank, which is why 'notes' reads 'late' while 'lines' still counts two rows -- the count beside the join is how a reader tells one note from one note and a gap. Group C had a row and no note on it, so there was nothing to join and the answer is the empty string, not null. That is deliberately the opposite of what 'sum' says about the same group: joining no strings together produces a string, while adding no numbers together produces a total nobody measured.
+Each group's notes are joined in the order the rows arrived, with '; ' between. A's missing note is skipped, so 'notes' reads 'late' while 'lines' still counts two rows. C has a row but no note, so its notes are empty text, not null.
 
 ---
 

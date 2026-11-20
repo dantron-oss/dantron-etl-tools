@@ -2,9 +2,9 @@
 
 # `case_when`
 
-*transform tool.* Add a column labelling each row by the first case it satisfies in an ordered ladder.
+*transform tool.* Set a column by rules: if this, then that; else something else.
 
-Rules are read in order and the first one a row satisfies decides it, even where cases overlap. A null condition is not a match, so such a row falls through rather than being folded into false. Every 'then' and 'otherwise' must agree on one family of value -- text, number, date, or truth value -- checked before a single row runs. Under 'replace' the ladder writes the whole column rather than only the rows a case matched, so a row no rung reached takes 'otherwise', or null when there is none.
+Use case_when to label or work out a column by rules, like a spreadsheet's nested IF or SQL's CASE WHEN. Each case is a condition and a value. For each row, the first case it meets gives the value; a row that meets none gets 'otherwise', or null. The result goes in a new column at the end of `rows`, or replaces a column when 'replace' is true.
 
 ## Ports
 
@@ -15,22 +15,29 @@ Rules are read in order and the first one a row satisfies decides it, even where
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `cases` | array | required |  | The ladder, read in order; the first case a row satisfies decides it. An empty ladder is refused rather than treated as a constant column. |
-| `cases[].when` | expression | required |  | The condition for this case; a row whose condition is null, not true, falls through to the next case. |
-| `cases[].then` | expression | required |  | The value a row matching this case is given; must agree in type family with every other 'then' and with 'otherwise'. |
-| `otherwise` | expression | optional |  | The value a row that satisfies no case is given; left out, such a row is null. |
-| `output` | string | required |  | The column this ladder writes; a name the input already carries is refused unless 'replace' says the overwrite was meant. |
+| `cases` | array | required |  | The cases, checked in order. The first one a row meets decides its value. |
+| `cases[].when` | expression | required |  | The condition, such as '[amount] < 0'. |
+| `cases[].then` | expression | required |  | The value for a row that meets the condition, such as "'refund'". Text needs quotes inside the expression. |
+| `otherwise` | expression | optional |  | The value for a row that meets no case. Left out, such a row gets null. |
+| `output` | string | required |  | The column to write, such as 'band'. |
 | `replace` | boolean | default `false` |  | Whether writing this column may overwrite a column of that name that is already there; leave it out and a name already in use is refused. |
 
 ## Notes
 
-- A branch that gives null belongs to every family, because a null does; it is never the disagreement that gets refused.
-- A replacement writes the whole column rather than only the rows a case matched, so a row no case reached takes 'otherwise', or null when there is none, exactly as it would in a new column, instead of keeping the value it had.
-- A '/' whose divisor is zero stops the step, but only on a row that reaches it, as in SQL's CASE: a case's condition is checked on the rows no earlier case took, its value on the rows it takes, and 'otherwise' on the rows no case took. So a case that takes the zero rows first, such as when: '[months] = 0', guards a later case that divides by [months].
+- Cases are checked in the order written, and the first one a row meets wins, even when cases overlap.
+- A condition that is null because of a missing value does not count as met, so the row moves on to the next case.
+- Every 'then' and 'otherwise' must give the same kind of value: text, a number, a date, or true/false. A mix is refused before any row runs, naming the case.
+- A value of null fits with any kind, so it is never the mismatch that gets refused.
+- With 'replace', the whole column is rewritten, so a row no case reached gets 'otherwise', or null if there is none, instead of keeping its old value.
+- With 'replace', the cases read the column's values as they were before this step, so a case can read the column it writes.
+- A name already on the input is refused unless 'replace' is true, and 'replace' on a column that is not there is refused too.
+- Dividing by zero stops the run, but only on a row that reaches that division, as in SQL's CASE: a condition is checked on the rows no earlier case took, a value on the rows its case takes, and 'otherwise' on the rows no case took.
+- So a case that takes the zero rows first, such as when: '[months] = 0', guards a later case that divides by [months].
+- An empty list of cases is refused.
 
 ## Example 1
 
-an eight-branch ladder reduced to three rungs and a fall-through
+label each row by the first rule it meets
 
 ```yaml fragment
 tool: case_when
@@ -68,11 +75,11 @@ Rows out:
 | 3 | open | 10.0 | null | no_category |
 | 4 | open | 10.0 | standard | counted |
 
-Each row is labelled by the first case it satisfies; the last row satisfies none of the three and falls through to 'otherwise' rather than being left unlabelled.
+Each row gets the value of the first case it meets. The last row meets none of the three, so it gets the 'otherwise' value.
 
 ## Example 2
 
-with no 'otherwise', a row matching no case is left null rather than labelled
+leave a row null when no case fits
 
 ```yaml fragment
 tool: case_when
@@ -101,11 +108,11 @@ Rows out:
 | 1 | -5.0 | negative |
 | 2 | 5.0 | null |
 
-The second row satisfies no case and no fallback is configured, so it is null rather than silently taking a label that was never written for it.
+The second row meets no case and there is no 'otherwise', so its band is null.
 
 ## Example 3
 
-a ladder reads the column it writes, and writes it back in place
+tidy a column in place, turning blanks into nulls
 
 ```yaml fragment
 tool: case_when
@@ -138,7 +145,7 @@ Rows out:
 | 2 | null |
 | 3 | Beta |
 
-'replace: true' says the overwrite was meant, so 'company' keeps its position and no column is added; the cases read the values that were there before this step ran.
+'replace: true' says to overwrite 'company', so it keeps its position and no column is added. The cases read the values as they were before this step.
 
 ---
 

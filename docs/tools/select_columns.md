@@ -2,9 +2,9 @@
 
 # `select_columns`
 
-*preparation tool.* Keep or drop the columns of `rows` a pattern list names, in the order asked for.
+*preparation tool.* Keep or remove columns by name, and put the kept ones in the order you list.
 
-Every pattern is matched against the frame's own columns before a single row is touched. Under 'keep', the output follows the order the patterns are listed in, not the frame's order; under 'drop', the survivors keep the frame's own order, because nothing was listed for them to follow.
+Use select_columns to narrow a table to the columns later steps need, or to remove the ones you are finished with. The rows are not changed. With 'keep', the output has the listed columns in the order you list them, so it also reorders. With 'drop', the remaining columns keep the table's own order.
 
 ## Ports
 
@@ -15,22 +15,26 @@ Every pattern is matched against the frame's own columns before a single row is 
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `columns` | array | required |  | Column names, or patterns where `*` stands for any run of characters (case sensitive); at least one is required and each must match at least one column. |
-| `columns[]` | string | optional |  | One column name, or a pattern using `*`. Nothing else is a wildcard. |
-| `action` | string | default `keep` | `keep`, `drop` | Whether the patterns name the columns to 'keep' (default) or the columns to 'drop'. |
+| `columns` | array | required |  | The columns to keep or drop, by name or by a pattern using `*`. |
+| `columns[]` | string | optional |  | One column name, or a pattern where `*` stands for any characters. |
+| `action` | string | default `keep` | `keep`, `drop` | 'keep' to keep only the listed columns, 'drop' to remove them. |
 
 More on some settings:
 
-- `columns`: Patterns are matched case-sensitively against the frame's columns; a column matched by more than one pattern is kept only once, at its first appearance. Only `*` is a wildcard: brackets and `?` are read as part of the name.
-- `action`: 'keep' selects only the listed columns; 'drop' selects everything else, in the frame's own order.
+- `columns`: For example ['code*', 'amount']: every column starting with 'code', then 'amount'.
+- `action`: Use 'drop' when it is shorter to list what goes than what stays.
 
 ## Notes
 
-- A pattern that matches nothing is refused, wildcard included: a wildcard silently contributing zero columns would be a whitelist failing open.
+- Every name or pattern must match at least one column, or the step is refused. A pattern that quietly matched nothing would hide a column that was renamed upstream.
+- Only `*` is a wildcard. Brackets and `?` are part of the name, so 'Total [CAD]' selects exactly that column.
+- Matching is case sensitive.
+- A column matched by two entries is kept once, where it first matched.
+- A 'drop' that would remove every column is refused.
 
 ## Example 1
 
-keep a code column and its suffix ahead of the amount
+keep the code columns and the amount, dropping the rest
 
 ```yaml fragment
 tool: select_columns
@@ -58,11 +62,11 @@ Rows out:
 | A1 | x | 10.0 |
 | B2 | null | -5.0 |
 
-`code*` matches `code` and `code_suffix`, in the frame's own order; `amount` follows because it is listed second. `region` is not listed, so it does not survive.
+'code*' matches 'code' and 'code_suffix', in the table's order. 'amount' comes next because it is listed second. 'region' is not listed, so it is dropped.
 
 ## Example 2
 
-drop the region column, keeping the rest in the frame's own order
+remove the region column
 
 ```yaml fragment
 tool: select_columns
@@ -90,7 +94,7 @@ Rows out:
 | A1 | x | 10.0 |
 | B2 | null | -5.0 |
 
-Only `region` matches, so it is the only column removed; the survivors keep the order the frame already had, since 'drop' names what leaves, not what stays.
+Only 'region' matches, so only it is removed. The other columns keep the order the table had.
 
 ---
 

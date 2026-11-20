@@ -2,9 +2,9 @@
 
 # `expand_date_range`
 
-*transform tool.* Expand each row into one row per period between two dates; set the rest aside.
+*transform tool.* Turn each row with a start and end date into one row per month between them.
 
-Every row between 'start' and 'end', inclusive of both, becomes one row per month on 'rows', with every other column carried unchanged and the period column added last. A row this cannot expand -- a missing end, or an end before its start -- is never dropped and never given a null period; it leaves on 'unexpanded' instead, carrying the input's schema exactly.
+Use expand_date_range to turn one row per contract or term into one row per month it covers, for example to spread a yearly amount over its months. `rows` has one row per month from 'start' to 'end', both included, with the other columns repeated and the month's first day in a new column at the end. A row that cannot be expanded goes to `unexpanded`, unchanged.
 
 ## Ports
 
@@ -15,27 +15,32 @@ Every row between 'start' and 'end', inclusive of both, becomes one row per mont
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `start` | expression | required |  | The range's first date, inclusive. |
-| `end` | expression | required |  | The range's last date, inclusive. |
-| `unit` | string | default `month` | `month` | The period a range is broken into; only 'month' ships. |
-| `period_column` | string | default `period_start` |  | The name of the added column carrying each period's first day. |
+| `start` | expression | required |  | The first date of the range, such as '[term_start]'. |
+| `end` | expression | required |  | The last date of the range, such as '[term_end]'. |
+| `unit` | string | default `month` | `month` | The period each row is split into. Only 'month' is offered. |
+| `period_column` | string | default `period_start` |  | The name of the new column holding each period's first day. |
 | `in_zone` | string | optional |  | The time zone in which a timestamp that carries a zone is read as a date, such as UTC or America/Toronto. Required when one does, refused when none does; no default. |
 
 More on some settings:
 
-- `start`: Must produce a date or a timestamp; a timestamp is read as its calendar date, in the zone 'in_zone' states when it carries one.
-- `end`: Must produce a date or a timestamp; a timestamp is read as its calendar date, in the zone 'in_zone' states when it carries one.
-- `in_zone`: Required when 'start' or 'end' is a timestamp in a time zone, because which day it falls on depends on the zone. 'UTC' reads the UTC date. Refused otherwise.
-- `period_column`: Refused if the input already carries a column of that name.
+- `start`: A date or a timestamp. A timestamp with a time zone also needs 'in_zone'.
+- `end`: A date or a timestamp. A timestamp with a time zone also needs 'in_zone'.
+- `in_zone`: For example 'UTC'. Needed when 'start' or 'end' is a timestamp with a time zone, because the day depends on the zone; refused otherwise.
+- `period_column`: For example 'month'. It must be a new column name.
 
 ## Notes
 
-- A backwards range is judged on the dates, not on the periods they fall in: two ends inside the same period the wrong way round still leave on 'unexpanded', which is what makes this agree with DateDiff's negative count on the same row. A timestamp is read as its calendar date first, in both tools, so two times on the same day are one day whichever comes first.
-- 'unexpanded' carries no period column and no reason column; the reason is one predicate away downstream, and adding one would stop the port being union-compatible with the rows that arrived.
+- Both ends count: January to December is twelve rows, however far into its month each date falls. The same day at both ends is one row.
+- A row with a missing date, or an end before its start, goes to `unexpanded`. It is never dropped and never given a null period.
+- Backwards is judged on the dates, not the months, so two dates in the same month the wrong way round also go to `unexpanded`. That agrees with date_diff's negative count.
+- A timestamp is read as its calendar date first, as in date_diff, so two times on the same day are the same day whichever comes first.
+- `unexpanded` has exactly the input's columns, with no period or reason column, so it can be unioned back with other input rows.
+- Amounts are repeated on every month row, not split. Divide them in a later step, for example by a date_diff count.
+- A 'period_column' name already on the input is refused.
 
 ## Example 1
 
-a clean term expands into one row per month it covers
+turn a three-month term into one row per month
 
 ```yaml fragment
 tool: expand_date_range
@@ -67,11 +72,11 @@ Rows out:
 | key | amount | term_start | term_end |
 |---|---|---|---|
 
-January through March, inclusive of both ends, is three rows; every other column is repeated onto each and the period column is added last.
+January to March, both included, gives three rows. The other columns are repeated on each, and the period column is added at the end.
 
 ## Example 2
 
-a backwards term is set aside instead of vanishing or becoming a null period
+set aside a term whose end is before its start
 
 ```yaml fragment
 tool: expand_date_range
@@ -104,7 +109,7 @@ Rows out:
 |---|---|---|---|
 | 2 | 10.0 | 2026-05-01 | 2026-01-31 |
 
-Key 1's term expands normally; key 2's end falls before its start, so it contributes no rows to 'rows' and leaves on 'unexpanded' carrying the input's own columns.
+Key 1 expands as usual. Key 2's end is before its start, so it gives no rows on 'rows' and goes to 'unexpanded' with its own columns.
 
 ---
 

@@ -2,9 +2,9 @@
 
 # `assemble_date`
 
-*transform tool.* Assemble year, month and day parts into one real date column, appended to the input.
+*transform tool.* Build a date from separate year, month and day columns.
 
-Turns separate year, month and day parts into one real `pl.Date` column, appended after every input column. The day defaults to the first of the month; the last day of a month is instead written down as `day: '31'` with `on_invalid: clamp`, which resolves per row to whatever day that row's own month ends on -- the 28th, 29th, 30th or 31st.
+Use assemble_date to build a real date from separate year, month and day values, for example a period given as year 2026 and month 3. The date goes in a new column at the end of `rows`. The day is 1 unless you give one. For the last day of each month, write day '31' with on_invalid 'clamp': each row gets its own month's last day, the 28th, 29th, 30th or 31st.
 
 ## Ports
 
@@ -15,25 +15,29 @@ Turns separate year, month and day parts into one real `pl.Date` column, appende
 
 | setting | type | required or default | allowed values | what it is |
 |---|---|---|---|---|
-| `year` | expression | required |  | The year part: a column, a fixed value or a computed expression. |
-| `month` | expression | required |  | The month part, numbered 1-12. A month name is not read here. |
-| `day` | expression | default `1` |  | The day-of-month part. Defaults to '1', the only day every month has. |
-| `on_invalid` | string | default `error` | `clamp`, `set_null`, `error` | What to do with a day the calendar is too short for: 'clamp' it into the month, carry 'set_null' (a null date), or 'error' (the default). |
-| `output` | string | required |  | The name of the date column to add; it may not replace a column that is already there. |
+| `year` | expression | required |  | The year: a column such as '[year]', a fixed value, or an expression. |
+| `month` | expression | required |  | The month as a number from 1 to 12. A month name is not read. |
+| `day` | expression | default `1` |  | The day of the month. Left out, it is 1. |
+| `on_invalid` | string | default `error` | `clamp`, `set_null`, `error` | What to do with a day the month is too short for, such as 31 June: 'clamp' to the month's last day, 'set_null', or 'error' (stop the run). |
+| `output` | string | required |  | The name of the new date column, such as 'period_start'. |
 
 More on some settings:
 
-- `on_invalid`: Spelled 'set_null', never 'null': an unquoted null in a definition file is the null value itself, not a name for this policy.
+- `day`: For example '[day]', or '31' with on_invalid 'clamp' for the end of the month.
+- `on_invalid`: The value is 'set_null', not 'null': an unquoted null in YAML means no value at all.
 
 ## Notes
 
-- A month is a number, never a name: the source's own spellings of a month name are a policy decision for a rule list or lookup a reviewer can see and change, not something this tool guesses at.
-- A null part gives a null date under every policy, including 'error': a part nobody supplied is a different question from a part that names an impossible date, and conflating them would fail a whole run over rows nobody filled in.
-- Under 'set_null', a row whose parts make no date gets an empty date, and the step says so: a note counts those rows, and each one is marked with the parts it held. A row with a missing part is not marked; it was never a date to begin with.
+- The month must be a number. Month names are spelled many ways, so turn them into numbers first with a rule list or lookup someone can see and change.
+- Each part must be a whole number, or text of digits only. '+5' or '5.0' is refused.
+- 'on_invalid' only covers a day the month is too short for. A month outside 1 to 12, a year no date can hold, or text that is not digits is refused under every setting.
+- A null in any part gives a null date under every setting, including 'error'. A part nobody filled in is not the same as an impossible date.
+- Under 'set_null', a row whose parts make no date gets a null date. A note counts those rows, and each is marked with the parts it held. A row with a missing part is not marked.
+- An output name already in use is refused.
 
 ## Example 1
 
-a period stated only by month defaults to its first day
+build the first day of each month from a year and a month
 
 ```yaml fragment
 tool: assemble_date
@@ -61,11 +65,11 @@ Rows out:
 | 1 | 2026 | 1 | 2026-01-01 |
 | 2 | 2025 | 6 | 2025-06-01 |
 
-No 'day' is configured, so each row takes the default '1' -- the only day every month has.
+No 'day' is given, so each row gets day 1.
 
 ## Example 2
 
-the last day of the month, written once and resolved per row
+build the last day of each month
 
 ```yaml fragment
 tool: assemble_date
@@ -95,7 +99,7 @@ Rows out:
 | 1 | 2026 | 2 | 2026-02-28 |
 | 2 | 2024 | 2 | 2024-02-29 |
 
-'day: 31' names the last day of the month; 'on_invalid: clamp' resolves it to the 28th in an ordinary February and the 29th in a leap one, from the same fixed value.
+'day: 31' with 'on_invalid: clamp' gives each row its own month's last day: the 28th in an ordinary February, the 29th in a leap year.
 
 ---
 
