@@ -288,6 +288,9 @@ class _Compiler:
                 f"{self._describe(right)}",
             )
         self._refuse_timestamp_against_date(left, right, operation)
+        exact_pair = self._exact_operands([left, right])
+        if exact_pair is not None:
+            left, right = exact_pair
         built = _COMPARISONS[type(operation)](left.expr, right.expr)
         return Typed(built, Family.BOOLEAN, node, "gives a truth value")
 
@@ -485,6 +488,15 @@ class _Compiler:
             family = self._one_family(operands, f"{name}() {params[0].requirement}")
         else:
             family = function.result
+        exact_operands = self._exact_operands(operands) if function.on_exact is not None else None
+        if function.on_exact is not None and exact_operands is not None:
+            if function.divides_by is not None:
+                divisor = function.divides_by
+                self._record_division(node.args[divisor], exact_operands[divisor], f"{name}()")
+            met = iter(exact_operands)
+            given = [(lambda part: (part.expr, part.dtype))(next(met)) if isinstance(argument, Typed) else argument for argument in arguments]
+            answer = function.on_exact(*given)
+            return self._exact_answer(answer, node, exact_operands)
         if function.meets is not None:
             arguments = self._meet(function, arguments)
             operands = [argument for argument in arguments if isinstance(argument, Typed)]
@@ -513,13 +525,6 @@ class _Compiler:
         """Check how a function's value arguments meet each other, as its `meets` says; see Function."""
         operands = [argument for argument in arguments if isinstance(argument, Typed)]
         if function.meets == "arithmetic":
-            for operand in operands:
-                if isinstance(operand.dtype, pl.Decimal):
-                    raise error(
-                        self._text,
-                        f"{self._describe(operand)}, and the engine has no {function.name}() for an exact "
-                        f"Decimal; cast the column to Float64 first, with the cast_columns tool",
-                    )
             return [_widened(argument) if isinstance(argument, Typed) else argument for argument in arguments]
         self._refuse_two_clocks(function.name, operands)
         if function.meets == "compared":
@@ -652,6 +657,15 @@ class _Compiler:
                 met.append(operand)
             elif operand.constant is not None:
                 met.append(self._exact_literal(operand, exact_column))
+            elif dtype is not None and dtype.is_float():
+                rendered = self._spelling.render(operand.node)
+                raise error(
+                    self._text,
+                    f"{self._describe(exact_column)}, an exact decimal, and {self._describe(operand)}, a float: "
+                    f"an exact value meeting a float would give a float without a word, and the figure would no "
+                    f"longer be exact. Convert one side first with the cast_columns tool, {rendered} to Decimal "
+                    f"or {self._spelling.render(exact_column.node)} to Float64",
+                )
             else:
                 return None
         return met

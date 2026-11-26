@@ -10,7 +10,7 @@ Why: docs/design/expressions.md#exact-decimals
 """
 
 from decimal import Decimal
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 import polars as pl
 
@@ -158,6 +158,57 @@ def _product_reaches(first: pl.Expr, second: pl.Expr) -> pl.Expr:
     cross = first_high * second_low + first_low * second_high
     reaches = both_high | (cross + (first_low * second_low) // half >= half)
     return reaches.fill_null(False)
+
+
+def coalesce(*parts: Part) -> Exact:
+    """The first value that is not null, with the largest places of them all.
+
+    Too large where the value chosen has too many whole digits to be written at those places.
+    """
+    places = max(places_of(dtype) for _, dtype in parts)
+    written = [at_places(value, dtype, places) for value, dtype in parts]
+    chosen_misfit = pl.coalesce([pl.when(value.is_not_null()).then(misfit) for (value, _), (_, misfit) in zip(parts, written)])
+    return Exact(pl.coalesce([value for value, _ in written]), places, chosen_misfit.fill_null(False))
+
+
+def least(*parts: Part) -> Exact:
+    """The smallest value, nulls skipped, with the largest places of them all."""
+    return _ordered(pl.min_horizontal, parts)
+
+
+def greatest(*parts: Part) -> Exact:
+    """The largest value, nulls skipped, with the largest places of them all."""
+    return _ordered(pl.max_horizontal, parts)
+
+
+def _ordered(pick: Any, parts: tuple[Part, ...]) -> Exact:
+    places = max(places_of(dtype) for _, dtype in parts)
+    written = [at_places(value, dtype, places) for value, dtype in parts]
+    too_large = pl.any_horizontal([misfit for _, misfit in written])
+    return Exact(pick([value for value, _ in written]), places, too_large)
+
+
+def nullif(subject: Part, other: Part) -> Exact:
+    """Null where the first value equals the second, otherwise the first, in its own type."""
+    (value, dtype), (against, _) = subject, other
+    return Exact(pl.when(value == against).then(None).otherwise(value), places_of(dtype), pl.lit(False), dtype)
+
+
+def remainder(dividend: Part, divisor: Part) -> Exact:
+    """The remainder of the first value divided by the second, with the first one's sign, as SQL's MOD.
+
+    Both are written at the larger places, and the remainder is worked out on the digits they hold,
+    which is exact. A zero divisor gives null here; the step has already stopped on it.
+    """
+    places = max(places_of(dividend[1]), places_of(divisor[1]))
+    first, first_misfit = at_places(*dividend, places)
+    second, second_misfit = at_places(*divisor, places)
+    held, by = _digits_held(first, exact_dtype(places)), _digits_held(second, exact_dtype(places)).abs()
+    by = pl.when(by == 0).then(None).otherwise(by)
+    left = held.abs() % by
+    # The engine has no minus sign for a 128-bit whole number, so it is taken from zero.
+    signed = pl.when(held < 0).then(pl.lit(0, dtype=pl.Int128) - left).otherwise(left)
+    return Exact(_with_places(signed, places), places, first_misfit | second_misfit)
 
 
 def _places(value: Decimal) -> int:

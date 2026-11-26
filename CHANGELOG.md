@@ -29,6 +29,12 @@ things; each such release says how to upgrade.
   A product whose places would pass 38 is refused when the step starts, and one too large for 38
   digits stops the step and names the rows. Where a step needs the old figure, write
   `round([price] * [rate], 2)`.
+- **An exact column meeting a float column stops the step.** `[amount] * [ratio]`, `[amount] =
+  [ratio]`, `coalesce([amount], [ratio])`, `least`, `greatest` and `nullif`, with `amount` a
+  `Decimal` column and `ratio` a `Float64` one, gave a float or compared as floats, without a word.
+  They now stop when the step starts, naming the float. Convert one side first with `cast_columns`.
+  A typed number or a whole number beside an exact column is exact instead: `coalesce([amount], 0.0)`
+  gives 0.00, where it gave a `Float64`. `mod` on a `Decimal`, which was refused, is now exact.
 
 ## [0.3.0] - 2026-11-20
 

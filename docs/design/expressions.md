@@ -233,6 +233,18 @@ names the rows. In `case_when` a row no case reaches is not checked, and its unu
   is checked first: split each at 10^19; if both high halves are above zero the product is at least
   10^38; otherwise one cross term is left and the product reaches 10^38 exactly when
   `cross + low // 10^19` reaches 10^19. No step of the check passes 128 bits.
+- Functions that combine values write each at the largest places among them: `coalesce` refuses a
+  row only where the value it picks does not fit; `least` and `greatest` where any value does not,
+  since each is compared. `nullif` compares by value and gives its first value back in its own
+  type. `mod` works on the digits held, as 128-bit whole numbers at the larger places, and takes
+  the dividend's sign as PostgreSQL's `mod(numeric, numeric)` does. `floor`, `ceil` and `sign` keep
+  the column's type, as they did.
+
+**An exact value meeting a float stops the step.** The engine slides to a float without a word,
+in arithmetic, comparisons, `coalesce` and the rest, and a comparison is where that hides: 0.30 is
+not 0.1 + 0.2 in floats. So the compiler refuses an exact operand beside a float operand that is not
+a typed number, and names the float part as written, whether a column (`[ratio]`) or a calculation
+that gives a float (`[qty] / 2`). A whole number meets an exact value as an exact value with no places.
 
 ## Quoting and literals
 

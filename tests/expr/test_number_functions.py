@@ -135,10 +135,10 @@ class TestMod:
         assert _values(self.PAIRS.head(1), "mod(null, [b])") == [None]
         assert _values(self.PAIRS.head(1), "mod([a], null)") == [None]
 
-    def test_an_exact_decimal_is_refused_with_what_to_do(self) -> None:
-        said = _refusal(NUMBERS, "mod([money], 2)")
-        assert "[money]" in said and "Float64" in said and "cast_columns" in said
-        assert "Float64" in _refusal(NUMBERS, "mod([n], [money])")
+    def test_an_exact_decimal_gives_an_exact_remainder(self) -> None:
+        """As PostgreSQL's mod on numeric; tests/expr/test_exact_expressions.py has the rest."""
+        assert _values(NUMBERS, "mod([money], 1)")[:5] == [Decimal("-0.25"), Decimal("0.25"), Decimal("-0.50"), Decimal("0.50"), 0]
+        assert _dtype(NUMBERS, "mod([n], [money])") == pl.Decimal(38, 2)
 
     def test_text_is_refused(self) -> None:
         assert "mod()" in _refusal(NUMBERS, "mod([code], 2)")

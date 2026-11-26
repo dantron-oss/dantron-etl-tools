@@ -270,8 +270,8 @@ the step and names the values: it never becomes a blank date. A format without a
 **Numbers.** `floor` and `ceil` go down or up to a whole number and keep the number's type, so a
 `Decimal` stays a `Decimal`. `sign` gives -1, 0 or 1. `mod(a, b)` is the remainder with the sign of
 `a`, as SQL's `MOD` and Alteryx's `Mod`: `mod(-7, 3)` is -1, where the engine's own `%` would give 2.
-`mod` by zero stops the step, as `/` by zero does, and a `Decimal` is refused: cast it to `Float64`
-first. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
+`mod` by zero stops the step, as `/` by zero does. On a `Decimal` it is exact, with the larger of the
+two places: `mod(812.40, 3)` is 2.40. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
 only all nulls give null. `nullif(a, b)` is null where `a` equals `b`, otherwise `a`;
 `nullif([code], '')` turns empty text into a null.
 
@@ -596,6 +596,11 @@ Each of these has caught a real pipeline.
 - **`*` adds the two places, and never rounds.** 812.40 × 0.0725 is 58.899000, six places. Places
   grow quickly in a chain of products, and a product whose places pass 38 is refused when the step
   starts. Round one side first, such as `round([rate], 4)`, when a figure only needs so many.
+- **An exact value never meets a float.** `[amount] + [ratio]`, `[amount] = [ratio]`,
+  `coalesce([amount], [ratio])` and every other function that combines values stop the step when
+  `amount` is `Decimal` and `ratio` is `Float64`, naming the float. Convert one side first with
+  `cast_columns`. A whole number or a typed number beside an exact value is exact:
+  `coalesce([amount], 0.0)` gives 0.00 where `amount` is blank.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

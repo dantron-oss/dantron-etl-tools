@@ -27,6 +27,7 @@ from .arguments import (
     WholeNumber,
     probe_pattern,
 )
+from . import exact
 from .dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .errors import Refusal
 from .families import Family
@@ -80,10 +81,13 @@ class Function:
     #: How the value arguments meet each other, beyond sharing a family. "compared": tested for
     #: equality, so a timestamp against a date is refused as '=' refuses it. "ordered": put in order,
     #: so timestamps on different clocks are refused. "arithmetic": worked out as the operators work,
-    #: so an unsigned whole number is widened to Int64 and an exact Decimal is refused.
+    #: so an unsigned whole number is widened to Int64.
     meets: Literal["compared", "ordered", "arithmetic"] | None = None
     #: The argument that divides: a zero there stops the step, as a '/' by zero does.
     divides_by: int | None = None
+    #: How the function works when one of its values is an exact decimal: given each value and its
+    #: type, it gives the exact answer. None means the function treats an exact value as any other.
+    on_exact: Callable[..., exact.Exact] | None = None
 
 
 def _coalesce(*parts: pl.Expr) -> pl.Expr:
@@ -481,6 +485,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_coalesce,
         summary="The first value that is not null: coalesce([discount], 0.0) gives 0.0 where discount is blank.",
         example="coalesce([discount], 0.0)",
+        on_exact=exact.coalesce,
     ),
     Function(
         "round",
@@ -714,6 +719,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         divides_by=1,
         summary="The remainder of the first number divided by the second, with the first one's sign: mod(-7, 3) is -1.",
         example="mod([month_number], 3)",
+        on_exact=exact.remainder,
     ),
     Function(
         "least",
@@ -726,6 +732,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         meets="ordered",
         summary="The smallest of the values; nulls are skipped, and only all nulls give null.",
         example="least([due_on], [paid_on])",
+        on_exact=exact.least,
     ),
     Function(
         "greatest",
@@ -738,6 +745,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         meets="ordered",
         summary="The largest of the values; nulls are skipped, and only all nulls give null.",
         example="greatest([amount], 0)",
+        on_exact=exact.greatest,
     ),
     Function(
         "nullif",
@@ -751,6 +759,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         meets="compared",
         summary="Null where the first value equals the second, otherwise the first: nullif([code], '') blanks empty text.",
         example="nullif([discount], 0)",
+        on_exact=exact.nullif,
     ),
     Function(
         "lower",
