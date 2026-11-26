@@ -99,3 +99,114 @@ class TestATypedNumberKeepsItsWrittenText:
         assert dtype_of_value(Decimal("1E+5")) == pl.Decimal(38, 0)
         assert holding_phrase(Decimal("1.5")) == "is a decimal"
 
+
+# ---------------------------------------------------------------------------
+# Unit 10: +, -, the minus sign and abs on exact values
+# ---------------------------------------------------------------------------
+
+PRICES = pl.DataFrame(
+    {
+        "key": ["p", "q", "r"],
+        "d2": exact(["812.40", "100.00", None], 2),
+        "d4": exact(["0.0725", "-7.0000", "1.0000"], 4),
+        "n": [7, 3, None],
+        "f": [0.0725, 1.5, 2.0],
+    }
+)
+
+
+def _formula(frame: pl.DataFrame, value: str) -> pl.Series:
+    from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+    config = {"columns": [{"name": "out", "value": value}]}
+    return run_tool(REGISTRY.get("formula"), Ports({"rows": frame}), config)["rows"]["out"]
+
+
+def _formula_refusal(frame: pl.DataFrame, value: str) -> str:
+    from dantron_etl.authoring import DataError
+
+    with pytest.raises(DataError) as raised:
+        _formula(frame, value)
+    return str(raised.value)
+
+
+def _exactly(out: pl.Series, places: int, values: list[str | None]) -> None:
+    """The column is exact with 38 digits and these places, and holds these values, digit for digit."""
+    assert out.dtype == pl.Decimal(38, places), out.dtype
+    assert [None if value is None else str(value) for value in out.to_list()] == values
+
+
+class TestAddingAndSubtractingExactValues:
+    def test_two_exact_columns_give_the_larger_places(self) -> None:
+        _exactly(_formula(PRICES, "[d2] + [d4]"), 4, ["812.4725", "93.0000", None])
+        _exactly(_formula(PRICES, "[d4] - [d2]"), 4, ["-812.3275", "-107.0000", None])
+
+    def test_a_typed_number_beside_an_exact_column_is_exact_as_written(self) -> None:
+        _exactly(_formula(PRICES, "[d2] + 0.0725"), 4, ["812.4725", "100.0725", None])
+        _exactly(_formula(PRICES, "0.0725 + [d2]"), 4, ["812.4725", "100.0725", None])
+        _exactly(_formula(PRICES, "[d2] - 1.10"), 2, ["811.30", "98.90", None])
+        _exactly(_formula(PRICES, "[d2] + -0.5"), 2, ["811.90", "99.50", None])
+        _exactly(_formula(PRICES, "-0.5 + [d2]"), 2, ["811.90", "99.50", None])
+
+    def test_a_whole_number_beside_an_exact_column_is_exact(self) -> None:
+        _exactly(_formula(PRICES, "[d2] - 7"), 2, ["805.40", "93.00", None])
+        _exactly(_formula(PRICES, "[d2] + [n]"), 2, ["819.40", "103.00", None])
+        _exactly(_formula(PRICES, "[n] - [d4]"), 4, ["6.9275", "10.0000", None])
+
+    def test_with_no_exact_column_a_typed_number_still_gives_a_float(self) -> None:
+        assert _formula(PRICES, "[f] + 0.0725").dtype == pl.Float64
+        assert _formula(PRICES, "[n] + 0.5").to_list() == [7.5, 3.5, None]
+
+    def test_null_beside_an_exact_column_gives_an_exact_null(self) -> None:
+        _exactly(_formula(PRICES, "[d2] + null"), 2, [None, None, None])
+        _exactly(_formula(PRICES, "null - [d4]"), 4, [None, None, None])
+
+    def test_the_minus_sign_and_abs_keep_the_places(self) -> None:
+        _exactly(_formula(PRICES, "-[d4]"), 4, ["-0.0725", "7.0000", "-1.0000"])
+        _exactly(_formula(PRICES, "abs([d4])"), 4, ["0.0725", "7.0000", "1.0000"])
+        _exactly(_formula(PRICES, "abs(-[d2] - 0.005)"), 3, ["812.405", "100.005", None])
+
+    @pytest.mark.parametrize("text", ["[d2] + 1e-40", "[d2] - 123456789012345678901234567890123456789.5"])
+    def test_a_typed_number_an_exact_decimal_cannot_hold_is_refused(self, text: str) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr(text, PRICES.schema)
+        said = str(raised.value)
+        assert "38 digits" in said and "[d2]" in said
+
+
+BIGGEST = "9" * 36 + ".00"  # 38 digits in all, the most there is at 2 places
+
+
+class TestAnAnswerTooLargeToHold:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["small", "large"],
+            "a": exact(["1.00", BIGGEST], 2),
+            "b": exact(["2.00", "1.00"], 2),
+            "w": exact(["1", "9" * 37], 0),
+        }
+    )
+
+    @pytest.mark.parametrize("text", ["[a] + [b]", "-[a] - [b]", "[b] + [a]", "[a] + 1", "[a] + 1.01", "[w] + 0.05"])
+    def test_stops_the_step_naming_the_rows_and_what_to_do(self, text: str) -> None:
+        said = _formula_refusal(self.FRAME, text)
+        assert "columns[0].value" in said and text in said and "38 digits" in said
+        assert "1 of 2 row(s)" in said and "'key': 'large'" in said and "round" in said
+
+    def test_just_under_the_limit_is_exact(self) -> None:
+        frame = self.FRAME.with_columns(pl.Series("b", [Decimal("2.00"), Decimal("-1.00")], dtype=pl.Decimal(38, 2)))
+        _exactly(_formula(frame, "[a] + [b]"), 2, ["3.00", "9" * 35 + "8.00"])
+        _exactly(_formula(frame, "-[a] - [b]"), 2, ["-3.00", "-" + "9" * 35 + "8.00"])
+        _exactly(_formula(self.FRAME, "[w] - 1"), 0, ["0", "9" * 36 + "8"])
+        _exactly(_formula(self.FRAME, "[w] + 0.5"), 1, ["1.5", "9" * 37 + ".5"])
+        _exactly(_formula(self.FRAME, "[a] + 0.01"), 2, ["1.01", "9" * 36 + ".01"])
+
+    def test_on_a_row_a_case_never_reaches_it_neither_stops_nor_breaks(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        config = {"cases": [{"when": "[a] < 100", "then": "[a] + [b]"}], "output": "out"}
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": self.FRAME}), config)["rows"]["out"]
+        _exactly(out, 2, ["3.00", None])
+

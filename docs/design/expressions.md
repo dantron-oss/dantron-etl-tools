@@ -201,6 +201,32 @@ rows. Nothing turns null into false. `is null` and `is not null` are the only te
 themselves, which is what makes them the way to find a missing value; `coalesce([code], 'Z') = 'Z'`
 lets a null row take part.
 
+## Exact decimals
+
+Owner's rulings (2026-11-20): arithmetic on exact decimals is exact and only `round` rounds; a
+number typed in a pipeline is exact as written; an exact value meeting a float stops the step.
+
+**A typed number keeps its text.** The scan passes a number's characters to the parser unchanged,
+and the parser reads only ASCII outside quotes, so a number node's place in the parsed text is the
+author's spelling of it. `Spelling.written_number` reads it back as a Python `Decimal`: `1.10` keeps
+its two places. Each compiled part carries that value as `constant`. Beside an exact column the
+constant is used, as a literal with its written places; anywhere else the float is used, as before,
+so a flow with no exact column computes what it always did.
+
+**Every answer is checked before it is worked out.** The engine's exact arithmetic is not safe to
+hand a value: it stops with its own error when a sum passes 38 digits, gives a blank when a value
+with many whole digits meets one with many places (it writes both at the larger places first), and
+rounds a product half to even. So each exact operator (`exact.py`) builds two columns: the answer,
+and a true/false column that is true where the answer would need more than 38 digits. On those rows
+the operands are replaced by null before the engine sees them, so the engine never fails and never
+wraps round. The compiler registers the true/false column as a row check, and every tool already
+runs row checks (`refuse_rows_without_an_answer`) before it writes anything, so the step stops and
+names the rows. In `case_when` a row no case reaches is not checked, and its unused answer is null.
+
+- `+` and `-`: both sides are written at the larger places first; a side that does not fit there
+  is too large. Otherwise the sum is too large only when both lean the same way and `|a| > 38 nines
+  - |b|`, worked out on values that each fit.
+
 ## Quoting and literals
 
 - **Text is single-quoted; a quote inside is doubled**, as in SQL and Excel: `'O''Brian'`. The doubling is

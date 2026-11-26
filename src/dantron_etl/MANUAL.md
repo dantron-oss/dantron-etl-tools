@@ -589,6 +589,10 @@ Each of these has caught a real pipeline.
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
   the point, from 0 to 38. No tool takes it yet. `cast_columns`, `read_csv`, `unpivot` and
   `write_excel`'s rules refuse it by name; use `Float64` until they do.
+- **Arithmetic on an exact column is exact.** `+` and `-` give the larger of the two places:
+  `[amount] + 0.0725` on 812.40 is 812.4725. A number typed in the expression is exact as written,
+  so `1.10` has 2 places, and a whole number counts as 0 places. An answer that needs more than 38
+  digits stops the step and names the rows; it never rounds or wraps round.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

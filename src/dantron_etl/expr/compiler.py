@@ -14,7 +14,9 @@ from typing import Any, Final, NamedTuple
 
 import polars as pl
 
+from ..column_types import EXACT_DIGITS, exact_dtype
 from ..renames import FUNCTION_RENAMES
+from . import exact
 from .arguments import POSITIONS, Param, Value
 from .errors import Refusal, error
 from .families import (
@@ -236,6 +238,11 @@ class _Compiler:
                     f"exactly; cast the column to Float64 first, with the cast_columns tool",
                 )
         left, right = _signed(left), _signed(right)
+        exact_pair = self._exact_operands([left, right])
+        if exact_pair is not None and operation in (ast.Add, ast.Sub):
+            first, second = exact_pair
+            answer = exact.add(first.expr, first.dtype, second.expr, second.dtype, subtract=operation is ast.Sub)
+            return self._exact_answer(answer, node, exact_pair)
         if operation is ast.Div:
             self._record_division(node.right, right)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
@@ -622,6 +629,53 @@ class _Compiler:
     def _describe(self, typed: Typed) -> str:
         """One operand named the way its author wrote it, with what it holds."""
         return f"{self._spelling.render(typed.node)} {typed.holds}"
+
+    # -- exact decimals ----------------------------------------------------
+
+    def _exact_operands(self, operands: Sequence[Typed]) -> list[Typed] | None:
+        """The operands as exact arithmetic meets them, or None when none of them is exact.
+
+        Only with a schema. A whole number and a null meet an exact value as they are; a typed number
+        becomes an exact literal with the places it was written with.
+        """
+        if self._schema is None or not any(isinstance(operand.dtype, pl.Decimal) for operand in operands):
+            return None
+        exact_column = next(operand for operand in operands if isinstance(operand.dtype, pl.Decimal))
+        met: list[Typed] = []
+        for operand in operands:
+            dtype = operand.dtype
+            if isinstance(dtype, pl.Decimal) or (dtype is not None and (dtype.is_integer() or dtype == pl.Null)):
+                met.append(operand)
+            elif operand.constant is not None:
+                met.append(self._exact_literal(operand, exact_column))
+            else:
+                return None
+        return met
+
+    def _exact_literal(self, operand: Typed, beside: Typed) -> Typed:
+        """A typed number beside an exact value, as an exact literal; refused if an exact decimal cannot hold it."""
+        value = operand.constant
+        assert value is not None
+        if not exact.holds(value):
+            raise error(
+                self._text,
+                f"{self._spelling.render(operand.node)} is a number beside {self._describe(beside)}, and an exact "
+                f"decimal holds {EXACT_DIGITS} digits in all, counting its places, so it cannot hold that number as "
+                f"written; round it to fewer places, or convert the column to Float64 with the cast_columns tool",
+            )
+        literal = exact.literal(value)
+        return operand._replace(expr=literal, dtype=exact_dtype(exact.places_of(dtype_of_value(value))))
+
+    def _exact_answer(self, answer: exact.Exact, node: ast.expr, operands: Sequence[Typed]) -> Typed:
+        """An exact answer as a compiled part, with the check that stops the step where it is too large to hold."""
+        shown = next((operand for operand in operands if operand.constant is None), operands[0])
+        problem = (
+            f"works out {{0}} as an exact decimal with {answer.places} places, and on some rows the answer needs "
+            f"more than {EXACT_DIGITS} digits: {{1}} holds {{found}} there"
+        )
+        written = (self._spelling.render(node), self._spelling.render(shown.node))
+        self.row_checks.append(RowCheck(answer.too_large, shown.expr, problem, exact.TOO_LARGE_REMEDY, written))
+        return Typed(answer.expr, Family.NUMBER, node, "gives a number", exact_dtype(answer.places))
 
     # -- helpers -----------------------------------------------------------
 

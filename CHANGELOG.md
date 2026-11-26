@@ -13,6 +13,16 @@ things; each such release says how to upgrade.
   listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv`, `unpivot` and
   `write_excel`'s format, width and wrap rules refuse it, now with a message that says so.
 
+### Changed
+
+- **Adding or subtracting a typed number to an exact column stays exact.** `[amount] + 0.0725`,
+  where `amount` is a `Decimal` column, gave a `Float64`, so the figure was a nearby double and the
+  column was no longer exact. It now gives an exact decimal with the larger places, 812.4725, as two
+  exact columns and an exact column beside a whole number already did. A sum too large for 38 digits stops the step and
+  names the rows, where the engine stopped with its own error, and a column whose places differ no
+  longer turns such a sum into a blank. If a step relied on the float, convert the column with
+  `cast_columns` to `Float64` first.
+
 ## [0.3.0] - 2026-11-20
 
 This release adds to the library and changes no result a pipeline gives today. It reads Excel's

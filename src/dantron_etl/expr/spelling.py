@@ -50,6 +50,8 @@ def render_value(value: Any) -> str:
         return quote_text(value)
     if isinstance(value, date):
         return f"date'{value.isoformat()}'"
+    if isinstance(value, Decimal):
+        return str(value)
     return repr(value)
 
 
