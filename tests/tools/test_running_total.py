@@ -146,6 +146,12 @@ class TestGrouping:
                 [1, 10, 101, 1000],
                 id="a_null_in_one_of_two_columns_is_still_its_own_group",
             ),
+            pytest.param(
+                {"account": ["", None, "", None]},
+                [1, 10, 100, 1000],
+                [1, 10, 101, 1010],
+                id="a_null_group_never_merges_with_an_empty_text_group",
+            ),
         ],
     )
     def test_a_null_group_value_is_a_group_of_its_own(
@@ -155,7 +161,8 @@ class TestGrouping:
         expected: list[int],
     ) -> None:
         """As SQL's PARTITION BY: the null rows share one total. They are not merged into another group,
-        and they do not each start again. With two columns, (null, A) and (null, null) are two groups."""
+        and they do not each start again. With two columns, (null, A) and (null, null) are two groups.
+        Empty text is a value, so its group is not the null group."""
         frame = pl.DataFrame({**groups, "amount": amounts})
 
         produced = _run(frame, {"group_by": list(groups), "columns": [_entry("amount", "total")]})
@@ -202,13 +209,36 @@ class TestNulls:
         got = _written(produced["total"]) if values.dtype == pl.Decimal(38, 2) else produced["total"].to_list()
         assert got == expected
 
-    def test_a_group_of_only_nulls_stays_null_beside_a_group_with_values(self) -> None:
-        """B has values, A has none. A's totals are null, not zero; B's are untouched by A's nulls."""
-        frame = pl.DataFrame({"account": ["A", "B", "A", "B"], "amount": pl.Series([None, 1, None, 2], dtype=pl.Int64)})
+    @pytest.mark.parametrize(
+        ("values", "expected"),
+        [
+            pytest.param(pl.Series([None, 1, None, 2], dtype=pl.Int64), [None, 1, None, 3], id="whole_numbers"),
+            pytest.param(
+                pl.Series([None, 1.0, None, 2.0], dtype=pl.Float64),
+                [None, 1.0, None, 3.0],
+                id="floats",
+            ),
+            pytest.param(
+                _exact([None, "1.00", None, "2.00"], 2),
+                [None, "1.00", None, "3.00"],
+                id="exact_decimals",
+            ),
+        ],
+    )
+    def test_a_group_of_only_nulls_stays_null_beside_a_group_with_values(
+        self,
+        values: pl.Series,
+        expected: list[Any],
+    ) -> None:
+        """B has values, A has none. A's totals are null, not zero, and never B's total carried
+        across; B's are untouched by A's nulls. Rows alternate, so a total that leaked between groups
+        through arrival order would show."""
+        frame = pl.DataFrame({"account": ["A", "B", "A", "B"], "amount": values})
 
         produced = _run(frame, {"group_by": ["account"], "columns": [_entry("amount", "total")]})
 
-        assert produced["total"].to_list() == [None, 1, None, 3]
+        got = _written(produced["total"]) if values.dtype == pl.Decimal(38, 2) else produced["total"].to_list()
+        assert got == expected
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +308,34 @@ class TestResultTypes:
         assert produced.schema["total"] == pl.Float64
         assert produced["total"].to_list() == [0.5, 0.75, -0.25]
 
+    def test_a_float32_column_is_summed_in_float64(self) -> None:
+        """16777217 is the first whole number a Float32 cannot hold. Summed in Float32 and widened
+        afterwards, the second total would come out as 16777216."""
+        frame = pl.DataFrame({"amount": pl.Series([16777216.0, 1.0], dtype=pl.Float32)})
+
+        produced = _run(frame, {"columns": [_entry("amount", "total")]})
+
+        assert produced.schema["total"] == pl.Float64
+        assert produced["total"].to_list() == [16777216.0, 16777217.0]
+
+    def test_a_uint64_value_past_int64_stops_the_step_naming_the_column(self) -> None:
+        """An unsigned column can hold 2**63, which an Int64 total cannot. Stopped, not wrapped."""
+        frame = pl.DataFrame({"amount": pl.Series([2**63], dtype=pl.UInt64)})
+
+        with pytest.raises(DataError) as caught:
+            _run(frame, {"columns": [_entry("amount", "total")]})
+
+        assert "amount" in str(caught.value), f"the refusal should name the column: {caught.value}"
+
+    def test_a_uint64_value_inside_int64_is_kept_as_int64(self) -> None:
+        """The mirror: the largest value an Int64 holds comes through from an unsigned column."""
+        frame = pl.DataFrame({"amount": pl.Series([2**63 - 1], dtype=pl.UInt64)})
+
+        produced = _run(frame, {"columns": [_entry("amount", "total")]})
+
+        assert produced.schema["total"] == pl.Int64
+        assert produced["total"].to_list() == [2**63 - 1]
+
     @pytest.mark.parametrize(
         ("places", "precision", "values", "expected"),
         [
@@ -321,8 +379,27 @@ class TestResultTypes:
 
 
 class TestATotalPastItsRangeStopsTheStep:
-    """Every running value must fit, not only the last. One that does not stops the step by name."""
+    """Every running value must fit, not only the last. One that does not stops the step by name.
 
+    Each rule runs in both settings: one total over every row, and a total per group. In the grouped
+    form a second group follows that fits, so the refusal has to name the group that broke.
+    """
+
+    @staticmethod
+    def _frame(values: pl.Series, *, grouped: bool, tail: Any) -> tuple[pl.DataFrame, dict[str, Any]]:
+        """The values alone, or the values as group ``acct-7`` followed by one ``tail`` row in ``acct-2``."""
+        config: dict[str, Any] = {"columns": [_entry("amount", "total")]}
+        if not grouped:
+            return pl.DataFrame({"amount": values}), config
+        frame = pl.DataFrame(
+            {
+                "account": ["acct-7"] * len(values) + ["acct-2"],
+                "amount": pl.concat([values, pl.Series([tail], dtype=values.dtype)]),
+            }
+        )
+        return frame, {**config, "group_by": ["account"]}
+
+    @pytest.mark.parametrize("grouped", [False, True], ids=["no_group_by", "grouped"])
     @pytest.mark.parametrize(
         "values",
         [
@@ -330,26 +407,28 @@ class TestATotalPastItsRangeStopsTheStep:
             pytest.param([_INT64_MIN, -1], id="one_past_the_floor"),
             pytest.param([2**62, 2**62], id="two_values_that_fit_alone"),
             pytest.param([_INT64_MAX, 1, -1], id="past_the_ceiling_then_back_inside"),
+            pytest.param([_INT64_MIN, -1, 1], id="past_the_floor_then_back_inside"),
         ],
     )
-    def test_an_int64_total_past_its_range_stops_naming_the_group_and_the_column(self, values: list[int]) -> None:
-        """The engine wraps a total past Int64's range round to the other end and says nothing. The last
-        case ends inside the range, but its middle row's total does not fit, so it stops too. The other
-        group fits and does not stop the step on its own; the refusal names the one that broke."""
-        frame = pl.DataFrame(
-            {
-                "account": ["acct-7"] * len(values) + ["acct-2"],
-                "amount": pl.Series([*values, 1], dtype=pl.Int64),
-            }
-        )
+    def test_an_int64_total_past_its_range_stops_naming_the_group_and_the_column(
+        self,
+        values: list[int],
+        grouped: bool,
+    ) -> None:
+        """The engine wraps a total past Int64's range round to the other end and says nothing. The
+        "back inside" cases end inside the range, but a middle row's total does not fit, so they stop
+        too."""
+        frame, config = self._frame(pl.Series(values, dtype=pl.Int64), grouped=grouped, tail=1)
 
         with pytest.raises(DataError) as caught:
-            _run(frame, {"group_by": ["account"], "columns": [_entry("amount", "total")]})
+            _run(frame, config)
 
         message = str(caught.value)
-        assert "acct-7" in message, f"the refusal should name the group: {message}"
         assert "amount" in message, f"the refusal should name the column: {message}"
+        if grouped:
+            assert "acct-7" in message, f"the refusal should name the group: {message}"
 
+    @pytest.mark.parametrize("grouped", [False, True], ids=["no_group_by", "grouped"])
     @pytest.mark.parametrize(
         ("values", "expected"),
         [
@@ -359,41 +438,52 @@ class TestATotalPastItsRangeStopsTheStep:
             pytest.param([_INT64_MAX, _INT64_MIN], [_INT64_MAX, -1], id="ceiling_then_floor"),
         ],
     )
-    def test_an_int64_total_just_inside_its_range_is_kept(self, values: list[int], expected: list[int]) -> None:
+    def test_an_int64_total_just_inside_its_range_is_kept(
+        self,
+        values: list[int],
+        expected: list[int],
+        grouped: bool,
+    ) -> None:
         """The mirror: a check that refused one value too early would break a total that lands exactly
         on the limit."""
-        frame = pl.DataFrame({"amount": pl.Series(values, dtype=pl.Int64)})
+        frame, config = self._frame(pl.Series(values, dtype=pl.Int64), grouped=grouped, tail=1)
 
-        produced = _run(frame, {"columns": [_entry("amount", "total")]})
+        produced = _run(frame, config)
 
-        assert produced["total"].to_list() == expected
+        assert produced["total"].to_list() == (expected + [1] if grouped else expected)
         assert produced.schema["total"] == pl.Int64
 
+    @pytest.mark.parametrize("grouped", [False, True], ids=["no_group_by", "grouped"])
     @pytest.mark.parametrize(
         "values",
         [
             pytest.param([_LARGEST_AT_2, "0.01"], id="one_cent_over"),
             pytest.param(["-" + _LARGEST_AT_2, "-0.01"], id="one_cent_under"),
             pytest.param(["9" * 36 + ".00", "9" * 36 + ".00", "-" + "9" * 36 + ".00"], id="over_then_back_inside"),
+            pytest.param(
+                ["-" + "9" * 36 + ".00", "-" + "9" * 36 + ".00", "9" * 36 + ".00"],
+                id="under_then_back_inside",
+            ),
         ],
     )
-    def test_an_exact_total_past_38_digits_stops_naming_the_group_and_the_column(self, values: list[str]) -> None:
+    def test_an_exact_total_past_38_digits_stops_naming_the_group_and_the_column(
+        self,
+        values: list[str],
+        grouped: bool,
+    ) -> None:
         """Unlike a group's final sum, a running total shows every step, so a middle step past 38 digits
         stops the step even when the last one fits."""
-        frame = pl.DataFrame(
-            {
-                "account": ["acct-7"] * len(values) + ["acct-2"],
-                "amount": _exact([*values, "1.00"], 2),
-            }
-        )
+        frame, config = self._frame(_exact(values, 2), grouped=grouped, tail=Decimal("1.00"))
 
         with pytest.raises(DataError) as caught:
-            _run(frame, {"group_by": ["account"], "columns": [_entry("amount", "total")]})
+            _run(frame, config)
 
         message = str(caught.value)
-        assert "acct-7" in message, f"the refusal should name the group: {message}"
         assert "amount" in message, f"the refusal should name the column: {message}"
+        if grouped:
+            assert "acct-7" in message, f"the refusal should name the group: {message}"
 
+    @pytest.mark.parametrize("grouped", [False, True], ids=["no_group_by", "grouped"])
     @pytest.mark.parametrize(
         ("values", "expected"),
         [
@@ -405,14 +495,68 @@ class TestATotalPastItsRangeStopsTheStep:
             ),
         ],
     )
-    def test_an_exact_total_just_inside_38_digits_is_kept(self, values: list[str], expected: list[str]) -> None:
+    def test_an_exact_total_just_inside_38_digits_is_kept(
+        self,
+        values: list[str],
+        expected: list[str],
+        grouped: bool,
+    ) -> None:
         """The mirror of the refusal above, one cent inside the limit."""
-        frame = pl.DataFrame({"amount": _exact(values, 2)})
+        frame, config = self._frame(_exact(values, 2), grouped=grouped, tail=Decimal("1.00"))
 
-        produced = _run(frame, {"columns": [_entry("amount", "total")]})
+        produced = _run(frame, config)
 
-        assert _written(produced["total"]) == expected
+        assert _written(produced["total"]) == (expected + ["1.00"] if grouped else expected)
         assert produced.schema["total"] == pl.Decimal(38, 2)
+
+    @pytest.mark.parametrize(
+        ("values", "largest", "zero"),
+        [
+            pytest.param(pl.Series([_INT64_MAX, _INT64_MAX, 0, 0], dtype=pl.Int64), _INT64_MAX, 0, id="int64"),
+            pytest.param(
+                _exact([_LARGEST_AT_2, _LARGEST_AT_2, "0.00", "0.00"], 2),
+                _LARGEST_AT_2,
+                "0.00",
+                id="exact",
+            ),
+        ],
+    )
+    def test_each_group_is_checked_on_its_own_total_not_the_whole_frame(
+        self,
+        values: pl.Series,
+        largest: Any,
+        zero: Any,
+    ) -> None:
+        """A and B each sit on the limit. Grouped, every total fits and is kept. Without groups, the
+        same rows pass the limit on the second row and stop the step: both sides of one rule."""
+        frame = pl.DataFrame({"account": ["A", "B", "A", "B"], "amount": values})
+        config: dict[str, Any] = {"columns": [_entry("amount", "total")]}
+
+        produced = _run(frame, {**config, "group_by": ["account"]})
+
+        got = _written(produced["total"]) if values.dtype == pl.Decimal(38, 2) else produced["total"].to_list()
+        assert got == [largest] * 4
+        with pytest.raises(DataError):
+            _run(frame, config)
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param(pl.Series([1, _INT64_MAX, 1], dtype=pl.Int64), id="int64"),
+            pytest.param(_exact(["1.00", _LARGEST_AT_2, "0.01"], 2), id="exact"),
+        ],
+    )
+    def test_the_refusal_names_the_group_that_broke_not_the_first_row(self, values: pl.Series) -> None:
+        """acct-2's single row comes first and fits. The refusal must name acct-7, whose total broke,
+        and not acct-2 because it happened to be the first row."""
+        frame = pl.DataFrame({"account": ["acct-2", "acct-7", "acct-7"], "amount": values})
+
+        with pytest.raises(DataError) as caught:
+            _run(frame, {"group_by": ["account"], "columns": [_entry("amount", "total")]})
+
+        message = str(caught.value)
+        assert "acct-7" in message, f"the refusal should name the group that broke: {message}"
+        assert "acct-2" not in message, f"the group that fits should not be named: {message}"
 
 
 # ---------------------------------------------------------------------------
