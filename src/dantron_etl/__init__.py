@@ -32,7 +32,7 @@ from .runner import run_pipeline
 from .spec import Pipeline, PortRef, Step
 from .trace import CachedFrame, ColumnCheckError, PipelineTrace, StepEvent, StepFailedError
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "__version__",

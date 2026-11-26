@@ -7,6 +7,14 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26
+
+This release makes exact decimals a proper type. A pipeline names one as `type: Decimal` with
+`places: 2`, and arithmetic on it is exact: only `round` rounds, and a division gives 16 places.
+A pipeline with no exact column gives the same results as before. Two things may now stop a step
+that ran before: an exact column meeting a `Float64` column, and a write of a number that a
+database's `numeric(p,s)` column would have rounded. Each is listed under Changed with what to do.
+
 ### Added
 
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
@@ -289,7 +297,8 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 
-[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DanTron-Inc/dantron-etl-tools/releases/tag/v0.1.0
