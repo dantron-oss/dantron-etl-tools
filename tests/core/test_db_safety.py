@@ -394,3 +394,57 @@ class TestAnAddressIsReadAsTheDriverReadsIt:
         where = db._postgres_where("host=db.example dbname=orders_archive")  # type: ignore[attr-defined]
 
         assert where.database == "orders_archive"
+
+
+class TestReadingTheNumericDeclarationsLeavesNoTransactionOpen:
+    """psycopg opens a transaction with the first statement. A write's own transaction then becomes a
+    savepoint inside it, and closing the connection throws every row away."""
+
+    class _Cursor:
+        def __init__(self, connection: Any) -> None:
+            self._connection = connection
+
+        def execute(self, statement: str, parameters: Any = None) -> None:
+            if self._connection.status == "IDLE":
+                self._connection.status = "INTRANS"
+
+        def fetchall(self) -> list[tuple[str, str]]:
+            return [("amount", "numeric(12,2)"), ("label", "text")]
+
+        def close(self) -> None:
+            pass
+
+    class _Connection:
+        autocommit = False
+
+        def __init__(self, status: str) -> None:
+            self.status = status
+            self.rolled_back = 0
+
+        @property
+        def info(self) -> Any:
+            return types.SimpleNamespace(transaction_status=types.SimpleNamespace(name=self.status))
+
+        def cursor(self) -> Any:
+            return TestReadingTheNumericDeclarationsLeavesNoTransactionOpen._Cursor(self)
+
+        def rollback(self) -> None:
+            self.rolled_back += 1
+            self.status = "IDLE"
+
+    def _loader(self) -> Any:
+        fake_psycopg = types.SimpleNamespace(errors=types.SimpleNamespace(IntegrityError=Exception), Error=Exception)
+        return db._PostgresLoader(fake_psycopg)  # type: ignore[attr-defined]
+
+    def test_a_read_on_an_idle_connection_ends_the_transaction_it_began(self) -> None:
+        connection = self._Connection("IDLE")
+        found = self._loader().numeric_declarations(connection, "s", "t")
+        assert found == {"amount": (12, 2)}
+        assert connection.status == "IDLE"
+        assert connection.rolled_back == 1
+
+    def test_a_read_inside_a_transaction_leaves_that_transaction_alone(self) -> None:
+        connection = self._Connection("INTRANS")
+        self._loader().numeric_declarations(connection, "s", "t")
+        assert connection.status == "INTRANS"
+        assert connection.rolled_back == 0

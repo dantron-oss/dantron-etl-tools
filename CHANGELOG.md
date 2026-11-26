@@ -7,6 +7,17 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26
+
+### Fixed
+
+- **`write_table` writes its rows to Postgres again.** In 0.4.0 it read the table's column
+  declarations on the writing connection before its own transaction began. psycopg opened a
+  transaction for that read, the write became a savepoint inside it, and closing the connection
+  discarded every row without an error. Reading the declarations now ends the transaction it began.
+  `publish_tables` read them inside its own transaction and was not affected. SQLite was not
+  affected. Use 0.4.1 rather than 0.4.0 wherever a pipeline writes a table to Postgres.
+
 ## [0.4.0] - 2026-11-26
 
 This release makes exact decimals a proper type. A pipeline names one as `type: Decimal` with
@@ -297,7 +308,8 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 
-[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.1.0...v0.2.0
