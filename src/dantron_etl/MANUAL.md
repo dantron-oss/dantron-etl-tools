@@ -601,6 +601,12 @@ Each of these has caught a real pipeline.
   empty table's does too. A `numeric` with no places stated arrives at the most places any of its
   values has, so the type can change from night to night: declare the places at the source. A value
   past 38 digits, or `NaN`, stops `read_table` naming the column. SQLite has no exact type.
+- **A database's `numeric(p,s)` column takes a number only when every value fits.** `write_table`
+  and `publish_tables` check each value against s places and p digits before anything is written,
+  because the database would round the rest without a word. A `Float64` is read to 15 significant
+  digits first (10.25 fits `numeric(12,2)`, 10.255 does not). A `Decimal` column never goes into a
+  `double precision`, `real` or `float` column; `cast_columns` it to `Float64` first. A `Float64`
+  into a float column is written as it always was.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

@@ -33,6 +33,20 @@ things; each such release says how to upgrade.
   driver handed over with fewer than 38 digits in all (`numeric(12,2)` through ADBC) now arrives with
   38, keeping its places. The figures are the same. If a later step compared that column's type
   with a `Null` one, look at it again.
+- **`write_table` and `publish_tables` refuse a number a `numeric(p,s)` column would round.** Before,
+  a `Float64` value with more places than the column holds (10.255 into `numeric(12,2)`) was rounded
+  by Postgres without a word, and stored as it was by SQLite; a not-a-number went into Postgres as
+  `NaN`; a whole number with too many digits was refused by Postgres in its own words and stored by
+  SQLite. Now each stops the step before anything is written, naming the column, the declaration and
+  the rows. A `Float64` that fits is written as its reading to 15 significant digits, which is what
+  Postgres stored anyway for any figure of 15 digits or fewer. What to do: round the column in a
+  formula step to the table's places (`round([amount], 2)`), or widen the table's column. Writes of
+  `Float64` to `double precision`, `real` or `float` columns, and to a `numeric` with no places
+  stated, are unchanged.
+- **A `Decimal` column is refused by a `double precision`, `real` or `float` column**, where it used
+  to be written as its nearest binary value. Convert it with `cast_columns` to `Float64` first. A
+  `Decimal` column that fits now goes into a `numeric(p,s)` column on SQLite too, sent as its digits;
+  before, SQLite refused it with a driver error.
 
 ## [0.3.0] - 2026-11-20
 
