@@ -16,7 +16,7 @@ You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) (or pip).
 ```bash
 uv venv
 source .venv/bin/activate          # on Windows: .venv\Scripts\activate
-uv pip install git+https://github.com/DanTron-Inc/dantron-etl-tools@main
+uv pip install git+https://github.com/dantron-oss/dantron-etl-tools@main
 ```
 
 `@main` installs the latest released version. To keep a project on one version, name its tag
@@ -24,7 +24,7 @@ instead, such as `@v0.2.0`. The versions are listed under the repository's tags,
 one changed is in [CHANGELOG.md](CHANGELOG.md).
 
 With pip instead of uv: `python -m venv .venv`, activate it the same way, then
-`pip install git+https://github.com/DanTron-Inc/dantron-etl-tools@main`.
+`pip install git+https://github.com/dantron-oss/dantron-etl-tools@main`.
 
 Check it worked:
 
@@ -165,7 +165,7 @@ print(trace.frame("by_customer.rows"))
 ```
 
 Database tables (`read_table`, `write_table`, `publish_tables`) work with SQLite out of the box. For
-Postgres, install the extra: `uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/DanTron-Inc/dantron-etl-tools@main"`.
+Postgres, install the extra: `uv pip install "dantron-etl-tools[postgres] @ git+https://github.com/dantron-oss/dantron-etl-tools@main"`.
 
 For agents writing pipelines, `src/dantron_etl/MANUAL.md` ships inside the package with the rules
 that matter most.

@@ -12,7 +12,7 @@ You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/). Development 
 version in `.python-version`, and CI also tests 3.11 and 3.12.
 
 ```bash
-git clone https://github.com/DanTron-Inc/dantron-etl-tools
+git clone https://github.com/dantron-oss/dantron-etl-tools
 cd dantron-etl-tools
 uv sync --extra dev --extra postgres
 ```

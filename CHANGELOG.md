@@ -7,6 +7,15 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-26
+
+### Changed
+
+- **The library's home is public**, at https://github.com/dantron-oss/dantron-etl-tools. The install
+  lines, the package's links and the changelog's comparisons point there. A project that installs
+  from the old address changes its dependency to the new one; the code and every version tag are
+  the same.
+
 ## [0.4.1] - 2026-11-26
 
 ### Fixed
@@ -308,9 +317,10 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 
-[Unreleased]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/DanTron-Inc/dantron-etl-tools/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/DanTron-Inc/dantron-etl-tools/releases/tag/v0.1.0
+[Unreleased]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/dantron-oss/dantron-etl-tools/releases/tag/v0.1.0
