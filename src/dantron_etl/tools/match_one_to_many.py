@@ -125,8 +125,9 @@ class MatchOneToMany:
                 "with 'not in the matched set'.",
                 "A part in the matched sets of two or more wholes: every row of each of those wholes is "
                 "rejected with 'a part is claimed by more than one whole'. Nothing is tried again.",
-                "A row missing its whole key or its part key is rejected with 'missing key', even when "
-                "its amount is missing too.",
+                "A row missing its whole key or its part key is not a pair. It is set aside with "
+                "'missing key', even when its amount is missing too, and never counts in the amount "
+                "checks below.",
                 "A row missing its part amount is rejected with 'missing amount'. So is every row of a "
                 "whole whose amount is missing on all its rows.",
                 "Rows rejected for a missing key or amount take no part in any search, do not count "
@@ -135,7 +136,7 @@ class MatchOneToMany:
                 "rejected with 'more candidates than the search allows'.",
                 "These stop the step, naming the keys: the same whole and part on two rows; one whole "
                 "with two different amounts; one part with two different amounts. A missing amount "
-                "beside a value counts as different.",
+                "beside a value counts as different. Only rows with both keys are checked.",
                 "Zero and negative amounts are allowed. A part of zero can join any set, so it makes a "
                 "second set that adds up, if there is room for it under 'max_parts'.",
                 "A set has at least one part: a whole of zero is never matched by an empty set.",
@@ -379,6 +380,7 @@ def _subsets(amounts: Sequence[int], offset: int, most: int) -> list[tuple[int, 
 def _refuse_contradictions(frame: pl.DataFrame, work: pl.DataFrame, config: Mapping[str, Any]) -> None:
     """Stop on the same pair twice, a whole with two amounts, or a part with two amounts."""
     whole_key, part_key = config["whole_key"], config["part_key"]
+    # A row missing either key is not a pair, so it takes no part in any of these checks.
     keyed = work.filter(pl.col("w").is_not_null() & pl.col("p").is_not_null())
     repeated = keyed.filter(pl.len().over("w", "p") > 1)
     if repeated.height:
@@ -394,8 +396,7 @@ def _refuse_contradictions(frame: pl.DataFrame, work: pl.DataFrame, config: Mapp
         ("p", "pa", "part", part_key, config["part_amount"]),
     )
     for key, amount, noun, key_column, amount_column in checks:
-        named = work.filter(pl.col(key).is_not_null())
-        differing = named.filter(pl.col(amount).n_unique().over(key) > 1)
+        differing = keyed.filter(pl.col(amount).n_unique().over(key) > 1)
         if differing.height:
             raise DataError(
                 f"column {amount_column!r} gives one {noun} two or more different amounts (a missing "
