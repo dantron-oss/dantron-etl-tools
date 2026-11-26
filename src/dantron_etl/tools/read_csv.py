@@ -2,6 +2,7 @@
 
 Types are worked out from the whole file and corrected per column with `column_types`. A value that
 will not convert, or a line with the wrong number of fields, stops the run. A blank field is null.
+An exact `Decimal` is never worked out; it is read only where `column_types` names it.
 
 Why: docs/design/tools.md#read_csv
 """
@@ -22,10 +23,12 @@ from ..column_types import (
     DATETIME_DEFAULT_FORMAT,
     DECLARED_DTYPE,
     DECLARED_TYPES,
+    EXACT_DIGITS,
     EXACT_TYPE,
     TEMPORAL_TYPES,
     TIME_DEFAULT_FORMAT,
-    not_yet_exact,
+    check_places,
+    exact_from_text,
 )
 from ..authoring import (
     REGISTRY,
@@ -129,9 +132,14 @@ class ReadCsv:
                         ),
                         "type": ConfigField(
                             type="string",
-                            description="The type, such as 'String', 'Int64', 'Float64' or 'Date'.",
+                            description="The type, such as 'String', 'Int64', 'Float64', 'Decimal' or 'Date'.",
                             required=True,
                             enum=DECLARED_TYPES,
+                        ),
+                        "places": ConfigField(
+                            type="integer",
+                            description="Only with type 'Decimal', and required there: the digits "
+                            "after the point, from 0 to 38, such as 2.",
                         ),
                         "format": ConfigField(
                             type="string",
@@ -165,6 +173,10 @@ class ReadCsv:
                 "value: a leading zero (02134) or a whole number too big for 64 bits.",
                 "Settle that in 'column_types': String keeps it as written, Int64 or Float64 reads it "
                 "as a number anyway.",
+                "A column is read as an exact Decimal only when 'column_types' says so, with its "
+                "'places'; figures are otherwise Float64. Each value must be written as plain digits, "
+                "with an optional point and minus sign, and fit the places: 1.005 does not fit 2 places "
+                "and stops the run. A blank field is null.",
                 "A line with more or fewer fields than the header stops the run, naming the line. It is "
                 "never padded or cut.",
                 "A blank field is null, never empty text. A blank line is a row of nulls, not skipped, "
@@ -179,8 +191,8 @@ class ReadCsv:
                 "path": "For example 'data/orders.csv'. It must end in .csv or .tsv.",
                 "delimiter": "For example ';' or a tab. One character.",
                 "encoding": "For example 'cp1252' for a file saved by older Windows programs.",
-                "column_types": "For example [{column: zip, type: String}, {column: ordered_on, type: "
-                "Date, format: '%d/%m/%Y'}].",
+                "column_types": "For example [{column: zip, type: String}, {column: price, type: Decimal, "
+                "places: 2}, {column: ordered_on, type: Date, format: '%d/%m/%Y'}].",
                 "skip_rows": "For example 2, to skip two title lines above the header. Not negative.",
             },
         )
@@ -268,10 +280,7 @@ def _validate_column_types(column_types: Sequence[Mapping[str, Any]]) -> None:
     for index, entry in enumerate(column_types):
         column = entry["column"]
         declared_type = entry["type"]
-        if declared_type == EXACT_TYPE:
-            raise ConfigError(
-                not_yet_exact("read_csv", f"column_types[{index}].type", "use Float64 for figures, or String to keep the digits as written")
-            )
+        check_places(declared_type, entry.get("places"), f"column_types[{index}].places")
         fmt = entry.get("format")
         if column in seen:
             raise ConfigError(f"read_csv declares column_types for column {column!r} more than once")
@@ -414,6 +423,8 @@ def _refuse_a_lossy_number(series: pl.Series, line_numbers: list[int]) -> None:
 def _declared_series(name: str, values: list[str | None], entry: Mapping[str, Any]) -> pl.Series:
     """``values`` converted to the type ``entry`` declares, or a refusal naming what would not convert."""
     declared_type = entry["type"]
+    if declared_type == EXACT_TYPE:
+        return _exact_series(name, values, entry["places"])
     convert = _converter(declared_type, entry.get("format"))
 
     converted: list[Any] = []
@@ -435,6 +446,22 @@ def _declared_series(name: str, values: list[str | None], entry: Mapping[str, An
         )
 
     return pl.Series(name, converted, dtype=DECLARED_DTYPE[declared_type])
+
+
+def _exact_series(name: str, values: list[str | None], places: int) -> pl.Series:
+    """``values`` read as exact decimals with ``places``, or a refusal naming the ones that do not fit."""
+    text = pl.Series(name, values, dtype=pl.String)
+    converted = exact_from_text(text, places)
+    if converted.misfits.any():
+        raise DataError(
+            f"read_csv could not convert column {name!r} to declared type 'Decimal' with {places} places: a "
+            f"value converts when written as plain digits, with an optional point and minus sign, such as "
+            f"-12.50, with at most {places} places and at most {EXACT_DIGITS - places} digits before the "
+            f"point. Correct the file, or declare the column String to keep the text as written",
+            offending=pl.DataFrame({name: text.filter(converted.misfits)}),
+            total=len(values),
+        )
+    return converted.values
 
 
 def _converter(declared_type: str, fmt: str | None) -> Callable[[str], Any]:

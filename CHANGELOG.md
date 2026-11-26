@@ -10,13 +10,16 @@ things; each such release says how to upgrade.
 ### Added
 
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
-  listed in `COLUMN_TYPES`. `read_csv`, `unpivot` and `write_excel`'s format, width and wrap rules
-  refuse it for now, with a message that says so.
+  listed in `COLUMN_TYPES`. `unpivot` and `write_excel`'s format, width and wrap rules refuse it
+  for now, with a message that says so.
 - **`cast_columns` converts to `Decimal`**, written `{column: price, type: Decimal, places: 2}`. Text
   written as plain digits, whole numbers, exact columns of other places and `Float64` convert
   exactly; a float is read to 15 significant digits first. A value that does not fit the places
   without rounding (`1.005` at 2 places) stops the step, saying to round first, or with
   `on_invalid: set_null` is emptied, counted and marked.
+- **`read_csv` reads `Decimal` columns**, named in `column_types` with `places`. Each value must be
+  written as plain digits that fit the places, or the run stops naming it; a blank field is null.
+  A column is never worked out as `Decimal` by itself.
 
 ### Changed
 

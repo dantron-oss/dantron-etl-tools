@@ -1188,6 +1188,15 @@
                 "required": false,
                 "type": "string"
               },
+              "places": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "integer"
+              },
               "type": {
                 "default": null,
                 "enum": [

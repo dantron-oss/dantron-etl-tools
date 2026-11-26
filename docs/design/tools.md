@@ -754,6 +754,11 @@ both give a frame that looks right and is not. The refusal names the line or the
 number, and a whole number past 64 bits can only be read as a float, which rounds it. The author
 decides in `column_types`.
 
+**`Decimal` is declared, never worked out.** A file's `12.50` is as much a measurement as a price, and
+only the author knows which needs to stay exact, so inference stays Int64, Float64, true/false or
+text. A declared column is read through `exact_from_text`, which takes plain digits only and never
+rounds: `1.005` at 2 places is a value that will not convert. Blanks are already null by then.
+
 **A blank field is null, and a blank line is a row.** write_csv writes a row of nulls as an empty line,
 so dropping it here would lose that row on a round trip.
 

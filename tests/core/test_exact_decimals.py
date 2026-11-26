@@ -37,7 +37,6 @@ from dantron_etl.column_types import (
     to_exact,
 )
 from dantron_etl.tools.cast_columns import CastColumns
-from dantron_etl.tools.read_csv import ReadCsv
 from dantron_etl.tools.unpivot import Unpivot
 from dantron_etl.tools.write_excel import WriteExcel
 
@@ -147,13 +146,6 @@ def _says_not_yet(message: str, tool: str, field: str) -> None:
     assert repr(field) in message
     assert "Decimal" in message
     assert f"{tool} does not take exact decimals yet" in message
-
-
-def test_read_csv_refuses_decimal_for_now(tmp_path: Path) -> None:
-    path = tmp_path / "orders.csv"
-    path.write_text("amount\n1.50\n", encoding="utf-8")
-    message = _refused(ReadCsv(), {"path": str(path), "column_types": [{"column": "amount", "type": "Decimal"}]})
-    _says_not_yet(message, "read_csv", "column_types[0].type")
 
 
 def test_unpivot_refuses_decimal_for_now() -> None:
