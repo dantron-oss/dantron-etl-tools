@@ -66,6 +66,12 @@ cast to `Float64` is written in the pipeline. `any_true` and `all_true` are `BOO
 the engine answers false and true for a group of nulls, so that case is guarded to give null.
 These eight are worked out by one function, `shared_aggregate`, that cross_tab calls too.
 
+**An exact column is widened to 38 digits before it is aggregated.** Every exact column the library
+makes has 38 digits, but a source can hold fewer, and on polars 1.38 a sum keeps them: the total of
+a `Decimal(18, 2)` column comes back typed with 18 digits even when it needs more, and its value is
+then wrong. Widening the total afterwards is too late, so `widened` casts the column first, keeping
+its places. It is the same in group_by and cross_tab.
+
 **Groups keep first-appearance order.** A key of several columns has no obvious sort order, and the
 order the input already has is the one a reader knows. polars promises no group order unless asked,
 so `maintain_order=True` is set.

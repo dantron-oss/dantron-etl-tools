@@ -65,6 +65,7 @@ no caller's nouns; these are the shapes of three real aggregation steps, not the
 
 from collections.abc import Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -1373,3 +1374,60 @@ class TestTheNewAggregatesRefuse:
             GroupBy().validate_config(
                 {"by": ["code"], "aggregations": [_aggregation("q", "quantile", "[x]", fraction=fraction)]}
             )
+
+
+def _exact(values: list[str | None], places: int, *, precision: int = 38) -> pl.Series:
+    """Exact decimals written as text, so nothing passes through a float on the way in."""
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+def _written(series: pl.Series) -> list[str | None]:
+    """Each value as the digits it holds, so a test pins the places as well as the value."""
+    return series.cast(pl.String).to_list()
+
+
+class TestAnExactColumnKeepsItsPlaces:
+    """A sum, min, max, first or last of an exact column is exact, at its places, with 38 digits in all.
+
+    The engine gives a sum 18 or 38 digits depending on its version, and keeps a source's 18 for the
+    rest; the library gives 38 on every version.
+    """
+
+    @pytest.mark.parametrize(
+        ("function", "expected"),
+        [
+            ("sum", ["3.35", None]),
+            ("min", ["1.10", None]),
+            ("max", ["2.25", None]),
+            ("first", [None, None]),
+            ("first_non_null", ["1.10", None]),
+            ("last", [None, None]),
+            ("last_non_null", ["2.25", None]),
+        ],
+    )
+    @pytest.mark.parametrize("precision", [18, 38])
+    def test_each_keeps_the_places_at_38_digits(self, function: str, expected: list[Any], precision: int) -> None:
+        frame = pl.DataFrame(
+            {"code": ["A", "A", "A", "A", "B"], "price": _exact([None, "1.10", "2.25", None, None], 2, precision=precision)}
+        )
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", function, "[price]")]})
+
+        assert rows.schema["out"] == pl.Decimal(38, 2)
+        assert _written(rows["out"]) == expected
+
+    def test_a_total_past_18_digits_from_an_18_digit_column_is_right(self) -> None:
+        """Widened before summing: on the lowest engine version, widening the total afterwards is too late."""
+        frame = pl.DataFrame({"code": ["A", "A"], "price": _exact(["9999999999999999.99", "1.00"], 2, precision=18)})
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[price]")]})
+        assert _written(rows["out"]) == ["10000000000000000.99"]
+
+    def test_a_total_of_an_expression_keeps_the_places_it_gives(self) -> None:
+        frame = pl.DataFrame({"code": ["A", "A"], "rate": _exact(["0.0725", "1.1"], 4, precision=18)})
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[rate] + [rate]")]})
+        assert rows.schema["out"] == pl.Decimal(38, 4)
+        assert _written(rows["out"]) == ["2.3450"]
+
+    def test_a_frame_with_no_rows_gives_the_same_type(self) -> None:
+        frame = pl.DataFrame({"code": ["A"], "price": _exact(["1.10"], 2, precision=18)}).head(0)
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[price]")]})
+        assert rows.schema["out"] == pl.Decimal(38, 2)

@@ -55,6 +55,7 @@ More on some settings:
 - 'join_text' only joins text. Turn numbers or dates into text in an earlier step.
 - A 'separator' on any function other than 'join_text' is refused, not ignored.
 - A 'value' that reads no column, such as '1', is refused. It would be worked out once per group, so 'sum' of 1 would not count rows. Use 'count' for that.
+- 'sum', 'min', 'max', 'first' and 'last' of an exact Decimal column keep its places, with 38 digits in all.
 - 'sum' keeps the type of the column it adds up. If an Int32 or UInt32 total is too big for that type, the run stops and names the aggregation, instead of giving a wrong number. Cast the column to Int64 first if totals can be that large.
 
 ## Example 1

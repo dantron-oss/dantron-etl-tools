@@ -12,6 +12,7 @@ from typing import Any, Final
 
 import polars as pl
 
+from ..column_types import exact_dtype
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -147,6 +148,17 @@ def shared_aggregate(expression: pl.Expr, function: str, fraction: float | None)
 SHARED_AGGREGATES: Final[frozenset[str]] = STATISTICS | TRUTH_AGGREGATES | {"last", "last_non_null"}
 
 
+def widened(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """``expression`` with an exact column of ``dtype`` widened to 38 digits, keeping its places.
+
+    Done before aggregating, because on some engine versions a sum keeps the source's narrower
+    digits even when the total needs more. Any other type is left as it is. Shared with cross_tab.
+    """
+    if isinstance(dtype, pl.Decimal) and dtype.precision != exact_dtype(dtype.scale).precision:
+        return expression.cast(exact_dtype(dtype.scale))
+    return expression
+
+
 def sum_without_wrapping(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
     """The sum of ``expression``, worked out as Int64 when its type would wrap past its limit."""
     return expression.cast(pl.Int64).sum() if dtype in NARROW_SUM_LIMITS else expression.sum()
@@ -274,6 +286,8 @@ class GroupBy:
                 "A 'separator' on any function other than 'join_text' is refused, not ignored.",
                 "A 'value' that reads no column, such as '1', is refused. It would be worked out "
                 "once per group, so 'sum' of 1 would not count rows. Use 'count' for that.",
+                "'sum', 'min', 'max', 'first' and 'last' of an exact Decimal column keep its places, "
+                "with 38 digits in all.",
                 "'sum' keeps the type of the column it adds up. If an Int32 or UInt32 total is too "
                 "big for that type, the run stops and names the aggregation, instead of giving a "
                 "wrong number. Cast the column to Int64 first if totals can be that large.",
@@ -430,10 +444,10 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
     if function == "count":
         return pl.len().cast(pl.Int64).alias(name)
 
-    expression = compile_for(frame, value, f"aggregations[{index}].value")
+    _, dtype = compiled_dtype(frame, value, f"aggregations[{index}].value")
+    expression = widened(compile_for(frame, value, f"aggregations[{index}].value"), dtype)
 
     if function == "sum":
-        _, dtype = compiled_dtype(frame, value, f"aggregations[{index}].value")
         total = sum_without_wrapping(expression, dtype)
         return pl.when(expression.is_not_null().any()).then(total).otherwise(None).alias(name)
     if function == "count_non_null":

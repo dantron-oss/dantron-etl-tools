@@ -601,6 +601,9 @@ Each of these has caught a real pipeline.
   `0.0725` comes out as `1.5000` and `0.0725`. An exact column beside a `Float64` column is refused,
   naming the float column: convert one side with `cast_columns`. `values_type: Decimal` with
   `values_places: 2` reads every turned column exactly, by `cast_columns`' rule.
+- **A total of an exact column is exact, at the column's places.** `sum`, `min`, `max`, `first`,
+  `last` and their `_non_null` forms in `group_by` and `cross_tab` keep the places, with 38 digits in
+  all, on every engine version, even when the source held fewer digits.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

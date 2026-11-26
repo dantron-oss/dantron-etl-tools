@@ -36,6 +36,10 @@ things; each such release says how to upgrade.
 - **`unpivot` of exact columns gives 38 digits in all.** Turned exact columns that all held, say,
   `Decimal(18, 2)` came out as `Decimal(18, 2)`; they come out as `Decimal(38, 2)` now, with the same
   values. Nothing to do, unless a later step compared the type by its digits.
+- **`group_by` and `cross_tab` give an exact total 38 digits in all.** A `sum`, `min`, `max`,
+  `first` or `last` of a `Decimal(18, 2)` column gave `Decimal(18, 2)` (and on polars 1.38 a sum
+  past 16 digits before the point came out wrong); it gives `Decimal(38, 2)` now, with the right
+  value. Nothing to do.
 
 ## [0.3.0] - 2026-11-20
 

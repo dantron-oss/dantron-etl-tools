@@ -103,6 +103,7 @@ carries no caller's nouns.
 """
 
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -1296,3 +1297,43 @@ class TestTheNewAggregatesInACell:
     def test_the_fraction_is_an_optional_number_with_no_default(self) -> None:
         field = CrossTab().config_template()["fraction"]
         assert (field.type, field.required, field.default) == ("number", False, None)
+
+
+def _exact(values: list[str | None], places: int, *, precision: int = 38) -> pl.Series:
+    """Exact decimals written as text, so nothing passes through a float on the way in."""
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+class TestAnExactColumnKeepsItsPlacesInACell:
+    """A cell of an exact column keeps its places, with 38 digits in all, on every engine version."""
+
+    ROWS = pl.DataFrame(
+        {
+            "code": ["a", "a", "a", "b"],
+            "period": ["p1", "p1", "p2", "p1"],
+            "price": _exact(["1.10", "2.25", None, "-0.05"], 2, precision=18),
+        }
+    )
+
+    @pytest.mark.parametrize(
+        ("function", "expected"),
+        [
+            ("sum", {"p1": ["3.35", "-0.05"], "p2": [None, None]}),
+            ("max", {"p1": ["2.25", "-0.05"], "p2": [None, None]}),
+            ("last_non_null", {"p1": ["2.25", "-0.05"], "p2": [None, None]}),
+        ],
+    )
+    def test_each_cell_is_exact_at_the_columns_places(self, function: str, expected: dict[str, list[Any]]) -> None:
+        config = {"by": ["code"], "names_from": "period", "values_from": "price", "function": function}
+        rows = run_tool(CrossTab(), Ports({"rows": self.ROWS}), config)["rows"]
+
+        assert rows.schema["p1"] == rows.schema["p2"] == pl.Decimal(38, 2)
+        assert {name: rows[name].cast(pl.String).to_list() for name in ("p1", "p2")} == expected
+
+    def test_a_cell_total_past_18_digits_from_an_18_digit_column_is_right(self) -> None:
+        frame = pl.DataFrame(
+            {"code": ["a", "a"], "period": ["p1", "p1"], "price": _exact(["9999999999999999.99", "1.00"], 2, precision=18)}
+        )
+        config = {"by": ["code"], "names_from": "period", "values_from": "price", "function": "sum"}
+        rows = run_tool(CrossTab(), Ports({"rows": frame}), config)["rows"]
+        assert rows["p1"].cast(pl.String).to_list() == ["10000000000000000.99"]

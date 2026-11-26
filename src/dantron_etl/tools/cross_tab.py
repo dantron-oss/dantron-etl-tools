@@ -33,6 +33,7 @@ from .group_by import (
     sum_without_wrapping,
     totals_that_do_not_fit,
     unsuitable,
+    widened,
 )
 
 
@@ -116,6 +117,7 @@ class CrossTab:
                 "comma and a space, nulls skipped. A cell whose values are all null is empty text.",
                 "So with 'join_text', a cell with rows but no values is empty text, while a cell with "
                 "no rows is null. group_by never has the second case.",
+                "A cell of an exact Decimal column keeps its places, with 38 digits in all.",
                 "'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that "
                 "type, the run stops instead of giving a wrong number. Cast to Int64 first if totals "
                 "can be that large.",
@@ -260,7 +262,7 @@ def _narrow_cells_back(wide: pl.DataFrame, names: Sequence[str], measure: str, d
 def _cell(config: Mapping[str, Any], name: str, measure_dtype: pl.DataType) -> pl.Expr:
     """One value column: the aggregate of `values_from` over this cell's rows, or null if it has none."""
     here = pl.col(config["names_from"]) == name
-    measure = pl.col(config["values_from"]).filter(here)
+    measure = widened(pl.col(config["values_from"]), measure_dtype).filter(here)
     aggregate = config["function"]
 
     # Do not remove this guard: polars gives 0 for a cell with no rows, and for 'sum' of only
