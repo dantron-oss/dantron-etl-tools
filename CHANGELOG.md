@@ -7,6 +7,25 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`running_total` adds running sums of number columns**, like Alteryx's Running Total: each row
+  gets the total so far, in the order the rows arrive, starting again for each `group_by` group. A
+  null adds nothing. Whole numbers give `Int64` totals, floats `Float64`, and an exact `Decimal`
+  column exact totals at its places. A running value that does not fit stops the step, naming the
+  group and the column. Put a `sort` in front for a meaningful order.
+- **`match_one_to_many`** pairs each whole with the one set of its candidate parts whose amounts add
+  up to it, such as a deposit with the payments it holds. A whole with no such set, more than one,
+  or a part another whole also needs is set aside with a reason, never guessed. Amounts are whole
+  numbers or `Decimal`, compared exactly, within an optional `tolerance`.
+- **`multi_row_formula`**, Alteryx's Multi-Row Formula: set one column with an expression that can
+  read other rows. `[Row-1:amount]` is `amount` one row up and `[Row+1:amount]` one row down, in
+  arrival order, within each group of `group_by`; a row that is not there reads as null. An
+  earlier row of the column being written reads what the step already wrote, so
+  `coalesce([amount], [Row-1:amount])` fills blanks down and `coalesce([Row-1:balance], 0) +
+  [amount]` keeps a running balance. Every other tool still refuses `[Row-1:amount]` as a column
+  the input does not have.
+
 ## [0.4.2] - 2026-11-26
 
 ### Changed

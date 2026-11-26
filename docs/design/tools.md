@@ -688,6 +688,39 @@ smaller number, so pointers never loop, and each round the larger end of every r
 being a group. On a single chain at least half the groups go each round, so 200,000 records in a chain
 take at most 18 rounds.
 
+## multi_row_formula
+
+**Why a tool.** A fill-down or a running balance reads what the step wrote one row up, and formula
+reads only the input. It is Alteryx's Multi-Row Formula, and SQL's LAG and LEAD over a window
+partitioned by `group_by` in arrival order.
+
+**Row references are syntax, read by this tool alone.** `[Row-1:amount]` is lifted by the scan like
+any column name. This tool asks the scan which of those names are row references and adds one column
+per reference before the expression is compiled, so the compiler, its type checks and its division
+checks are formula's own. Every other tool reads the same brackets as a column of that whole name
+and refuses it, as it did before. The runner's column check asks the tool which input columns its
+expression reads (`column_references`), because an earlier row of a new output column is not on the
+input.
+
+**Without self-reference, all rows at once.** Each reference is the column shifted within its group.
+
+**With self-reference, a window at a time until nothing changes.** Rows are taken in order of their
+place in their group: every group's first row, then every group's second, and so on. Within a window
+of places, the formula is worked out for every row at once, reading the values the last pass wrote,
+and repeated until a pass changes nothing. Each row reads only rows above it, so there is one set of
+values that a pass leaves unchanged, and it is the set a row-by-row walk gives. A pass also fixes at
+least one more place for good, so it always ends. A fill-down settles in as many passes as the
+longest run of blanks; 50,000 rows with a value every hundredth row take under a second. A running
+balance in one long group needs a pass per row and is slow (about 45 seconds for 50,000 rows in one
+group); across many groups it is quick (under a second for the same rows in 500 groups). The help
+points a running balance at `running_total`, which is fast in every case.
+
+**Refusals read the same as formula's.** A division by zero, an answer past 38 digits or a value
+that does not convert is acted on only once every row has settled, so a divisor that is zero only
+on a pass before the rows above it were final does not stop the step. The refusal then names every
+row whose own calculation has no answer, in arrival order, with the input's own columns and not
+the tool's `Row-1:...` columns, as formula would name them.
+
 ## cross_tab
 
 **For series.** One row per key and period becomes one row per key with a column per period, which is

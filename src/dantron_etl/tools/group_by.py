@@ -204,13 +204,25 @@ def exact_parts(expression: pl.Expr, function: str) -> pl.Expr:
             ordered.slice(count // 2, 1).first().alias("high"),
         )
     else:
-        part = pl.lit(_PART, dtype=pl.Int128)
-        whole = _whole(expression)
-        fields = [(whole // part).sum().alias("high"), (whole % part).sum().alias("low")]
+        high, low = _halves(expression)
+        fields = [high.sum().alias("high"), low.sum().alias("low")]
         if function == "mean":
             fields.append(expression.count().cast(pl.Int128).alias("count"))
         parts = pl.struct(*fields)
     return pl.when(expression.is_not_null().any()).then(parts).otherwise(None)
+
+
+def exact_running_parts(expression: pl.Expr, within: list[str]) -> pl.Expr:
+    """The 'sum' parts of ``exact_parts``, as running totals in row order, one per row.
+
+    Shared with running_total. The totals start again for each group of the ``within`` columns,
+    or run over every row when it is empty. A null adds nothing, and the parts stay null until
+    the group's first value, so ``exact_results`` gives null there.
+    """
+    high, low = (half.cum_sum().forward_fill() for half in _halves(expression))
+    if within:
+        high, low = high.over(within), low.over(within)
+    return pl.when(high.is_not_null()).then(pl.struct(high.alias("high"), low.alias("low")))
 
 
 def exact_results(parts: pl.Series, function: str, places: int) -> tuple[pl.Series, pl.Series]:
@@ -249,6 +261,12 @@ def exact_results(parts: pl.Series, function: str, places: int) -> tuple[pl.Seri
     )
     values = exact_from_text(worked["text"], places + extra).values.alias(parts.name)
     return values, worked["too_large"].alias(parts.name)
+
+
+def _halves(expression: pl.Expr) -> tuple[pl.Expr, pl.Expr]:
+    """An exact value as a whole number of its smallest place, split at 10**19 into a high and a low part."""
+    part, whole = pl.lit(_PART, dtype=pl.Int128), _whole(expression)
+    return whole // part, whole % part
 
 
 def _whole(expression: pl.Expr) -> pl.Expr:

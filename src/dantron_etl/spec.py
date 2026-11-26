@@ -15,8 +15,7 @@ from types import MappingProxyType
 from typing import Any
 
 from .errors import PipelineError, name_choices
-from .expr import references
-from .config import expression_values
+from .contract import column_references_for
 from .registry import REGISTRY, ToolRegistry
 
 __all__ = ["Container", "Lane", "Pipeline", "PortRef", "Step"]
@@ -254,10 +253,9 @@ class Pipeline:
         registry = self.registry if self.registry is not None else REGISTRY
         result: dict[str, dict[str, frozenset[str]]] = {}
         for step in self.steps:
-            tool = registry.get(step.tool)
-            values = expression_values(tool.config_template(), step.config)
-            if values:
-                result[step.id] = {path: references(text) for path, text in values}
+            found = column_references_for(registry.get(step.tool), step.config)
+            if found:
+                result[step.id] = found
         return result
 
 

@@ -2067,3 +2067,53 @@ class TestReleasingFramesUnderACache:
         assert released["trimmed"] == {PortRef("entries", "rows")}, "'kept' would have read it, and no longer runs"
         assert released["rated"] == {port}, "a cached frame is released like any other once nothing reads it"
         assert dict(live.frames) == {}, "a resumed live run holds nothing when it ends"
+
+
+class TestARowReferenceIsCheckedAsTheColumnItReads:
+    """The runner checks a multi_row_formula step's [Row-1:amount] as a read of 'amount', before it runs.
+
+    The column check names what each expression reads. A row reference reads the column after the
+    colon, and an earlier row of the output reads what the step itself writes, so it asks nothing
+    of the input.
+    """
+
+    def _balance_flow(self, expression: str) -> Pipeline:
+        return load_pipeline(
+            {
+                "name": "a running balance",
+                "steps": [
+                    {"id": "entries", "tool": "read_csv", "config": {"path": "entries.csv"}},
+                    {
+                        "id": "balanced",
+                        "tool": "multi_row_formula",
+                        "config": {"output": "balance", "type": "Float64", "expression": expression},
+                        "inputs": {"rows": "entries.rows"},
+                    },
+                    {
+                        "id": "checked",
+                        "tool": "assert_rows",
+                        "config": {"predicate": "[balance] >= 0", "allow_empty": True},
+                        "inputs": {"rows": "balanced.rows"},
+                    },
+                ],
+            }
+        )
+
+    def test_a_flow_reading_an_earlier_row_of_a_new_column_runs(self) -> None:
+        spec = self._balance_flow("coalesce([Row-1:balance], 0) + coalesce([Row - 1 : amount], 0)")
+        sources = {PortRef("entries", "rows"): pl.DataFrame({"amount": [5.0, 7.0, 1.0]})}
+
+        assert spec.column_references()["balanced"] == {"expression": frozenset({"amount"})}
+        trace = run_pipeline(spec, sources=sources, retain="all")
+
+        assert trace.frames[PortRef("balanced", "rows")]["balance"].to_list() == [0.0, 5.0, 12.0]
+
+    def test_a_misspelled_column_in_a_row_reference_is_refused_before_the_step_runs(self) -> None:
+        spec = self._balance_flow("coalesce([Row-1:balance], 0) + [Row-1:amonut]")
+        sources = {PortRef("entries", "rows"): pl.DataFrame({"amount": [5.0, 7.0, 1.0]})}
+
+        with pytest.raises(ColumnCheckError) as raised:
+            run_pipeline(spec, sources=sources, retain="all")
+
+        assert raised.value.step_id == "balanced"
+        assert "amonut" in str(raised.value)
