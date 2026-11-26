@@ -33,7 +33,7 @@ from ..authoring import (
     WorkedExample,
     example_database,
 )
-from ._table_load import require_landable_columns, require_matching_table, require_rows
+from ._table_load import landing_frame, require_landable_columns, require_matching_table, require_rows
 
 _MODE_ENUM = ("replace", "append")
 
@@ -108,6 +108,14 @@ class WriteTable:
                 "A column whose values will not fit the table's column type is refused before anything "
                 "is written, naming the column: text in a whole-number column, or a fraction. "
                 "publish_tables runs the same checks.",
+                "A number goes into a numeric(p,s) column only when every value fits s places and p "
+                "digits; the database would round the rest without a word. A Float64 is read to 15 "
+                "significant digits first, as round reads it, and that reading is what is written: "
+                "10.25 fits numeric(12,2), 10.255 is refused. Round first with a formula step.",
+                "A Decimal column is never written to a double precision, real or float column. Convert "
+                "it with cast_columns to Float64 first. A Float64 into a float column is written as it is.",
+                "SQLite has no exact type: a Decimal is sent as its digits, and SQLite stores them by "
+                "its own rule. A numeric(p,s) column is checked the same way on both.",
                 "If the database refuses rows during the load (a missing required value, a repeated "
                 "key), the step stops, names the table and shows the rows that were refused.",
                 "The same rows pass on through `rows`, so the flow can continue after the write.",
@@ -137,8 +145,10 @@ class WriteTable:
         with open_connection(uri) as connection:
             require_matching_table(connection, frame, qualified)
             require_rows("write_table", frame, qualified, config["allow_empty"])
-            declared = driver_for(connection).declared_column_types(connection, config["schema"], config["table"])
-        require_landable_columns(frame, declared, qualified)
+            loader = driver_for(connection)
+            declared = loader.declared_column_types(connection, config["schema"], config["table"])
+            numerics = loader.numeric_declarations(connection, config["schema"], config["table"])
+        require_landable_columns(frame, declared, qualified, numerics)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
@@ -182,6 +192,7 @@ def _write_rows(
     wrong", so an unknown driver is refused by name and every engine reports the same way.
     """
     loader = driver_for(connection)
+    landing = landing_frame(frame, loader.numeric_declarations(connection, schema, table))
     load = _Load(
         loader=loader,
         connection=connection,
@@ -191,7 +202,7 @@ def _write_rows(
         mode=mode,
         frame=frame,
         columns=list(frame.columns),
-        rows=frame.rows(),
+        rows=landing.rows(),
     )
 
     try:

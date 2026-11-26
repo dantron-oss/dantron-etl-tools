@@ -270,8 +270,8 @@ the step and names the values: it never becomes a blank date. A format without a
 **Numbers.** `floor` and `ceil` go down or up to a whole number and keep the number's type, so a
 `Decimal` stays a `Decimal`. `sign` gives -1, 0 or 1. `mod(a, b)` is the remainder with the sign of
 `a`, as SQL's `MOD` and Alteryx's `Mod`: `mod(-7, 3)` is -1, where the engine's own `%` would give 2.
-`mod` by zero stops the step, as `/` by zero does, and a `Decimal` is refused: cast it to `Float64`
-first. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
+`mod` by zero stops the step, as `/` by zero does. On a `Decimal` it is exact, with the larger of the
+two places: `mod(812.40, 3)` is 2.40. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
 only all nulls give null. `nullif(a, b)` is null where `a` equals `b`, otherwise `a`;
 `nullif([code], '')` turns empty text into a null.
 
@@ -326,8 +326,6 @@ Some expressions that look reasonable never give the answer they seem to, and ar
   `[posted_at] <= date'2025-01-31'` leaves out the 31st after midnight and `[posted_at] =
   date'2025-01-31'` is almost never true. `>=` and `<` mean what they say and are allowed; for the
   rest, cast the timestamp to `Date` first, or write the range as `>= start and < next day`.
-- `/` on a `Decimal` column keeps the column's own number of places (100.00 / 3 is 33.33). Cast the
-  column to `Float64` first.
 - A `#` outside quotes is not a comment; put notes in the step's `why`.
 
 **Only some fields are expressions, and it matters.** A tool's template says which: `filter`'s
@@ -585,6 +583,79 @@ Each of these has caught a real pipeline.
 - **A decimal becomes a whole number only when it already is one.** `cast_columns` (and `unpivot`'s
   `values_type`) reads `12.0` as `Int64` 12, but stops on `1.99`, naming the column and the values,
   because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
+- **`Decimal` is the exact type, and its places are written beside it.** `{type: Decimal, places: 2}`
+  names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
+  the point, from 0 to 38.
+- **`cast_columns` converts to `Decimal` without rounding.** Text written as plain digits (`-12.50`),
+  whole numbers, exact columns of other places and floats all convert, but only a value that fits:
+  `'1.005'` does not fit 2 places, so the step stops and says to `round` first, or under
+  `on_invalid: set_null` empties, counts and marks it. A float is read to 15 significant digits, so
+  `0.1 + 0.2` becomes `0.30`. Back to `Float64`, each value lands on the nearest double.
+- **`read_csv` reads `Decimal` only where `column_types` says so**, with its `places`. A figure is
+  otherwise worked out as `Float64`; nothing is guessed to be exact. Each value must be plain digits
+  that fit the places (`1.005` at 2 places, `1e3` and `+1.25` stop the run), and a blank field is
+  null. A column `write_csv` wrote from an exact column reads back as itself.
+- **`unpivot` stacks exact columns of different places at the larger places.** `1.50` beside
+  `0.0725` comes out as `1.5000` and `0.0725`. An exact column beside a `Float64` column is refused,
+  naming the float column: convert one side with `cast_columns`. `values_type: Decimal` with
+  `values_places: 2` reads every turned column exactly, by `cast_columns`' rule.
+- **A total of an exact column is exact, at the column's places.** `sum`, `min`, `max`, `first`,
+  `last` and their `_non_null` forms in `group_by` and `cross_tab` keep the places, with 38 digits in
+  all, on every engine version, even when the source held fewer digits.
+- **An exact total that needs more than 38 digits stops the step.** A `sum` in `group_by` or a
+  cell in `cross_tab` past 38 digits (at 2 places, 36 before the point) names the group and the
+  column instead of giving the wrong number the engine would. Convert to `Float64` for figures that
+  large, or round to fewer places first.
+- **Exact keys pair by value.** `join` pairs a `Decimal` key with a `Decimal` key of other places
+  (1.50 with 1.5000) and with a whole-number key (5.00 with 5), as SQL's `=` does; the key on
+  `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
+  places the same way, writing the records at the larger places. A `Decimal` key beside a `Float64`
+  key is refused, naming the float column: convert one side with `cast_columns` first.
+- **`union` stacks `Decimal` columns of different places at the larger places.** 0.07 over 0.0725
+  comes out as 0.0700 and 0.0725. Nothing is rounded. A `Decimal` column over a `Float64` or a
+  whole-number column is refused, as every other type difference is.
+- **A Postgres `numeric(p,s)` column arrives as `Decimal` with s places**, whatever its values, and an
+  empty table's does too. A `numeric` with no places stated arrives at the most places any of its
+  values has, so the type can change from night to night: declare the places at the source. A value
+  past 38 digits, or `NaN`, stops `read_table` naming the column. SQLite has no exact type.
+- **A database's `numeric(p,s)` column takes a number only when every value fits.** `write_table`
+  and `publish_tables` check each value against s places and p digits before anything is written,
+  because the database would round the rest without a word. A `Float64` is read to 15 significant
+  digits first (10.25 fits `numeric(12,2)`, 10.255 does not). A `Decimal` column never goes into a
+  `double precision`, `real` or `float` column; `cast_columns` it to `Float64` first. A `Float64`
+  into a float column is written as it always was.
+- **`write_excel` writes a `Decimal` column when a cell keeps every value.** A cell holds a double,
+  which keeps 15 significant digits, so a value with more (12,345,678,901,234.56) refuses the column,
+  naming the rows: round it upstream, or cast it to `String`. A rule for `type: Decimal` in
+  `formats`, `widths` or `wrap` reaches every `Decimal` column, whatever its places; a `Float64`
+  rule does not. `write_csv` writes a `Decimal` with every place it holds.
+- **The viewer names an exact column by its places.** A column heading reads `Decimal, 2 places`,
+  as a flow writes the type, and each cell shows the digits as held (`58.899000`), never a rounded
+  or scientific spelling. A saved run's `ports.json` records the type the same way.
+- **Arithmetic on an exact column is exact.** `+` and `-` give the larger of the two places:
+  `[amount] + 0.0725` on 812.40 is 812.4725. A number typed in the expression is exact as written,
+  so `1.10` has 2 places, and a whole number counts as 0 places. An answer that needs more than 38
+  digits stops the step and names the rows; it never rounds or wraps round.
+- **`*` adds the two places, and never rounds.** 812.40 × 0.0725 is 58.899000, six places. Places
+  grow quickly in a chain of products, and a product whose places pass 38 is refused when the step
+  starts. Round one side first, such as `round([rate], 4)`, when a figure only needs so many.
+- **A calculation of typed numbers alone is exact beside an exact column:** `[amount] * (1 + 0.0725)`
+  multiplies by exactly 1.0725, and `1 / 3` there is 0.3333333333333333 by the division rule.
+- **`/` gives 16 places, or more if either side has more,** and rounds the last place half away from
+  zero: 100.00 / 7.00 is 14.2857142857142857. Round the answer to the places you report. At 16 places
+  each side may have at most 22 whole digits; a larger one stops the step.
+- **`round(x, n)` on an exact value gives exactly `n` places**, half away from zero: `round(58.899000,
+  2)` is 58.90 and `round(1.5, 2)` is 1.50. `n` runs to 38. Apart from the last place of a division, it is
+  the only place an exact figure is rounded.
+- **An exact value never meets a float.** `[amount] + [ratio]`, `[amount] = [ratio]`,
+  `coalesce([amount], [ratio])` and every other function that combines values stop the step when
+  `amount` is `Decimal` and `ratio` is `Float64`, naming the float. Convert one side first with
+  `cast_columns`. A whole number or a typed number beside an exact value is exact:
+  `coalesce([amount], 0.0)` gives 0.00 where `amount` is blank.
+- **Exact values compare by value.** 1.50 equals 1.5000, and `[amount] in (1.5, 812.4)` matches
+  1.50 and 812.40. Nothing is rounded to match: 0.12 is not in `(0.125)`.
+- **`case_when` with an exact branch writes every branch with the largest places among them.** A
+  whole number or a typed number (`then: "0.0"`) is exact there; a `Float64` branch is refused.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
@@ -706,8 +777,11 @@ Two more rulings you will meet:
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
 - **`mean`, `median`, `std` and `quantile` skip nulls**, as SQL's `AVG` does, so a mean divides by
-  the values that are there. A group with no value gives null. They refuse an exact `Decimal`
-  column, which they would work out in binary floating point; cast it to `Float64` first.
+  the values that are there. A group with no value gives null. Of an exact `Decimal` column,
+  `mean` is the exact total divided by the count and `median` the middle value (or the two middle
+  values divided by 2), at 16 places or the column's own if more, the last rounded half away from
+  zero: the mean of 1, 0 and 0 is 0.3333333333333333. `std` and `quantile` refuse an exact column,
+  since their answer cannot be exact; convert it to `Float64` first.
   `quantile` needs `fraction`, from 0 to 1, beside it. `any_true` and `all_true` skip nulls too, and
   a group of nulls gives null, as SQL's `BOOL_OR` and `BOOL_AND`.
 - **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a

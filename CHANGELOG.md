@@ -7,6 +7,133 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
+  listed in `COLUMN_TYPES`.
+- **`cast_columns` converts to `Decimal`**, written `{column: price, type: Decimal, places: 2}`. Text
+  written as plain digits, whole numbers, exact columns of other places and `Float64` convert
+  exactly; a float is read to 15 significant digits first. A value that does not fit the places
+  without rounding (`1.005` at 2 places) stops the step, saying to round first, or with
+  `on_invalid: set_null` is emptied, counted and marked.
+- **`read_csv` reads `Decimal` columns**, named in `column_types` with `places`. Each value must be
+  written as plain digits that fit the places, or the run stops naming it; a blank field is null.
+  A column is never worked out as `Decimal` by itself.
+- **`unpivot` takes `values_type: Decimal`** with `values_places`, converting every turned column
+  exactly by `cast_columns`' rule. Without `values_type`, exact columns of different places, which
+  were refused, are stacked at the larger places. An exact column beside a `Float64` one is refused,
+  naming the float column.
+- **`mean` and `median` of an exact `Decimal` column**, which were refused, are exact in `group_by`
+  and `cross_tab`: the total divided by the count, or the middle value (the two middle values divided
+  by 2), at 16 places or the column's own if more, the last rounded half away from zero. One that
+  needs more than 38 digits stops the step. `std` and `quantile` still refuse an exact column, now
+  saying why.
+- **`join` pairs exact keys by value**: a `Decimal` key with a `Decimal` key of other places (1.50
+  with 1.5000), and with a whole-number key (5.00 with 5). Both used to be refused, so no join that
+  ran before gives a different answer. A `Decimal` key beside a `Float64` key is still refused, now
+  naming the float column to convert. `make_groups` links two `Decimal` columns of different places
+  by value too, at the larger places.
+- **`write_excel` writes a `Decimal` column** when every value has at most 15 significant digits,
+  the most a cell keeps; it used to refuse every `Decimal` column. A value with more refuses the
+  column, naming the rows. A `formats`, `widths` or `wrap` rule for `type: Decimal` reaches every
+  `Decimal` column, whatever its places.
+- **The viewer shows an exact column's type in words**: `Decimal, 6 places` where it showed
+  `Decimal(precision=38, scale=6)`, in each column heading and in a saved run's `ports.json`. Cells
+  show the digits as held, including a tiny figure such as `0.0000001000`, which a drawn slice used
+  to show as `1.000E-7`.
+- **`union` stacks `Decimal` columns of different places** at the larger places (0.07 over 0.0725
+  gives 0.0700 and 0.0725), where it used to refuse them. A `Decimal` column over a `Float64` or
+  whole-number column is still refused; that refusal, and every other type refusal in `union`, now
+  says to use `cast_columns` on one side.
+- **`read_table` reads a Postgres `numeric` as an exact `Decimal` it controls.** A value a `Decimal`
+  cannot hold (more than 38 digits, or `NaN`) stops the step naming the column, instead of an engine
+  error. A `numeric` with no places stated still arrives at the places of its data; the notes now say
+  so and recommend declaring them.
+- **`/` divides exact decimals**, where it was refused. The answer has 16 places, or more if either
+  side has more, and the last place is rounded half away from zero: 100.00 / 7.00 is
+  14.2857142857142857, and 2 / 3 is 0.6666666666666667. Each side may have at most 22 whole digits
+  at 16 places; a larger one stops the step by name. A zero divisor stops the step, as before, and
+  a null gives null.
+
+### Changed
+
+- **`cast_columns` from an exact decimal to `Float64` lands on the nearest double.** It now goes
+  through the value's digits. The figure changes only where the value's digits, counting every
+  place the column holds, make a whole number larger than 2^53, or the column holds more than 22
+  places: there the old conversion could miss by one step (457,200,000,000,000,000,000,000.00 gave
+  4.5720000000000004e+23, and gives 4.572e+23 now). Any 2-place price under 90 trillion converts
+  exactly as before. Nothing to do.
+- **`unpivot` of exact columns gives 38 digits in all.** Turned exact columns that all held, say,
+  `Decimal(18, 2)` came out as `Decimal(18, 2)`; they come out as `Decimal(38, 2)` now, with the same
+  values. Nothing to do, unless a later step compared the type by its digits.
+- **`group_by` and `cross_tab` give an exact total 38 digits in all.** A `sum`, `min`, `max`,
+  `first` or `last` of a `Decimal(18, 2)` column gave `Decimal(18, 2)` (and on polars 1.38 a sum
+  past 16 digits before the point came out wrong); it gives `Decimal(38, 2)` now, with the right
+  value. Nothing to do.
+- **An exact total past 38 digits stops the step.** A `sum` in `group_by`, or a `cross_tab` cell,
+  of an exact column whose total needs more than 38 digits gave a wrong number without a word (and
+  on polars 1.38 could crash the run later); it now stops, naming the group and the column. Convert
+  the column to `Float64` for figures that large, or round it to fewer places first.
+- **`read_table` types a Postgres `numeric(p,s)` from its declaration.** An empty table's column used
+  to arrive as `Null`; it now arrives as `Decimal` with s places, as a full table's does. A column a
+  driver handed over with fewer than 38 digits in all (`numeric(12,2)` through ADBC) now arrives with
+  38, keeping its places. The figures are the same. If a later step compared that column's type
+  with a `Null` one, look at it again.
+- **`write_table` and `publish_tables` refuse a number a `numeric(p,s)` column would round.** Before,
+  a `Float64` value with more places than the column holds (10.255 into `numeric(12,2)`) was rounded
+  by Postgres without a word, and stored as it was by SQLite; a not-a-number went into Postgres as
+  `NaN`; a whole number with too many digits was refused by Postgres in its own words and stored by
+  SQLite. Now each stops the step before anything is written, naming the column, the declaration and
+  the rows. A `Float64` that fits is written as its reading to 15 significant digits, which is what
+  Postgres stored anyway for any figure of 15 digits or fewer. What to do: round the column in a
+  formula step to the table's places (`round([amount], 2)`), or widen the table's column. Writes of
+  `Float64` to `double precision`, `real` or `float` columns, and to a `numeric` with no places
+  stated, are unchanged.
+- **A `Decimal` column is refused by a `double precision`, `real` or `float` column**, where it used
+  to be written as its nearest binary value. Convert it with `cast_columns` to `Float64` first. A
+  `Decimal` column that fits now goes into a `numeric(p,s)` column on SQLite too, sent as its digits;
+  before, SQLite refused it with a driver error.
+- **Adding or subtracting a typed number to an exact column stays exact.** `[amount] + 0.0725`,
+  where `amount` is a `Decimal` column, gave a `Float64`, so the figure was a nearby double and the
+  column was no longer exact. It now gives an exact decimal with the larger places, 812.4725, as two
+  exact columns and an exact column beside a whole number already did. A sum too large for 38
+  digits stops the step and names the rows, where the engine stopped with its own error, and a
+  column whose places differ no longer turns such a sum into a blank. If a step relied on the float, convert the column with
+  `cast_columns` to `Float64` first.
+- **Multiplying exact values no longer rounds.** `[price] * [rate]` on two `Decimal` columns gave the
+  larger of the two places, rounded half to even: 0.07 × 0.07 was 0.00, and 812.40 × 0.07 was
+  56.87. It now gives the two places added, with nothing rounded: 0.0049 and 56.8680. A typed
+  number counts its written places, so `[price] * 0.0725` is exact too, where it gave a `Float64`.
+  A product whose places would pass 38 is refused when the step starts, and one too large for 38
+  digits stops the step and names the rows. Where a step needs the old figure, write
+  `round([price] * [rate], 2)`.
+- **An exact column meeting a float column stops the step.** `[amount] * [ratio]`, `[amount] =
+  [ratio]`, `coalesce([amount], [ratio])`, `least`, `greatest` and `nullif`, with `amount` a
+  `Decimal` column and `ratio` a `Float64` one, gave a float or compared as floats, without a word.
+  They now stop when the step starts, naming the float. Convert one side first with `cast_columns`.
+  A typed number or a whole number beside an exact column is exact instead: `coalesce([amount], 0.0)`
+  gives 0.00, where it gave a `Float64`. `mod` on a `Decimal`, which was refused, is now exact.
+- **Exact values compare by value, whatever their places.** `[amount] in (0.3, 812.4)` on a
+  `Decimal` column matched as floats; it now matches 0.30 and 812.40 exactly, and never rounds
+  (0.12 is not in `(0.125)`). A value with many whole digits compared with one with many places,
+  such as a 30-digit count against a price with 10 places, gave a blank; it now gives the answer.
+- **`round(x, n)` on an exact value gives exactly `n` places.** `round([price], 2)` on a `Decimal`
+  column with 3 places kept the 3 places (1.005 became 1.010); it now gives a `Decimal` with 2 places
+  (1.01), as PostgreSQL's `round` does, and pads with zeros when the value has fewer. `round` of an
+  exact product gave a `Float64`; it is now exact. `floor`, `ceil` and `round` on a value at the very
+  top of what its column holds, which gave a number too large for the column without a word, now
+  stop the step and name the rows. Figures are unchanged; only the places written after them move.
+- **A calculation made only of typed numbers is exact beside an exact column.** `[amount] = 0.1 + 0.2`
+  compared as floats, so 0.30 was not equal to it; it is now. `[amount] * (1 + 0.0725)` gave a
+  `Float64`; it now gives an exact decimal, 871.299000 for 812.40. Beside a float column, or on its
+  own, such a calculation is the float it always was.
+- **`case_when` keeps an exact ladder exact.** A ladder with one `Decimal` branch and one `Float64`
+  branch gave a `Float64` column; it is now refused when the step starts, naming the float branch.
+  A typed number beside an exact branch, such as `then: "0.0"`, gave a `Float64`; it is now exact.
+  Branches of different places gave the engine's own type, which held only 18 digits; every branch
+  is now written with the largest places among them, in 38 digits. Convert a float branch with
+  `cast_columns` first.
+
 ## [0.3.0] - 2026-11-20
 
 This release adds to the library and changes no result a pipeline gives today. It reads Excel's

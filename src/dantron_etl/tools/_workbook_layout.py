@@ -10,6 +10,7 @@ from typing import Any, Final
 
 import polars as pl
 
+from ..column_types import exact_to_float
 from ._workbook_checks import table_name
 from ._workbook_rules import column_formats, format_rules, resolve_rules
 
@@ -124,7 +125,10 @@ def _longest_shown(column: pl.Series, code: str | None) -> float:
     values = column.drop_nulls()
     if values.is_empty():
         return 0
-    dtype = column.dtype
+    if isinstance(values.dtype, pl.Decimal):
+        # Shown as the double it is written as, so 1234.5600 is measured as 1234.56.
+        values = exact_to_float(values)
+    dtype = values.dtype
     if dtype == pl.String:
         return float(values.str.len_chars().max() or 0)
     if dtype == pl.Boolean:

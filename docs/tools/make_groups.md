@@ -34,6 +34,7 @@ More on some settings:
 - A pair of a record with itself is how a record with no links is listed. It does not cut that record off from its other pairs.
 - Rows come out sorted by group, then by record, so a written file does not change between runs on the same pairs.
 - 'left' and 'right' must have the same type. The number 2 and the text '2' are not the same record, so the tool refuses rather than guess.
+- Two Decimal columns of different places are the one exception: 1.50 and 1.5000 are the same record, written at the larger places. A Decimal column beside a whole-number or Float64 column is refused.
 
 ## Example 1
 

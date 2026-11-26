@@ -129,8 +129,12 @@ config:
 whole-number column. That is fine for a count or a rank. For a large value, `cast_columns` the
 column to `Int64` first; arithmetic past the 32-bit range gives a wrong number.
 
-**Dividing a `Decimal` column keeps its places.** `100.00 / 3` on a `Decimal` column with two places
-is `33.33`. Cast it to `Float64` first if you need more.
+**Arithmetic on a `Decimal` column is exact.** A number typed beside it is exact as written, so
+`[amount] * 0.0725` on 812.40 is 58.899000. `+` and `-` give the larger places, `*` adds the places,
+and `/` gives 16 places with the last rounded half away from zero: `100.00 / 7.00` is
+`14.2857142857142857`. Nothing else rounds. An answer that needs more than 38 digits stops the step.
+A `Decimal` column meeting a `Float64` column stops the step too: convert one side with
+`cast_columns` first.
 
 **A timestamp compared with a date** reads the date as midnight at its start. So
 `[posted_at] <= date'2025-01-31'` leaves out the 31st after midnight. `>=` and `<` are allowed and

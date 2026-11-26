@@ -9,11 +9,14 @@ import ast
 import operator
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from decimal import Decimal
 from typing import Any, Final, NamedTuple
 
 import polars as pl
 
+from ..column_types import EXACT_DIGITS, exact_dtype
 from ..renames import FUNCTION_RENAMES
+from . import exact
 from .arguments import POSITIONS, Param, Value
 from .errors import Refusal, error
 from .families import (
@@ -107,6 +110,48 @@ def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | 
     return tuple(compiler.divisions)
 
 
+def exact_places(text: str, columns: Mapping[str, pl.DataType]) -> int | None:
+    """The places ``text`` gives as an exact value, or None when it gives no exact value.
+
+    An exact decimal gives its places, a whole number 0, and a typed number, or a calculation of
+    typed numbers, the places it is written with. A float, text, a date or a null gives None.
+    """
+    tree, scanned, schema = front_door(text, columns)
+    typed = _Compiler(text, scanned, schema)._typed(tree.body)
+    if typed.constant is not None:
+        return exact.places_of(dtype_of_value(typed.constant))
+    if isinstance(typed.dtype, pl.Decimal) or (typed.dtype is not None and typed.dtype.is_integer()):
+        return exact.places_of(typed.dtype)
+    return None
+
+
+def compile_exact(text: str, columns: Mapping[str, pl.DataType], places: int) -> tuple[pl.Expr, pl.Expr]:
+    """``text`` as an exact decimal with ``places`` places, and where a value has too many whole digits for that.
+
+    For a value that sits beside exact values, such as one branch of a ladder. A typed number is exact
+    as written. A float is refused, as everywhere an exact value meets one.
+    """
+    tree, scanned, schema = front_door(text, columns)
+    compiler = _Compiler(text, scanned, schema)
+    typed = compiler._typed(tree.body)
+    if typed.constant is not None:
+        typed = compiler._exact_literal(typed, None)
+    elif typed.dtype is not None and typed.dtype.is_float():
+        raise error(
+            text,
+            f"{compiler._describe(typed)}, a float, where it sits beside an exact decimal: an exact value meeting a "
+            f"float would give a float without a word. Convert one side first with the cast_columns tool",
+        )
+    assert typed.dtype is not None
+    return exact.at_places(typed.expr, typed.dtype, places)
+
+
+def exact_constant(text: str) -> Decimal | None:
+    """The exact value of ``text`` when it is a typed number, as written; None for anything else."""
+    tree, scanned, schema = front_door(text, None)
+    return _Compiler(text, scanned, schema)._typed(tree.body).constant
+
+
 def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[RowCheck, ...]:
     """Every function call in ``text`` that has rows with no answer, in the order written."""
     tree, scanned, schema = front_door(text, columns)
@@ -195,7 +240,7 @@ class _Compiler:
         folded = self._spelling.literal(node)
         if isinstance(folded, (int, float)) and not isinstance(folded, bool):
             self._check_whole_number(folded)
-            return self._typed_value(folded, node)
+            return self._typed_value(folded, node)._replace(constant=self._spelling.written_number(node))
 
         operand = _signed(self._typed(node.operand))
         self._require(operand, Family.NUMBER, "a minus sign needs a number")
@@ -210,7 +255,8 @@ class _Compiler:
             return Typed(negative, Family.NULL, node, operand.holds, operand.dtype)
         # The type comes along, because a minus sign does not change it: the negative of a whole
         # number is a whole number, and the negative of a decimal is a decimal.
-        return Typed(negative, Family.NUMBER, node, "gives a number", operand.dtype)
+        constant = None if operand.constant is None else operand.constant.copy_negate()
+        return Typed(negative, Family.NUMBER, node, "gives a number", operand.dtype, constant)
 
     def _binary_op(self, node: ast.BinOp) -> Typed:
         operation = type(node.op)
@@ -221,19 +267,27 @@ class _Compiler:
         right = self._typed(node.right)
         for operand in (left, right):
             self._require_arithmetic(operand, symbol)
-            if operation is ast.Div and isinstance(operand.dtype, pl.Decimal):
-                raise error(
-                    self._text,
-                    f"{self._describe(operand)}, and '/' on a decimal column keeps the column's own number of "
-                    f"places (100.00 / 3 gives 33.33, and 7 / 2 at no places gives 4) instead of dividing "
-                    f"exactly; cast the column to Float64 first, with the cast_columns tool",
-                )
         left, right = _signed(left), _signed(right)
+        exact_pair = self._exact_operands([left, right])
+        if exact_pair is not None and operation in (ast.Add, ast.Sub):
+            first, second = exact_pair
+            answer = exact.add(first.expr, first.dtype, second.expr, second.dtype, subtract=operation is ast.Sub)
+            return self._exact_answer(answer, node, exact_pair)
+        if exact_pair is not None and operation is ast.Mult:
+            first, second = exact_pair
+            self._refuse_too_many_places(first, second)
+            return self._exact_answer(exact.multiply(first.expr, first.dtype, second.expr, second.dtype), node, exact_pair)
         if operation is ast.Div:
             self._record_division(node.right, right)
+        if exact_pair is not None and operation is ast.Div:
+            return self._exact_quotient(node, exact_pair)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
         dtype = arithmetic_dtype(operation, left.dtype, right.dtype)
-        return Typed(built, Family.NUMBER, node, "gives a number", dtype)
+        # A calculation made only of typed numbers is worked out exactly too, for use beside an exact column.
+        constant = None
+        if left.constant is not None and right.constant is not None:
+            constant = exact.constant(symbol, left.constant, right.constant)
+        return Typed(built, Family.NUMBER, node, "gives a number", dtype, constant)
 
     def _compare(self, node: ast.Compare) -> Typed:
         if len(node.ops) != 1:
@@ -270,6 +324,11 @@ class _Compiler:
                 f"{self._describe(right)}",
             )
         self._refuse_timestamp_against_date(left, right, operation)
+        exact_pair = self._exact_operands([left, right])
+        if exact_pair is not None:
+            first, second = exact_pair
+            built = exact.compare(_COMPARISONS[type(operation)], (first.expr, first.dtype), (second.expr, second.dtype))
+            return Typed(built, Family.BOOLEAN, node, "gives a truth value")
         built = _COMPARISONS[type(operation)](left.expr, right.expr)
         return Typed(built, Family.BOOLEAN, node, "gives a truth value")
 
@@ -326,7 +385,7 @@ class _Compiler:
             if isinstance(value, int) and not isinstance(value, bool):
                 self._check_whole_number(value)
             values.append(value)
-            parts.append(self._typed_value(value, candidate))
+            parts.append(self._typed_value(value, candidate)._replace(constant=self._spelling.written_number(candidate)))
 
         listed = self._one_family(parts, "a list of values to match needs every value in the same type family")
         left = self._typed(node.left)
@@ -338,6 +397,13 @@ class _Compiler:
             )
         for part in parts:
             self._refuse_timestamp_against_date(left, part, None)
+        if self._schema is not None and isinstance(left.dtype, pl.Decimal):
+            numbers = [part.constant for part in parts]
+            for part in parts:
+                if part.constant is not None:
+                    self._exact_literal(part, left)  # refuses a number no exact decimal holds
+            built = exact.member((left.expr, left.dtype), numbers)
+            return Typed(~built if negated else built, Family.BOOLEAN, node, "gives a truth value")
         if listed is Family.NUMBER and any(isinstance(value, float) for value in values):
             values = [value if value is None else float(value) for value in values]
         built = left.expr.is_in(list(values))
@@ -368,7 +434,7 @@ class _Compiler:
         if isinstance(value, int):
             self._check_whole_number(value)
         if isinstance(value, (int, float)):
-            return self._typed_value(value, node)
+            return self._typed_value(value, node)._replace(constant=self._spelling.written_number(node))
         raise error(
             self._text,
             f"{value!r} is not a literal this language supports (it is a {type(value).__name__}): the literals are "
@@ -467,6 +533,15 @@ class _Compiler:
             family = self._one_family(operands, f"{name}() {params[0].requirement}")
         else:
             family = function.result
+        exact_operands = self._exact_operands(operands) if function.on_exact is not None else None
+        if function.on_exact is not None and exact_operands is not None:
+            if function.divides_by is not None:
+                divisor = function.divides_by
+                self._record_division(node.args[divisor], exact_operands[divisor], f"{name}()")
+            met = iter(exact_operands)
+            given = [(lambda part: (part.expr, part.dtype))(next(met)) if isinstance(argument, Typed) else argument for argument in arguments]
+            answer = function.on_exact(*given)
+            return self._exact_answer(answer, node, exact_operands)
         if function.meets is not None:
             arguments = self._meet(function, arguments)
             operands = [argument for argument in arguments if isinstance(argument, Typed)]
@@ -495,13 +570,6 @@ class _Compiler:
         """Check how a function's value arguments meet each other, as its `meets` says; see Function."""
         operands = [argument for argument in arguments if isinstance(argument, Typed)]
         if function.meets == "arithmetic":
-            for operand in operands:
-                if isinstance(operand.dtype, pl.Decimal):
-                    raise error(
-                        self._text,
-                        f"{self._describe(operand)}, and the engine has no {function.name}() for an exact "
-                        f"Decimal; cast the column to Float64 first, with the cast_columns tool",
-                    )
             return [_widened(argument) if isinstance(argument, Typed) else argument for argument in arguments]
         self._refuse_two_clocks(function.name, operands)
         if function.meets == "compared":
@@ -615,6 +683,95 @@ class _Compiler:
     def _describe(self, typed: Typed) -> str:
         """One operand named the way its author wrote it, with what it holds."""
         return f"{self._spelling.render(typed.node)} {typed.holds}"
+
+    # -- exact decimals ----------------------------------------------------
+
+    def _exact_operands(self, operands: Sequence[Typed]) -> list[Typed] | None:
+        """The operands as exact arithmetic meets them, or None when none of them is exact.
+
+        Only with a schema. A whole number and a null meet an exact value as they are; a typed number
+        becomes an exact literal with the places it was written with.
+        """
+        if self._schema is None or not any(isinstance(operand.dtype, pl.Decimal) for operand in operands):
+            return None
+        exact_column = next(operand for operand in operands if isinstance(operand.dtype, pl.Decimal))
+        met: list[Typed] = []
+        for operand in operands:
+            dtype = operand.dtype
+            if isinstance(dtype, pl.Decimal) or (dtype is not None and (dtype.is_integer() or dtype == pl.Null)):
+                met.append(operand)
+            elif operand.constant is not None:
+                met.append(self._exact_literal(operand, exact_column))
+            elif dtype is not None and dtype.is_float():
+                rendered = self._spelling.render(operand.node)
+                described = self._describe(operand) if operand.holds.startswith("holds") else f"{rendered} gives {dtype}"
+                raise error(
+                    self._text,
+                    f"{self._describe(exact_column)}, an exact decimal, and {described}, a float: "
+                    f"an exact value meeting a float would give a float without a word, and the figure would no "
+                    f"longer be exact. Convert one side first with the cast_columns tool, {rendered} to Decimal "
+                    f"or {self._spelling.render(exact_column.node)} to Float64",
+                )
+            else:
+                return None
+        return met
+
+    def _exact_literal(self, operand: Typed, beside: Typed | None) -> Typed:
+        """A typed number beside an exact value, as an exact literal; refused if an exact decimal cannot hold it."""
+        value = operand.constant
+        assert value is not None
+        if not exact.holds(value):
+            where = "" if beside is None else f" beside {self._spelling.render(beside.node)}, an exact decimal"
+            raise error(
+                self._text,
+                f"{self._spelling.render(operand.node)} is a number{where}, and an exact decimal holds "
+                f"{EXACT_DIGITS} digits in all, counting its places, so it cannot hold that number as written; "
+                f"round it to fewer places, or convert the column to Float64 with the cast_columns tool",
+            )
+        literal = exact.literal(value)
+        return operand._replace(expr=literal, dtype=exact_dtype(exact.places_of(dtype_of_value(value))))
+
+    def _refuse_too_many_places(self, first: Typed, second: Typed) -> None:
+        """Refuse a product whose places pass 38: no row of it could be held, so it is refused before any is read."""
+        places = exact.places_of(first.dtype) + exact.places_of(second.dtype)  # type: ignore[arg-type]
+        if places > EXACT_DIGITS:
+            raise error(
+                self._text,
+                f"{self._describe(first)} and {self._describe(second)}, and their product would have {places} "
+                f"places, more than the {EXACT_DIGITS} digits an exact decimal holds; round one side first, such "
+                f"as round({self._spelling.render(first.node)}, 2), so the product needs fewer places",
+            )
+
+    def _exact_quotient(self, node: ast.BinOp, operands: Sequence[Typed]) -> Typed:
+        """An exact division, with the checks that stop the step on a side too wide for the places it gives."""
+        dividend, divisor = operands
+        quotient = exact.divide((dividend.expr, dividend.dtype), (divisor.expr, divisor.dtype))
+        places = quotient.answer.places
+        for side, too_wide in ((dividend, quotient.dividend_too_wide), (divisor, quotient.divisor_too_wide)):
+            problem = (
+                f"divides exactly in {{0}}, which gives {places} places after the point, so each side may have "
+                f"at most {EXACT_DIGITS - places} whole digits: {{1}} holds {{found}}"
+            )
+            written = (self._spelling.render(node), self._spelling.render(side.node))
+            remedy = (
+                f"A division gives {exact.DIVISION_PLACES} places, or more if either side has more, and an exact "
+                f"decimal holds {EXACT_DIGITS} digits in all. Convert the columns to Float64 with the cast_columns "
+                f"tool for figures that large"
+            )
+            self.row_checks.append(RowCheck(too_wide, side.expr, problem, remedy, written))
+        return self._exact_answer(quotient.answer, node, operands)
+
+    def _exact_answer(self, answer: exact.Exact, node: ast.expr, operands: Sequence[Typed]) -> Typed:
+        """An exact answer as a compiled part, with the check that stops the step where it is too large to hold."""
+        shown = next((operand for operand in operands if operand.constant is None), operands[0])
+        problem = (
+            f"works out {{0}} as an exact decimal with {answer.places} places, and on some rows the answer needs "
+            f"more than {EXACT_DIGITS} digits: {{1}} holds {{found}} there"
+        )
+        written = (self._spelling.render(node), self._spelling.render(shown.node))
+        self.row_checks.append(RowCheck(answer.too_large, shown.expr, problem, exact.TOO_LARGE_REMEDY, written))
+        dtype = answer.dtype if answer.dtype is not None else exact_dtype(answer.places)
+        return Typed(answer.expr, Family.NUMBER, node, "gives a number", dtype)
 
     # -- helpers -----------------------------------------------------------
 

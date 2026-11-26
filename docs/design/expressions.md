@@ -201,6 +201,88 @@ rows. Nothing turns null into false. `is null` and `is not null` are the only te
 themselves, which is what makes them the way to find a missing value; `coalesce([code], 'Z') = 'Z'`
 lets a null row take part.
 
+## Exact decimals
+
+Owner's rulings (2026-11-20): arithmetic on exact decimals is exact and only `round` rounds; a
+number typed in a pipeline is exact as written; an exact value meeting a float stops the step.
+
+**A typed number keeps its text.** The scan passes a number's characters to the parser unchanged,
+and the parser reads only ASCII outside quotes, so a number node's place in the parsed text is the
+author's spelling of it. `Spelling.written_number` reads it back as a Python `Decimal`: `1.10` keeps
+its two places. Each compiled part carries that value as `constant`. Beside an exact column the
+constant is used, as a literal with its written places; anywhere else the float is used, as before,
+so a flow with no exact column computes what it always did.
+A calculation made only of typed numbers (`1 + 0.0725`) carries an exact value too, worked out in
+Python's decimals by the same rules as the columns: no rounding for `+`, `-` and `*`, and the
+division rule for `/`, on whole numbers so nothing is rounded twice. A zero divisor leaves it
+without one, and it is then the float it always was.
+
+**Every answer is checked before it is worked out.** The engine's exact arithmetic is not safe to
+hand a value: it stops with its own error when a sum passes 38 digits, gives a blank when a value
+with many whole digits meets one with many places (it writes both at the larger places first), and
+rounds a product half to even. So each exact operator (`exact.py`) builds two columns: the answer,
+and a true/false column that is true where the answer would need more than 38 digits. On those rows
+the operands are replaced by null before the engine sees them, so the engine never fails and never
+wraps round. The compiler registers the true/false column as a row check, and every tool already
+runs row checks (`refuse_rows_without_an_answer`) before it writes anything, so the step stops and
+names the rows. In `case_when` a row no case reaches is not checked, and its unused answer is null.
+
+- `+` and `-`: both sides are written at the larger places first; a side that does not fit there
+  is too large. Otherwise the sum is too large only when both lean the same way and `|a| > 38 nines
+  - |b|`, worked out on values that each fit.
+- `*`: the engine writes both sides at the larger places before it multiplies, so it rounds the
+  product half to even, and a large value times a small one comes back blank. The library multiplies
+  the digits each side holds (812.40 holds 81240) as 128-bit whole numbers, read from the value's
+  own text, and puts the point back through text. Those hold 38 digits, so a product of two of them
+  is checked first: split each at 10^19; if both high halves are above zero the product is at least
+  10^38; otherwise one cross term is left and the product reaches 10^38 exactly when
+  `cross + low // 10^19` reaches 10^19. No step of the check passes 128 bits.
+- Functions that combine values write each at the largest places among them: `coalesce` refuses a
+  row only where the value it picks does not fit; `least` and `greatest` where any value does not,
+  since each is compared. `nullif` compares by value and gives its first value back in its own
+  type. `mod` works on the digits held, as 128-bit whole numbers at the larger places, and takes
+  the dividend's sign as PostgreSQL's `mod(numeric, numeric)` does. `floor`, `ceil` and `sign` keep
+  the column's type, as they did, and stop the step where the answer needs one more whole digit
+  than the column holds (the engine writes it there anyway, as a value too large for its type).
+- `round(x, n)` gives exactly `n` places, as PostgreSQL's does. To fewer places it works on the
+  digits held, as whole numbers, so a value that rounds up to one more whole digit (99.5 to 100) is
+  still held; the engine would round within the column's own type and could not hold it. To more
+  places it pads, and a value with too many whole digits for them stops the step. `format_number`
+  rounds an exact value in Python's exact decimals, row by row as it already writes, so it never
+  meets that limit.
+- `/`: the ruling is 16 places, or more if either side has more, the last rounded half away from
+  zero. The engine divides at the larger places of its two sides and rounds half to even, so both
+  sides are written at the answer's places first; at 16 places that leaves each side 22 whole
+  digits, and a larger one is refused by name (the divisor too, since the engine writes it at those
+  places as well and would give a blank). A tie is found from the remainder `held * 10^places -
+  quotient * divisor`, all as whole numbers of the last place. The two products pass 128 bits, but
+  the engine's 128-bit arithmetic wraps round and the remainder itself is at most half the divisor,
+  so the wrapped difference is the true remainder; a test pins the wrapping. Where the remainder is
+  exactly half the divisor and has the dividend's sign, the engine went towards zero, and the
+  answer moves one unit away. The quotient is too large only when the divisor is below 1, and then
+  `|dividend| >= |divisor| * 10^(38 - places)` is exact on whole numbers. Zero divisors are made null
+  before the engine divides, so a division a `case_when` guards works on every engine version.
+
+**An exact value meeting a float stops the step.** The engine slides to a float without a word,
+in arithmetic, comparisons, `coalesce` and the rest, and a comparison is where that hides: 0.30 is
+not 0.1 + 0.2 in floats. So the compiler refuses an exact operand beside a float operand that is not
+a typed number, and names the float part as written, whether a column (`[ratio]`) or a calculation
+that gives a float (`[qty] / 2`). A whole number meets an exact value as an exact value with no places.
+
+**Comparisons are by value.** The engine compares two exact values by writing both at the larger
+places, and gives a blank where one has too many whole digits for that. Such a value is larger
+than anything the other side can hold, so only its sign decides the comparison, and the library
+answers that way. `in` writes its list in the column's own type, so the column is never converted,
+and leaves out a listed number that cannot be written there once its trailing zeros are dropped:
+0.125 can equal no value of a column with 2 places, and 1.5000 is written 1.50.
+
+**`case_when` branches are compiled one at a time,** so the tool asks the language for each
+branch's places (`exact_places_for`: an exact decimal's, 0 for a whole number, a typed number's as
+written) and, when any branch is exact, compiles every branch at the largest of them
+(`compile_exact_for`). A value too large for those places stops the step only on the rows that take
+that branch, through `refuse_exact_too_large`, the same helper a tool uses for any exact answer it
+works out itself.
+
 ## Quoting and literals
 
 - **Text is single-quoted; a quote inside is doubled**, as in SQL and Excel: `'O''Brian'`. The doubling is

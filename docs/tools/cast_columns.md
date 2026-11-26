@@ -17,13 +17,14 @@ Use cast_columns to say what type a column really is: numbers that arrived as te
 |---|---|---|---|---|
 | `columns` | array | required |  | The columns to change, one entry each, with the type each should be. |
 | `columns[].column` | string | required |  | The column to change, such as 'amount'. |
-| `columns[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The new type, such as 'Float64' for decimals, 'Int64' for whole numbers, 'Date' or 'String'. |
+| `columns[].type` | string | required | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | The new type, such as 'Float64' for decimals, 'Decimal' for exact decimals, 'Int64' for whole numbers, 'Date' or 'String'. |
+| `columns[].places` | integer | optional |  | Only with type 'Decimal', and required there: the digits after the point, from 0 to 38, such as 2. |
 | `columns[].in_zone` | string | optional |  | Only when turning a timestamp with a time zone into a 'Date': the zone whose calendar decides the day, such as 'UTC'. |
 | `on_invalid` | string | default `error` | `error`, `set_null` | What to do with a value that will not convert: 'error' stops the run; 'set_null' makes it null and reports how many. |
 
 More on some settings:
 
-- `columns`: For example [{column: amount, type: Float64}, {column: opened_on, type: Date}]. The order of the entries does not matter.
+- `columns`: For example [{column: amount, type: Float64}, {column: price, type: Decimal, places: 2}, {column: opened_on, type: Date}]. The order of the entries does not matter.
 - `on_invalid`: Use 'set_null' for a large, messy source where a few bad values should not stop a nightly run.
 
 ## Notes
@@ -36,6 +37,10 @@ More on some settings:
 - A column named twice is refused.
 - Text does not become true/false here, because sources spell it many ways (true, T, Y, 1). Use case_when to decide. That pair is refused when the step runs, not when the pipeline loads.
 - A decimal becomes a whole number only when it already is one: 12.0 becomes 12, but 1.99 stops the run, or is emptied and counted under 'set_null'. Round it first.
+- 'Decimal' is an exact decimal with 'places' digits after the point. A value converts only when it fits without rounding: '1.005' does not fit 2 places, so it stops the run, or is emptied and counted under 'set_null'. Round it first.
+- Text becomes a Decimal only when written as plain digits, with an optional point and minus sign, such as -12.50. Exponents, spaces and commas do not convert.
+- A Float64 becomes a Decimal read to 15 significant digits, as round reads it: 0.1 + 0.2 becomes 0.30. Not-a-number and infinity do not convert.
+- A Decimal becomes a Float64 through its digits, so each value lands on the nearest double, however many digits it has.
 - A timestamp with a time zone becomes a Date only with 'in_zone', because the day depends on the zone: 23:30 on 31 January in Toronto is 1 February in UTC. There is no default.
 - A date cast to a number gives the days since 1 January 1970.
 - A timestamp cast to Int64 gives a count in the column's own time unit: microseconds for a timestamp this library made, but a source may give nanoseconds or milliseconds. To count days or months between dates, use date_diff.
@@ -105,6 +110,41 @@ Rows out:
 | 5 | 2026-02-01 |
 
 Each entry names a column and its type. A date is read as year-month-day; for digits in another order, use assemble_date.
+
+## Example 3
+
+turn prices held as text into exact decimals with two places
+
+```yaml fragment
+tool: cast_columns
+config:
+  columns:
+  - column: price
+    type: Decimal
+    places: 2
+```
+
+Rows in:
+
+`rows`
+
+| code | price |
+|---|---|
+| A1 | 812.40 |
+| B2 | 19.9 |
+| C3 | null |
+
+Rows out:
+
+`rows`
+
+| code | price |
+|---|---|
+| A1 | 812.40 |
+| B2 | 19.90 |
+| C3 | null |
+
+Each price is held exactly, with two places: 19.9 becomes 19.90. A price written with more places, such as 1.005, would stop the run rather than be rounded.
 
 ---
 

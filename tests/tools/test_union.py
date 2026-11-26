@@ -20,11 +20,12 @@ Vocabulary is generic: the library carries no caller's nouns.
 """
 
 from datetime import date
+from decimal import Decimal
 
 import polars as pl
 import pytest
 
-from dantron_etl.authoring import CATEGORIES, ConfigError, Ports, REGISTRY, check_tool, run_tool
+from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.tools.union import Union
 
 
@@ -214,3 +215,92 @@ class TestAnAllNullColumnTakesTheOtherSidesType:
             _stack(top, bottom)
 
         assert "amount" in str(caught.value)
+
+
+def _exact(values: list[str | None], places: int, precision: int = 38) -> pl.Series:
+    """Exact decimals, written as text so nothing passes through a float."""
+    return pl.Series("amount", [None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+class TestExactColumnsOfDifferentPlaces:
+    """Two exact columns of different places stack at the larger places, digits kept; nothing is rounded.
+
+    Every other type difference stays refused: an exact column over a float column, and over a
+    whole-number column, as Int32 over Int64 is. Before, every one of these was refused.
+    """
+
+    @pytest.mark.parametrize("height", [2, 0], ids=["with_rows", "with_no_rows"])
+    @pytest.mark.parametrize(("top_places", "bottom_places"), [(2, 4), (4, 2)])
+    def test_exact_columns_stack_at_the_larger_places(self, top_places: int, bottom_places: int, height: int) -> None:
+        def written(values: list[str | None], places: int) -> pl.Series:
+            return _exact([None if v is None else f"{Decimal(v):.{places}f}" for v in values], places)
+
+        top = pl.DataFrame({"code": ["A", "B"], "amount": written(["1.5", None], top_places)}).head(height)
+        bottom = pl.DataFrame({"code": ["C", "D"], "amount": written(["-0.25", "7"], bottom_places)}).head(height)
+
+        rows = _stack(top, bottom)
+
+        assert rows.schema["amount"] == pl.Decimal(38, 4)
+        expected = [Decimal("1.5000"), None, Decimal("-0.2500"), Decimal("7.0000")]
+        assert rows["amount"].to_list() == (expected if height else [])
+        assert [str(value) for value in rows["amount"].drop_nulls()] == (
+            ["1.5000", "-0.2500", "7.0000"] if height else []
+        )
+
+    def test_exact_columns_of_the_same_places_but_different_total_digits_stack(self) -> None:
+        top = pl.DataFrame({"amount": _exact(["1.50"], 2, precision=18)})
+        bottom = pl.DataFrame({"amount": _exact(["2.25"], 2)})
+
+        rows = _stack(top, bottom)
+
+        assert rows.schema["amount"] == pl.Decimal(38, 2)
+        assert rows["amount"].to_list() == [Decimal("1.50"), Decimal("2.25")]
+
+    def test_a_value_too_wide_for_the_larger_places_is_refused_naming_the_row(self) -> None:
+        wide = "9" * 36 + ".00"
+        top = pl.DataFrame({"code": ["A", "B"], "amount": _exact(["1.00", wide], 2)})
+        bottom = pl.DataFrame({"code": ["C"], "amount": _exact(["1.0000"], 4)})
+
+        with pytest.raises(DataError) as caught:
+            _stack(top, bottom)
+
+        message = str(caught.value)
+        for word in ("'amount' on input port 'top'", "on input port 'bottom'", "34 digits", "round([amount], 2)"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+        assert caught.value.offending_rows == 1
+        assert caught.value.examples[0]["code"] == "B"
+
+    @pytest.mark.parametrize("other", [pl.Float64, pl.Float32, pl.Int64, pl.Int32, pl.String])
+    @pytest.mark.parametrize("exact_side", ["top", "bottom"])
+    @pytest.mark.parametrize("height", [1, 0], ids=["with_rows", "with_no_rows"])
+    def test_an_exact_column_over_any_other_type_stays_refused(
+        self, other: pl.DataType, exact_side: str, height: int
+    ) -> None:
+        exact = pl.DataFrame({"amount": _exact(["1.00"], 2)}).head(height)
+        different = pl.DataFrame({"amount": pl.Series([1]).cast(other)}).head(height)
+        top, bottom = (exact, different) if exact_side == "top" else (different, exact)
+
+        with pytest.raises(ConfigError) as caught:
+            _stack(top, bottom)
+
+        message = str(caught.value)
+        assert "amount" in message and str(other) in message and "Decimal" in message
+        assert "cast_columns" in message
+
+    def test_an_all_null_column_takes_the_exact_sides_type(self) -> None:
+        top = pl.DataFrame({"amount": [None, None]})
+        bottom = pl.DataFrame({"amount": _exact(["1.25"], 2)})
+
+        rows = _stack(top, bottom)
+
+        assert rows.schema["amount"] == pl.Decimal(38, 2)
+        assert rows["amount"].to_list() == [None, None, Decimal("1.25")]
+
+    def test_exact_columns_of_one_type_stack_as_they_always_did(self) -> None:
+        top = pl.DataFrame({"amount": _exact(["1.25"], 2, precision=18)})
+        bottom = pl.DataFrame({"amount": _exact(["-3.50"], 2, precision=18)})
+
+        rows = _stack(top, bottom)
+
+        assert rows.schema["amount"] == pl.Decimal(18, 2)
+        assert rows["amount"].to_list() == [Decimal("1.25"), Decimal("-3.50")]

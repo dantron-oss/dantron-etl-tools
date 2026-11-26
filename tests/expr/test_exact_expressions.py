@@ -1,0 +1,693 @@
+"""Exact decimals in expressions: typed numbers, arithmetic, comparisons, functions and overflow.
+
+A column of type Decimal holds exact values. Arithmetic on it is exact, and only round() rounds. A
+number typed in the expression is exact as written. An exact value meeting a float column stops the
+step. A flow with no exact column computes exactly what it did before; the characterisation
+snapshot holds that side, and a few cases here say it in words.
+"""
+
+from decimal import Decimal
+import polars as pl
+import pytest
+
+from dantron_etl import load_pipeline
+from dantron_etl.expr import compile_expr, exact_constant
+
+
+def exact(values: list[str | None], places: int, *, precision: int = 38) -> pl.Series:
+    """An exact series written as text, so nothing passes through a float."""
+    return pl.Series([None if value is None else Decimal(value) for value in values], dtype=pl.Decimal(precision, places))
+
+
+def _column(frame: pl.DataFrame, text: str) -> pl.Series:
+    return frame.select(compile_expr(text, frame.schema).alias("out"))["out"]
+
+
+# ---------------------------------------------------------------------------
+# Unit 9: a typed number keeps the text it was written with
+# ---------------------------------------------------------------------------
+
+
+class TestATypedNumberKeepsItsWrittenText:
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [
+            ("0.0725", Decimal("0.0725")),
+            ("1.10", Decimal("1.10")),
+            ("7", Decimal("7")),
+            ("0.0", Decimal("0.0")),
+            ("1e-9", Decimal("1E-9")),
+            ("2.50E+2", Decimal("250")),
+            ("0.1234567890123456789", Decimal("0.1234567890123456789")),
+        ],
+    )
+    def test_the_value_is_the_number_as_written_with_its_places(self, text: str, value: Decimal) -> None:
+        found = exact_constant(text)
+        assert found == value and found is not None
+        assert found.as_tuple().exponent == value.as_tuple().exponent
+
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [("-0.5", Decimal("-0.5")), ("-1.10", Decimal("-1.10")), ("- -2.25", Decimal("2.25")), ("-(0.30)", Decimal("-0.30"))],
+    )
+    def test_a_minus_sign_in_front_is_part_of_the_number(self, text: str, value: Decimal) -> None:
+        found = exact_constant(text)
+        assert found == value and found is not None
+        assert found.as_tuple().exponent == value.as_tuple().exponent
+
+    @pytest.mark.parametrize("text", ["[amount]", "'1.10'", "null", "true", "date'2026-01-01'", "abs(1.5)", "[a] + 1"])
+    def test_anything_that_is_not_a_typed_number_has_no_exact_value(self, text: str) -> None:
+        assert exact_constant(text) is None
+
+    def test_a_number_from_the_rules_file_keeps_the_value_yaml_gave_it(self) -> None:
+        """YAML reads 1.10 as the float 1.1, so a rule keeps its value but can lose a trailing zero."""
+        document = {
+            "name": "rules",
+            "steps": [
+                {"id": "entries", "tool": "read_csv", "config": {"path": "entries.csv"}},
+                {
+                    "id": "priced",
+                    "tool": "formula",
+                    "config": {"columns": [{"name": "rate", "value": "(${rules.rate})"}]},
+                    "inputs": {"rows": "entries.rows"},
+                },
+                {
+                    "id": "written",
+                    "tool": "write_csv",
+                    "config": {"path": "out.csv", "overwrite": True},
+                    "inputs": {"rows": "priced.rows"},
+                },
+            ],
+        }
+        for rule, expected in ((0.0725, "0.0725"), (1.10, "1.1"), (-2.5, "-2.5"), (7, "7"), (1e-9, "1E-9")):
+            written = load_pipeline(document, rules={"rate": rule}).step("priced").config["columns"][0]["value"]
+            found = exact_constant(written)
+            assert found is not None and str(found) == expected, (rule, written)
+
+    def test_with_no_exact_column_near_a_typed_number_is_the_float_it_always_was(self) -> None:
+        frame = pl.DataFrame({"f": [2.0], "n": [3]})
+        for text, value in (("0.0725", 0.0725), ("[f] * 1.10", 2.2), ("[n] * 0.5", 1.5), ("-0.5 + [n]", 2.5)):
+            out = _column(frame, text)
+            assert out.dtype == pl.Float64 and out.to_list() == [value], text
+        assert _column(frame, "[n] + 7").dtype == pl.Int64
+
+    def test_an_exact_value_is_a_number_to_every_type_check_never_a_date(self) -> None:
+        from dantron_etl.expr.families import Family, dtype_of_value, family_of_value, holding_phrase
+
+        assert family_of_value(Decimal("0.0725")) is Family.NUMBER
+        assert dtype_of_value(Decimal("0.0725")) == pl.Decimal(38, 4)
+        assert dtype_of_value(Decimal("1E+5")) == pl.Decimal(38, 0)
+        assert holding_phrase(Decimal("1.5")) == "is a decimal"
+
+
+# ---------------------------------------------------------------------------
+# Unit 10: +, -, the minus sign and abs on exact values
+# ---------------------------------------------------------------------------
+
+PRICES = pl.DataFrame(
+    {
+        "key": ["p", "q", "r"],
+        "d2": exact(["812.40", "100.00", None], 2),
+        "d4": exact(["0.0725", "-7.0000", "1.0000"], 4),
+        "n": [7, 3, None],
+        "f": [0.0725, 1.5, 2.0],
+    }
+)
+
+
+def _formula(frame: pl.DataFrame, value: str) -> pl.Series:
+    from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+    config = {"columns": [{"name": "out", "value": value}]}
+    return run_tool(REGISTRY.get("formula"), Ports({"rows": frame}), config)["rows"]["out"]
+
+
+def _formula_refusal(frame: pl.DataFrame, value: str) -> str:
+    from dantron_etl.authoring import DataError
+
+    with pytest.raises(DataError) as raised:
+        _formula(frame, value)
+    return str(raised.value)
+
+
+def _exactly(out: pl.Series, places: int, values: list[str | None]) -> None:
+    """The column is exact with 38 digits and these places, and holds these values, digit for digit."""
+    assert out.dtype == pl.Decimal(38, places), out.dtype
+    assert [None if value is None else format(value, "f") for value in out.to_list()] == values
+
+
+class TestAddingAndSubtractingExactValues:
+    def test_two_exact_columns_give_the_larger_places(self) -> None:
+        _exactly(_formula(PRICES, "[d2] + [d4]"), 4, ["812.4725", "93.0000", None])
+        _exactly(_formula(PRICES, "[d4] - [d2]"), 4, ["-812.3275", "-107.0000", None])
+
+    def test_a_typed_number_beside_an_exact_column_is_exact_as_written(self) -> None:
+        _exactly(_formula(PRICES, "[d2] + 0.0725"), 4, ["812.4725", "100.0725", None])
+        _exactly(_formula(PRICES, "0.0725 + [d2]"), 4, ["812.4725", "100.0725", None])
+        _exactly(_formula(PRICES, "[d2] - 1.10"), 2, ["811.30", "98.90", None])
+        _exactly(_formula(PRICES, "[d2] + -0.5"), 2, ["811.90", "99.50", None])
+        _exactly(_formula(PRICES, "-0.5 + [d2]"), 2, ["811.90", "99.50", None])
+
+    def test_a_whole_number_beside_an_exact_column_is_exact(self) -> None:
+        _exactly(_formula(PRICES, "[d2] - 7"), 2, ["805.40", "93.00", None])
+        _exactly(_formula(PRICES, "[d2] + [n]"), 2, ["819.40", "103.00", None])
+        _exactly(_formula(PRICES, "[n] - [d4]"), 4, ["6.9275", "10.0000", None])
+
+    def test_with_no_exact_column_a_typed_number_still_gives_a_float(self) -> None:
+        assert _formula(PRICES, "[f] + 0.0725").dtype == pl.Float64
+        assert _formula(PRICES, "[n] + 0.5").to_list() == [7.5, 3.5, None]
+
+    def test_null_beside_an_exact_column_gives_an_exact_null(self) -> None:
+        _exactly(_formula(PRICES, "[d2] + null"), 2, [None, None, None])
+        _exactly(_formula(PRICES, "null - [d4]"), 4, [None, None, None])
+
+    def test_the_minus_sign_and_abs_keep_the_places(self) -> None:
+        _exactly(_formula(PRICES, "-[d4]"), 4, ["-0.0725", "7.0000", "-1.0000"])
+        _exactly(_formula(PRICES, "abs([d4])"), 4, ["0.0725", "7.0000", "1.0000"])
+        _exactly(_formula(PRICES, "abs(-[d2] - 0.005)"), 3, ["812.405", "100.005", None])
+
+    @pytest.mark.parametrize("text", ["[d2] + 1e-40", "[d2] - 123456789012345678901234567890123456789.5"])
+    def test_a_typed_number_an_exact_decimal_cannot_hold_is_refused(self, text: str) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr(text, PRICES.schema)
+        said = str(raised.value)
+        assert "38 digits" in said and "[d2]" in said
+
+
+BIGGEST = "9" * 36 + ".00"  # 38 digits in all, the most there is at 2 places
+
+
+class TestAnAnswerTooLargeToHold:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["small", "large"],
+            "a": exact(["1.00", BIGGEST], 2),
+            "b": exact(["2.00", "1.00"], 2),
+            "w": exact(["1", "9" * 37], 0),
+        }
+    )
+
+    @pytest.mark.parametrize("text", ["[a] + [b]", "-[a] - [b]", "[b] + [a]", "[a] + 1", "[a] + 1.01", "[w] + 0.05"])
+    def test_stops_the_step_naming_the_rows_and_what_to_do(self, text: str) -> None:
+        said = _formula_refusal(self.FRAME, text)
+        assert "columns[0].value" in said and text in said and "38 digits" in said
+        assert "1 of 2 row(s)" in said and "'key': 'large'" in said and "round" in said
+
+    def test_just_under_the_limit_is_exact(self) -> None:
+        frame = self.FRAME.with_columns(pl.Series("b", [Decimal("2.00"), Decimal("-1.00")], dtype=pl.Decimal(38, 2)))
+        _exactly(_formula(frame, "[a] + [b]"), 2, ["3.00", "9" * 35 + "8.00"])
+        _exactly(_formula(frame, "-[a] - [b]"), 2, ["-3.00", "-" + "9" * 35 + "8.00"])
+        _exactly(_formula(self.FRAME, "[w] - 1"), 0, ["0", "9" * 36 + "8"])
+        _exactly(_formula(self.FRAME, "[w] + 0.5"), 1, ["1.5", "9" * 37 + ".5"])
+        _exactly(_formula(self.FRAME, "[a] + 0.01"), 2, ["1.01", "9" * 36 + ".01"])
+
+    def test_on_a_row_a_case_never_reaches_it_neither_stops_nor_breaks(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        config = {"cases": [{"when": "[a] < 100", "then": "[a] + [b]"}], "output": "out"}
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": self.FRAME}), config)["rows"]["out"]
+        _exactly(out, 2, ["3.00", None])
+
+
+# ---------------------------------------------------------------------------
+# Unit 11: multiplying exact values adds their places, with no rounding
+# ---------------------------------------------------------------------------
+
+
+class TestMultiplyingExactValues:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r", "s"],
+            "a": exact(["812.40", "0.07", "-19.99", None], 2),
+            "b": exact(["0.0725", "0.0700", "3.0000", "1.0000"], 4),
+            "c": exact(["0.07", "0.07", "0.15", "1.00"], 2),
+            "n": [3, -2, 0, None],
+        }
+    )
+
+    def test_the_product_has_both_places_and_is_never_rounded(self) -> None:
+        _exactly(_formula(self.FRAME, "[a] * [b]"), 6, ["58.899000", "0.004900", "-59.970000", None])
+        _exactly(_formula(self.FRAME, "[c] * [a]"), 4, ["56.8680", "0.0049", "-2.9985", None])
+
+    def test_a_typed_number_or_a_whole_number_adds_its_own_places(self) -> None:
+        _exactly(_formula(self.FRAME, "[a] * 0.0725"), 6, ["58.899000", "0.005075", "-1.449275", None])
+        _exactly(_formula(self.FRAME, "0.5 * [a]"), 3, ["406.200", "0.035", "-9.995", None])
+        _exactly(_formula(self.FRAME, "[a] * 3"), 2, ["2437.20", "0.21", "-59.97", None])
+        _exactly(_formula(self.FRAME, "[n] * [a]"), 2, ["2437.20", "-0.14", "0.00", None])
+        _exactly(_formula(self.FRAME, "[a] * -1.0"), 3, ["-812.400", "-0.070", "19.990", None])
+
+    def test_with_no_exact_column_a_product_is_the_float_it_was(self) -> None:
+        frame = pl.DataFrame({"f": [812.40], "n": [3]})
+        assert _formula(frame, "[f] * 0.0725").to_list() == [812.40 * 0.0725]
+        assert _formula(frame, "[n] * 0.5").dtype == pl.Float64
+        assert _formula(frame, "[n] * 2").dtype == pl.Int64
+
+    def test_places_past_38_are_refused_when_the_step_starts(self) -> None:
+        from dantron_etl.authoring import ConfigError
+
+        frame = pl.DataFrame({"x": exact(["1.5"], 20), "y": exact(["2.5"], 19), "z": exact(["0.5"], 18)})
+        with pytest.raises(ConfigError) as raised:
+            _formula(frame.head(0), "[x] * [y]")
+        said = str(raised.value)
+        assert "39 places" in said and "[x]" in said and "[y]" in said and "round" in said
+        _exactly(_formula(frame, "[x] * [z]"), 38, ["0." + "75" + "0" * 36])
+        with pytest.raises(ConfigError):
+            _formula(frame, "[x] * 0.0000000000000000001")
+
+    WHOLE = pl.DataFrame(
+        {
+            "key": ["under", "over", "cross under", "cross over"],
+            "a": exact(["9999999999999999999", "10000000000000000000", "1000000000000000000", "1000000000000000000"], 0),
+            "b": exact(["10000000000000000001", "10000000000000000000", "99999999999999999999", "100000000000000000000"], 0),
+        }
+    )
+
+    @pytest.mark.parametrize("text", ["[a] * [b]", "[b] * [a]", "-[a] * [b]"])
+    def test_a_product_past_38_digits_stops_the_step_and_one_just_under_is_exact(self, text: str) -> None:
+        said = _formula_refusal(self.WHOLE, text)
+        assert "38 digits" in said and "2 of 4 row(s)" in said and "'key': 'over'" in said and "cross over" in said
+        under = self.WHOLE.filter(pl.col("key").str.contains("under"))
+        sign = "-" if text.startswith("-") else ""
+        _exactly(_formula(under, text), 0, [sign + "9" * 38, sign + "99999999999999999999" + "0" * 18])
+
+    def test_a_large_value_times_a_small_one_is_exact_when_the_product_fits(self) -> None:
+        frame = pl.DataFrame({"big": exact(["1" + "0" * 31], 0), "tiny": exact(["0.0000003"], 7)})
+        _exactly(_formula(frame, "[big] * [tiny]"), 7, ["3" + "0" * 24 + ".0000000"])
+        _exactly(_formula(frame, "[tiny] * [big]"), 7, ["3" + "0" * 24 + ".0000000"])
+
+    def test_on_a_row_a_case_never_reaches_a_product_too_large_neither_stops_nor_breaks(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        config = {"cases": [{"when": "[key] = 'under'", "then": "[a] * [b]"}], "output": "out"}
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": self.WHOLE}), config)["rows"]["out"]
+        _exactly(out, 0, ["9" * 38, None, None, None])
+
+
+# ---------------------------------------------------------------------------
+# Unit 12: an exact value meeting a float column stops the step
+# ---------------------------------------------------------------------------
+
+MIXED = pl.DataFrame(
+    {
+        "key": ["p", "q", "r", "s"],
+        "d": exact(["812.40", "-7.50", None, "100.00"], 2),
+        "d4": exact(["0.0725", "-7.5000", "1.2500", None], 4),
+        "f": [0.0725, 1.5, 2.0, None],
+        "f32": pl.Series([0.5, 1.5, 2.0, None], dtype=pl.Float32),
+        "n": [3, -2, None, 100],
+    }
+)
+
+
+class TestAnExactValueMeetingAFloatColumn:
+    @pytest.mark.parametrize(
+        ("text", "named"),
+        [
+            ("[d] + [f]", "[f]"),
+            ("[f] - [d]", "[f]"),
+            ("[d] * [f]", "[f]"),
+            ("[d] + [f32]", "[f32]"),
+            ("[d] = [f]", "[f]"),
+            ("[f] < [d]", "[f]"),
+            ("[d] >= [n] / 2", "[n] / 2"),
+            ("[d] + round([f], 2)", "round([f], 2)"),
+            ("coalesce([d], [f])", "[f]"),
+            ("coalesce([f], 0, [d])", "[f]"),
+            ("least([d], [f])", "[f]"),
+            ("greatest([f], [d4])", "[f]"),
+            ("nullif([d], [f])", "[f]"),
+            ("nullif([f], [d])", "[f]"),
+            ("mod([d], [f])", "[f]"),
+            ("mod([f], [d4])", "[f]"),
+        ],
+    )
+    def test_stops_the_step_naming_the_float_and_what_to_do(self, text: str, named: str) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr(text, MIXED.schema)
+        said = str(raised.value)
+        assert f"{named} " in said and "a float" in said and "cast_columns" in said, said
+
+    def test_a_float_column_beside_a_typed_number_or_a_whole_number_is_as_it_was(self) -> None:
+        assert _formula(MIXED, "[f] + 0.5").dtype == pl.Float64
+        assert _formula(MIXED, "coalesce([f], 0)").to_list() == [0.0725, 1.5, 2.0, 0.0]
+        assert _formula(MIXED, "least([f], [n])").dtype == pl.Float64
+
+    def test_exact_beside_a_whole_number_is_allowed_and_exact(self) -> None:
+        assert _formula(MIXED, "[d] = [n] * 0 + 100").to_list() == [False, False, None, True]
+        _exactly(_formula(MIXED, "coalesce([d], [n])"), 2, ["812.40", "-7.50", None, "100.00"])
+        _exactly(_formula(MIXED, "least([d], [n])"), 2, ["3.00", "-7.50", None, "100.00"])
+        _exactly(_formula(MIXED, "greatest([n], [d], 0.125)"), 3, ["812.400", "0.125", "0.125", "100.000"])
+
+
+class TestFunctionsThatCombineExactValues:
+    def test_coalesce_gives_the_larger_places_and_a_typed_zero_is_exact(self) -> None:
+        _exactly(_formula(MIXED, "coalesce([d], [d4])"), 4, ["812.4000", "-7.5000", "1.2500", "100.0000"])
+        _exactly(_formula(MIXED, "coalesce([d], 0.0)"), 2, ["812.40", "-7.50", "0.00", "100.00"])
+        _exactly(_formula(MIXED, "coalesce(null, [d4])"), 4, ["0.0725", "-7.5000", "1.2500", None])
+
+    def test_least_and_greatest_compare_by_value_and_skip_nulls(self) -> None:
+        _exactly(_formula(MIXED, "least([d], [d4])"), 4, ["0.0725", "-7.5000", "1.2500", "100.0000"])
+        _exactly(_formula(MIXED, "greatest([d4], [d])"), 4, ["812.4000", "-7.5000", "1.2500", "100.0000"])
+
+    def test_nullif_compares_by_value_and_keeps_the_first_values_type(self) -> None:
+        _exactly(_formula(MIXED, "nullif([d], 100)"), 2, ["812.40", "-7.50", None, None])
+        _exactly(_formula(MIXED, "nullif([d], -7.5000)"), 2, ["812.40", None, None, "100.00"])
+        _exactly(_formula(MIXED, "nullif([d], [d4])"), 2, ["812.40", None, None, "100.00"])
+        out = _formula(MIXED, "nullif([n], [d])")
+        assert out.dtype == pl.Int64 and out.to_list() == [3, -2, None, None]
+
+    def test_mod_is_exact_with_the_first_values_sign_as_in_sql(self) -> None:
+        _exactly(_formula(MIXED, "mod([d], 3)"), 2, ["2.40", "-1.50", None, "1.00"])
+        _exactly(_formula(MIXED, "mod([d], -0.7)"), 2, ["0.40", "-0.50", None, "0.60"])
+        _exactly(_formula(MIXED, "mod([d], [d4])"), 4, ["0.0375", "0.0000", None, None])
+        _exactly(_formula(MIXED, "mod(7, [d4])"), 4, ["0.0400", "7.0000", "0.7500", None])
+
+    def test_mod_by_a_zero_exact_value_stops_the_step(self) -> None:
+        frame = pl.DataFrame({"key": ["p", "q"], "a": exact(["7.00", "8.00"], 2), "b": exact(["3.00", "0.00"], 2)})
+        said = _formula_refusal(frame, "mod([a], [b])")
+        assert "divides by zero" in said and "'key': 'q'" in said
+        _exactly(_formula(frame.head(1), "mod([a], [b])"), 2, ["1.00"])
+
+    def test_a_value_too_large_for_the_places_it_meets_stops_the_step(self) -> None:
+        frame = pl.DataFrame(
+            {"key": ["fits", "large"], "w": exact([None, "9" * 37], 0), "d": exact(["1.25", "1.25"], 2)}
+        )
+        said = _formula_refusal(frame, "coalesce([w], [d])")
+        assert "38 digits" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "coalesce([w], [d])"), 2, ["1.25"])
+        assert "'key': 'large'" in _formula_refusal(frame, "greatest([w], [d])")
+
+
+# ---------------------------------------------------------------------------
+# Unit 13: comparing exact values of different places, by value
+# ---------------------------------------------------------------------------
+
+
+class TestComparingExactValuesByValue:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r", "s"],
+            "d2": exact(["1.50", "0.12", "812.40", None], 2),
+            "d4": exact(["1.5000", "0.1250", "812.3999", "1.0000"], 4),
+            "w": exact(["9" * 37, "-" + "9" * 37, "1", "2"], 0),
+            "d30": exact(["12345678.5", "1.25", None, "0"], 30),
+        }
+    )
+
+    def _truth(self, text: str) -> list[bool | None]:
+        out = _formula(self.FRAME, text)
+        assert out.dtype == pl.Boolean
+        return out.to_list()
+
+    def test_equal_values_of_different_places_are_equal(self) -> None:
+        assert self._truth("[d2] = [d4]") == [True, False, False, None]
+        assert self._truth("[d4] != [d2]") == [False, True, True, None]
+        assert self._truth("[d2] > [d4]") == [False, False, True, None]
+        assert self._truth("[d2] <= 1.5000") == [True, True, False, None]
+
+    def test_a_value_with_more_whole_digits_than_the_other_places_allow_still_compares(self) -> None:
+        """The engine gives a blank here, because it writes both sides at the larger places first."""
+        assert self._truth("[w] > [d2]") == [True, False, False, None]
+        assert self._truth("[d2] < [w]") == [True, False, False, None]
+        assert self._truth("[w] = [d4]") == [False, False, False, False]
+        assert self._truth("[w] != [d4]") == [True, True, True, True]
+        assert self._truth("[w] <= 0.5") == [False, True, False, False]
+        assert self._truth("[w] >= [d30]") == [True, False, None, True]
+
+    def test_in_matches_by_value_and_never_rounds(self) -> None:
+        assert self._truth("[d2] in (0.125)") == [False, False, False, None]
+        assert self._truth("[d4] in (0.125)") == [False, True, False, False]
+        assert self._truth("[d2] in (1.5, 812.4)") == [True, False, True, None]
+        assert self._truth("[d2] not in (1.5, 812.4)") == [False, True, False, None]
+        assert self._truth("[d4] in (1, 0.1250)") == [False, True, False, True]
+        assert self._truth("[w] in (2, 1.25)") == [False, False, False, True]
+        assert self._truth("[d30] in (123456789, 1.25)") == [False, True, None, False]
+        # A listed number with many places must not push a large value out of reach.
+        frame = pl.DataFrame({"w": exact(["1" + "0" * 36, "1"], 0)})
+        assert _formula(frame, "[w] in (1e36, 0.0000000000000000000000000001)").to_list() == [True, False]
+        narrow = pl.DataFrame({"d": exact(["100.00", "7.50", None], 2, precision=12)})
+        assert _formula(narrow, "[d] in (100, 7.5000, 123456789012345678)").to_list() == [True, True, None]
+
+    def test_with_no_exact_column_in_matches_as_it_did(self) -> None:
+        frame = pl.DataFrame({"f": [0.3, 0.1 + 0.2, 1.0], "n": [1, 2, 3]})
+        assert _formula(frame, "[f] in (0.3, 1)").to_list() == [True, False, True]
+        assert _formula(frame, "[n] in (1, 2.5)").to_list() == [True, False, False]
+
+
+# ---------------------------------------------------------------------------
+# Unit 14: dividing exact values gives 16 places, the last rounded half away from zero
+# ---------------------------------------------------------------------------
+
+
+class TestDividingExactValues:
+    def test_sixteen_places_with_the_last_rounded_half_away_from_zero(self) -> None:
+        frame = pl.DataFrame(
+            {
+                "a": exact(["100.00", "1.00", "2.00", "10.00", "-2.00", None], 2),
+                "b": exact(["7.00", "3.00", "3.00", "4.00", "3.00", "1.00"], 2),
+            }
+        )
+        _exactly(
+            _formula(frame, "[a] / [b]"),
+            16,
+            ["14.2857142857142857", "0.3333333333333333", "0.6666666666666667", "2.5000000000000000",
+             "-0.6666666666666667", None],
+        )
+
+    def test_a_tie_at_the_sixteenth_place_goes_away_from_zero_where_the_engine_goes_to_even(self) -> None:
+        tiny = "0.000000000000000"  # fifteen zeros after the point
+        frame = pl.DataFrame({"a": exact([tiny + "1", "-" + tiny + "1", tiny + "5", tiny + "3", tiny + "1"], 16)})
+        frame = frame.with_columns(b=exact(["2", "2", "2", "2", "-2"], 0))
+        _exactly(_formula(frame, "[a] / [b]"), 16, [tiny + "1", "-" + tiny + "1", tiny + "3", tiny + "2", "-" + tiny + "1"])
+
+    def test_more_places_than_sixteen_are_kept(self) -> None:
+        frame = pl.DataFrame({"a": exact(["1"], 20), "b": exact(["3.000000000000000000000000"], 24)})
+        _exactly(_formula(frame, "[a] / 3"), 20, ["0.33333333333333333333"])
+        _exactly(_formula(frame, "[a] / [b]"), 24, ["0.333333333333333333333333"])
+
+    def test_whole_numbers_and_typed_numbers_beside_an_exact_value_are_exact(self) -> None:
+        frame = pl.DataFrame({"d": exact(["10.00", "-1.00"], 2), "n": [4, 3]})
+        _exactly(_formula(frame, "[d] / [n]"), 16, ["2.5000000000000000", "-0.3333333333333333"])
+        _exactly(_formula(frame, "[n] / [d]"), 16, ["0.4000000000000000", "-3.0000000000000000"])
+        _exactly(_formula(frame, "[d] / 0.5"), 16, ["20.0000000000000000", "-2.0000000000000000"])
+        _exactly(_formula(frame, "1 / [d]"), 16, ["0.1000000000000000", "-1.0000000000000000"])
+
+    def test_with_no_exact_column_division_is_the_float_it_was(self) -> None:
+        frame = pl.DataFrame({"a": [1, 10], "b": [3, 4]})
+        assert _formula(frame, "[a] / [b]").to_list() == [1 / 3, 2.5]
+
+    def test_a_float_divisor_or_dividend_is_refused(self) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        for text in ("[d] / [f]", "[f] / [d]"):
+            with pytest.raises(ExpressionError) as raised:
+                compile_expr(text, MIXED.schema)
+            assert "[f] holds Float64" in str(raised.value) and "cast_columns" in str(raised.value)
+
+    def test_a_zero_divisor_stops_the_step_and_a_null_gives_null(self) -> None:
+        frame = pl.DataFrame({"key": ["p", "q", "r"], "a": exact(["1.00", "2.00", "3.00"], 2), "b": exact(["4.00", "0.00", None], 2)})
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "divides by zero" in said and "'key': 'q'" in said and "1 of 3 row(s)" in said
+        _exactly(_formula(frame.filter(pl.col("key") != "q"), "[a] / [b]"), 16, ["0.2500000000000000", None])
+
+    def test_a_division_guarded_by_an_earlier_case_works_on_every_engine_version(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        frame = pl.DataFrame({"a": exact(["1.00", "2.00"], 2), "b": exact(["0.00", "4.00"], 2)})
+        config = {"cases": [{"when": "[b] != 0", "then": "[a] / [b]"}], "output": "out"}
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": frame}), config)["rows"]["out"]
+        _exactly(out, 16, [None, "0.5000000000000000"])
+
+    def test_a_dividend_with_more_than_22_whole_digits_is_refused_by_name(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "a": exact(["9" * 22, "1" + "0" * 22], 0), "b": exact(["3", "3"], 0)})
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "22 whole digits" in said and "[a]" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "[a] / [b]"), 16, ["3" * 22 + ".0000000000000000"])
+
+    def test_a_divisor_with_more_than_22_whole_digits_is_refused_by_name(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "a": exact(["1", "1"], 0), "b": exact(["9" * 22, "1" + "0" * 22], 0)})
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "22 whole digits" in said and "[b]" in said and "'key': 'large'" in said
+
+    def test_a_quotient_too_large_to_hold_stops_the_step(self) -> None:
+        frame = pl.DataFrame(
+            {"key": ["fits", "large"], "a": exact(["9" * 21 + ".9", "1" + "0" * 21], 1), "b": exact(["0.1", "0.1"], 1)}
+        )
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "38 digits" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "[a] / [b]"), 16, ["9" * 22 + ".0000000000000000"])
+
+    def test_the_engine_wraps_128_bit_whole_numbers_round_which_the_tie_check_relies_on(self) -> None:
+        """If a polars upgrade stops wrapping, the remainder of a division can no longer be worked out this way."""
+        def wrapped(value: int) -> int:
+            value %= 2**128
+            return value - 2**128 if value >= 2**127 else value
+
+        values = [10**38, -(10**38), 7]
+        big = pl.DataFrame({"x": pl.Series(values, dtype=pl.Int128)})
+        found = big.select(pl.col("x") * pl.col("x") - pl.col("x") * pl.lit(10**38 - 1, dtype=pl.Int128))["x"]
+        assert found.to_list() == [wrapped(x * x - x * (10**38 - 1)) for x in values]
+        # The difference of two wrapped products is the true one whenever the true one fits.
+        assert found.to_list()[0] == 10**38
+
+
+# ---------------------------------------------------------------------------
+# Unit 15: round(x, n) on an exact value gives exactly n places
+# ---------------------------------------------------------------------------
+
+
+class TestRoundingAnExactValue:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r", "s", "t"],
+            "x": exact(["1.005", "-2.345", "2.500", "-0.004", None], 3),
+            "y": exact(["58.899000", "-0.000500", "0.125000", "7", "0"], 6),
+        }
+    )
+
+    def test_rounds_half_away_from_zero_to_exactly_that_many_places(self) -> None:
+        _exactly(_formula(self.FRAME, "round([x], 2)"), 2, ["1.01", "-2.35", "2.50", "0.00", None])
+        _exactly(_formula(self.FRAME, "round([x], 0)"), 0, ["1", "-2", "3", "0", None])
+        _exactly(_formula(self.FRAME, "round([y], 3)"), 3, ["58.899", "-0.001", "0.125", "7.000", "0.000"])
+
+    def test_fewer_places_than_asked_are_padded(self) -> None:
+        _exactly(_formula(self.FRAME, "round([x], 5)"), 5, ["1.00500", "-2.34500", "2.50000", "-0.00400", None])
+
+    def test_a_product_rounded_stays_exact(self) -> None:
+        _exactly(_formula(self.FRAME, "round([x] * [y], 2)"), 2, ["59.19", "0.00", "0.31", "-0.03", None])
+
+    def test_38_places_is_the_most_and_39_is_refused_when_the_step_starts(self) -> None:
+        from dantron_etl.authoring import ConfigError
+
+        tiny = pl.DataFrame({"z": exact(["0.5"], 1)})
+        _exactly(_formula(tiny, "round([z], 38)"), 38, ["0.5" + "0" * 37])
+        with pytest.raises(ConfigError) as raised:
+            _formula(tiny, "round([z], 39)")
+        assert "38" in str(raised.value) and "round()" in str(raised.value)
+
+    def test_a_value_too_large_for_the_places_asked_stops_the_step(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "w": exact(["1", "9" * 37], 0)})
+        said = _formula_refusal(frame, "round([w], 2)")
+        assert "38 digits" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "round([w], 1)"), 1, ["1.0"])
+
+    def test_rounding_up_to_one_more_whole_digit_is_exact(self) -> None:
+        frame = pl.DataFrame({"m": exact(["9" * 37 + ".5", "-" + "9" * 37 + ".5"], 1)})
+        _exactly(_formula(frame, "round([m], 0)"), 0, ["1" + "0" * 37, "-1" + "0" * 37])
+
+    def test_a_float_column_rounds_as_it_always_did(self) -> None:
+        frame = pl.DataFrame({"f": [1.005, 2.675]})
+        assert _formula(frame, "round([f], 2)").to_list() == [1.01, 2.68]
+
+    def test_format_number_writes_what_round_gives(self) -> None:
+        out = _formula(self.FRAME, "format_number([x], 2, ',', '.')").to_list()
+        assert out == ["1.01", "-2.35", "2.50", "-0.00", None]
+        edge = pl.DataFrame({"m": exact(["9" * 37 + ".5"], 1)})
+        assert _formula(edge, "format_number([m], 0, ',', '')").to_list() == ["10" + ",000" * 12]
+
+
+class TestFloorAndCeilOnAnExactValue:
+    def test_keep_the_column_type_and_stop_where_the_answer_needs_another_digit(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "m": exact(["-1.25", "-" + "9" * 36 + ".50"], 2)})
+        out = _formula(frame.head(1), "floor([m])")
+        assert out.dtype == pl.Decimal(38, 2) and out.to_list() == [Decimal("-2.00")]
+        said = _formula_refusal(frame, "floor([m])")
+        assert "38 digits" in said and "'key': 'large'" in said
+        _exactly(_formula(frame, "ceil([m])"), 2, ["-1.00", "-" + "9" * 36 + ".00"])
+        assert "'key': 'large'" in _formula_refusal(frame, "ceil(-[m])")
+
+    def test_a_narrower_column_stops_where_its_own_digits_run_out(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "m": exact(["9999999.50", "99999999.50"], 2, precision=10)})
+        assert "'key': 'large'" in _formula_refusal(frame, "ceil([m])")
+        assert _formula(frame.head(1), "ceil([m])").to_list() == [Decimal("10000000.00")]
+
+    def test_sign_keeps_the_type_and_stops_only_where_the_column_has_no_whole_digit(self) -> None:
+        frame = pl.DataFrame({"m": exact(["-1.25", "0.00", "3.50"], 2), "t": exact(["-0.5", "0", "0.25"], 38)})
+        _exactly(_formula(frame, "sign([m])"), 2, ["-1.00", "0.00", "1.00"])
+        assert "38 digits" in _formula_refusal(frame.with_columns(key=pl.Series(["a", "b", "c"])), "sign([t])")
+        _exactly(_formula(frame.slice(1, 1), "sign([t])"), 38, ["0." + "0" * 38])
+
+
+# ---------------------------------------------------------------------------
+# Unit 16: a calculation made only of typed numbers is exact beside an exact column
+# ---------------------------------------------------------------------------
+
+
+class TestACalculationOfTypedNumbers:
+    FRAME = pl.DataFrame({"d": exact(["812.40", "0.30", None], 2), "f": [812.40, 0.30, None]})
+
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [
+            ("1 + 0.0725", "1.0725"),
+            ("2 * 0.50 - 0.25", "0.75"),
+            ("-(0.5 + 0.25)", "-0.75"),
+            ("1 / 3", "0.3333333333333333"),
+            ("2 / 3", "0.6666666666666667"),
+            ("-2 / 3", "-0.6666666666666667"),
+            ("1 / -3", "-0.3333333333333333"),
+            ("-1 / -3", "0.3333333333333333"),
+            ("0.0000000000000001 / 2", "0.0000000000000001"),
+            ("1 / 0.000000000000000003", "333333333333333333.333333333333333333"),
+        ],
+    )
+    def test_is_worked_out_exactly_as_the_operators_would(self, text: str, value: str) -> None:
+        found = exact_constant(text)
+        assert found is not None and format(found, "f") == value
+
+    def test_beside_an_exact_column_it_is_exact(self) -> None:
+        _exactly(_formula(self.FRAME, "[d] * (1 + 0.0725)"), 6, ["871.299000", "0.321750", None])
+        _exactly(_formula(self.FRAME, "[d] + 1 / 3"), 16, ["812.7333333333333333", "0.6333333333333333", None])
+        _exactly(_formula(self.FRAME, "[d] * -(0.5 + 0.25)"), 4, ["-609.3000", "-0.2250", None])
+        assert _formula(self.FRAME, "[d] = 0.1 + 0.2").to_list() == [False, True, None]
+
+    def test_beside_a_float_column_or_alone_it_is_the_float_it_was(self) -> None:
+        assert _formula(self.FRAME, "[f] = 0.1 + 0.2").to_list() == [False, False, None]
+        out = _formula(self.FRAME, "[f] * (1 + 0.0725)")
+        assert out.dtype == pl.Float64 and out.to_list()[:2] == [812.40 * (1 + 0.0725), 0.30 * (1 + 0.0725)]
+        alone = _formula(self.FRAME, "1 / 3 + 0.5")
+        assert alone.dtype == pl.Float64 and alone.to_list() == [1 / 3 + 0.5] * 3
+
+    def test_one_an_exact_decimal_cannot_hold_is_refused_beside_an_exact_column(self) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr("[d] + 1e30 * 1e30", self.FRAME.schema)
+        assert "1e+30 * 1e+30" in str(raised.value) and "38 digits" in str(raised.value)
+        assert exact_constant("1 / (1 - 1)") is None
+
+
+# ---------------------------------------------------------------------------
+# A flow that converts its exact columns to Float64 first computes what it always did
+# ---------------------------------------------------------------------------
+
+
+class TestAFlowThatConvertsItsExactColumnsToFloat64First:
+    """The first project reads prices as exact decimals and converts them to Float64 before any sum."""
+
+    def test_the_converted_columns_divide_and_compare_as_floats_exactly_as_before(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        frame = pl.DataFrame(
+            {
+                "key": ["p", "q", "r"],
+                "list_price": exact(["812.40", "0.30", "19.99"], 2),
+                "net_price": exact(["406.20", "0.00", "6.663"], 3),
+            }
+        )
+        cast = {"columns": [{"column": "list_price", "type": "Float64"}, {"column": "net_price", "type": "Float64"}]}
+        floats = run_tool(REGISTRY.get("cast_columns"), Ports({"rows": frame}), cast)["rows"]
+        assert floats.schema["list_price"] == pl.Float64 and floats["list_price"].to_list() == [812.40, 0.30, 19.99]
+        ladder = {
+            "cases": [{"when": "abs([net_price]) > 0.000000001", "then": "[list_price] / [net_price]"}],
+            "otherwise": "0.0",
+            "output": "ratio",
+        }
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": floats}), ladder)["rows"]["ratio"]
+        assert out.dtype == pl.Float64 and out.to_list() == [812.40 / 406.20, 0.0, 19.99 / 6.663]
+        kept = run_tool(REGISTRY.get("filter"), Ports({"rows": floats}), {"predicate": "[list_price] = 0.1 + 0.2"})
+        assert kept["true"].height == 0

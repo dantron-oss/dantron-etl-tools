@@ -16,7 +16,12 @@ from collections.abc import Collection, Mapping
 
 import polars as pl
 
+from decimal import Decimal
+
 from .compiler import Division, RowCheck, build
+from .compiler import compile_exact as _compile_exact
+from .compiler import exact_constant as _exact_constant
+from .compiler import exact_places as _exact_places
 from .compiler import divisions as _divisions
 from .compiler import row_checks as _row_checks
 from .errors import ExpressionError
@@ -33,9 +38,12 @@ __all__ = [
     "Division",
     "ExpressionError",
     "RowCheck",
+    "compile_exact",
     "compile_expr",
     "divisions",
     "escape_text",
+    "exact_constant",
+    "exact_places",
     "quote_text",
     "references",
     "row_checks",
@@ -72,6 +80,31 @@ def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] |
     exactly as `compile_expr` checks it.
     """
     return _row_checks(text, columns)
+
+
+def exact_places(text: str, columns: Mapping[str, pl.DataType]) -> int | None:
+    """The places `text` gives as an exact value against these columns, or None when it gives none.
+
+    An exact decimal column gives its places, a whole number 0, a typed number the places written.
+    """
+    return _exact_places(text, columns)
+
+
+def compile_exact(text: str, columns: Mapping[str, pl.DataType], places: int) -> tuple[pl.Expr, pl.Expr]:
+    """`text` compiled as an exact decimal with `places` places, beside other exact values.
+
+    Gives the expression and a true/false expression, true on a row whose value has too many whole
+    digits to be written with those places. A float is refused.
+    """
+    return _compile_exact(text, columns, places)
+
+
+def exact_constant(text: str) -> Decimal | None:
+    """The exact value of a typed number, as written: `1.10` is 1.10 with its 2 places, `-0.5` is -0.5.
+
+    None when `text` is anything else. The text is checked exactly as `compile_expr` checks it.
+    """
+    return _exact_constant(text)
 
 
 def references(text: str) -> frozenset[str]:

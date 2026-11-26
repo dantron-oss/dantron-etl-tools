@@ -16,6 +16,8 @@ MAX_SHEET_ROWS: Final[int] = 1_048_576
 MAX_DATA_ROWS: Final[int] = MAX_SHEET_ROWS - 1
 # The largest whole number a cell (a double) holds exactly, with its neighbour still distinct.
 MAX_EXACT_INTEGER: Final[int] = 2**53 - 1
+# The significant digits a cell (a double) keeps: a figure of this many digits or fewer shows as written.
+MAX_CELL_DIGITS: Final[int] = 15
 
 # The most characters one cell holds. A longer text would be cut to this length without a word.
 MAX_CELL_TEXT: Final[int] = 32_767
@@ -33,8 +35,6 @@ def require_xlsx_path(tool: str, path: str) -> None:
 
 def unsupported_dtype_reason(dtype: pl.DataType) -> str | None:
     """Why a column of `dtype` cannot be written to a cell faithfully, or None if it can."""
-    if isinstance(dtype, pl.Decimal):
-        return "a Decimal column's whole purpose is an exactness a cell does not keep"
     if isinstance(dtype, pl.Time):
         return "a cell has no notion of a time of day on its own; it would arrive as a date in 1899"
     if isinstance(dtype, pl.Duration):
@@ -54,3 +54,15 @@ def unsupported_dtype_reason(dtype: pl.DataType) -> str | None:
     if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None:
         return "a cell cannot record a time zone offset alongside an instant"
     return None
+
+
+def past_cell_digits(column: pl.Series) -> pl.Series:
+    """True on each value of an exact column with more significant digits than a cell keeps (15).
+
+    Zeros before the first digit and after the last one do not count: 0.0725 has 3, 1234.5000 has
+    5 and 1,000,000 has 1. A null is never true.
+    """
+    text = column.cast(pl.String).str.strip_chars_start("-")
+    digits = text.str.replace(".", "", literal=True).str.strip_chars_start("0").str.strip_chars_end("0")
+    return (digits.str.len_chars() > MAX_CELL_DIGITS).fill_null(False).alias(column.name)
+

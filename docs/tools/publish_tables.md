@@ -45,6 +45,9 @@ More on some settings:
 - An empty port stops the whole publish, not only its own table, unless that entry has 'allow_empty: true'.
 - The tables must already exist; this tool never creates one. Each frame's columns must match its table's exactly, apart from 'stamp_column', which the frames never carry.
 - A column whose values will not fit the table's column type is refused before anything is written. write_table runs the same checks.
+- A number goes into a numeric(p,s) column only when every value fits s places and p digits; the database would round the rest without a word. A Float64 is read to 15 significant digits first, as round reads it, and that reading is what is written: 10.25 fits numeric(12,2), 10.255 is refused. Round first with a formula step.
+- A Decimal column is never written to a double precision, real or float column. Convert it with cast_columns to Float64 first. A Float64 into a float column is written as it is.
+- SQLite has no exact type: a Decimal is sent as its digits, and SQLite stores them by its own rule. A numeric(p,s) column is checked the same way on both.
 - A port or table named by two entries is refused, and so is a 'stamp_column' named like one of the tables.
 - A merge loads its rows into a temporary table named _etl_merge_staging first. A permanent table of that name is hidden while a merge runs.
 

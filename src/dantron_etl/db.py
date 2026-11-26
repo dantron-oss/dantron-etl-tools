@@ -19,6 +19,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 from urllib.parse import unquote, urlparse
@@ -86,8 +87,8 @@ _SQL_TYPE_NAMES: Final[dict[str, str]] = {
     "real": "Float64",
     "double": "Float64",
     "double precision": "Float64",
-    "numeric": "Float64",
-    "decimal": "Float64",
+    "numeric": "Decimal",
+    "decimal": "Decimal",
     "bpchar": "String",
     "char": "String",
     "character": "String",
@@ -109,12 +110,15 @@ _SQL_TYPE_NAMES: Final[dict[str, str]] = {
 
 
 def _register_adapters() -> None:
-    """Store Python dates and datetimes in SQLite as ISO text.
+    """Store Python dates and datetimes in SQLite as ISO text, and exact decimals as their digits.
+
+    SQLite has no exact type: a column declared numeric then stores the digits by its own rule.
 
     Why: docs/design/database.md#dates-in-sqlite
     """
     sqlite3.register_adapter(date, lambda value: value.isoformat())
     sqlite3.register_adapter(datetime, lambda value: value.isoformat(sep=" "))
+    sqlite3.register_adapter(Decimal, lambda value: format(value, "f"))
 
 
 _register_adapters()
@@ -570,6 +574,27 @@ def declared_type_of(sql_type: str) -> str | None:
     return _SQL_TYPE_NAMES.get(name.strip())
 
 
+#: A numeric or decimal type, with the digits and places it states, if any.
+_NUMERIC: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:numeric|decimal)\s*(?:\(\s*(?P<digits>[0-9]+)\s*(?:,\s*(?P<places>-?[0-9]+)\s*)?\))?\s*",
+    re.IGNORECASE,
+)
+
+
+def numeric_declaration(sql_type: str) -> tuple[int | None, int | None] | None:
+    """Return the total digits and the places a ``numeric`` or ``decimal`` type states; ``None`` for any other type.
+
+    ``numeric(12,2)`` gives (12, 2). ``numeric(5)`` gives (5, 0), as Postgres reads it. ``numeric``
+    with nothing stated gives (None, None): its values keep whatever places they were written with.
+    """
+    match = _NUMERIC.fullmatch(sql_type)
+    if match is None:
+        return None
+    if match["digits"] is None:
+        return (None, None)
+    return int(match["digits"]), int(match["places"] or 0)
+
+
 # The type of value psycopg returns for each Postgres type, where that never varies.
 _POSTGRES_VALUE_TYPES: Final[dict[str, str]] = {
     "smallint": "Int64",
@@ -706,6 +731,26 @@ class RowLoader:
         """
         return {}
 
+    def exact_columns(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Return each column whose values are read as exact decimals, with the digits and places it declares.
+
+        Both are None where the declaration states none. The default, and SQLite, which has no exact
+        type, answer with no columns.
+        """
+        return {}
+
+    def numeric_declarations(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Return each column declared numeric or decimal, with the digits and places it states.
+
+        Both are None where the declaration states none. A writer checks values against these before it
+        writes, on SQLite as well, since the declaration is what the table promises its readers.
+        """
+        return {}
+
     def merge_rows(
         self,
         connection: Any,
@@ -806,6 +851,15 @@ class _SqliteLoader(RowLoader):
         prefix = f"{quoted_identifier(schema)}." if schema else ""
         info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
         return {entry[_TABLE_INFO_NAME]: declared_type_of(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
+
+    def numeric_declarations(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Read each column declared numeric or decimal from ``pragma table_info``."""
+        prefix = f"{quoted_identifier(schema)}." if schema else ""
+        info = connection.execute(f"pragma {prefix}table_info({quoted_identifier(table)})").fetchall()
+        declared = {entry[_TABLE_INFO_NAME]: numeric_declaration(entry[_TABLE_INFO_DECLARED_TYPE] or "") for entry in info}
+        return {name: stated for name, stated in declared.items() if stated is not None}
 
     def value_types(self, connection: Any, schema: str | None, table: str) -> dict[str, str | None]:
         """Answer by SQLite's own rule for which kind of value a declared type stores."""
@@ -956,6 +1010,32 @@ class _PostgresLoader(RowLoader):
             return {name: _POSTGRES_VALUE_TYPES.get(_bare_type_name(spelling)) for name, spelling in cursor.fetchall()}
         finally:
             cursor.close()
+
+    def exact_columns(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Every numeric column: Postgres holds each one exactly."""
+        return self.numeric_declarations(connection, schema, table)
+
+    def numeric_declarations(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Read each ``numeric`` column and what it declares with ``format_type`` over ``pg_attribute``.
+
+        A domain over numeric, or an array of it, is not counted: its values arrive as the driver gives them.
+        """
+        qualified = qualified_name(schema, table)
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "select attname, format_type(atttypid, atttypmod) from pg_attribute "
+                "where attrelid = %s::regclass and attnum > 0 and not attisdropped",
+                (qualified,),
+            )
+            declared = {name: numeric_declaration(spelling) for name, spelling in cursor.fetchall()}
+        finally:
+            cursor.close()
+        return {name: stated for name, stated in declared.items() if stated is not None}
 
     def merge_rows(
         self,

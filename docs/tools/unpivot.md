@@ -19,7 +19,8 @@ Use unpivot to turn a wide table into a long one, for example one column per mon
 | `by[]` | string | optional |  | One column that stays as it is. Naming it twice counts it once. |
 | `names_to` | string | required |  | The name of the new column holding each old column's heading, such as 'month'. |
 | `values_to` | string | required |  | The name of the new column holding each old cell's value, such as 'amount'. |
-| `values_type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Optional: the type to read every turned column as, such as 'Float64'. Without it, those columns must already share a type. |
+| `values_type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Optional: the type to read every turned column as, such as 'Float64'. Without it, those columns must already share a type. |
+| `values_places` | integer | optional |  | Only with values_type 'Decimal', and required there: the digits after the point, from 0 to 38, such as 2. |
 | `on_invalid` | string | optional | `error`, `set_null` | With 'values_type': 'error' stops the run on a value that will not convert (the default); 'set_null' makes it null and reports how many. |
 | `exclude_nulls` | boolean | default `false` |  | Set true to leave out cells that are null, instead of making a row with no value. |
 
@@ -29,6 +30,7 @@ More on some settings:
 - `names_to`: For example 'month'. It always holds text.
 - `values_to`: For example 'amount'.
 - `values_type`: For example 'Float64', when a text column sits among the figures.
+- `values_places`: For example 2, beside values_type: Decimal, for figures to the cent.
 - `on_invalid`: Use 'set_null' with 'values_type' when some cells are expected not to convert, such as notes beside figures.
 - `exclude_nulls`: Set it on a sparse sheet to skip the empty cells.
 
@@ -46,6 +48,8 @@ More on some settings:
 - A decimal with a fraction does not convert to a whole-number 'values_type': 1.99 is a value that will not convert. Round it first.
 - 'on_invalid: error' (the default) stops the run on a value that will not convert, naming the column and the values. 'set_null' makes it null, reports how many out of how many as a warning, and marks each row; only columns that lost a value are reported.
 - 'on_invalid' without 'values_type' is refused, because there is nothing to convert.
+- 'values_type: Decimal' with 'values_places' reads every turned column as an exact decimal, by cast_columns' rule: a value that does not fit the places without rounding will not convert.
+- Without 'values_type', exact Decimal columns of different places are stacked at the larger places, which adds zeros and loses nothing. An exact column beside a Float64 column is refused, naming the float column: convert one of them with cast_columns.
 - Unlike cast_columns, reading a column as the type it already has is fine here, because the turned columns are all the ones you did not name.
 - 'names_to' and 'values_to' must be two different new names, not used by 'by' or any column that is turned.
 
@@ -195,6 +199,41 @@ Rows out:
 | 3 | c2 | 7.5 |
 
 The two null cells are left out: record 2's c1 and record 1's c2. Record 3's c1 holds empty text, which is a value, so it is kept. The rows keep the full unpivot's order: all of c1, then all of c2.
+
+## Example 5
+
+turn exact decimals of different places into one column
+
+```yaml fragment
+tool: unpivot
+config:
+  by:
+  - code
+  names_to: measure
+  values_to: value
+```
+
+Rows in:
+
+`rows`
+
+| code | price | rate |
+|---|---|---|
+| A | 812.40 | 0.0725 |
+| B | 19.99 | null |
+
+Rows out:
+
+`rows`
+
+| code | measure | value |
+|---|---|---|
+| A | price | 812.4000 |
+| B | price | 19.9900 |
+| A | rate | 0.0725 |
+| B | rate | null |
+
+'price' holds 2 places and 'rate' 4, so the values are stacked at 4 places: 812.40 becomes 812.4000, the same figure. A Float64 column among them would be refused instead.
 
 ---
 

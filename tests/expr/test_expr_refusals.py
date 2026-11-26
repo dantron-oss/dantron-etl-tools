@@ -187,10 +187,13 @@ class TestATimestampAgainstADate:
 
 
 class TestDividingADecimalColumn:
-    @pytest.mark.parametrize("text", ["[dec] / 3", "3 / [dec]", "[dec] / [dec]"])
-    def test_is_refused_with_a_pointer_to_a_cast(self, text: str) -> None:
-        message = _refusal(text, FRAME.schema)
-        assert "[dec] holds Decimal" in message and "Float64" in message
+    @pytest.mark.parametrize(
+        ("text", "first"), [("[dec] / 3", "33.3333333333333333"), ("3 / [dec]", "0.0300000000000000"), ("[dec] / [dec]", "1.0000000000000000")]
+    )
+    def test_gives_sixteen_places(self, text: str, first: str) -> None:
+        """tests/expr/test_exact_expressions.py has the rule in full."""
+        out = FRAME.select(compile_expr(text, FRAME.schema).alias("x"))["x"]
+        assert out.dtype == pl.Decimal(38, 16) and format(out[0], "f") == first
 
     def test_other_arithmetic_on_a_decimal_column_is_unchanged(self) -> None:
         out = FRAME.select(compile_expr("[dec] * 2 + 1", FRAME.schema).alias("x"))["x"]

@@ -83,6 +83,8 @@ import subprocess
 import sys
 import textwrap
 from collections.abc import Mapping
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -878,8 +880,18 @@ def _typed_melt_refusal_cases() -> list[Any]:
         ),
         pytest.param(
             {**BASE, "values_type": "Decimal"},
-            ("values_type", "Float64", "String"),
-            id="a_values_type_that_is_not_one_of_the_declared_types",
+            ("values_places", "Decimal", "places: 2"),
+            id="a_values_type_of_decimal_with_no_places",
+        ),
+        pytest.param(
+            {**BASE, "values_type": "Float64", "values_places": 2},
+            ("values_places", "only Decimal"),
+            id="places_beside_a_type_that_takes_none",
+        ),
+        pytest.param(
+            {**BASE, "values_places": 2},
+            ("values_places", "values_type"),
+            id="places_with_no_values_type_beside_them",
         ),
         pytest.param(
             {**BASE, "values_type": "float64"},
@@ -976,7 +988,16 @@ class TestTheStatedMeltIsDeclaredAndDocumented:
         """
         template = Unpivot().config_template()
 
-        assert set(template) == {"by", "names_to", "values_to", "values_type", "on_invalid", "exclude_nulls"}
+        assert set(template) == {
+            "by",
+            "names_to",
+            "values_to",
+            "values_type",
+            "values_places",
+            "on_invalid",
+            "exclude_nulls",
+        }
+        assert template["values_places"].default is None, "places are written only beside Decimal"
         assert not set(template) & YAML_REWRITES, "a field a definition file rewrites is not a field"
         assert expression_fields(template) == (), "every field here names a column or a type; none computes one"
 
@@ -1770,3 +1791,129 @@ class TestAStatedWholeNumberTypeRefusesAFraction:
 
         assert result["rows"]["count"].to_list() == [None, 2, 3, 4]
         assert any("1.5" in note for note in result.notes), result.notes
+
+
+def _exact(values: list[str | None], places: int, *, precision: int = 38) -> pl.Series:
+    """Exact decimals written as text, so nothing passes through a float on the way in."""
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+def _written(series: pl.Series) -> list[str | None]:
+    """Each value as the digits it holds, so a test pins the places as well as the value."""
+    return series.cast(pl.String).to_list()
+
+
+EXACT: dict[str, Any] = {
+    "by": ["code"],
+    "names_to": "period",
+    "values_to": "amount",
+    "values_type": "Decimal",
+    "values_places": 2,
+}
+
+
+class TestAMeltToExactDecimals:
+    """'values_type: Decimal' with 'values_places' reads every turned column exactly, as cast_columns does."""
+
+    def test_text_whole_numbers_floats_and_exact_columns_all_melt_exactly(self) -> None:
+        frame = pl.DataFrame(
+            {
+                "code": ["a", "b"],
+                "p1": ["812.40", None],
+                "p2": [3, -7],
+                "p3": [0.1 + 0.2, 19.9],
+                "p4": _exact(["1.2300", "-0.0500"], 4),
+            }
+        )
+        rows = run_tool(Unpivot(), Ports({"rows": frame}), EXACT)["rows"]
+
+        assert rows.schema["amount"] == pl.Decimal(38, 2)
+        assert _written(rows["amount"]) == ["812.40", None, "3.00", "-7.00", "0.30", "19.90", "1.23", "-0.05"]
+
+    def test_a_value_that_does_not_fit_stops_the_run_naming_the_melted_column(self) -> None:
+        frame = pl.DataFrame({"code": ["a", "b"], "p1": ["1.50", "1.005"], "p2": ["2", "3"]})
+        with pytest.raises(DataError) as caught:
+            run_tool(Unpivot(), Ports({"rows": frame}), EXACT)
+        message = str(caught.value)
+        for word in ("melted column 'p1'", "'1.005'", "Decimal with 2 places"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1
+
+    def test_set_null_empties_counts_and_marks_what_does_not_fit(self) -> None:
+        frame = pl.DataFrame({"code": ["a", "b"], "p1": ["1.50", "1.005"], "p2": ["2", "abc"]})
+        result = run_tool(Unpivot(), Ports({"rows": frame}), {**EXACT, "on_invalid": "set_null"})
+        assert _written(result["rows"]["amount"]) == ["1.50", None, "2.00", None]
+        assert len(result.notes) == 2
+        assert all("Decimal with 2 places" in note for note in result.notes), result.notes
+        assert result.status["rows"]["level"].to_list() == ["ok", "warning", "ok", "warning"]
+
+    @pytest.mark.parametrize("height", [1, 0])
+    def test_a_turned_column_that_holds_no_number_is_refused_on_its_type(self, height: int) -> None:
+        frame = pl.DataFrame({"code": ["a"], "p1": ["1.50"], "opened": [date(2026, 1, 1)]}).head(height)
+        with pytest.raises(ConfigError) as caught:
+            run_tool(Unpivot(), Ports({"rows": frame}), EXACT)
+        message = str(caught.value)
+        assert "opened" in message and "Date" in message and "Decimal" in message, message
+
+    def test_a_frame_with_no_rows_still_gives_the_exact_type(self) -> None:
+        frame = pl.DataFrame({"code": ["a"], "p1": ["1.50"], "p2": [1.5]}).head(0)
+        rows = run_tool(Unpivot(), Ports({"rows": frame}), EXACT)["rows"]
+        assert rows.height == 0
+        assert rows.schema["amount"] == pl.Decimal(38, 2)
+
+
+class TestExactColumnsMeltWithoutAStatedType:
+    """Exact columns of different places stack at the larger places; beside a float they are refused."""
+
+    def _melt(self, frame: pl.DataFrame) -> pl.DataFrame:
+        config = {"by": ["code"], "names_to": "period", "values_to": "amount"}
+        return run_tool(Unpivot(), Ports({"rows": frame}), config)["rows"]
+
+    @pytest.mark.parametrize("reversed_order", [False, True])
+    def test_unequal_places_widen_to_the_larger_whichever_comes_first(self, reversed_order: bool) -> None:
+        columns = {"p1": _exact(["1.50", None], 2), "p2": _exact(["0.0725", "-3"], 4)}
+        if reversed_order:
+            columns = dict(reversed(columns.items()))
+        rows = self._melt(pl.DataFrame({"code": ["a", "b"], **columns}))
+
+        assert rows.schema["amount"] == pl.Decimal(38, 4)
+        expected = {"p1": ["1.5000", None], "p2": ["0.0725", "-3.0000"]}
+        assert _written(rows["amount"]) == [value for name in columns for value in expected[name]]
+
+    def test_every_exact_column_comes_out_with_38_digits(self) -> None:
+        frame = pl.DataFrame({"code": ["a"], "p1": _exact(["1.50"], 2, precision=18), "p2": _exact(["2.25"], 2)})
+        rows = self._melt(frame)
+        assert rows.schema["amount"] == pl.Decimal(38, 2)
+        assert _written(rows["amount"]) == ["1.50", "2.25"]
+
+    def test_a_column_of_nothing_takes_the_exact_type(self) -> None:
+        frame = pl.DataFrame({"code": ["a"], "p1": _exact(["1.50"], 2), "p2": pl.Series([None], dtype=pl.Null)})
+        rows = self._melt(frame)
+        assert rows.schema["amount"] == pl.Decimal(38, 2)
+        assert _written(rows["amount"]) == ["1.50", None]
+
+    @pytest.mark.parametrize("height", [1, 0])
+    @pytest.mark.parametrize("float_first", [False, True])
+    def test_exact_beside_a_float_is_refused_naming_the_float_column(self, height: int, float_first: bool) -> None:
+        columns = {"p1": _exact(["1.50"], 2), "p2": pl.Series([1.5])}
+        if float_first:
+            columns = dict(reversed(columns.items()))
+        with pytest.raises(ConfigError) as caught:
+            self._melt(pl.DataFrame({"code": ["a"], **columns}).head(height))
+        message = str(caught.value)
+        for word in ("'p2'", "Float64", "cast_columns", "Decimal"):
+            assert word in message, message
+
+    def test_exact_beside_a_whole_number_is_still_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            self._melt(pl.DataFrame({"code": ["a"], "p1": _exact(["1.50"], 2), "p2": [3]}))
+        assert "p1" in str(caught.value) and "p2" in str(caught.value)
+
+    def test_a_value_too_large_for_the_larger_places_is_refused(self) -> None:
+        wide = "9" * 35 + ".00"
+        frame = pl.DataFrame({"code": ["a"], "p1": _exact([wide], 2), "p2": _exact(["0.0001"], 4)})
+        with pytest.raises(DataError) as caught:
+            self._melt(frame)
+        message = str(caught.value)
+        for word in ("'p1'", "4 places", "38 digits"):
+            assert word in message, message

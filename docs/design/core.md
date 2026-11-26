@@ -46,7 +46,8 @@ per-step flag is one an author could set and forget.
 ## One set of type names
 
 **Decided.** Every tool that lets a flow state a column's type uses the names in `column_types.py`,
-spelled as polars spells them: `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time`.
+spelled as polars spells them: `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`,
+`Datetime`, `Time`.
 
 **Why.** Several tools need these words. A CSV states no types, so its reader infers them and must
 be correctable. A cast step states them outright, because two frames about to be stacked must agree.
@@ -60,6 +61,29 @@ real dates needs none, which is why not every tool offers one.
 **A fraction is never cut silently.** polars reads 1.99 as the whole number 1 and -2.7 as -2,
 without a word. `cut_fractions` finds those rows first, and a tool refuses with `fraction_refusal`
 (the owner's ruling: refuse unless every value is already whole, and say to `round` first).
+
+### Exact conversions
+
+**Decided.** `Decimal` is written with `places`; its total digits are always 38, the most the
+engine holds, so a column's type is its places alone. Converting to it never rounds: each value
+converts exactly or its row is reported. Every conversion goes through plain-digit text, which the
+library reads itself.
+
+**Why.** The engine rounds half to even wherever it narrows, takes `1e3`, `.5` and `+1.25` as
+numbers, and reads a float through a binary multiplication (0.1 at 20 places is clean, 1/3 is
+not). Reading text is the one route whose every digit can be checked.
+
+**A float is read to 15 significant digits** (6 for Float32), the reading `round` uses. The digits
+come from the shortest text that reads back as the same float, rounded half away from zero. So a
+float whose shortest text is 4.916491689924465 reads as 4.91649168992447, although its binary value
+lies just below that half. A spreadsheet shows the shortest text, so the reading follows what a
+person sees.
+
+**Back to Float64, through text.** The engine's own conversion divides the digits held by a power
+of ten in binary. It lands on the nearest double while the digits held, counting every place,
+make a whole number no larger than 2**53 and the column has at most 22 places. Past either limit
+it can miss by one step: 457,200,000,000,000,000,000,000.00 at 2 places becomes
+4.5720000000000004e+23. Reading the text lands on the nearest double every time.
 
 ## One name, one tool
 

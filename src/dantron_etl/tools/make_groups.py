@@ -20,6 +20,7 @@ from ..authoring import (
     WorkedExample,
     require_columns,
 )
+from ._exact_columns import larger_exact_type, widen_exact
 
 _OUTPUT_FIELDS = ("record_column", "group_column")
 
@@ -85,6 +86,9 @@ class MakeGroups:
                 "between runs on the same pairs.",
                 "'left' and 'right' must have the same type. The number 2 and the text '2' are not "
                 "the same record, so the tool refuses rather than guess.",
+                "Two Decimal columns of different places are the one exception: 1.50 and 1.5000 are "
+                "the same record, written at the larger places. A Decimal column beside a whole-number "
+                "or Float64 column is refused.",
             ),
             field_help={
                 "left": "For example 'account_id'. Which column is 'left' and which is 'right' makes "
@@ -116,7 +120,7 @@ class MakeGroups:
         require_columns(edges, [left], "left", "pairs")
         require_columns(edges, [right], "right", "pairs")
         left_type, right_type = edges.schema[left], edges.schema[right]
-        if left_type != right_type:
+        if left_type != right_type and larger_exact_type(left_type, right_type) is None:
             raise ConfigError(
                 f"config fields 'left' and 'right' name columns of different types on input port 'pairs': "
                 f"{left!r} is {left_type} and {right!r} is {right_type}. A value of one type is never the "
@@ -128,6 +132,7 @@ class MakeGroups:
         left, right = config["left"], config["right"]
         record_column, group_column = config["record_column"], config["group_column"]
 
+        edges = _exact_ends_alike(edges, left, right)
         # Every distinct record, sorted, so a record's position is also its rank.
         nodes = pl.concat([edges[left], edges[right]]).drop_nulls().unique().sort().rename("value")
         index = nodes.to_frame().with_row_index("id")
@@ -161,6 +166,18 @@ class MakeGroups:
             [group_column, record_column]
         )
         return Ports({"rows": rows})
+
+
+def _exact_ends_alike(edges: pl.DataFrame, left: str, right: str) -> pl.DataFrame:
+    """``edges`` with two exact ends of different places both widened to the larger places."""
+    dtype = larger_exact_type(edges.schema[left], edges.schema[right])
+    if dtype is None:
+        return edges
+    places = dtype.scale
+    wider = left if edges.schema[left].scale == places else right
+    return edges.with_columns(
+        widen_exact(edges, column, places, where="on input port 'pairs'", wider=wider) for column in (left, right)
+    )
 
 
 def _follow_to_end(parent: pl.Series) -> pl.Series:

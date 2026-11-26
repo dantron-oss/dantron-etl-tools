@@ -27,8 +27,8 @@ configuration has to serve both runs.
 **A whole number is written digit for digit.** This is the sharpest illustration of why this is a
 separate tool: 123456789012345678 through a spreadsheet cell comes back 123456789012345696 with
 nothing said, and the workbook sink refuses it for that reason. Here it is written as its digits
-and is exactly itself, and so is a ``Decimal``, whose whole purpose is an exactness a cell cannot
-keep. Nothing about size is refused, and neither is a frame far taller than a sheet.
+and is exactly itself, and so is a ``Decimal``, every place it holds, past the 15 digits a cell
+keeps. Nothing about size is refused, and neither is a frame far taller than a sheet.
 
 **A value carrying the delimiter, a quote or a line ending is quoted.** This is where a naive
 writer corrupts a file silently: the field becomes two fields, the line becomes one field too
@@ -138,6 +138,21 @@ class TestWhatReachesTheFile:
                 "1234.56",
                 id="and_a_figure_whose_whole_purpose_is_exactness_keeps_it",
             ),
+            pytest.param(
+                pl.Series("value", [Decimal("58.899")], dtype=pl.Decimal(38, 6)),
+                "58.899000",
+                id="an_exact_figure_keeps_every_place_it_holds",
+            ),
+            pytest.param(
+                pl.Series("value", [Decimal("-0.5")], dtype=pl.Decimal(38, 2)),
+                "-0.50",
+                id="an_exact_figure_below_zero_keeps_its_places",
+            ),
+            pytest.param(
+                pl.Series("value", [Decimal("12345678901234567890.12")], dtype=pl.Decimal(38, 2)),
+                "12345678901234567890.12",
+                id="an_exact_figure_past_what_a_cell_keeps_is_written_whole",
+            ),
             pytest.param(pl.Series("value", [None], dtype=pl.String), "", id="nothing_is_written_as_an_empty_field"),
         ],
     )
@@ -150,8 +165,8 @@ class TestWhatReachesTheFile:
         """A file has no types, so writing is serialisation and every rule of it is visible here.
 
         Two of these are the reason this tool exists separately from the workbook sink. A
-        ``Decimal`` is written as its digits and is exactly itself, where a cell would hold it as a
-        double and the workbook sink refuses it outright. A timestamp carrying an offset keeps the
+        ``Decimal`` is written as its digits and is exactly itself, where a cell holds a double and
+        the workbook sink refuses one of more than 15 significant digits. A timestamp carrying an offset keeps the
         offset, where a cell has nowhere to record one and the workbook sink refuses that too.
 
         The others pin the spellings the paired reader has to assume: a truth value is ``true``

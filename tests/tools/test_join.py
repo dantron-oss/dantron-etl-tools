@@ -71,6 +71,7 @@ period column differently.
 """
 
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -523,7 +524,10 @@ def _refused_key_specifications() -> list[Any]:
             {"keys": ["group_id"], "left_keys": ["group_id"]}, ("keys", "left_keys"), True, id="both_forms_with_left_on"
         ),
         pytest.param(
-            {"keys": ["group_id"], "right_keys": ["group_id"]}, ("keys", "right_keys"), True, id="both_forms_with_right_on"
+            {"keys": ["group_id"], "right_keys": ["group_id"]},
+            ("keys", "right_keys"),
+            True,
+            id="both_forms_with_right_on",
         ),
         pytest.param(
             {"keys": ["group_id"], "left_keys": ["group_id"], "right_keys": ["group_id"]},
@@ -894,3 +898,176 @@ class TestKeyTypesAreCheckedOnTheSchema:
         notes = " ".join(Join().help().notes)
 
         assert "Float" in notes and "0.1 + 0.2" in notes
+
+
+# ---------------------------------------------------------------------------
+# Exact decimal keys
+# ---------------------------------------------------------------------------
+
+
+def _exact(name: str, values: Sequence[str | None], places: int, precision: int = 38) -> pl.Series:
+    """An exact column, written as text so nothing passes through a float."""
+    return pl.Series(name, [None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+class TestExactKeysPairByValue:
+    """An exact key pairs by value, as SQL's ``=`` does: 1.50 with 1.5000, and 5.00 with the whole number 5.
+
+    Before, every one of these pairs was refused, so no flow that ran then gives a different answer now.
+    An exact key against a float key stays refused, now naming the float column to convert.
+    """
+
+    @pytest.mark.parametrize("how", ["inner", "left"])
+    @pytest.mark.parametrize(("left_places", "right_places"), [(2, 4), (4, 2)], ids=["fewer_left", "more_left"])
+    def test_exact_keys_of_different_places_pair_by_value(self, how: str, left_places: int, right_places: int) -> None:
+        def written(value: str, places: int) -> str:
+            return f"{Decimal(value):.{places}f}"
+
+        left = pl.DataFrame(
+            {
+                "price": _exact(
+                    "price", [written(v, left_places) for v in ("1.5", "-2.25", "3")] + [None], left_places
+                ),
+                "order_id": [1, 2, 3, 4],
+            }
+        )
+        right = pl.DataFrame(
+            {
+                "price": _exact(
+                    "price", [written(v, right_places) for v in ("1.5", "-2.25", "4")] + [None], right_places
+                ),
+                "band": ["a", "b", "c", "d"],
+            }
+        )
+
+        result = _run(left, right, {"keys": ["price"], "how": how})
+
+        joined = result["joined"]
+        assert joined.schema["price"] == pl.Decimal(38, left_places), "the key keeps the left side's type"
+        paired = joined.filter(pl.col("band").is_not_null())
+        assert paired.select("order_id", "band").rows() == [(1, "a"), (2, "b")]
+        assert paired["price"].to_list() == [Decimal("1.5"), Decimal("-2.25")]
+        assert joined.height == (4 if how == "left" else 2)
+        assert_frame_equal(result["left_only"], left[[2, 3]])
+        assert_frame_equal(result["right_only"], right[[2, 3]])
+
+    def test_the_differently_named_form_pairs_exact_keys_of_different_places(self) -> None:
+        left = pl.DataFrame({"due": _exact("due", ["10.10", "20.00"], 2), "order_id": [1, 2]})
+        right = pl.DataFrame({"amount": _exact("amount", ["10.1000", "20.0001"], 4), "payment_id": [7, 8]})
+
+        result = _run(left, right, {"left_keys": ["due"], "right_keys": ["amount"]})
+
+        assert result["joined"].rows() == [(Decimal("10.10"), 1, 7)]
+        assert result["joined"].columns == ["due", "order_id", "payment_id"]
+        assert result["left_only"]["order_id"].to_list() == [2]
+        assert result["right_only"]["payment_id"].to_list() == [8]
+
+    def test_exact_keys_of_the_same_places_but_different_total_digits_pair(self) -> None:
+        left = pl.DataFrame({"k": _exact("k", ["1.50", "2.00"], 2, precision=18), "v": [1, 2]})
+        right = pl.DataFrame({"k": _exact("k", ["2.00"], 2), "w": [9]})
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].rows() == [(Decimal("2.00"), 2, 9)]
+
+    @pytest.mark.parametrize("exact_side", ["left", "right"])
+    @pytest.mark.parametrize("whole", [pl.Int64, pl.Int32, pl.UInt8])
+    def test_an_exact_key_pairs_with_a_whole_number_key(self, exact_side: str, whole: pl.DataType) -> None:
+        exact = pl.DataFrame({"k": _exact("k", ["5.00", "5.01", "7.00", None], 2), "e": [1, 2, 3, 4]})
+        counted = pl.DataFrame({"k": pl.Series("k", [5, 6, None], dtype=whole), "c": [10, 20, 30]})
+        left, right = (exact, counted) if exact_side == "left" else (counted, exact)
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].height == 1
+        assert result["joined"].schema["k"] == left.schema["k"]
+        assert result["joined"].select("e", "c").rows() == [(1, 10)]
+        exact_unpaired = result["left_only"] if exact_side == "left" else result["right_only"]
+        whole_unpaired = result["right_only"] if exact_side == "left" else result["left_only"]
+        assert exact_unpaired["e"].to_list() == [2, 3, 4], "5.01 and 7.00 find no partner, and a null never pairs"
+        assert whole_unpaired["c"].to_list() == [20, 30]
+
+    def test_a_value_too_wide_for_the_other_sides_places_pairs_nothing(self) -> None:
+        """36 digits before the point cannot be held at 4 places, so no value on that side can equal it."""
+        wide = "9" * 36 + ".00"
+        left = pl.DataFrame({"k": _exact("k", [wide, "1.00"], 2), "v": [1, 2]})
+        right = pl.DataFrame({"k": _exact("k", ["1.0000"], 4), "w": [9]})
+
+        result = _run(left, right, {"keys": ["k"], "how": "left"})
+
+        assert result["joined"]["k"].to_list() == [Decimal(wide), Decimal("1.00")]
+        assert result["joined"]["w"].to_list() == [None, 9]
+        assert result["left_only"]["k"].to_list() == [Decimal(wide)]
+        assert result["right_only"].height == 0
+
+    def test_a_whole_number_too_wide_for_the_exact_sides_places_pairs_nothing(self) -> None:
+        left = pl.DataFrame({"k": [10**18, 1], "v": [1, 2]})
+        right = pl.DataFrame({"k": _exact("k", ["1." + "0" * 25], 25), "w": [9]})
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].rows() == [(1, 2, 9)]
+        assert result["left_only"]["k"].to_list() == [10**18]
+
+    def test_an_exact_key_beside_a_key_that_already_matched_pairs_on_both(self) -> None:
+        left = pl.DataFrame(
+            {"code": ["A", "A", "B"], "rate": _exact("rate", ["0.07", "0.10", "0.07"], 2), "v": [1, 2, 3]}
+        )
+        right = pl.DataFrame({"code": ["A", "B"], "rate": _exact("rate", ["0.0700", "0.0800"], 4), "w": [8, 9]})
+
+        result = _run(left, right, {"keys": ["code", "rate"]})
+
+        assert result["joined"].rows() == [("A", Decimal("0.07"), 1, 8)]
+        assert result["left_only"]["v"].to_list() == [2, 3]
+        assert result["right_only"]["w"].to_list() == [9]
+
+    def test_an_exact_key_beside_a_key_typed_null_pairs_nothing(self) -> None:
+        left = pl.DataFrame({"k": _exact("k", ["1.50"], 2), "n": [None], "v": [1]})
+        right = pl.DataFrame({"k": _exact("k", ["1.5000"], 4), "n": ["x"], "w": [2]})
+
+        result = _run(left, right, {"keys": ["k", "n"], "how": "left"})
+
+        assert result["joined"].rows() == [(Decimal("1.50"), None, 1, None)]
+        assert_frame_equal(result["left_only"], left)
+        assert_frame_equal(result["right_only"], right)
+
+    def test_the_internal_key_never_collides_with_a_column_of_either_side(self) -> None:
+        left = pl.DataFrame({"k": _exact("k", ["1.50"], 2), "__key_0": ["left"]})
+        right = pl.DataFrame({"k": _exact("k", ["1.5000"], 4), "__key_0_": ["right"]})
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].columns == ["k", "__key_0", "__key_0_"]
+        assert result["joined"].rows() == [(Decimal("1.50"), "left", "right")]
+
+    def test_exact_keys_of_one_type_join_as_they_always_did(self) -> None:
+        left = pl.DataFrame({"k": _exact("k", ["1.50", "2.00", None], 2), "v": [1, 2, 3]})
+        right = pl.DataFrame({"k": _exact("k", ["2.00", None], 2), "w": [9, 10]})
+
+        result = _run(left, right, {"keys": ["k"]})
+
+        assert result["joined"].rows() == [(Decimal("2.00"), 2, 9)]
+        assert result["left_only"]["v"].to_list() == [1, 3]
+        assert result["right_only"]["w"].to_list() == [10]
+
+    @pytest.mark.parametrize("float_side", ["left", "right"])
+    @pytest.mark.parametrize("float_type", [pl.Float64, pl.Float32])
+    @pytest.mark.parametrize("height", [2, 0], ids=["with_rows", "with_no_rows"])
+    def test_an_exact_key_against_a_float_key_is_refused_naming_the_float_column(
+        self, float_side: str, float_type: pl.DataType, height: int
+    ) -> None:
+        exact = pl.DataFrame({"due": _exact("due", ["1.50", "2.00"], 2), "e": [1, 2]}).head(height)
+        floats = pl.DataFrame({"paid": pl.Series("paid", [1.5, 2.0], dtype=float_type), "f": [1, 2]}).head(height)
+        if float_side == "left":
+            left, right, config = floats, exact, {"left_keys": ["paid"], "right_keys": ["due"]}
+        else:
+            left, right, config = exact, floats, {"left_keys": ["due"], "right_keys": ["paid"]}
+
+        with pytest.raises(ConfigError) as caught:
+            _run(left, right, config)
+
+        message = str(caught.value)
+        side = "left" if float_side == "left" else "right"
+        for word in (f"{side} column 'paid'", str(float_type), "'due'", "Decimal", "cast_columns", "left_keys"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+        assert "convert one side" in message
