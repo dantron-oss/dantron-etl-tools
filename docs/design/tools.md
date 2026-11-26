@@ -715,9 +715,11 @@ balance in one long group needs a pass per row and is slow (about 45 seconds for
 group); across many groups it is quick (under a second for the same rows in 500 groups). The help
 points a running balance at `running_total`, which is fast in every case.
 
-**Refusals read the same as formula's.** A division by zero or a value that does not convert is
-acted on only at the first place where it happens, once every row above it is final, so the rows
-named are the ones a row-by-row walk would stop on.
+**Refusals read the same as formula's.** A division by zero, an answer past 38 digits or a value
+that does not convert is acted on only once every row has settled, so a divisor that is zero only
+on a pass before the rows above it were final does not stop the step. The refusal then names every
+row whose own calculation has no answer, in arrival order, with the input's own columns and not
+the tool's `Row-1:...` columns, as formula would name them.
 
 ## cross_tab
 

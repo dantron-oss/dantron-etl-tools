@@ -40,7 +40,7 @@ More on some settings:
 - A formula that reads earlier rows of its own output is worked out a few rows at a time, so it is slower than any other formula, which is worked out for all rows at once. A fill-down stays quick. A running balance over one very long group (tens of thousands of rows) takes seconds to tens of seconds; for a running balance, running_total is the fast choice.
 - 'type' is needed when the expression reads earlier rows of a new output column, because its type cannot be worked out otherwise. When it reads earlier rows of a column already there, the output keeps that column's type.
 - With 'type', or a column whose type is kept, the result converts as cast_columns converts it: nothing is rounded, and a value that does not fit stops the step.
-- Everything formula refuses is refused here: a column that is not there, a type mismatch, an exact decimal meeting a float. A division by zero on a row stops the step, as does an exact answer past 38 digits.
+- Everything formula refuses is refused here: a column that is not there, a type mismatch, an exact decimal meeting a float. A division by zero on a row stops the step, as does an exact answer past 38 digits. With a self-reference, only the settled values decide, and the refusal names every such row.
 - The output column is updated in place when it is there and added at the end when not. No other column and no row moves. No rows in gives no rows out, with the output column.
 - It mirrors SQL's LAG and LEAD over a window partitioned by 'group_by' in arrival order.
 

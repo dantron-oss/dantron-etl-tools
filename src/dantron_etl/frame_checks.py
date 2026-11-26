@@ -63,7 +63,14 @@ def compile_for(frame: pl.DataFrame, text: str, field: str) -> pl.Expr:
         raise ConfigError(f"config field {field!r} does not compile: {error}") from error
 
 
-def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *, among: pl.Expr | None = None) -> None:
+def refuse_rows_without_an_answer(
+    frame: pl.DataFrame,
+    text: str,
+    field: str,
+    *,
+    among: pl.Expr | None = None,
+    shown: Sequence[str] | None = None,
+) -> None:
     """Stop the step on a row of ``frame`` that ``text`` has no answer for.
 
     That is a ``/`` whose divisor is zero, and a function call with no answer on that row, such as
@@ -73,6 +80,9 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
 
     ``among`` limits the check to the rows the expression is used on (``case_when`` passes the
     rows that reach a case). Other tools pass nothing.
+
+    ``shown`` names the columns the refusal's rows show, when ``frame`` carries columns of the
+    tool's own beside the input's (multi_row_formula's ``Row-1:amount``). Left out, all of them.
 
     Why: docs/design/core.md#division-by-zero-stops-the-step
     """
@@ -89,7 +99,7 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
             f"expression: `{text}`. A division by zero has no answer, so the step stops rather than "
             f"write infinity or not-a-number; give the rows whose divisor is zero a case_when rung "
             f"of their own, before the one that divides",
-            offending=frame.filter(zero),
+            offending=_showing(frame.filter(zero), shown),
             total=frame.height,
         )
     for check in checks:
@@ -101,9 +111,14 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
         problem, remedy = check.refusal(values["value"].to_list())
         raise DataError(
             f"config field {field!r} {problem}, in expression: `{text}`. {remedy}",
-            offending=offending,
+            offending=_showing(offending, shown),
             total=frame.height,
         )
+
+
+def _showing(rows: pl.DataFrame, shown: Sequence[str] | None) -> pl.DataFrame:
+    """``rows`` with only the ``shown`` columns, or all of them when ``shown`` is None."""
+    return rows if shown is None else rows.select(shown)
 
 
 def _answer_checks(frame: pl.DataFrame, text: str, field: str) -> tuple[tuple[Division, ...], tuple[RowCheck, ...]]:

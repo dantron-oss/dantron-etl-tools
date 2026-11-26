@@ -141,7 +141,8 @@ class MultiRowFormula:
                 "it: nothing is rounded, and a value that does not fit stops the step.",
                 "Everything formula refuses is refused here: a column that is not there, a type mismatch, "
                 "an exact decimal meeting a float. A division by zero on a row stops the step, as does an "
-                "exact answer past 38 digits.",
+                "exact answer past 38 digits. With a self-reference, only the settled values decide, and "
+                "the refusal names every such row.",
                 "The output column is updated in place when it is there and added at the end when not. "
                 "No other column and no row moves. No rows in gives no rows out, with the output column.",
                 "It mirrors SQL's LAG and LEAD over a window partitioned by 'group_by' in arrival order.",
@@ -200,12 +201,12 @@ class MultiRowFormula:
         group_by = list(config.get("group_by") or [])
         work = frame.with_columns([_shifted(reference, group_by) for reference in plan.reads])
         if plan.writes_back:
-            values = _worked_out_in_turn(work, plan, config, group_by)
+            values = _worked_out_in_turn(work, plan, config, group_by, frame.columns)
         else:
-            refuse_rows_without_an_answer(work, config["expression"], "expression")
+            refuse_rows_without_an_answer(work, config["expression"], "expression", shown=frame.columns)
             values = work.select(plan.expression).to_series()
             if plan.target is not None:
-                values = _convert(values, plan.target, work, work.height, config)
+                values = _convert(values, plan.target, frame, config)
         return Ports({"rows": frame.with_columns(values.alias(config["output"]))})
 
 
@@ -274,13 +275,12 @@ def _shifted(reference: RowReference, group_by: Sequence[str]) -> pl.Expr:
     return (moved.over(group_by) if group_by else moved).alias(reference.written)
 
 
-def _convert(
-    values: pl.Series, target: pl.DataType, rows: pl.DataFrame, total: int, config: Mapping[str, Any]
-) -> pl.Series:
+def _convert(values: pl.Series, target: pl.DataType, rows: pl.DataFrame, config: Mapping[str, Any]) -> pl.Series:
     """`values` as the output's type, by cast_columns' rules: nothing rounded, a misfit stops the step.
 
-    `rows` are the rows the values belong to, for the refusal; `total` is the rows of the step.
+    `rows` are the input's rows the values belong to, in arrival order, for the refusal.
     """
+    total = rows.height
     if values.dtype == target:
         return values
     wanted = _type_name(target, config)
@@ -355,7 +355,7 @@ _SMALLEST_WINDOW: Final[int] = 256
 
 
 def _worked_out_in_turn(
-    work: pl.DataFrame, plan: _Plan, config: Mapping[str, Any], group_by: Sequence[str]
+    work: pl.DataFrame, plan: _Plan, config: Mapping[str, Any], group_by: Sequence[str], columns: Sequence[str]
 ) -> pl.Series:
     """Work out a formula that reads earlier rows of its own output, giving what a row-by-row walk gives.
 
@@ -366,7 +366,9 @@ def _worked_out_in_turn(
     pass changes nothing, every row equals the formula worked out on the final rows above it. Each
     pass makes at least one more place final, so the repeating always ends.
 
-    `work` is the input with the reads of other columns already added.
+    A row with no answer, or a value that does not convert, stops the step only once every row is
+    settled, and the refusal names every such row. `work` is the input with the reads of other
+    columns already added; `columns` are the input's own, which a refusal shows.
 
     Why: docs/design/tools.md#multi_row_formula
     """
@@ -397,6 +399,7 @@ def _worked_out_in_turn(
     selected = [plan.expression.alias("value"), (stops if stops is not None else pl.lit(False)).alias("stop")]
 
     done = pl.Series("value", [], dtype=target)
+    failed = False
     first, window = 0, _FIRST_WINDOW
     while first < count:
         last = min(first + window, count)
@@ -414,35 +417,31 @@ def _worked_out_in_turn(
             guess = values
             if settled:
                 break
-        failing = got.get_column("stop") | misfits
-        if failing.any():
-            at = int(positions.slice(start, size).filter(failing).min())  # type: ignore[arg-type]
-            known = pl.concat([done, guess, pl.repeat(None, total - start - size, dtype=target, eager=True)])
-            _refuse(
-                ordered.hstack([known.gather(found).alias(name) for name, found in reach]), starts, at, plan, config
-            )
+        # Only the settled pass decides: a row that failed only while the rows above it were
+        # still unsettled has an answer.
+        failed = failed or bool((got.get_column("stop") | misfits).any())
         done = pl.concat([done, guess])
         first = last
         # Widen the window while it settles in few passes (a fill-down), narrow it while it needs
         # many (a running balance needs one pass per place).
         window = window * 2 if turns * 4 <= window else max(window // 2, _SMALLEST_WINDOW)
 
-    return done.gather(keys.get_column("placed"))
+    placed = keys.get_column("placed")
+    if failed:
+        read = [done.gather(found.gather(placed)).alias(name) for name, found in reach]
+        _refuse(work.drop([name for name, _ in reach], strict=False).hstack(read), plan, config, columns)
+    return done.gather(placed)
 
 
-def _refuse(rows: pl.DataFrame, starts: Sequence[int], at: int, plan: _Plan, config: Mapping[str, Any]) -> None:
-    """Stop the step on the rows at position `at`, the first with no answer or a value that does not convert.
+def _refuse(rows: pl.DataFrame, plan: _Plan, config: Mapping[str, Any], columns: Sequence[str]) -> None:
+    """Stop the step on every row whose own calculation has no answer, or whose value does not convert.
 
-    `rows` are every row in the order worked out, with what each self-reference read. The rows
-    before position `at` hold their final values, so the refusal reads as formula's would.
+    `rows` are the rows in arrival order, each with the settled values its self-references read, so
+    the rows named are those formula would name. The refusal shows the input's own `columns`.
     """
-    text, total = config["expression"], rows.height
-    start, end = starts[at], starts[at + 1]
-    among = pl.Series([False] * start + [True] * (end - start) + [False] * (total - end))
-    refuse_rows_without_an_answer(rows, text, "expression", among=pl.lit(among))
-    those = rows.slice(start, end - start)
+    refuse_rows_without_an_answer(rows, config["expression"], "expression", shown=columns)
     assert plan.target is not None
-    _convert(those.select(plan.expression).to_series(), plan.target, those, total, config)
+    _convert(rows.select(plan.expression).to_series(), plan.target, rows.select(columns), config)
     raise AssertionError("a row was found failing, and neither check stopped on it")  # pragma: no cover
 
 
