@@ -660,3 +660,34 @@ class TestACalculationOfTypedNumbers:
         assert "1e+30 * 1e+30" in str(raised.value) and "38 digits" in str(raised.value)
         assert exact_constant("1 / (1 - 1)") is None
 
+
+# ---------------------------------------------------------------------------
+# A flow that converts its exact columns to Float64 first computes what it always did
+# ---------------------------------------------------------------------------
+
+
+class TestAFlowThatConvertsItsExactColumnsToFloat64First:
+    """The first project reads prices as exact decimals and converts them to Float64 before any sum."""
+
+    def test_the_converted_columns_divide_and_compare_as_floats_exactly_as_before(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        frame = pl.DataFrame(
+            {
+                "key": ["p", "q", "r"],
+                "list_price": exact(["812.40", "0.30", "19.99"], 2),
+                "net_price": exact(["406.20", "0.00", "6.663"], 3),
+            }
+        )
+        cast = {"columns": [{"column": "list_price", "type": "Float64"}, {"column": "net_price", "type": "Float64"}]}
+        floats = run_tool(REGISTRY.get("cast_columns"), Ports({"rows": frame}), cast)["rows"]
+        assert floats.schema["list_price"] == pl.Float64 and floats["list_price"].to_list() == [812.40, 0.30, 19.99]
+        ladder = {
+            "cases": [{"when": "abs([net_price]) > 0.000000001", "then": "[list_price] / [net_price]"}],
+            "otherwise": "0.0",
+            "output": "ratio",
+        }
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": floats}), ladder)["rows"]["ratio"]
+        assert out.dtype == pl.Float64 and out.to_list() == [812.40 / 406.20, 0.0, 19.99 / 6.663]
+        kept = run_tool(REGISTRY.get("filter"), Ports({"rows": floats}), {"predicate": "[list_price] = 0.1 + 0.2"})
+        assert kept["true"].height == 0

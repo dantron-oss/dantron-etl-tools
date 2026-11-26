@@ -6,6 +6,9 @@ expressions, whether each one is accepted or refused, the refusal's exact wordin
 accepted ones the type and values it gives on a small fixed frame. The expressions come from the
 library's own tests, worked examples and manual, plus a list of edge cases below.
 
+A second, smaller set (``EXACT_CASES``) is recorded against a frame of exact decimal columns; each
+of those entries says ``"frame": "exact"``.
+
 A deliberate change in behaviour shows here as a difference. Regenerate the file with
 ``PYTHONPATH=src python tests/expr/test_expr_characterisation.py`` and say in the commit what changed.
 """
@@ -15,6 +18,7 @@ import sys
 import warnings
 from collections.abc import Callable
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -312,6 +316,85 @@ EDGE_CASES: tuple[str, ...] = (
 )
 
 
+# Expressions over exact decimal columns, recorded against `exact_frame()`, where every entry says
+# "frame": "exact". The frame above has no exact column, so its entries are what a flow with none
+# computes; these are what one with them computes.
+EXACT_CASES: tuple[str, ...] = (
+    "[price] + [rate]",
+    "[price] - 7",
+    "[price] + 0.0725",
+    "0.0725 + [price]",
+    "[price] + -0.5",
+    "-[price]",
+    "abs([price] - 1000)",
+    "[price] + null",
+    "[price] * [rate]",
+    "[price] * 0.0725",
+    "[price] * [qty]",
+    "[price] * (1 + 0.0725)",
+    "[price] / [rate]",
+    "[price] / 7",
+    "1 / [price]",
+    "[price] / 0",
+    "[price] + 1 / 3",
+    "[price] = [rate]",
+    "[price] > 0.005",
+    "[price] = 0.1 + 0.2",
+    "[price] in (812.4, 0.3)",
+    "[price] not in (0.125, 1)",
+    "[big] > [price]",
+    "[big] = [rate]",
+    "[price] + [ratio]",
+    "[price] = [ratio]",
+    "[price] * [qty] / 2",
+    "[price] >= [qty] / 2",
+    "coalesce([price], 0.0)",
+    "coalesce([price], [rate])",
+    "coalesce([price], [ratio])",
+    "least([price], [qty], 0.125)",
+    "greatest([rate], [price])",
+    "greatest([ratio], [price])",
+    "nullif([price], 0.30)",
+    "nullif([qty], [price])",
+    "mod([price], 3)",
+    "mod([price], [rate])",
+    "mod([price], [ratio])",
+    "round([price], 1)",
+    "round([price] * [rate], 2)",
+    "round([rate], 6)",
+    "round([price], 39)",
+    "floor([price])",
+    "ceil([rate])",
+    "sign([price])",
+    "format_number([rate], 2, ',', '.')",
+    "[price] + 1e-40",
+    "[tiny] * [tiny]",
+    "[tiny] * [rate]",
+    "[big] + 1",
+    "[big] * [big]",
+    "add_months([seen], [price])",
+)
+
+
+def exact_frame() -> pl.DataFrame:
+    """Four rows of exact decimals beside a whole number, a float and a date; the fourth is null where it can be."""
+
+    def exact(values: list[str | None], places: int) -> pl.Series:
+        return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(38, places))
+
+    return pl.DataFrame(
+        {
+            "price": exact(["812.40", "0.30", "-7.50", None], 2),
+            "rate": exact(["0.0725", "0.3000", "1.2500", "2.0000"], 4),
+            "big": exact(["9" * 37, "1", "-" + "9" * 37, None], 0),
+            "tiny": exact(["0." + "0" * 19 + "5", "0." + "1" * 20, "0", None], 20),
+            "qty": [3, -2, None, 4],
+            "ratio": [0.0725, 0.3, 1.25, None],
+            "seen": [date(2026, 1, 31), date(2026, 6, 15), None, date(2024, 2, 29)],
+        }
+    )
+
+
 def frame() -> pl.DataFrame:
     """Five rows; the fourth is null in every column that can hold a null.
 
@@ -399,9 +482,15 @@ def _same(outcome: str, earlier: str) -> str:
     return "same" if outcome == earlier and outcome != "ok" else outcome
 
 
-def current(texts: list[str]) -> list[dict[str, Any]]:
-    data = frame()
-    return [record(text, data) for text in texts]
+def current(texts: list[str], exact_texts: list[str] = []) -> list[dict[str, Any]]:  # noqa: B006
+    data, exact = frame(), exact_frame()
+    return [record(text, data) for text in texts] + [{"frame": "exact", **record(text, exact)} for text in exact_texts]
+
+
+def _texts(entries: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    """The texts recorded against each frame, in the order recorded."""
+    exact = [entry["text"] for entry in entries if entry.get("frame") == "exact"]
+    return [entry["text"] for entry in entries if entry.get("frame") != "exact"], exact
 
 
 def _as_text(records: list[dict[str, Any]]) -> str:
@@ -411,7 +500,7 @@ def _as_text(records: list[dict[str, Any]]) -> str:
 def test_every_recorded_expression_still_does_exactly_what_it_did() -> None:
     """Accepted or refused, the same wording, the same type and the same values, for every one."""
     expected = json.loads(SNAPSHOT_FILE.read_text(encoding="utf8"))
-    actual = current([entry["text"] for entry in expected])
+    actual = current(*_texts(expected))
     changed = [(before, after) for before, after in zip(expected, actual, strict=True) if before != after]
     shown = "\n\n".join(f"before: {before}\nafter:  {after}" for before, after in changed[:5])
     assert not changed, (
@@ -423,8 +512,8 @@ def test_every_recorded_expression_still_does_exactly_what_it_did() -> None:
 def test_the_snapshot_covers_the_edge_cases_and_both_outcomes() -> None:
     """The file is not empty, holds every edge case above, and records refusals as well as results."""
     expected = json.loads(SNAPSHOT_FILE.read_text(encoding="utf8"))
-    texts = {entry["text"] for entry in expected}
-    assert set(EDGE_CASES) <= texts
+    texts, exact_texts = _texts(expected)
+    assert set(EDGE_CASES) <= set(texts) and set(EXACT_CASES) <= set(exact_texts)
     assert sum(1 for entry in expected if "schema_result" in entry) > 300
     assert sum(1 for entry in expected if "schema_result" not in entry) > 300
 
@@ -433,9 +522,8 @@ if __name__ == "__main__":
     # Run from the checkout's root with PYTHONPATH=src, so this checkout's own source is recorded.
     # With a file of texts as the argument, record those texts; without one, re-record the texts
     # the snapshot already holds.
-    if len(sys.argv) > 1:
-        texts = json.loads(Path(sys.argv[1]).read_text(encoding="utf8"))
-    else:
-        texts = [entry["text"] for entry in json.loads(SNAPSHOT_FILE.read_text(encoding="utf8"))]
+    recorded, exact_texts = _texts(json.loads(SNAPSHOT_FILE.read_text(encoding="utf8")))
+    texts = json.loads(Path(sys.argv[1]).read_text(encoding="utf8")) if len(sys.argv) > 1 else recorded
     texts = list(dict.fromkeys([*texts, *EDGE_CASES]))
-    SNAPSHOT_FILE.write_text(_as_text(current(texts)), encoding="utf8")
+    exact_texts = list(dict.fromkeys([*exact_texts, *EXACT_CASES]))
+    SNAPSHOT_FILE.write_text(_as_text(current(texts, exact_texts)), encoding="utf8")
