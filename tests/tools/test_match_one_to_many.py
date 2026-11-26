@@ -26,8 +26,11 @@ What these tests pin:
   missing key; rows missing either do not count towards the search limit; a missing amount beside a
   value for one whole or part is a data error, while one missing on every row is a missing amount;
   a whole-number amount beside an exact one is compared by value.
+- The cases settled after the adversarial review (rules 13 to 15): a row missing a key is not a pair,
+  so it is neither searched nor checked against other rows; it keeps its own reason; and a tolerance
+  is compared exactly, whatever its places.
 - The answer does not depend on the order the rows arrive in, and agrees with a plain brute-force
-  reading of the rules on random small inputs.
+  reading of the rules on random frames with fractional amounts and tolerances.
 
 The tool is reached only through ``get_tool("match_one_to_many")`` and ``run_tool``.
 """
@@ -35,8 +38,8 @@ The tool is reached only through ``get_tool("match_one_to_many")`` and ``run_too
 import random
 from collections import Counter
 from collections.abc import Sequence
-from decimal import Decimal
-from itertools import combinations
+from decimal import ROUND_FLOOR, Decimal
+from itertools import product
 from typing import Any, Final
 
 import polars as pl
@@ -155,6 +158,13 @@ def _verdicts(result: Ports, reason: str = "reason") -> dict[int, str]:
     return verdicts
 
 
+def _offending_rows(error: DataError) -> set[int]:
+    """The ``row`` ids of the rows a data error names, checked against the count it gives."""
+    rows = {example["row"] for example in error.examples}
+    assert error.offending_rows == len(rows), f"the error counts {error.offending_rows} rows but shows {rows}"
+    return rows
+
+
 def _check(
     cases: Sequence[Case],
     *,
@@ -241,6 +251,20 @@ class TestChoosingTheSet:
             max_parts=max_parts,
         )
 
+    @pytest.mark.parametrize(
+        ("amount_of_c", "verdicts"),
+        [
+            pytest.param("150.00", [MANY_SETS] * 4, id="two_parts_of_the_same_amount_make_two_sets"),
+            pytest.param("151.00", [MATCHED, OUTSIDE, MATCHED, OUTSIDE], id="a_dollar_apart_only_one_set_adds_up"),
+        ],
+    )
+    def test_two_parts_of_the_same_amount_are_two_different_sets(self, amount_of_c: str, verdicts: list[str]) -> None:
+        """A+B and A+C have the same total but are different sets, so 250 is ambiguous. X never fits."""
+        amounts = [("A", "100.00"), ("X", "999.00"), ("B", "150.00"), ("C", amount_of_c)]
+        _check(
+            [("W1", "250.00", part, amount, verdict) for (part, amount), verdict in zip(amounts, verdicts, strict=True)]
+        )
+
 
 # ---------------------------------------------------------------------------
 # Rule 2: a part claimed by two wholes
@@ -285,6 +309,28 @@ class TestClaimedParts:
                 ("W2", "150.00", "G", "150.00", MANY_SETS),
             ]
         )
+
+    @pytest.mark.parametrize(
+        ("second_whole", "verdicts"),
+        [
+            pytest.param(
+                [("W2", "150.00", "B", "150.00"), ("W2", "150.00", "F", "70.00"), ("W2", "150.00", "G", "10.00")],
+                [MATCHED, MATCHED, TOO_MANY, TOO_MANY, TOO_MANY],
+                id="a_whole_over_the_limit_is_not_searched_so_it_claims_nothing",
+            ),
+            pytest.param(
+                [("W2", "150.00", "B", "150.00"), ("W2", "150.00", "F", "70.00")],
+                [CLAIMED] * 4,
+                id="the_same_whole_within_the_limit_chooses_b_and_both_wholes_lose",
+            ),
+        ],
+    )
+    def test_only_a_whole_that_was_searched_can_claim_a_part(
+        self, second_whole: list[tuple[str, str, str, str]], verdicts: list[str]
+    ) -> None:
+        """W1 chooses A+B. W2's only set is B. With max_candidates 2, W2 is searched only when it has two rows."""
+        rows = [("W1", "250.00", "A", "100.00"), ("W1", "250.00", "B", "150.00"), *second_whole]
+        _check([(*row, verdict) for row, verdict in zip(rows, verdicts, strict=True)], max_candidates=2)
 
 
 # ---------------------------------------------------------------------------
@@ -387,14 +433,30 @@ class TestSearchLimit:
         ]
         _check(cases, whole_type=WHOLE_NUMBER, part_type=WHOLE_NUMBER, max_parts=2)
 
+    @pytest.mark.parametrize(
+        ("parts", "verdict"),
+        [
+            pytest.param([("A", "250.00")], MATCHED, id="one_candidate_is_within_a_limit_of_one"),
+            pytest.param([("A", "250.00"), ("B", "40.00")], TOO_MANY, id="two_candidates_are_over_a_limit_of_one"),
+        ],
+    )
+    def test_a_limit_of_one_searches_only_a_whole_with_a_single_candidate(
+        self, parts: list[tuple[str, str]], verdict: str
+    ) -> None:
+        _check([("W1", "250.00", part, amount, verdict) for part, amount in parts], max_candidates=1)
+
 
 # ---------------------------------------------------------------------------
 # Rule 5: data errors
 # ---------------------------------------------------------------------------
 
 
+# A row no data error is about, placed between the two that conflict.
+BYSTANDER: Final = ("W9", "90.00", "H", "90.00")
+
+
 class TestDataErrors:
-    """Rows that contradict each other stop the step, naming them. The clean version runs."""
+    """Rows that contradict each other stop the step, naming exactly those rows. The clean version runs."""
 
     @pytest.mark.parametrize(
         ("broken", "clean", "named"),
@@ -425,11 +487,17 @@ class TestDataErrors:
         clean: list[tuple[str, str, str, str]],
         named: str,
     ) -> None:
-        with pytest.raises(DataError) as caught:
-            run_tool(_tool(), Ports({"candidates": _frame([(*row, "") for row in broken])}), _config())
-        assert named in str(caught.value), f"the error must name {named!r}: {caught.value}"
+        """The error carries the two conflicting rows (input rows 0 and 2) and not the row between them."""
+        first, second = broken
+        frame = _frame([(*row, "") for row in (first, BYSTANDER, second)])
 
-        _run(_frame([(*row, "") for row in clean]), _config())
+        with pytest.raises(DataError) as caught:
+            run_tool(_tool(), Ports({"candidates": frame}), _config())
+
+        assert named in str(caught.value), f"the error must name {named!r}: {caught.value}"
+        assert _offending_rows(caught.value) == {0, 2}
+
+        _run(_frame([(*row, "") for row in (clean[0], BYSTANDER, clean[1])]), _config())
 
 
 # ---------------------------------------------------------------------------
@@ -528,11 +596,15 @@ class TestDecidedCases:
     def test_rule_11_a_missing_amount_beside_a_value_for_the_same_whole_or_part_stops_the_step(
         self, broken: list[tuple[str, str | None, str, str | None]], named: str
     ) -> None:
-        """A missing value counts as different from a value, so these are two different amounts."""
+        """A missing value counts as different from a value, so these are two different amounts.
+
+        The error carries the two conflicting rows and not the row after them.
+        """
         with pytest.raises(DataError) as caught:
-            run_tool(_tool(), Ports({"candidates": _frame([(*row, "") for row in broken])}), _config())
+            run_tool(_tool(), Ports({"candidates": _frame([(*row, "") for row in (*broken, BYSTANDER)])}), _config())
 
         assert named in str(caught.value), f"the error must name {named!r}: {caught.value}"
+        assert _offending_rows(caught.value) == {0, 1}
 
     @pytest.mark.parametrize(
         "cases",
@@ -586,6 +658,100 @@ class TestDecidedCases:
             whole_type=whole_type,
             part_type=part_type,
         )
+
+
+# ---------------------------------------------------------------------------
+# Rule 13: a row missing a key is not a pair
+# ---------------------------------------------------------------------------
+
+
+class TestRowsMissingAKey:
+    """A row missing either key is neither searched nor checked against the rows of its whole or part."""
+
+    @pytest.mark.parametrize(
+        "cases",
+        [
+            pytest.param(
+                [
+                    ("W1", "250.00", "A", "100.00", MATCHED),
+                    ("W1", "250.00", "B", "150.00", MATCHED),
+                    ("W1", None, None, "40.00", MISSING_KEY),
+                ],
+                id="no_part_key_and_no_whole_amount_beside_rows_that_carry_the_amount",
+            ),
+            pytest.param(
+                [
+                    ("W1", "250.00", "A", "100.00", MATCHED),
+                    ("W1", "250.00", "B", "150.00", MATCHED),
+                    ("W1", "260.00", None, "40.00", MISSING_KEY),
+                ],
+                id="no_part_key_and_a_different_whole_amount",
+            ),
+            pytest.param(
+                [
+                    ("W1", "250.00", "A", "100.00", MATCHED),
+                    ("W1", "250.00", "B", "150.00", MATCHED),
+                    (None, "90.00", "A", "75.00", MISSING_KEY),
+                    (None, "90.00", "B", None, MISSING_KEY),
+                ],
+                id="no_whole_key_and_a_different_or_missing_part_amount",
+            ),
+        ],
+    )
+    def test_a_row_missing_a_key_does_not_make_its_whole_or_part_inconsistent(self, cases: list[Case]) -> None:
+        _check(cases)
+
+    @pytest.mark.parametrize(
+        ("broken", "named"),
+        [
+            pytest.param(
+                [("W1", "250.00", "A", "100.00"), ("W1", "250.00", "B", "150.00"), ("W1", None, "C", "40.00")],
+                "W1",
+                id="both_keys_present_and_no_whole_amount",
+            ),
+            pytest.param(
+                [("W1", "250.00", "A", "100.00"), ("W1", "250.00", "B", "150.00"), ("W2", "90.00", "A", "75.00")],
+                "A",
+                id="both_keys_present_and_a_different_part_amount",
+            ),
+        ],
+    )
+    def test_the_same_rows_with_both_keys_present_still_stop_the_step(
+        self, broken: list[tuple[str, str | None, str, str]], named: str
+    ) -> None:
+        with pytest.raises(DataError) as caught:
+            run_tool(_tool(), Ports({"candidates": _frame([(*row, "") for row in broken])}), _config())
+
+        assert named in str(caught.value), f"the error must name {named!r}: {caught.value}"
+
+    @pytest.mark.parametrize(
+        "cases",
+        [
+            pytest.param(
+                [
+                    (None, "90.00", "A", "100.00", MISSING_KEY),
+                    (None, "90.00", "A", "100.00", MISSING_KEY),
+                    ("W1", "100.00", "A", "100.00", MATCHED),
+                ],
+                id="no_whole_key_twice_with_the_same_part",
+            ),
+            pytest.param(
+                [
+                    ("W1", "100.00", None, "40.00", MISSING_KEY),
+                    ("W1", "100.00", None, "40.00", MISSING_KEY),
+                    ("W1", "100.00", "A", "100.00", MATCHED),
+                ],
+                id="no_part_key_twice_under_the_same_whole",
+            ),
+            pytest.param(
+                [(None, None, None, None, MISSING_KEY), (None, None, None, None, MISSING_KEY)],
+                id="no_keys_at_all_twice",
+            ),
+        ],
+    )
+    def test_two_rows_missing_the_same_key_are_not_the_same_pair_twice(self, cases: list[Case]) -> None:
+        """The mirror, (W1, A) twice with both keys present, stops the step (TestDataErrors)."""
+        _check(cases)
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +880,51 @@ class TestAmounts:
             tolerance=tolerance,
         )
 
+    @pytest.mark.parametrize(
+        ("part_type", "first", "second", "tolerance", "verdict"),
+        [
+            pytest.param(MONEY, "60.00", "40.01", 0.005, NO_SET, id="a_cent_over_is_outside_half_a_cent"),
+            pytest.param(MONEY, "60.00", "39.99", 0.005, NO_SET, id="a_cent_short_is_outside_half_a_cent"),
+            pytest.param(MONEY, "60.00", "40.01", 0.01, MATCHED, id="a_cent_over_is_inside_a_cent"),
+            pytest.param(MONEY, "60.00", "40.02", 0.019, NO_SET, id="two_cents_over_is_outside_1_9_cents"),
+            pytest.param(MONEY, "60.00", "40.01", 0.019, MATCHED, id="a_cent_over_is_inside_1_9_cents"),
+            pytest.param(pl.Decimal(12, 3), "60.000", "40.010", 0.01, MATCHED, id="a_gap_of_0_010_is_inside_0_01"),
+            pytest.param(pl.Decimal(12, 3), "60.000", "40.011", 0.01, NO_SET, id="a_gap_of_0_011_is_outside_0_01"),
+            pytest.param(pl.Decimal(12, 3), "60.000", "39.985", 0.015, MATCHED, id="a_gap_of_0_015_is_inside_0_015"),
+            pytest.param(pl.Decimal(12, 3), "60.000", "39.984", 0.015, NO_SET, id="a_gap_of_0_016_is_outside_0_015"),
+        ],
+    )
+    def test_a_tolerance_is_compared_exactly_whatever_its_places(
+        self, part_type: pl.DataType, first: str, second: str, tolerance: float, verdict: str
+    ) -> None:
+        """Rule 15. A tolerance finer than the amounts is not rounded to their places (0.005 is not 0.01).
+
+        A tolerance coarser than the amounts is not rounded either. The tolerance is the number
+        written: 0.015 has no exact binary form, but a gap of exactly 0.015 is inside it.
+        """
+        _check(
+            [("W1", "100.00", "A", first, verdict), ("W1", "100.00", "B", second, verdict)],
+            part_type=part_type,
+            tolerance=tolerance,
+        )
+
+    @pytest.mark.parametrize(
+        ("whole_type", "part_type"),
+        [
+            pytest.param(pl.Int32, pl.Int32, id="int32"),
+            pytest.param(pl.UInt64, pl.UInt64, id="uint64"),
+            pytest.param(pl.Int32, pl.UInt64, id="int32_wholes_and_uint64_parts"),
+            pytest.param(pl.UInt64, MONEY, id="uint64_wholes_and_exact_parts"),
+        ],
+    )
+    def test_other_whole_number_types_are_accepted(self, whole_type: pl.DataType, part_type: pl.DataType) -> None:
+        """The worked example in other whole-number types. W3 falls short of its whole, which an unsigned type cannot hold."""
+        cases: list[Case] = [
+            (whole, int(Decimal(str(whole_amount))), part, int(Decimal(str(part_amount))), verdict)
+            for whole, whole_amount, part, part_amount, verdict in WORKED_EXAMPLE
+        ]
+        _check(cases, whole_type=whole_type, part_type=part_type)
+
 
 # ---------------------------------------------------------------------------
 # Rule 7: empty input
@@ -729,6 +940,22 @@ class TestEmptyInput:
 
         assert result["matched"].height == 0
         assert result["rejected"].height == 0
+
+    @pytest.mark.parametrize("amount_type", [MONEY, WHOLE_NUMBER], ids=["exact_amounts", "whole_number_amounts"])
+    def test_a_frame_where_no_row_is_searched_gives_an_empty_matched_port_with_the_right_columns(
+        self, amount_type: pl.DataType
+    ) -> None:
+        """Every row is missing a key or an amount, so the search has nothing to work on."""
+        _check(
+            [
+                (None, 250, "A", 100, MISSING_KEY),
+                ("W1", None, "B", 150, MISSING_AMOUNT),
+                ("W2", 90, "C", None, MISSING_AMOUNT),
+                ("W3", 90, None, 90, MISSING_KEY),
+            ],
+            whole_type=amount_type,
+            part_type=amount_type,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -771,18 +998,44 @@ class TestInputOrder:
 
 
 # ---------------------------------------------------------------------------
-# Against a plain brute-force reading of rules 1 to 4, 9, 10 and 12
+# Against a plain brute-force reading of the rules
 # ---------------------------------------------------------------------------
 
-Pair = tuple[str | None, int | None, str | None, int | None]
+Pair = tuple[str | None, Decimal | None, str | None, Decimal | None]
 
 
-def _brute_force(pairs: Sequence[Pair], *, max_parts: int, tolerance: int, max_candidates: int) -> list[str]:
-    """The rules written out the slow, obvious way. One verdict per row.
+def _sets_that_add_up(
+    rows: Sequence[int], amounts: Sequence[Decimal], target: Decimal, max_parts: int, tolerance: Decimal
+) -> list[tuple[int, ...]]:
+    """The sets of 1 to ``max_parts`` rows whose total is within ``tolerance`` of ``target``.
 
-    A missing key is checked before a missing amount (rule 9). Rows missing either take no part in
-    the search, do not count towards the limit (rule 10), and keep their own reason whatever happens
-    to their whole.
+    Every set is tried, each total built by adding one amount to a smaller set's total. The walk stops
+    at the second set found, since two already make the whole ambiguous.
+    """
+    found: list[tuple[int, ...]] = []
+
+    def extend(start: int, chosen: tuple[int, ...], total: Decimal) -> bool:
+        for position in range(start, len(rows)):
+            subset = (*chosen, rows[position])
+            subtotal = total + amounts[position]
+            if abs(subtotal - target) <= tolerance:
+                found.append(subset)
+                if len(found) == 2:
+                    return True
+            if len(subset) < max_parts and extend(position + 1, subset, subtotal):
+                return True
+        return False
+
+    extend(0, (), Decimal(0))
+    return found
+
+
+def _brute_force(pairs: Sequence[Pair], *, max_parts: int, tolerance: Decimal, max_candidates: int) -> list[str]:
+    """The rules written out the slow, obvious way, in Python decimals. One verdict per row.
+
+    A missing key is checked before a missing amount (rule 9). Rows missing either are not searched,
+    not counted towards the limit (rule 10), and keep their own reason whatever happens to their
+    whole (rule 14). The caller makes sure no frame is a data error.
     """
     verdicts: list[str] = [""] * len(pairs)
     by_whole: dict[str, list[int]] = {}
@@ -794,24 +1047,16 @@ def _brute_force(pairs: Sequence[Pair], *, max_parts: int, tolerance: int, max_c
         else:
             by_whole.setdefault(whole, []).append(index)
 
-    def amount(row: int, column: int) -> int:
-        value = pairs[row][column]
-        assert value is not None
-        return value
-
     chosen: dict[str, tuple[int, ...]] = {}
     for whole, rows in by_whole.items():
         if len(rows) > max_candidates:
             for row in rows:
                 verdicts[row] = TOO_MANY
             continue
-        target = amount(rows[0], 1)
-        sets = [
-            subset
-            for size in range(1, max_parts + 1)
-            for subset in combinations(rows, size)
-            if abs(sum(amount(row, 3) for row in subset) - target) <= tolerance
-        ]
+        target = pairs[rows[0]][1]
+        amounts = [pairs[row][3] for row in rows]
+        assert target is not None and None not in amounts
+        sets = _sets_that_add_up(rows, amounts, target, max_parts, tolerance)  # type: ignore[arg-type]
         if not sets:
             for row in rows:
                 verdicts[row] = NO_SET
@@ -829,66 +1074,147 @@ def _brute_force(pairs: Sequence[Pair], *, max_parts: int, tolerance: int, max_c
     return verdicts
 
 
-def _random_pairs(generator: random.Random) -> list[Pair]:
-    """A small crowded frame that is never a data error.
+#: Every combination of settings a random frame may draw: (max_parts, tolerance, max_candidates).
+SETTINGS: Final[list[tuple[int, float, int]]] = list(product(range(1, 7), (0, 0.005, 0.01, 0.015), (5, 25)))
 
-    A whole or a part with no amount has none on every row (rule 11). Some rows lose a whole key, a
-    part key or both, but never so that a pair of keys, missing ones included, repeats.
+#: The (whole, part) amount types. Each group of frames sharing settings takes the next pair in turn.
+TYPE_PAIRS: Final[list[tuple[pl.DataType, pl.DataType]]] = [
+    (MONEY, pl.Decimal(12, 3)),
+    (WHOLE_NUMBER, WHOLE_NUMBER),
+    (WHOLE_NUMBER, MONEY),
+    (MONEY, WHOLE_NUMBER),
+    (pl.Decimal(12, 3), MONEY),
+    (MONEY, MONEY),
+]
+
+#: The fractions a random amount may carry, limited to those its column's places can hold.
+FRACTIONS: Final = tuple(Decimal(t) for t in ("0", "0", "0", "0.5", "0.25", "0.01", "0.99", "0.005", "0.015", "0.125"))
+
+#: How far a whole built from a set of its parts is moved off that set's total.
+NUDGES: Final = tuple(
+    Decimal(t) for t in ("0", "0", "0", "0.005", "-0.005", "0.01", "-0.01", "0.015", "-0.015", "0.02")
+)
+
+
+def _step(dtype: pl.DataType) -> Decimal:
+    """The smallest step a column of this type can hold: 1, 0.01 or 0.001."""
+    return Decimal(1).scaleb(-dtype.scale) if isinstance(dtype, pl.Decimal) else Decimal(1)
+
+
+def _random_pairs(generator: random.Random, prefix: str, whole_step: Decimal, part_step: Decimal) -> list[Pair]:
+    """A small crowded frame that is never a data error, with every key starting ``prefix``.
+
+    Up to 4 wholes and 14 parts; a whole has 1 to 12 candidates. Most wholes are built from a set of
+    their own parts, then moved a little (by 0 to 2 cents, in half-cent steps) and cut to the whole's
+    places, so the tolerance edges are reached. Amounts are small, with repeats and zeros, so ambiguous
+    wholes and shared parts are common. A whole or part with no amount has none on every row with both
+    keys. Rows that lose a key may carry any amounts at all (rule 13).
     """
-    wholes = {f"W{w}": generator.randint(-2, 12) for w in range(generator.randint(1, 4))}
-    parts = {f"P{p}": generator.randint(-3, 8) for p in range(generator.randint(1, 7))}
-    for amounts in (wholes, parts):
-        for key in amounts:
-            if generator.random() < 0.1:
-                amounts[key] = None
+
+    def amount(step: Decimal) -> Decimal:
+        return Decimal(generator.randint(-3, 9)) + generator.choice([f for f in FRACTIONS if f % step == 0])
+
+    parts = {
+        f"{prefix}P{p}": None if generator.random() < 0.08 else amount(part_step)
+        for p in range(generator.randint(1, 14))
+    }
     pairs: list[Pair] = []
-    seen: set[tuple[str | None, str | None]] = set()
-    for whole, whole_amount in wholes.items():
-        for part in generator.sample(sorted(parts), generator.randint(1, len(parts))):
-            whole_key: str | None = None if generator.random() < 0.08 else whole
-            part_key: str | None = None if generator.random() < 0.08 else part
-            if (whole_key, part_key) in seen:
-                whole_key, part_key = whole, part
-            seen.add((whole_key, part_key))
-            pairs.append((whole_key, whole_amount, part_key, parts[part]))
+    for w in range(generator.randint(1, 4)):
+        candidates = generator.sample(sorted(parts), generator.randint(1, min(12, len(parts))))
+        known = [value for part in candidates if (value := parts[part]) is not None]
+        roll = generator.random()
+        whole_amount: Decimal | None
+        if roll < 0.08:
+            whole_amount = None
+        elif roll < 0.75 and known:
+            total = sum(generator.sample(known, generator.randint(1, min(6, len(known)))), Decimal(0))
+            moved = (total + generator.choice(NUDGES)) / whole_step
+            whole_amount = moved.to_integral_value(rounding=ROUND_FLOOR) * whole_step
+        else:
+            whole_amount = amount(whole_step)
+        pairs.extend((f"{prefix}W{w}", whole_amount, part, parts[part]) for part in candidates)
+
+    for index, (whole, whole_amount, part, part_amount) in enumerate(pairs):
+        roll = generator.random()
+        if roll < 0.04:
+            whole = None
+        elif roll < 0.08:
+            part = None
+        elif roll < 0.09:
+            whole = part = None
+        else:
+            continue
+        if generator.random() < 0.5:
+            whole_amount = None if generator.random() < 0.3 else amount(whole_step)
+            part_amount = None if generator.random() < 0.3 else amount(part_step)
+        pairs[index] = (whole, whole_amount, part, part_amount)
     return pairs
 
 
+def _typed(value: Decimal | None, dtype: pl.DataType) -> Decimal | int | None:
+    if value is None or isinstance(dtype, pl.Decimal):
+        return value
+    assert value == value.to_integral_value()
+    return int(value)
+
+
 class TestAgainstBruteForce:
-    @pytest.mark.parametrize(
-        ("whole_type", "part_type"),
-        [
-            pytest.param(WHOLE_NUMBER, WHOLE_NUMBER, id="whole_numbers"),
-            pytest.param(MONEY, pl.Decimal(12, 3), id="exact_amounts_of_different_places"),
-            pytest.param(WHOLE_NUMBER, MONEY, id="whole_number_wholes_and_exact_parts"),
-            pytest.param(MONEY, WHOLE_NUMBER, id="exact_wholes_and_whole_number_parts"),
-        ],
-    )
-    def test_the_tool_agrees_with_a_brute_force_search_on_random_small_inputs(
-        self, whole_type: pl.DataType, part_type: pl.DataType
-    ) -> None:
-        """Two hundred random frames per pair of types, shuffled before they go in.
+    def test_the_tool_agrees_with_a_brute_force_search_on_random_frames(self) -> None:
+        """Six hundred random frames, each from its own seed, compared row by row with the reference.
 
-        Few wholes, shared parts, small amounts including zero and negatives, and some missing keys
-        and amounts. Each frame is crowded on purpose, so every reason turns up.
+        Frames that drew the same settings run together: their keys carry the frame's number, so no
+        two frames share a whole or a part and cannot affect each other. Each group is shuffled and run
+        once, in the group's amount types. A failure names the frame, its seed, settings and rows.
         """
-        generator = random.Random(20261126)
-        for number in range(200):
-            pairs = _random_pairs(generator)
-            settings = {
-                "max_parts": generator.randint(1, 4),
-                "tolerance": generator.choice([0, 0, 1]),
-                "max_candidates": generator.choice([3, 25]),
-            }
-            frame = _frame([(*pair, "") for pair in pairs], whole_type=whole_type, part_type=part_type).sample(
-                fraction=1.0, shuffle=True, seed=number
-            )
+        groups: dict[tuple[int, float, int], list[tuple[int, list[Pair]]]] = {}
+        for number in range(600):
+            generator = random.Random(20261126_000 + number)
+            settings = generator.choice(SETTINGS)
+            whole_type, part_type = TYPE_PAIRS[SETTINGS.index(settings) % len(TYPE_PAIRS)]
+            pairs = _random_pairs(generator, f"F{number}-", _step(whole_type), _step(part_type))
+            groups.setdefault(settings, []).append((number, pairs))
 
-            result = _run(frame, _config(**settings))
+        seen: set[str] = set()
+        for settings, frames in groups.items():
+            max_parts, tolerance, max_candidates = settings
+            whole_type, part_type = TYPE_PAIRS[SETTINGS.index(settings) % len(TYPE_PAIRS)]
+            every_pair = [pair for _, pairs in frames for pair in pairs]
+            frame = pl.DataFrame(
+                {
+                    "row": list(range(len(every_pair))),
+                    "deposit_id": [pair[0] for pair in every_pair],
+                    "deposit_amount": [_typed(pair[1], whole_type) for pair in every_pair],
+                    "payment_id": [pair[2] for pair in every_pair],
+                    "payment_amount": [_typed(pair[3], part_type) for pair in every_pair],
+                },
+                schema={
+                    "row": pl.Int64,
+                    "deposit_id": pl.String,
+                    "deposit_amount": whole_type,
+                    "payment_id": pl.String,
+                    "payment_amount": part_type,
+                },
+            ).sample(fraction=1.0, shuffle=True, seed=SETTINGS.index(settings))
 
-            expected = _brute_force(pairs, **settings)
-            got = _verdicts(result)
-            assert [got[row] for row in range(len(pairs))] == expected, f"frame {number}, {settings}: {pairs}"
+            config = _config(max_parts=max_parts, tolerance=tolerance, max_candidates=max_candidates)
+            got = _verdicts(_run(frame, config))
+
+            first_row = 0
+            for number, pairs in frames:
+                expected = _brute_force(
+                    pairs, max_parts=max_parts, tolerance=Decimal(str(tolerance)), max_candidates=max_candidates
+                )
+                answer = [got[first_row + index] for index in range(len(pairs))]
+                assert answer == expected, (
+                    f"frame {number} (seed {20261126_000 + number}), settings {settings}, "
+                    f"types {whole_type} and {part_type}: {pairs}"
+                )
+                seen.update(expected)
+                first_row += len(pairs)
+
+        assert seen == {MATCHED, NO_SET, MANY_SETS, OUTSIDE, CLAIMED, MISSING_KEY, MISSING_AMOUNT, TOO_MANY}, (
+            "the random frames must reach every reason"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -932,6 +1258,8 @@ class TestSettings:
         [
             pytest.param({"tolerance": -1}, "tolerance", id="a_negative_tolerance"),
             pytest.param({"tolerance": -0.01}, "tolerance", id="a_tolerance_just_below_zero"),
+            pytest.param({"tolerance": float("nan")}, "tolerance", id="a_tolerance_that_is_not_a_number"),
+            pytest.param({"tolerance": float("inf")}, "tolerance", id="an_infinite_tolerance"),
             pytest.param({"max_parts": 0}, "max_parts", id="max_parts_below_one"),
             pytest.param({"max_candidates": 0}, "max_candidates", id="max_candidates_below_one"),
             pytest.param({"part_key": "deposit_id"}, "deposit_id", id="the_same_column_for_both_keys"),
