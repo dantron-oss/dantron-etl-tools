@@ -30,7 +30,11 @@ More on some settings:
 - 'connection' names an environment variable that holds the address, so the address and its password never sit in the pipeline file.
 - Each column's type comes from all its values, not a sample. A column that is null in every row has type Null.
 - An empty table is typed from its definition instead: whole numbers, decimals and text, and on Postgres also true/false, dates, timestamps without a zone and times.
-- In an empty table, a column whose values could arrive as more than one kind (a numeric, a zone-aware timestamp, any SQLite column of another type) stays Null.
+- In an empty table, a column whose values could arrive as more than one kind (a numeric with no places stated, a zone-aware timestamp, any SQLite column of another type) stays Null.
+- A Postgres numeric(p,s) column arrives as Decimal with s places, whatever its values, and so does an empty table's. 38 digits are kept in all.
+- A Postgres numeric with no places stated arrives at the most places any of its values has, so its type can change from one night to the next. Declare the places at the source, such as numeric(18,2), and the type stays put.
+- A numeric value a Decimal cannot hold (more than 38 digits, or NaN) stops the step, naming the column.
+- SQLite has no exact type: its numbers arrive as Int64 or Float64.
 - Rows arrive in no particular order. Put a sort after it if order matters.
 - The schema and table names must be plain names. Anything else is refused before a connection opens.
 

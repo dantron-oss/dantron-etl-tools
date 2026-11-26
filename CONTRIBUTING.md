@@ -38,6 +38,25 @@ file names must be unique across folders.
 
 `-m "not slow"` leaves out the slowest tests while you work.
 
+### Both ends of the polars range
+
+The suite must pass on the lowest polars the package allows (the `polars>=` bound in
+`pyproject.toml`) and on the version in `uv.lock`. Projects run either one, and the two give
+different answers in a few places, most of all for exact decimals. A test that passes on one and
+fails on the other is a defect: the library must give one answer on both. CI runs both.
+
+`.venv` holds the locked version, so the command above tests that end. To test the lowest end, make
+a second environment beside it and put polars at the bound there:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-lowest uv sync --extra dev --extra postgres
+uv pip install --python .venv-lowest --resolution lowest --upgrade-package polars "polars>=1.38,<2"
+.venv-lowest/bin/pytest tests/ -q
+```
+
+Write the requirement as `pyproject.toml` has it today. Git ignores `.venv-lowest`. A later `uv sync`
+into it puts the locked polars back, so run the `uv pip install` line again after one.
+
 ### The Postgres tests
 
 About 50 tests need a Postgres server. They skip without one. To run them, start the throwaway

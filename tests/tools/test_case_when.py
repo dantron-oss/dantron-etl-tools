@@ -1198,3 +1198,82 @@ class TestCaseWhenRefusesAnOutputThatIsNotAName:
             refusals.append(str(caught.value))
 
         assert len(set(refusals)) == 1, f"one mistake, one explanation; got: {refusals}"
+
+
+# ---------------------------------------------------------------------------
+# Exact decimals in the branches
+# ---------------------------------------------------------------------------
+
+
+def _exact(values: list[str | None], places: int) -> pl.Series:
+    from decimal import Decimal
+
+    return pl.Series([None if value is None else Decimal(value) for value in values], dtype=pl.Decimal(38, places))
+
+
+def _ladder_out(frame: pl.DataFrame, cases: list[dict[str, str]], otherwise: str | None = None) -> pl.Series:
+    config: dict[str, Any] = {"cases": cases, "output": "out"}
+    if otherwise is not None:
+        config["otherwise"] = otherwise
+    return run_tool(CaseWhen(), Ports({"rows": frame}), config)["rows"]["out"]
+
+
+def _digits(out: pl.Series) -> list[str | None]:
+    return [None if value is None else format(value, "f") for value in out.to_list()]
+
+
+class TestCaseWhenExactBranches:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r"],
+            "d2": _exact(["812.40", "-7.50", None], 2),
+            "d4": _exact(["0.0725", "1.2500", "3.0000"], 4),
+            "f": [0.5, 1.5, 2.5],
+            "n": [1, 2, 3],
+        }
+    )
+
+    def test_a_float_branch_beside_an_exact_one_is_refused_naming_it(self) -> None:
+        for cases, otherwise, path in (
+            ([{"when": "[n] = 1", "then": "[d2]"}], "[f]", "otherwise"),
+            ([{"when": "[n] = 1", "then": "[f] * 2"}], "[d4]", "cases[0].then"),
+        ):
+            with pytest.raises(ConfigError) as raised:
+                _ladder_out(self.FRAME, cases, otherwise)
+            said = str(raised.value)
+            assert repr(path) in said and "float" in said and "cast_columns" in said, said
+
+    def test_a_typed_zero_beside_an_exact_branch_is_exact(self) -> None:
+        out = _ladder_out(self.FRAME, [{"when": "[d2] is null", "then": "0.0"}], "[d2]")
+        assert out.dtype == pl.Decimal(38, 2) and _digits(out) == ["812.40", "-7.50", "0.00"]
+
+    def test_branches_of_different_places_give_the_larger(self) -> None:
+        out = _ladder_out(self.FRAME, [{"when": "[n] = 1", "then": "[d2]"}, {"when": "[n] = 2", "then": "[n]"}], "[d4]")
+        assert out.dtype == pl.Decimal(38, 4) and _digits(out) == ["812.4000", "2.0000", "3.0000"]
+        out = _ladder_out(self.FRAME, [{"when": "[n] = 1", "then": "1 + 0.00005"}], "[d2] * 2")
+        assert out.dtype == pl.Decimal(38, 5) and _digits(out) == ["1.00005", "-15.00000", None]
+
+    def test_a_null_branch_and_no_otherwise_still_give_the_exact_type(self) -> None:
+        out = _ladder_out(self.FRAME, [{"when": "[n] = 1", "then": "null"}, {"when": "[n] = 2", "then": "[d4]"}])
+        assert out.dtype == pl.Decimal(38, 4) and _digits(out) == [None, "1.2500", None]
+
+    def test_with_no_exact_branch_the_ladder_is_as_it_was(self) -> None:
+        out = _ladder_out(self.FRAME, [{"when": "[n] = 1", "then": "0"}], "[f]")
+        assert out.dtype == pl.Float64 and out.to_list() == [0.0, 1.5, 2.5]
+
+    def test_a_value_too_large_for_the_larger_places_stops_only_where_its_case_is_taken(self) -> None:
+        from dantron_etl.authoring import DataError
+
+        frame = pl.DataFrame({"key": ["fits", "large"], "w": _exact(["1", "9" * 37], 0), "d": _exact(["0.25", "0.50"], 2)})
+        with pytest.raises(DataError) as raised:
+            _ladder_out(frame, [{"when": "[d] < 1", "then": "[w]"}], "[d]")
+        said = str(raised.value)
+        assert "'cases[0].then'" in said and "38 digits" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        out = _ladder_out(frame, [{"when": "[w] < 2", "then": "[w]"}], "[d]")
+        assert _digits(out) == ["1.00", "0.50"]
+
+    def test_a_typed_number_no_exact_decimal_holds_is_refused_by_name(self) -> None:
+        with pytest.raises(ConfigError) as raised:
+            _ladder_out(self.FRAME, [{"when": "[n] = 1", "then": "1e-40"}], "[d2]")
+        said = str(raised.value)
+        assert "'cases[0].then'" in said and "1e-40" in said and "38 digits" in said

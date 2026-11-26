@@ -22,16 +22,16 @@ Use write_excel to deliver results as a spreadsheet. Each entry in 'sheets' name
 | `sheets[].sheet` | string | required |  | The tab name, such as 'Summary'. At most 31 characters, and none of '[' ']' ':' '*' '?' '/' '\'. |
 | `sheets[].allow_empty` | boolean | optional |  | Set true to write a port with no rows as a tab of headings only. Left out, an empty port stops the run. |
 | `sheets[].formats` | array | optional |  | Number formats for this tab, one rule per entry, each for a type or one column. Left out, only dates are formatted. |
-| `sheets[].formats[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Apply the format to every column of this type, such as Float64. |
+| `sheets[].formats[].type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Apply the format to every column of this type, such as Float64. |
 | `sheets[].formats[].column` | string | optional |  | Apply the format to this one column. It beats a rule about the column's type. |
 | `sheets[].formats[].format` | string | required |  | The spreadsheet's format code, such as '#,##0.00' for money or '0.0%' for a percentage. |
 | `sheets[].widths` | array | optional |  | Column widths, one rule per entry, each for a type or one column. Left out, no width is set. |
-| `sheets[].widths[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Set this width on every column of this type. |
+| `sheets[].widths[].type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Set this width on every column of this type. |
 | `sheets[].widths[].column` | string | optional |  | Set this width on this one column; it beats any rule about the column's type. |
 | `sheets[].widths[].width` | number | required |  | The width, in characters: more than 0, at most 255. |
 | `sheets[].fit_widths` | boolean | optional |  | Set true to size each column to fit its heading and values, up to 60 characters wide. |
 | `sheets[].wrap` | array | optional |  | Columns whose text wraps onto several lines, one rule per entry, each for a type or one column. |
-| `sheets[].wrap[].type` | string | optional | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | Wrap every column of this type. |
+| `sheets[].wrap[].type` | string | optional | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | Wrap every column of this type. |
 | `sheets[].wrap[].column` | string | optional |  | Wrap this one column. |
 | `sheets[].table` | object | optional |  | Turn the rows into a spreadsheet table with filter dropdowns. Write {} to name it after the tab. |
 | `sheets[].table.name` | string | optional |  | The table's name, such as 'Sales'. Left out, it is made from the tab name. |
@@ -63,7 +63,9 @@ More on some settings:
 - A port with no rows stops the run, because an empty tab caused by a failure upstream looks like a quiet month. Set allow_empty: true on its sheet entry to allow it.
 - An allowed empty port gets its tab with the headings and nothing under them, never a missing tab and never a phrase such as '(no rows)'.
 - A whole number beyond 2**53 - 1, either way, is refused, because a cell cannot hold it exactly. Cast it to text upstream if that is what you want.
-- A Time, Duration, Decimal, list or nested record column is refused, not turned into text.
+- A Time, Duration, list or nested record column is refused, not turned into text.
+- A Decimal column is written as numbers when every value has at most 15 significant digits, the most a cell keeps, so the tab shows the figures as held. A value with more refuses the column, naming the rows: round it upstream, or cast it to String.
+- A rule for type Decimal reaches every Decimal column, whatever its places. A rule for Float64 does not reach a Decimal column.
 - Text longer than 32,767 characters, the most a cell holds, is refused, naming the column. It is never cut short.
 - Not-a-number or infinity in a decimal column is refused, naming the tab, the column and the rows, because a cell would show it as a blank. A null is written as an empty cell.
 - A frame with more than 1,048,575 rows, more than a tab holds, is refused, never cut short.

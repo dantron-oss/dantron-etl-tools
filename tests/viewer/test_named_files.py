@@ -170,8 +170,9 @@ def test_a_file_that_is_there_has_its_size_and_time(project: Path) -> None:
     project_, spec = loaded(project)
     found = facts(named_file(spec, run_folder(project_), "read", "path"), project_.root)
     assert found["exists"] and not found["outside_project"]
-    assert found["size"] == len(ORDERS.encode())
-    stamp = os.stat(project / "pipelines" / "orders.csv").st_mtime
+    on_disk = os.stat(project / "pipelines" / "orders.csv")
+    assert found["size"] == on_disk.st_size > 0
+    stamp = on_disk.st_mtime
     assert found["modified"].startswith(__import__("datetime").datetime.fromtimestamp(stamp).strftime("%Y-%m-%d"))
     assert found["can_preview"] and found["can_open"]
 

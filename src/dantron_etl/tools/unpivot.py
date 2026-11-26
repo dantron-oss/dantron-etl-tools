@@ -1,17 +1,30 @@
 """Unpivot: turn a wide frame long; every column outside `by` becomes a name and a value.
 
-The reverse of cross_tab. Turned columns must share a type unless `values_type` states one. Rows come
-out column by column. A null cell is a row with a null value unless `exclude_nulls`.
+The reverse of cross_tab. Turned columns must share a type unless `values_type` states one; exact
+decimals of different places stack at the larger places. Rows come out column by column. A null cell
+is a row with a null value unless `exclude_nulls`.
 
 Why: docs/design/tools.md#unpivot
 """
 
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, cut_fractions, fraction_refusal
+from ..column_types import (
+    DECLARED_TYPES,
+    EXACT_DIGITS,
+    EXACT_TYPE,
+    check_places,
+    cut_fractions,
+    declared_dtype,
+    exact_dtype,
+    exact_misfit_refusal,
+    fraction_refusal,
+    to_exact,
+)
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -70,6 +83,11 @@ class Unpivot:
                 "Without it, those columns must already share a type.",
                 enum=DECLARED_TYPES,
             ),
+            "values_places": ConfigField(
+                type="integer",
+                description="Only with values_type 'Decimal', and required there: the digits after "
+                "the point, from 0 to 38, such as 2.",
+            ),
             # No default: the rule refusing 'on_invalid' without 'values_type' reads whether it was written.
             "on_invalid": ConfigField(
                 type="string",
@@ -99,6 +117,7 @@ class Unpivot:
                 _some_columns_stay_put(),
                 _a_stated_type_melts_a_mixed_block(),
                 _null_cells_are_left_out(),
+                _exact_columns_stack_at_the_larger_places(),
             ),
             notes=(
                 "There is no setting listing the columns to turn. Every column not in 'by' is turned; "
@@ -126,6 +145,12 @@ class Unpivot:
                 "naming the column and the values. 'set_null' makes it null, reports how many out of "
                 "how many as a warning, and marks each row; only columns that lost a value are reported.",
                 "'on_invalid' without 'values_type' is refused, because there is nothing to convert.",
+                "'values_type: Decimal' with 'values_places' reads every turned column as an exact "
+                "decimal, by cast_columns' rule: a value that does not fit the places without rounding "
+                "will not convert.",
+                "Without 'values_type', exact Decimal columns of different places are stacked at the "
+                "larger places, which adds zeros and loses nothing. An exact column beside a Float64 "
+                "column is refused, naming the float column: convert one of them with cast_columns.",
                 "Unlike cast_columns, reading a column as the type it already has is fine here, "
                 "because the turned columns are all the ones you did not name.",
                 "'names_to' and 'values_to' must be two different new names, not used by 'by' or any "
@@ -136,6 +161,7 @@ class Unpivot:
                 "names_to": "For example 'month'. It always holds text.",
                 "values_to": "For example 'amount'.",
                 "values_type": "For example 'Float64', when a text column sits among the figures.",
+                "values_places": "For example 2, beside values_type: Decimal, for figures to the cent.",
                 "on_invalid": "Use 'set_null' with 'values_type' when some cells are expected not to "
                 "convert, such as notes beside figures.",
                 "exclude_nulls": "Set it on a sparse sheet to skip the empty cells.",
@@ -143,7 +169,14 @@ class Unpivot:
         )
 
     def validate_config(self, config: Mapping[str, Any]) -> None:
-        """Refuse blank or clashing new names, and on_invalid without values_type."""
+        """Refuse blank or clashing new names, places that do not suit the type, and on_invalid without values_type."""
+        if config["values_type"] is None and config["values_places"] is not None:
+            raise ConfigError(
+                f"config field 'values_places' is {config['values_places']!r} with no 'values_type' beside it; "
+                f"places belong to values_type: Decimal, so state that type or drop the places"
+            )
+        if config["values_type"] is not None:
+            check_places(config["values_type"], config["values_places"], "values_places")
         by_columns = set(_by_columns(config))
         for field in ("names_to", "values_to"):
             column = config[field]
@@ -196,6 +229,15 @@ class Unpivot:
         # 'values_type' settles the type itself, so there is nothing to refuse.
         if config["values_type"] is None:
             _settled_dtype(frame, melted)
+        elif config["values_type"] == EXACT_TYPE:
+            for column in melted:
+                dtype = frame.schema[column]
+                if not (dtype in (pl.String, pl.Null) or dtype.is_numeric()):
+                    raise ConfigError(
+                        f"config field 'values_type' reads every turned column as Decimal, but {column!r} "
+                        f"holds {dtype}, which is not a number; name it in 'by' so it is not turned, or "
+                        f"convert it in the step before this one"
+                    )
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
@@ -205,12 +247,12 @@ class Unpivot:
         if config["values_type"] is None:
             # Cast so an all-null column takes the others' type. Nothing can fail to read here.
             settled = _settled_dtype(frame, melted)
-            values = {column: frame[column].cast(settled) for column in melted}
+            values = {column: _as_settled(frame, column, settled) for column in melted}
             notes: list[str] = []
             blocks: list[pl.DataFrame] | None = None
         else:
             values, notes, blocks = _stated_values(
-                frame, melted, config["values_type"], config["on_invalid"] == "set_null"
+                frame, melted, config["values_type"], config["values_places"], config["on_invalid"] == "set_null"
             )
 
         # One frame per turned column, stacked in the frame's column order (column-major).
@@ -260,11 +302,25 @@ def _settled_dtype(frame: pl.DataFrame, melted: Sequence[str]) -> pl.DataType:
     """The one type the turned columns share, or a refusal naming two that differ.
 
     A Null-typed column is skipped and takes the others' type. If every column is Null, the answer is Null,
-    so a run where everything upstream matched nothing keeps its shape.
+    so a run where everything upstream matched nothing keeps its shape. Exact columns settle at 38 digits
+    and the largest places among them; an exact column beside a float is refused, naming the float.
     """
     typed = [(name, frame.schema[name]) for name in melted if frame.schema[name] != pl.Null]
     if not typed:
         return pl.Null
+
+    exact = [(name, dtype) for name, dtype in typed if isinstance(dtype, pl.Decimal)]
+    if exact:
+        floats = [(name, dtype) for name, dtype in typed if dtype.is_float()]
+        if floats:
+            raise ConfigError(
+                f"the columns about to be melted mix exact decimals and floats: {exact[0][0]} is "
+                f"{exact[0][1]} and {floats[0][0]!r} is {floats[0][1]}; stacked together the exact figures "
+                f"would become floats. Convert one side with cast_columns in the step before this one, "
+                f"such as {floats[0][0]!r} to Decimal, or state values_type"
+            )
+        if len(exact) == len(typed):
+            return exact_dtype(max(dtype.scale for _, dtype in exact))  # type: ignore[attr-defined]
 
     first_name, settled = typed[0]
     for name, dtype in typed[1:]:
@@ -278,10 +334,34 @@ def _settled_dtype(frame: pl.DataFrame, melted: Sequence[str]) -> pl.DataType:
     return settled
 
 
+def _as_settled(frame: pl.DataFrame, column: str, settled: pl.DataType) -> pl.Series:
+    """One turned column in the type the turned columns share.
+
+    An exact column is widened to the shared places through ``to_exact``, which adds zeros and never
+    rounds; a value with too many digits before the point to take them is refused by name.
+    """
+    if not (isinstance(settled, pl.Decimal) and isinstance(frame.schema[column], pl.Decimal)):
+        return frame[column].cast(settled)
+    places = settled.scale  # type: ignore[attr-defined]
+    converted = to_exact(frame[column], places)
+    if converted.misfits.any():
+        shown = ", ".join(str(value) for value in frame[column].filter(converted.misfits).head(3).to_list())
+        raise DataError(
+            f"melted column {column!r} holds values too large to stack at {places} places, the most among "
+            f"the turned columns, such as {shown}; an exact column holds 38 digits in all, so at most "
+            f"{EXACT_DIGITS - places} before the point. Round the column with more places to fewer in a "
+            f"formula step, or convert the columns to Float64 with cast_columns",
+            offending=frame.filter(converted.misfits),
+            total=frame.height,
+        )
+    return converted.values
+
+
 def _stated_values(
     frame: pl.DataFrame,
     melted: Sequence[str],
     declared: str,
+    places: int | None,
     lenient: bool,
 ) -> tuple[dict[str, pl.Series], list[str], list[pl.DataFrame] | None]:
     """Each turned column read as the stated type, a note per column that lost a value, and the status blocks.
@@ -290,13 +370,31 @@ def _stated_values(
     block per turned column, unstacked, because exclude_nulls drops rows per column and each block must
     lose the same rows. None when nothing was lost.
     """
-    target = DECLARED_DTYPE[declared]
+    target = declared_dtype(declared, places)
     values: dict[str, pl.Series] = {}
     notes: list[str] = []
     blocks: list[pl.DataFrame] = []
     degraded = False
 
     for column in melted:
+        if declared == EXACT_TYPE:
+            assert places is not None, "validate_config requires places beside Decimal"
+            converted = to_exact(frame[column], places)
+            if converted.misfits.any() and not lenient:
+                raise DataError(
+                    exact_misfit_refusal(column, frame[column].filter(converted.misfits), places, melted=True),
+                    offending=frame.filter(converted.misfits),
+                    total=frame.height,
+                )
+            if converted.misfits.any():
+                reasons, note = unreadable_report(frame, column, converted.misfits, f"Decimal with {places} places")
+                blocks.append(row_status([(column, reasons)], frame.height))
+                notes.append(note)
+                degraded = True
+            else:
+                blocks.append(row_status([], frame.height))
+            values[column] = converted.values
+            continue
         if lenient:
             # Counted before the values are replaced, as cast_columns does. Known gap shared with
             # cast_columns: a type pair polars refuses for a whole column (Date to Float64) raises
@@ -487,6 +585,38 @@ def _null_cells_are_left_out() -> WorkedExample:
         explanation="The two null cells are left out: record 2's c1 and record 1's c2. Record 3's c1 holds empty "
         "text, which is a value, so it is kept. The rows keep the full unpivot's order: all of c1, "
         "then all of c2.",
+        inputs=inputs,
+        outputs=outputs,
+        check_row_order=True,
+    )
+
+
+def _exact_columns_stack_at_the_larger_places() -> WorkedExample:
+    inputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {"code": ["A", "B"], "price": [Decimal("812.40"), Decimal("19.99")], "rate": [Decimal("0.0725"), None]},
+                schema={"code": pl.String, "price": pl.Decimal(38, 2), "rate": pl.Decimal(38, 4)},
+            )
+        }
+    )
+    outputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {
+                    "code": ["A", "B", "A", "B"],
+                    "measure": ["price", "price", "rate", "rate"],
+                    "value": [Decimal("812.4000"), Decimal("19.9900"), Decimal("0.0725"), None],
+                },
+                schema={"code": pl.String, "measure": pl.String, "value": pl.Decimal(38, 4)},
+            )
+        }
+    )
+    return WorkedExample(
+        scenario="turn exact decimals of different places into one column",
+        configuration={"by": ["code"], "names_to": "measure", "values_to": "value"},
+        explanation="'price' holds 2 places and 'rate' 4, so the values are stacked at 4 places: 812.40 becomes "
+        "812.4000, the same figure. A Float64 column among them would be refused instead.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

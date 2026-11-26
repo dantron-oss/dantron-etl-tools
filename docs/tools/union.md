@@ -19,6 +19,7 @@ None.
 
 - Both sides must have the same columns. A column on one side only is refused, never filled with nulls. Add it with a formula step, where it is visible.
 - Each column must have the same type on both sides, or the step is refused, naming both types. A column that is all null on one side takes the other side's type.
+- Two Decimal columns of different places are the one exception: they stack at the larger places, so 1.5 at 1 place comes out as 1.50 beside a column of 2 places. Nothing is rounded. A Decimal column over a Float64 or whole-number column is refused, as any other pair of types is.
 - Nothing is de-duplicated: a row on both sides comes out twice. Use remove_duplicates after it if you want one of each.
 - Rows keep their order: all of `top`, then all of `bottom`. Sort afterwards if you need another order.
 
@@ -93,6 +94,43 @@ Rows out:
 | C3 | 7.5 |
 
 The columns are matched by name, so 'bottom' is read into 'top''s column order. A column that only one side has would be refused.
+
+## Example 3
+
+stack exact decimals held at different places
+
+```yaml fragment
+tool: union
+config:
+  {}
+```
+
+Rows in:
+
+`top`
+
+| code | rate |
+|---|---|
+| A1 | 0.07 |
+| B2 | 1.50 |
+
+`bottom`
+
+| code | rate |
+|---|---|
+| C3 | 0.0725 |
+
+Rows out:
+
+`rows`
+
+| code | rate |
+|---|---|
+| A1 | 0.0700 |
+| B2 | 1.5000 |
+| C3 | 0.0725 |
+
+'rate' is Decimal with 2 places on 'top' and 4 on 'bottom', so the stacked column has 4 places: 0.07 comes out as 0.0700, the same value with two more zeros. Nothing is rounded.
 
 ---
 

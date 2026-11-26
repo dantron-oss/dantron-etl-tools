@@ -34,6 +34,9 @@ More on some settings:
 - The table's columns and the rows' columns must match exactly, in any order. An extra or missing column is refused, and so is a name that differs only in case.
 - A table with no rows stops the run unless 'allow_empty' is true, because a replace with nothing empties the table.
 - A column whose values will not fit the table's column type is refused before anything is written, naming the column: text in a whole-number column, or a fraction. publish_tables runs the same checks.
+- A number goes into a numeric(p,s) column only when every value fits s places and p digits; the database would round the rest without a word. A Float64 is read to 15 significant digits first, as round reads it, and that reading is what is written: 10.25 fits numeric(12,2), 10.255 is refused. Round first with a formula step.
+- A Decimal column is never written to a double precision, real or float column. Convert it with cast_columns to Float64 first. A Float64 into a float column is written as it is.
+- SQLite has no exact type: a Decimal is sent as its digits, and SQLite stores them by its own rule. A numeric(p,s) column is checked the same way on both.
 - If the database refuses rows during the load (a missing required value, a repeated key), the step stops, names the table and shows the rows that were refused.
 - The same rows pass on through `rows`, so the flow can continue after the write.
 

@@ -22,7 +22,8 @@ Use read_csv to start a flow from a .csv or .tsv file. The whole file is read to
 | `skip_rows` | integer | default `0` |  | How many lines to skip before the header, or before the data without one. |
 | `column_types` | array | optional |  | Columns whose worked-out type is wrong, with the type they should be. |
 | `column_types[].column` | string | required |  | The column name from the header, such as 'zip'. |
-| `column_types[].type` | string | required | `String`, `Int64`, `Float64`, `Boolean`, `Date`, `Datetime`, `Time` | The type, such as 'String', 'Int64', 'Float64' or 'Date'. |
+| `column_types[].type` | string | required | `String`, `Int64`, `Float64`, `Decimal`, `Boolean`, `Date`, `Datetime`, `Time` | The type, such as 'String', 'Int64', 'Float64', 'Decimal' or 'Date'. |
+| `column_types[].places` | integer | optional |  | Only with type 'Decimal', and required there: the digits after the point, from 0 to 38, such as 2. |
 | `column_types[].format` | string | optional |  | For a date or time: how it is written, such as '%d/%m/%Y'. Left out, year-month-day. |
 
 More on some settings:
@@ -30,7 +31,7 @@ More on some settings:
 - `path`: For example 'data/orders.csv'. It must end in .csv or .tsv.
 - `delimiter`: For example ';' or a tab. One character.
 - `encoding`: For example 'cp1252' for a file saved by older Windows programs.
-- `column_types`: For example [{column: zip, type: String}, {column: ordered_on, type: Date, format: '%d/%m/%Y'}].
+- `column_types`: For example [{column: zip, type: String}, {column: price, type: Decimal, places: 2}, {column: ordered_on, type: Date, format: '%d/%m/%Y'}].
 - `skip_rows`: For example 2, to skip two title lines above the header. Not negative.
 
 ## Notes
@@ -40,6 +41,7 @@ More on some settings:
 - A value that will not convert to its listed type stops the run, naming the column, the value and the type. It never becomes a silent null.
 - A column that would be read as numbers stops the run when a number would change a value: a leading zero (02134) or a whole number too big for 64 bits.
 - Settle that in 'column_types': String keeps it as written, Int64 or Float64 reads it as a number anyway.
+- A column is read as an exact Decimal only when 'column_types' says so, with its 'places'; figures are otherwise Float64. Each value must be written as plain digits, with an optional point and minus sign, and fit the places: 1.005 does not fit 2 places and stops the run. A blank field is null.
 - A line with more or fewer fields than the header stops the run, naming the line. It is never padded or cut.
 - A blank field is null, never empty text. A blank line is a row of nulls, not skipped, because write_csv writes a row of nulls that way.
 - A header with a blank or repeated name is refused. Without a header, columns are named column_1, column_2 and so on.

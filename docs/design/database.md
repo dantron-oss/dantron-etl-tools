@@ -79,14 +79,38 @@ in 3.14. Without our own, a `Date` column would warn today and fail on a later P
 definition; Postgres gives `format_type`'s spelling. Both go through the same table, so a frame
 compared with a table gets the same answer whichever engine holds the table.
 
-Width, precision and time zone are dropped before the lookup. `varchar(20)`, `numeric(12, 2)` and
-`timestamp without time zone` say nothing about which column type a value must be, and keeping them
-would answer two tables declared slightly differently in different ways.
+Width, precision and time zone are dropped before the lookup. `varchar(20)` and `timestamp without
+time zone` say nothing about which column type a value must be, and keeping them would answer two
+tables declared slightly differently in different ways. `numeric` and `decimal` read as `Decimal`;
+their digits and places are read separately, by `numeric_declaration`, because they decide which
+values fit (see below).
 
 **A name not in the table gets `None`, meaning "no opinion", not "wrong".** A domain, an enum, a JSON
 column, an array and any unknown name are passed over. Any doubt costs the slower answer, never a
 wrong one. An array is not reduced to its element type, because a column of arrays holds something
 no column type here describes.
+
+## Numbers into a numeric column
+
+**Decided.** A number goes into a `numeric(p,s)` column only when every value fits s places and
+p - s digits before the point, checked before anything is written, on both engines. An exact column
+is read as it is; a whole number too; a Float64 is read to 15 significant digits (a Float32 to 6),
+the reading `round` and `cast_columns` use, and that reading is what is sent, so the database
+stores exactly what was checked. A negative scale (`numeric(5,-2)`) holds whole hundreds only. A
+`numeric` with no places stated takes any number as it is. An exact column never goes into a
+`double precision`, `real` or `float` column.
+
+**Why.** Postgres rounds a value with more places than the column holds, half away from zero,
+without a word: 1.235 into `numeric(5,2)` is stored as 1.24, and 10.255 sent as a float is stored
+as 10.26. That is a figure changed by a write, which the owner's rulings forbid: nothing rounds
+unless the author asked. An exact column into a float column would keep only the nearest binary
+value, which is the exact column meeting a float, refused everywhere else in the library. A float
+into a float column is the path the first project publishes on, and it is untouched.
+
+**SQLite.** It has no exact type and its driver cannot send a Python `Decimal`, so the library
+registers an adapter that sends the digits as text. A column declared `numeric` then stores them by
+SQLite's own rule (a REAL or an INTEGER). The declared `numeric(p,s)` is still checked, because
+the declaration is what the table promises whoever reads it.
 
 ## Reading a table's rules
 

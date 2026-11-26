@@ -43,8 +43,8 @@ either way.
 **A port with no rows writes its tab with the headers and nothing under them.** A missing tab reads
 as a broken report. An empty tab reads as "nothing this month".
 
-**What a cell cannot hold is refused.** A whole number past 2**53 - 1, a Decimal, a Time, a
-Duration, a list, a struct, a frame taller than a sheet. The numbers are the ones in
+**What a cell cannot hold is refused.** A whole number past 2**53 - 1, a Decimal value of more than 15
+significant digits, a Time, a Duration, a list, a struct, a frame taller than a sheet. The numbers are the ones in
 ``_spreadsheet.py``, imported below rather than written down twice.
 
 Vocabulary is deliberately generic -- key, amount, code -- because the library carries no caller's
@@ -73,7 +73,7 @@ from dantron_etl.column_types import DECLARED_TYPES
 from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, check_tool, run_tool
 from dantron_etl.config import expression_fields
 from dantron_etl.contract import input_ports_for, ports_from_config
-from dantron_etl.tools._spreadsheet import MAX_DATA_ROWS, MAX_EXACT_INTEGER
+from dantron_etl.tools._spreadsheet import MAX_CELL_DIGITS, MAX_DATA_ROWS, MAX_EXACT_INTEGER
 from dantron_etl.tools.write_excel import WriteExcel
 
 # ---------------------------------------------------------------------------
@@ -1216,10 +1216,6 @@ class TestRefusalsAboutTheFrames:
     @pytest.mark.parametrize(
         "column",
         [
-            pytest.param(
-                pl.Series("amount", [Decimal("1234.56")], dtype=pl.Decimal(12, 2)),
-                id="a_figure_whose_whole_purpose_is_exactness",
-            ),
             pytest.param(pl.Series("at", [dt.time(13, 45)], dtype=pl.Time), id="a_time_of_day_lands_in_1899"),
             pytest.param(
                 pl.Series("took", [dt.timedelta(hours=2)], dtype=pl.Duration),
@@ -2707,3 +2703,154 @@ class TestAnEmptyPortMustBeAllowed:
         }
         with pytest.raises(DataError):
             _write({"full": _rows("a"), "empty": _rows("b").head(0)}, config)
+
+
+# ---------------------------------------------------------------------------
+# Exact decimals
+# ---------------------------------------------------------------------------
+
+
+def _exact(name: str, values: list[str | None], places: int) -> pl.Series:
+    """Exact decimals, written as text so nothing passes through a float."""
+    return pl.Series(name, [None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(38, places))
+
+
+def _cell_values(path: Path, sheet: str, column: int) -> list[Any]:
+    """One column's data cells as the spreadsheet library reads them back."""
+    book = openpyxl.load_workbook(path)
+    try:
+        worksheet = book[sheet]
+        return [worksheet.cell(row=row, column=column).value for row in range(2, worksheet.max_row + 1)]
+    finally:
+        book.close()
+
+
+class TestAnExactColumnIsWrittenWhenACellKeepsIt:
+    """A cell holds a double, which keeps 15 significant digits. An exact column is written when
+    every value fits them, as the nearest double, which shows the same digits; otherwise the column
+    is refused, naming the rows.
+    """
+
+    def test_values_of_15_significant_digits_or_fewer_are_written_as_numbers(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        values = ["1234567890.12", "-0.05", "0.0725", "99999999999999.9", "1" + "0" * 20, "0", None]
+        frame = pl.DataFrame({"key": [str(n) for n in range(len(values))], "amount": _exact("amount", values, 4)})
+
+        _write({"one": frame}, {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures"}]})
+
+        written = _cell_values(target, "Figures", 2)
+        assert written == [None if v is None else float(v) for v in values]
+        assert all(isinstance(v, (int, float)) for v in written if v is not None), "numbers, never text"
+        with zipfile.ZipFile(target) as archive:
+            sheet = archive.read("xl/worksheets/sheet1.xml").decode()
+        stored = re.search(r'<c r="B2"[^>]*><v>([^<]*)</v>', sheet)
+        assert stored is not None and stored.group(1) == "1234567890.12", "the double's digits, not 1234567890.1200"
+
+    @pytest.mark.parametrize(
+        ("value", "places", "outcome"),
+        [
+            ("1234567890123.45", 2, "written"),
+            ("12345678901234.56", 2, "refused"),
+            ("-12345678901234.56", 2, "refused"),
+            ("1234567890123.4500", 4, "written"),
+            ("0.000000000000001234", 18, "written"),
+            ("0.1234567890123456", 16, "refused"),
+            ("1234567890123450000", 0, "written"),
+            ("1234567890123456000", 0, "refused"),
+        ],
+        ids=[
+            "fifteen_digits",
+            "sixteen_digits",
+            "sixteen_digits_below_zero",
+            "trailing_zeros_do_not_count",
+            "leading_zeros_do_not_count",
+            "sixteen_digits_all_after_the_point",
+            "zeros_at_the_end_of_a_whole_number_do_not_count",
+            "sixteen_digits_of_a_whole_number",
+        ],
+    )
+    def test_a_value_past_15_significant_digits_refuses_the_column_naming_the_rows(
+        self, tmp_path: Path, value: str, places: int, outcome: str
+    ) -> None:
+        assert MAX_CELL_DIGITS == 15
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"key": ["r1", "r2"], "amount": _exact("amount", ["1", value], places)})
+        config = {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures"}]}
+
+        if outcome == "written":
+            _write({"one": frame}, config)
+            assert _cell_values(target, "Figures", 2) == [1, float(value)]
+            return
+
+        with pytest.raises(DataError) as caught:
+            _write({"one": frame}, config)
+        message = str(caught.value)
+        for word in ("'amount'", "'one'", "'Figures'", "15 significant digits", value, "1 of 2"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+        assert caught.value.examples[0]["key"] == "r2"
+        assert not target.exists(), "a refused write creates nothing"
+
+    def test_a_decimal_format_rule_reaches_every_exact_column_and_no_float(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame(
+            {
+                "price": _exact("price", ["12.50"], 2),
+                "rate": _exact("rate", ["0.0725"], 4),
+                "ratio": [0.5],
+                "special": _exact("special", ["3.000"], 3),
+            }
+        )
+        rules = [
+            {"type": "Decimal", "format": MONEY_FORMAT},
+            {"type": "Float64", "format": "0.0%"},
+            {"column": "special", "format": "0.000"},
+        ]
+
+        _write({"one": frame}, {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures", "formats": rules}]})
+
+        formats = _formats(target, "Figures")
+        assert formats == {"price": [MONEY_FORMAT], "rate": [MONEY_FORMAT], "ratio": ["0.0%"], "special": ["0.000"]}
+
+    def test_a_float_format_rule_does_not_reach_an_exact_column(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"price": _exact("price", ["12.50"], 2), "ratio": [0.5]})
+        rules = [{"type": "Float64", "format": MONEY_FORMAT}]
+
+        _write({"one": frame}, {"path": str(target), "sheets": [{"port": "one", "sheet": "Figures", "formats": rules}]})
+
+        assert _formats(target, "Figures") == {"price": ["General"], "ratio": [MONEY_FORMAT]}
+
+    def test_width_and_wrap_rules_of_type_decimal_are_taken(self, tmp_path: Path) -> None:
+        target = tmp_path / "pack.xlsx"
+        frame = pl.DataFrame({"code": ["a"], "price": _exact("price", ["12.50"], 2)})
+        entry = {
+            "port": "one",
+            "sheet": "Figures",
+            "widths": [{"type": "Decimal", "width": 18}],
+            "wrap": [{"type": "Decimal"}],
+        }
+
+        _write({"one": frame}, {"path": str(target), "sheets": [entry]})
+
+        book = openpyxl.load_workbook(target)
+        try:
+            sheet = book["Figures"]
+            assert sheet.column_dimensions["B"].width == 18
+            assert sheet["B2"].alignment.wrap_text is True
+            assert not sheet["A2"].alignment.wrap_text
+        finally:
+            book.close()
+
+    def test_an_exact_column_is_fitted_as_wide_as_the_same_figures_held_as_floats(self, tmp_path: Path) -> None:
+        exact = pl.DataFrame({"price": _exact("price", ["1234.5600", "-7.0000"], 4)})
+        floats = pl.DataFrame({"price": [1234.56, -7.0]})
+        widths = []
+        for name, frame in (("exact", exact), ("floats", floats)):
+            target = tmp_path / f"{name}.xlsx"
+            _write({"one": frame}, {"path": str(target), "sheets": [{"port": "one", "sheet": "F", "fit_widths": True}]})
+            book = openpyxl.load_workbook(target)
+            widths.append(book["F"].column_dimensions["A"].width)
+            book.close()
+
+        assert widths[0] == widths[1]
+

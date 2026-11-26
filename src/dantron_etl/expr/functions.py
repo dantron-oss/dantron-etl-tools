@@ -27,10 +27,11 @@ from .arguments import (
     WholeNumber,
     probe_pattern,
 )
+from . import exact
 from .dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .errors import Refusal
 from .families import Family
-from .formatting import written_as_text
+from .formatting import rounded_half_away, written_as_text
 
 
 @dataclass(frozen=True)
@@ -80,10 +81,13 @@ class Function:
     #: How the value arguments meet each other, beyond sharing a family. "compared": tested for
     #: equality, so a timestamp against a date is refused as '=' refuses it. "ordered": put in order,
     #: so timestamps on different clocks are refused. "arithmetic": worked out as the operators work,
-    #: so an unsigned whole number is widened to Int64 and an exact Decimal is refused.
+    #: so an unsigned whole number is widened to Int64.
     meets: Literal["compared", "ordered", "arithmetic"] | None = None
     #: The argument that divides: a zero there stops the step, as a '/' by zero does.
     divides_by: int | None = None
+    #: How the function works when one of its values is an exact decimal: given each value and its
+    #: type, it gives the exact answer. None means the function treats an exact value as any other.
+    on_exact: Callable[..., exact.Exact] | None = None
 
 
 def _coalesce(*parts: pl.Expr) -> pl.Expr:
@@ -114,7 +118,8 @@ def _round(subject: pl.Expr, digits: int, *, dtype: pl.DataType | None = None) -
 
 def _rounded(subject: pl.Expr, digits: int, dtype: pl.DataType) -> pl.Expr:
     if isinstance(dtype, pl.Decimal):
-        return subject.round(digits, mode="half_away_from_zero")
+        # Reached only without a schema; with one, the compiler uses exact.round_to and checks the rows.
+        return exact.round_to((subject, dtype), digits).expr
     read = _READ_DIGITS.get(dtype)
     if read is None:
         if dtype.is_integer() or dtype == pl.Null:
@@ -336,6 +341,14 @@ def _format_number(
     to zero keeps its minus sign (-0.004 reads -0.00). A null stays null. Written row by row, since polars
     has no kernel for grouping digits. The width and separators come from the file, never from a row.
     """
+    if isinstance(dtype, pl.Decimal):
+        # An exact value is rounded here, in Python's exact decimals, so no figure is too large to round.
+        return subject.map_elements(
+            lambda value: written_as_text(
+                rounded_half_away(value, decimals), decimals, thousands, point, negative=value < 0
+            ),
+            return_dtype=pl.String,
+        )
     # Digits from round()'s answer; the sign from the value itself, so -0.004 reads -0.00.
     return pl.struct(value=subject, rounded=_round(subject, decimals, dtype=dtype)).map_elements(
         lambda row: None
@@ -481,6 +494,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         to_polars=_coalesce,
         summary="The first value that is not null: coalesce([discount], 0.0) gives 0.0 where discount is blank.",
         example="coalesce([discount], 0.0)",
+        on_exact=exact.coalesce,
     ),
     Function(
         "round",
@@ -491,6 +505,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A number rounded to some decimal places, halves away from zero like a spreadsheet: 2.5 gives 3.",
         example="round([amount], 2)",
+        on_exact=exact.round_to,
     ),
     Function(
         "year",
@@ -683,6 +698,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A number taken down to the whole number at or below it, in the number's own type: -2.5 gives -3.",
         example="floor([hours])",
+        on_exact=exact.floor,
     ),
     Function(
         "ceil",
@@ -693,6 +709,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A number taken up to the whole number at or above it, in the number's own type: 2.1 gives 3.",
         example="ceil([hours])",
+        on_exact=exact.ceil,
     ),
     Function(
         "sign",
@@ -703,6 +720,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="-1 for a number below zero, 0 for zero, 1 above zero.",
         example="sign([balance])",
+        on_exact=exact.sign,
     ),
     Function(
         "mod",
@@ -714,6 +732,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         divides_by=1,
         summary="The remainder of the first number divided by the second, with the first one's sign: mod(-7, 3) is -1.",
         example="mod([month_number], 3)",
+        on_exact=exact.remainder,
     ),
     Function(
         "least",
@@ -726,6 +745,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         meets="ordered",
         summary="The smallest of the values; nulls are skipped, and only all nulls give null.",
         example="least([due_on], [paid_on])",
+        on_exact=exact.least,
     ),
     Function(
         "greatest",
@@ -738,6 +758,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         meets="ordered",
         summary="The largest of the values; nulls are skipped, and only all nulls give null.",
         example="greatest([amount], 0)",
+        on_exact=exact.greatest,
     ),
     Function(
         "nullif",
@@ -751,6 +772,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         meets="compared",
         summary="Null where the first value equals the second, otherwise the first: nullif([code], '') blanks empty text.",
         example="nullif([discount], 0)",
+        on_exact=exact.nullif,
     ),
     Function(
         "lower",

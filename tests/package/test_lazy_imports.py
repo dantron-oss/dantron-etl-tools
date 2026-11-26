@@ -1,5 +1,6 @@
 """Importing the package must not load the Excel libraries; only the Excel tools need them."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,8 @@ def test_importing_the_package_loads_no_excel_library():
         capture_output=True,
         text=True,
         check=True,
-        env={"PYTHONPATH": str(_SRC), "PYTHONDONTWRITEBYTECODE": "1"},
+        # The rest of the environment is kept: on Windows an interpreter does not start without it.
+        env={**os.environ, "PYTHONPATH": str(_SRC), "PYTHONDONTWRITEBYTECODE": "1"},
     )
     assert result.stdout.strip() == ""
 

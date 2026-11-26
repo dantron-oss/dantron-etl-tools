@@ -83,8 +83,9 @@ class WriteCsv:
                 "as null. That difference is lost.",
                 "A value containing the delimiter, a quote or a line break is wrapped in quotes, with "
                 "inner quotes doubled. Other values are not quoted.",
-                "Whole numbers and Decimal values are written digit for digit; text has no limit to "
-                "round them to.",
+                "Whole numbers and Decimal values are written digit for digit, a Decimal with every "
+                "place it holds (58.899000 at 6 places); text has no limit to round them to. Read "
+                "back, the column is Float64 unless read_csv's column_types says Decimal.",
                 "A List, Struct or Duration column is refused rather than turned into text.",
                 "A table with no rows stops the run unless 'allow_empty' is true, because an empty file "
                 "caused by a failure upstream looks like a quiet month.",

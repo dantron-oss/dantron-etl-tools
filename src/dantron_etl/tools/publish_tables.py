@@ -33,7 +33,13 @@ from ..authoring import (
     WorkedExample,
     example_database,
 )
-from ._table_load import require_landable_columns, require_matching_table, require_one_row_per_key, require_rows
+from ._table_load import (
+    landing_frame,
+    require_landable_columns,
+    require_matching_table,
+    require_one_row_per_key,
+    require_rows,
+)
 
 #: Spelled so a definition file hands each of them over as the word itself.
 _MODE_ENUM: Final[tuple[str, ...]] = ("replace", "append", "merge")
@@ -200,6 +206,14 @@ class PublishTables:
                 "match its table's exactly, apart from 'stamp_column', which the frames never carry.",
                 "A column whose values will not fit the table's column type is refused before anything "
                 "is written. write_table runs the same checks.",
+                "A number goes into a numeric(p,s) column only when every value fits s places and p "
+                "digits; the database would round the rest without a word. A Float64 is read to 15 "
+                "significant digits first, as round reads it, and that reading is what is written: "
+                "10.25 fits numeric(12,2), 10.255 is refused. Round first with a formula step.",
+                "A Decimal column is never written to a double precision, real or float column. Convert "
+                "it with cast_columns to Float64 first. A Float64 into a float column is written as it is.",
+                "SQLite has no exact type: a Decimal is sent as its digits, and SQLite stores them by "
+                "its own rule. A numeric(p,s) column is checked the same way on both.",
                 "A port or table named by two entries is refused, and so is a 'stamp_column' named "
                 "like one of the tables.",
                 "A merge loads its rows into a temporary table named _etl_merge_staging first. A "
@@ -276,6 +290,7 @@ class PublishTables:
                     frame,
                     loader.declared_column_types(connection, config["schema"], entry.table),
                     entry.qualified,
+                    loader.numeric_declarations(connection, config["schema"], entry.table),
                 )
                 if entry.mode == "merge":
                     require_one_row_per_key(frame, entry.key, entry.qualified)
@@ -388,7 +403,8 @@ def _publish_one(
     The stamp is added to the row tuples, not to the frame, which belongs to the caller.
     """
     columns = [*frame.columns, stamp.column] if stamp else list(frame.columns)
-    rows = [(*row, stamp.at) for row in frame.rows()] if stamp else frame.rows()
+    landing = landing_frame(frame, loader.numeric_declarations(connection, schema, entry.table))
+    rows = [(*row, stamp.at) for row in landing.rows()] if stamp else landing.rows()
 
     try:
         if entry.mode == "replace":

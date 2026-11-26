@@ -265,12 +265,22 @@
                 "required": false,
                 "type": "string"
               },
+              "places": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "integer"
+              },
               "type": {
                 "default": null,
                 "enum": [
                   "String",
                   "Int64",
                   "Float64",
+                  "Decimal",
                   "Boolean",
                   "Date",
                   "Datetime",
@@ -1178,12 +1188,22 @@
                 "required": false,
                 "type": "string"
               },
+              "places": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": false,
+                "required": false,
+                "type": "integer"
+              },
               "type": {
                 "default": null,
                 "enum": [
                   "String",
                   "Int64",
                   "Float64",
+                  "Decimal",
                   "Boolean",
                   "Date",
                   "Datetime",
@@ -1713,6 +1733,15 @@
           "required": false,
           "type": "string"
         },
+        "values_places": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        },
         "values_to": {
           "default": null,
           "enum": null,
@@ -1728,6 +1757,7 @@
             "String",
             "Int64",
             "Float64",
+            "Decimal",
             "Boolean",
             "Date",
             "Datetime",
@@ -1873,6 +1903,7 @@
                         "String",
                         "Int64",
                         "Float64",
+                        "Decimal",
                         "Boolean",
                         "Date",
                         "Datetime",
@@ -1991,6 +2022,7 @@
                         "String",
                         "Int64",
                         "Float64",
+                        "Decimal",
                         "Boolean",
                         "Date",
                         "Datetime",
@@ -2044,6 +2076,7 @@
                         "String",
                         "Int64",
                         "Float64",
+                        "Decimal",
                         "Boolean",
                         "Date",
                         "Datetime",

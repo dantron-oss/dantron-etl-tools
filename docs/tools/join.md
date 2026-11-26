@@ -42,9 +42,11 @@ More on some settings:
 - A copied amount is repeated on each copy, never split, so a total after a join is right only if the key is unique on the right. Check that before the join.
 - Rows come out in a fixed order: left order, a left row's copies in right order, and each unpaired port in its own side's order.
 - That order keeps written files stable between runs; a step that needs a meaningful order still needs a sort.
-- The two columns of a key pair must hold comparable types. Whole numbers of different sizes pair; a whole number against a decimal, or a date against a timestamp, is refused before any row moves. Use cast_columns first.
+- The two columns of a key pair must hold comparable types. Whole numbers of different sizes pair; a whole number against a Float64, or a date against a timestamp, is refused before any row moves. Use cast_columns first.
+- Exact decimal (Decimal) keys pair by value, as SQL's = does: 1.50 pairs with 1.5000, and 5.00 pairs with the whole number 5. The key on `joined` keeps the left side's type.
+- A Decimal key against a Float64 key is refused, naming the Float64 column. Convert one side with cast_columns first, so both are Decimal or both are Float64.
 - A key column of type Null, as an empty branch gives, takes the other side's type, and none of its rows pair.
-- Decimal (Float) keys pair only when exactly equal: 0.1 + 0.2 and 0.3 look alike but do not pair. Round a calculated key, or cast it to text, first.
+- Float64 keys pair only when exactly equal: 0.1 + 0.2 and 0.3 look alike but do not pair. Round a calculated key, or cast it to text or Decimal, first.
 
 ## Example 1
 

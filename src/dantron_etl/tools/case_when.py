@@ -21,9 +21,12 @@ from ..authoring import (
     ToolHelp,
     WorkedExample,
     check_output_column,
+    compile_exact_for,
     compile_for,
     compile_predicate_for,
     compiled_dtype,
+    exact_places_for,
+    refuse_exact_too_large,
     refuse_rows_without_an_answer,
 )
 
@@ -105,7 +108,12 @@ class CaseWhen:
                 "result goes in a new column at the end of `rows`, or replaces a column when "
                 "'replace' is true."
             ),
-            examples=(_disposition_ladder_example(), _no_otherwise_example(), _replacing_example()),
+            examples=(
+                _disposition_ladder_example(),
+                _no_otherwise_example(),
+                _replacing_example(),
+                _exact_example(),
+            ),
             notes=(
                 "Cases are checked in the order written, and the first one a row meets wins, even "
                 "when cases overlap.",
@@ -114,6 +122,9 @@ class CaseWhen:
                 "Every 'then' and 'otherwise' must give the same kind of value: text, a number, a date, "
                 "or true/false. A mix is refused before any row runs, naming the case.",
                 "A value of null fits with any kind, so it is never the mismatch that gets refused.",
+                "When one branch gives an exact decimal, every branch is written with the largest places among "
+                "them. A whole number, or a number typed in the expression such as 0.0, is exact beside it; a "
+                "float branch is refused, naming it.",
                 "With 'replace', the whole column is rewritten, so a row no case reached gets "
                 "'otherwise', or null if there is none, instead of keeping its old value.",
                 "With 'replace', the cases read the column's values as they were before this step, so "
@@ -150,40 +161,91 @@ class CaseWhen:
             reference = _check_family(frame, case["then"], f"cases[{index}].then", reference)
         if config.get("otherwise") is not None:
             _check_family(frame, config["otherwise"], "otherwise", reference)
+        _exact_places(frame, config)
 
     def execute(self, inputs: Ports, config: Mapping[str, Any]) -> Ports:
         frame = inputs["rows"]
         cases = config["cases"]
-        _refuse_rows_without_an_answer_where_used(frame, config)
+        places = _exact_places(frame, config)
+        _refuse_rows_without_an_answer_where_used(frame, config, places)
+
+        def value(text: str, path: str) -> pl.Expr:
+            if places is None:
+                return compile_for(frame, text, path)
+            return compile_exact_for(frame, text, path, places)[0]
 
         ladder = pl.when(compile_predicate_for(frame, cases[0]["when"], "cases[0].when")).then(
-            compile_for(frame, cases[0]["then"], "cases[0].then")
+            value(cases[0]["then"], "cases[0].then")
         )
         for index, case in enumerate(cases[1:], start=1):
             ladder = ladder.when(compile_predicate_for(frame, case["when"], f"cases[{index}].when")).then(
-                compile_for(frame, case["then"], f"cases[{index}].then")
+                value(case["then"], f"cases[{index}].then")
             )
         if config.get("otherwise") is not None:
-            ladder = ladder.otherwise(compile_for(frame, config["otherwise"], "otherwise"))
+            ladder = ladder.otherwise(value(config["otherwise"], "otherwise"))
 
         return Ports({"rows": frame.with_columns(ladder.alias(config["output"]))})
 
 
-def _refuse_rows_without_an_answer_where_used(frame: pl.DataFrame, config: Mapping[str, Any]) -> None:
+def _branches(config: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Every value the ladder can give, as (path, expression): each case's 'then', then 'otherwise'."""
+    branches = [(f"cases[{index}].then", case["then"]) for index, case in enumerate(config["cases"])]
+    if config.get("otherwise") is not None:
+        branches.append(("otherwise", config["otherwise"]))
+    return branches
+
+
+def _exact_places(frame: pl.DataFrame, config: Mapping[str, Any]) -> int | None:
+    """The places every branch is written with when one gives an exact decimal; None when none does.
+
+    The larger places of them all. A whole number counts as 0 places and a typed number as the places
+    it is written with, so `then: "0.0"` beside an exact branch is exact. A float branch beside an
+    exact one is refused, naming it.
+    """
+    shapes = [(path, text, *compiled_dtype(frame, text, path)) for path, text in _branches(config)]
+    exact_branch = next((path for path, _, _, dtype in shapes if isinstance(dtype, pl.Decimal)), None)
+    if exact_branch is None:
+        return None
+    places = []
+    for path, text, column, dtype in shapes:
+        if dtype == pl.Null:
+            continue
+        written = exact_places_for(frame, text, path)
+        if written is None:
+            raise ConfigError(
+                f"config field {path!r} gives {dtype}, a float, in column {column!r}, while {exact_branch!r} "
+                f"gives an exact decimal: one float branch would turn the whole column into floats without a "
+                f"word. Convert one side first with the cast_columns tool, in expression: `{text}`"
+            )
+        places.append(written)
+    return max(places)
+
+
+def _refuse_rows_without_an_answer_where_used(frame: pl.DataFrame, config: Mapping[str, Any], places: int | None) -> None:
     """Check each '/' only on the rows that reach it, as SQL's CASE does.
 
     A case's condition is used on the rows no earlier case took, its value on the rows it takes, and
     'otherwise' on the rows no case took. So a case that takes the zero rows first guards a later division.
+    With exact branches, a value too large to be written at the ladder's places stops the step on
+    the same terms.
     """
     taken = pl.lit(False)
     for index, case in enumerate(config["cases"]):
         reached = ~taken
         refuse_rows_without_an_answer(frame, case["when"], f"cases[{index}].when", among=reached)
         takes = compile_predicate_for(frame, case["when"], f"cases[{index}].when").fill_null(False)
-        refuse_rows_without_an_answer(frame, case["then"], f"cases[{index}].then", among=reached & takes)
+        _refuse_value_where_used(frame, case["then"], f"cases[{index}].then", places, reached & takes)
         taken = taken | takes
     if config.get("otherwise") is not None:
-        refuse_rows_without_an_answer(frame, config["otherwise"], "otherwise", among=~taken)
+        _refuse_value_where_used(frame, config["otherwise"], "otherwise", places, ~taken)
+
+
+def _refuse_value_where_used(frame: pl.DataFrame, text: str, path: str, places: int | None, used: pl.Expr) -> None:
+    refuse_rows_without_an_answer(frame, text, path, among=used)
+    if places is not None:
+        _, too_large = compile_exact_for(frame, text, path, places)
+        what = f"gives values to be written with {places} places, the places every branch of this ladder takes"
+        refuse_exact_too_large(frame, too_large, path, what, among=used)
 
 
 def _check_family(
@@ -294,6 +356,30 @@ def _replacing_example() -> WorkedExample:
         },
         explanation="'replace: true' says to overwrite 'company', so it keeps its position and no column is "
         "added. The cases read the values as they were before this step.",
+        inputs=inputs,
+        outputs=outputs,
+    )
+
+
+def _exact_example() -> WorkedExample:
+    from decimal import Decimal
+
+    def amounts(values: list[str | None], places: int) -> pl.Series:
+        return pl.Series([None if value is None else Decimal(value) for value in values], dtype=pl.Decimal(38, places))
+
+    inputs = Ports({"rows": pl.DataFrame({"key": [1, 2, 3], "amount": amounts(["812.40", None, "-7.5"], 2)})})
+    outputs = Ports(
+        {"rows": inputs["rows"].with_columns(owed=amounts(["812.40", "0.000", "-7.500"], 3))}
+    )
+    return WorkedExample(
+        scenario="keep an exact amount exact, with a typed zero for the blanks",
+        configuration={
+            "cases": [{"when": "[amount] is null", "then": "0.000"}],
+            "otherwise": "[amount]",
+            "output": "owed",
+        },
+        explanation="'amount' is an exact decimal with 2 places, and 0.000 is typed with 3, so every row is "
+        "written with 3 places, exactly. A Float64 branch here would be refused.",
         inputs=inputs,
         outputs=outputs,
     )

@@ -72,6 +72,7 @@ caller's nouns.
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -431,6 +432,67 @@ class TestWhatAColumnComesBackAs:
         message = str(caught.value)
         for word in named:
             assert word in message, f"the refusal should mention {word!r}: {message}"
+
+
+class TestAnExactDecimalColumn:
+    """`type: Decimal` with `places` reads each value exactly, or stops naming the ones that do not fit.
+
+    A value converts only when written as plain digits, with an optional point and minus sign, and
+    no more places than declared. A blank field is null before anything converts. Nothing is ever
+    inferred as Decimal: a column of figures is Float64 unless the author says otherwise.
+    """
+
+    def test_a_declared_column_holds_each_value_exactly_at_its_places(self, tmp_path: Path) -> None:
+        text = "key,price,qty\nr1,812.40,2\nr2,0.07,3\nr3,-3,4\nr4,,5\nr5,1.2300,6\nr6,007.5,7\n"
+        rows = _laid_out(tmp_path, text, column_types=[{"column": "price", "type": "Decimal", "places": 2}])
+
+        assert rows.schema["price"] == pl.Decimal(38, 2)
+        assert rows["price"].cast(pl.String).to_list() == ["812.40", "0.07", "-3.00", None, "1.23", "7.50"]
+        assert rows.schema["qty"] == pl.Int64, "the neighbour is still inferred"
+
+    @pytest.mark.parametrize("written", ["1.005", "1e3", "+1.25", " 1.50", "1,000.00", "abc", ".5", "1."])
+    def test_a_value_that_does_not_fit_stops_the_run_naming_it(self, tmp_path: Path, written: str) -> None:
+        text = f'key,price\nr1,12.50\nr2,"{written}"\n'
+        with pytest.raises(DataError) as caught:
+            _laid_out(tmp_path, text, column_types=[{"column": "price", "type": "Decimal", "places": 2}])
+
+        message = str(caught.value)
+        for word in ("'price'", "Decimal", "2 places", written):
+            assert word in message, message
+        assert "set_null" not in message, "read_csv has no such setting to offer"
+        assert caught.value.offending_rows == 1
+
+    def test_a_figure_with_too_many_digits_before_the_point_does_not_fit(self, tmp_path: Path) -> None:
+        fits, too_long = "9" * 36 + ".99", "1" + "0" * 36
+        rows = _laid_out(tmp_path, f"price\n{fits}\n", column_types=[{"column": "price", "type": "Decimal", "places": 2}])
+        assert rows["price"].to_list() == [Decimal(fits)]
+        with pytest.raises(DataError):
+            _laid_out(tmp_path, f"price\n{too_long}\n", column_types=[{"column": "price", "type": "Decimal", "places": 2}])
+
+    def test_a_file_with_no_rows_still_gives_the_exact_type(self, tmp_path: Path) -> None:
+        rows = _laid_out(tmp_path, "key,price\n", column_types=[{"column": "price", "type": "Decimal", "places": 4}])
+        assert rows.height == 0
+        assert rows.schema["price"] == pl.Decimal(38, 4)
+
+    def test_a_column_of_figures_is_never_inferred_as_exact(self, tmp_path: Path) -> None:
+        rows = _laid_out(tmp_path, "price\n12.50\n0.07\n")
+        assert rows.schema["price"] == pl.Float64
+
+    def test_places_are_required_beside_decimal_and_refused_beside_any_other_type(self, tmp_path: Path) -> None:
+        for entry in ({"column": "price", "type": "Decimal"}, {"column": "price", "type": "Float64", "places": 2}):
+            with pytest.raises(ConfigError) as caught:
+                _laid_out(tmp_path, "price\n1.50\n", column_types=[entry])
+            assert "'column_types[0].places'" in str(caught.value)
+
+    def test_an_exact_column_written_by_write_csv_reads_back_as_itself(self, tmp_path: Path) -> None:
+        target = tmp_path / "extract.csv"
+        frame = pl.DataFrame(
+            {"key": ["r1", "r2", "r3"], "rate": [Decimal("58.899000"), Decimal("-0.000001"), None]},
+            schema={"key": pl.String, "rate": pl.Decimal(38, 6)},
+        )
+        run_tool(WriteCsv(), Ports({"rows": frame}), {"path": str(target)})
+        back = _read({"path": str(target), "column_types": [{"column": "rate", "type": "Decimal", "places": 6}]})
+        assert_frame_equal(back, frame, check_row_order=True)
 
 
 # ---------------------------------------------------------------------------
@@ -909,13 +971,13 @@ class TestReadCsvInTheCatalog:
         assert template["column_types"].type == "array"
         assert template["column_types"].required is False, "a file whose inference is right needs no entry at all"
         assert entry is not None and entry.type == "object"
-        assert set(entry.fields or {}) == {"column", "type", "format"}
+        assert set(entry.fields or {}) == {"column", "type", "format", "places"}
         assert (entry.fields or {})["column"].required is True
         assert (entry.fields or {})["type"].required is True
         assert tuple((entry.fields or {})["type"].enum or ()) == tuple(DECLARED_TYPES)
         assert (entry.fields or {})["format"].required is False, "a date in ISO order needs no format"
 
-        assert set(DECLARED_TYPES) == {"String", "Int64", "Float64", "Boolean", "Date", "Datetime", "Time"}
+        assert set(DECLARED_TYPES) == {"String", "Int64", "Float64", "Decimal", "Boolean", "Date", "Datetime", "Time"}
         assert not set(DECLARED_TYPES) & YAML_UNSAFE_VALUES, "a declared type has to survive a definition file"
 
     def test_read_csv_conforms_and_its_example_leaves_nothing_behind_it(self) -> None:
