@@ -395,3 +395,71 @@ can pass (`false`) and `allow_empty: true`. Any row that arrives stops the run.
 
 An assertion on a frame with no rows fails unless the step says `allow_empty: true`, because "no
 rows" is usually a mistake upstream.
+
+## Match a payment to the orders it pays within a date window
+
+A customer pays for several orders with one payment. Pair every payment with each of the customer's
+orders placed in the 60 days before it, then let `match_one_to_many` find the one set of orders
+that adds up to the payment. A payment that no set adds up to, or two sets do, is set aside with a
+reason for a person to look at.
+
+```yaml
+name: Payments and the orders they pay
+
+steps:
+  - id: payments
+    tool: read_csv
+    config:
+      path: data/payments.csv
+      column_types:
+        - {column: paid_on, type: Date}
+        - {column: payment_amount, type: Decimal, places: 2}
+
+  - id: orders
+    tool: read_csv
+    config:
+      path: data/orders.csv
+      column_types:
+        - {column: ordered_on, type: Date}
+        - {column: order_amount, type: Decimal, places: 2}
+
+  - id: same_customer
+    tool: join
+    why: Every payment beside every order of the same customer.
+    config: {keys: [customer_id]}
+    inputs: {left: payments.rows, right: orders.rows}
+
+  - id: in_window
+    tool: filter
+    why: An order can only be paid on or after the day it was placed, and within 60 days.
+    config:
+      predicate: "days_between([ordered_on], [paid_on], 'elapsed') >= 0 and days_between([ordered_on], [paid_on], 'elapsed') <= 60"
+    inputs: {rows: same_customer.joined}
+
+  - id: paid_orders
+    tool: match_one_to_many
+    why: Each payment with the one set of up to five orders that adds up to it.
+    config:
+      whole_key: payment_id
+      whole_amount: payment_amount
+      part_key: order_id
+      part_amount: order_amount
+      max_parts: 5
+      reason_column: reason
+    inputs: {candidates: in_window.true}
+
+  - id: save
+    tool: write_csv
+    config: {path: output/paid_orders.csv, overwrite: true}
+    inputs: {rows: paid_orders.matched}
+
+  - id: to_review
+    tool: write_csv
+    why: Payments that could not be matched to exactly one set of orders.
+    config: {path: output/payments_to_review.csv, overwrite: true, allow_empty: true}
+    inputs: {rows: paid_orders.rejected}
+```
+
+Read the amounts as `Decimal`. A `Float64` amount is refused, because totals of decimal-point
+numbers do not add up exactly. To allow a cent either way, add `tolerance: 0.01`. A wider window or
+a larger `max_parts` finds more sets, and so more payments that add up two ways.
