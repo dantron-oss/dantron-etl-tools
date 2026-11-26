@@ -200,6 +200,23 @@ The catalog has no step's settings, so it shows the ports of the tool's first wo
 (`catalog_input_ports`). Those names cannot drift, because `check_tool` runs that example. They are
 true of that one example only, which is why the catalog shows `ports_from_config` beside them.
 
+## Columns read from the settings
+
+**Decided.** Before a step runs, the runner checks that every column its expressions read is on its
+input, and refuses a missing one by step, field and name. `contract.column_references_for` says
+which columns those are. For most tools it is every name in brackets. A tool that reads its brackets
+another way implements `column_references(config)` (the `DerivesColumnReferences` protocol).
+`multi_row_formula` is the one that does: `[Row-1:amount]` reads the input column `amount`, and
+`[Row-1:balance]`, where `balance` is the column the step writes, reads no input column at all.
+
+Two rules for the author:
+
+- **Every field, every column.** A column the member leaves out is not checked before the step runs.
+- **The settings arrive as written, with no defaults filled in**, as for input ports above.
+
+The default answer is the one the runner gave before the protocol existed, so a tool that does not
+implement it sees no change.
+
 ## Errors from a tool's own code
 
 `call_tool_code` wraps every call into code a tool author wrote: building the template, validating,

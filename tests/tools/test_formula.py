@@ -53,6 +53,7 @@ from polars.testing import assert_frame_equal
 
 from dantron_etl.authoring import CATEGORIES, ConfigError, DataError, Ports, REGISTRY, ToolError, check_tool, run_tool
 from dantron_etl.config import expression_fields, expression_values, validate_against_template
+from dantron_etl.contract import column_references_for
 from dantron_etl.tools.formula import Formula
 
 # ---------------------------------------------------------------------------
@@ -366,6 +367,20 @@ class TestFormulaRefusals:
         message = str(caught.value)
         assert named in message, f"refusal should name {named!r}: {message}"
         assert path in message, f"refusal should report the path {path!r}: {message}"
+
+    def test_a_row_reference_is_a_column_formula_does_not_have(self) -> None:
+        """[Row-1:x] reads another row only in multi_row_formula. Here it names a column, as it always did.
+
+        So a formula step that holds one is refused as a column the input lacks, and the runner's
+        check before the step runs looks for a column of that whole name, not for 'line_amount'.
+        """
+        config = {"columns": [{"name": "previous", "value": "[Row-1:line_amount]"}]}
+
+        with pytest.raises(ConfigError) as caught:
+            run_tool(Formula(), Ports({"rows": _rows()}), config)
+
+        assert "[Row-1:line_amount] is not a column in the data" in str(caught.value)
+        assert column_references_for(Formula(), config) == {"columns[0].value": frozenset({"Row-1:line_amount"})}
 
     def test_formula_leaves_its_input_untouched(self) -> None:
         """The boundary compares input schemas; the data must be unchanged too."""

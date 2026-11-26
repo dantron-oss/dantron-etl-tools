@@ -10,7 +10,15 @@ example of a tool.
 from .boundary import run_tool
 from .config import FIELD_TYPES, ConfigField, require_not_blank
 from .conformance import YAML_UNSAFE_VALUES, check_registry, check_tool
-from .contract import CATEGORIES, TERMINAL_CATEGORIES, DerivesInputPorts, Tool, ToolHelp, WorkedExample
+from .contract import (
+    CATEGORIES,
+    TERMINAL_CATEGORIES,
+    DerivesColumnReferences,
+    DerivesInputPorts,
+    Tool,
+    ToolHelp,
+    WorkedExample,
+)
 from .errors import (
     MAX_REPORTED_ROWS,
     ConfigError,
@@ -23,7 +31,7 @@ from .errors import (
 )
 from .expr.dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
-from .expr import references
+from .expr import ROW_REACH, RowReference, references
 from .frame_checks import (
     REPLACE_FIELD,
     ZONE_FIELD,
@@ -39,6 +47,8 @@ from .frame_checks import (
     refuse_rows_without_an_answer,
     require_columns,
     require_stated_zone,
+    row_references_for,
+    rows_without_an_answer,
 )
 from .ports import Ports
 from .registry import REGISTRY, ToolRegistry
@@ -58,6 +68,7 @@ __all__ = [
     "FIELD_TYPES",
     "TERMINAL_CATEGORIES",
     "ConfigField",
+    "DerivesColumnReferences",
     "DerivesInputPorts",
     "Ports",
     "Tool",
@@ -76,7 +87,11 @@ __all__ = [
     "exact_places_for",
     "refuse_exact_too_large",
     "refuse_rows_without_an_answer",
+    "row_references_for",
+    "rows_without_an_answer",
     "references",
+    "ROW_REACH",
+    "RowReference",
     "require_columns",
     "require_not_blank",
     "require_stated_zone",

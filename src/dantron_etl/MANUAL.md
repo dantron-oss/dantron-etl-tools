@@ -85,13 +85,13 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-30 tools, by category:
+33 tools, by category:
 
 | category | tools |
 |---|---|
 | `input` | `read_csv`, `read_excel`, `read_table` |
-| `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
+| `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_many`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
+| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `multi_row_formula`, `running_total`, `unpivot` |
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
@@ -99,7 +99,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
 
-Four capabilities that each replace a shape you would otherwise build badly:
+Five capabilities that each replace a shape you would otherwise build badly:
 
 - **Records that belong together through a chain** (A links to B, B to C, so A and C are one
   group) — `make_groups`. A fixed run of joins follows a chain only as deep as you wrote
@@ -109,10 +109,19 @@ Four capabilities that each replace a shape you would otherwise build badly:
   express it, because whether a candidate is still free depends on which were accepted before it.
   Remove exact duplicate candidates first: under `ties: refuse`, two identical rows tie with each
   other and both keys are refused.
+- **One whole made of several parts** (a deposit and the payments it holds) —
+  `match_one_to_many`. Build the candidates with a `join` and a `filter` on a date window first; the
+  tool then tries every set of up to `max_parts` parts and matches a whole only when exactly one set
+  adds up. No set, two sets, or a part two wholes both need: those rows are set aside with a reason.
+  Amounts must be whole numbers or `Decimal`; convert a `Float64` amount with `cast_columns` first.
 - **Every match in a text, one row each** — `regex_extract_groups` with `all_matches`. Not a fixed
   number of single-match steps, which caps the count.
 - **Every tab of a workbook whose name follows a pattern** — `read_excel` with `sheets_matching`.
   Not one read step per tab, which has to be edited every time the workbook gains a tab.
+- **A value that reads the row above or below** (the change from the last row, a fill-down, a
+  running balance) — `multi_row_formula`, Alteryx's Multi-Row Formula. `[Row-1:amount]` is the
+  amount one row up, within each group of `group_by`. Not a self-join on a row number, which pairs
+  the wrong rows the moment a group has a gap.
 
 ---
 
@@ -306,6 +315,10 @@ on every run and every computer. Use it where the natural key is several columns
 
 Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`,
 `is null`, `is not null`.
+
+**Row references belong to `multi_row_formula` alone.** There, `[Row-1:amount]` is `amount` one row
+up and `[Row+2:amount]` two rows down, from 1 to 1000 rows. Every other tool reads `[Row-1:amount]`
+as a column of that whole name, which the input does not have, so it is refused.
 
 **Extend it by whitelisting a function, never by growing syntax.** There are no user-defined
 functions, no attribute access, no subscripting, no lambdas. Those are refused by name, and that
@@ -542,10 +555,10 @@ Each of these has caught a real pipeline.
 - **A blank name for an output column is refused by every tool that takes one.** Empty, or nothing
   but whitespace -- a non-breaking space pasted from a spreadsheet counts, and is the one you
   cannot see -- in `formula`'s `columns[].name`, `group_by`'s `aggregations[].name`, the `output`
-  of `assemble_date`, `case_when`, `date_diff`, `normalize_text` and `record_id`, `unpivot`'s
-  `names_to` and `values_to`, `expand_date_range`'s `period_column`, `rename_columns`' `to`,
-  `make_groups`' `record_column` and `group_column`, and `regex_extract_groups`' `position_column`
-  and `match_number_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
+  of `assemble_date`, `case_when`, `date_diff`, `multi_row_formula`, `normalize_text` and
+  `record_id`, `unpivot`'s `names_to` and `values_to`, `expand_date_range`'s `period_column`,
+  `rename_columns`' `to`, `make_groups`' `record_column` and `group_column`, `running_total`'s
+  `columns[].output`, and `regex_extract_groups`' `position_column` and `match_number_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
   you can write — and it reads as an unnamed column in every rendering, so the step that wrote it
   reports success and the step after it cannot see what it produced. The rule is about a name that
   is *nothing*, not one that is unusual: `" total "` keeps its spaces and is written as spelled.
@@ -606,6 +619,10 @@ Each of these has caught a real pipeline.
   cell in `cross_tab` past 38 digits (at 2 places, 36 before the point) names the group and the
   column instead of giving the wrong number the engine would. Convert to `Float64` for figures that
   large, or round to fewer places first.
+- **A running total must fit at every row, not only the last.** `running_total` of an exact column
+  gives exact totals at its places, with 38 digits in all; of a whole-number column, `Int64` totals.
+  A running value past 38 digits, or past `Int64`'s range, stops the step naming the group and the
+  column, even when a later row brings the total back inside.
 - **Exact keys pair by value.** `join` pairs a `Decimal` key with a `Decimal` key of other places
   (1.50 with 1.5000) and with a whole-number key (5.00 with 5), as SQL's `=` does; the key on
   `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
@@ -725,8 +742,8 @@ Each of these has caught a real pipeline.
   `last_non_null` are the same from the other end.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
-  and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
-  `read_table` with no `sort` in between. Put a `sort` there.
+  and `join_text`, `record_id`, `multi_row_formula`, `running_total` and `limit_rows` read an
+  order nobody chose when they sit after a `read_table` with no `sort` in between. Put a `sort` there.
 
 ### Paths
 
@@ -767,6 +784,9 @@ Two more rulings you will meet:
 
 - **`sum` of a group whose values are all missing is null, not `0`.** Zero is a measurement; null is
   the absence of one, and nothing downstream can tell a fabricated zero from a real one.
+- **A null adds nothing to a running total.** `running_total` of null, 5, null, 3 is null, 5, 5, 8,
+  as SQL's `SUM(...) OVER (...)`: null only before a group's first value, and a group of nulls
+  stays null.
 - **`join_text` of the same group is the empty string** — deliberately the opposite. Joining no
   strings together produces the empty string in any language that has both; adding no numbers
   together produces a total nobody measured.

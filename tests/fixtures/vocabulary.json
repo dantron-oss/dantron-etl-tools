@@ -886,6 +886,90 @@
         "rows"
       ]
     },
+    "match_one_to_many": {
+      "category": "preparation",
+      "config": {
+        "max_candidates": {
+          "default": 25,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        },
+        "max_parts": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "integer"
+        },
+        "part_amount": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "part_key": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "reason_column": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "tolerance": {
+          "default": 0,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "number"
+        },
+        "whole_amount": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "whole_key": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "candidates"
+      ],
+      "output_ports": [
+        "matched",
+        "rejected"
+      ]
+    },
     "match_one_to_one": {
       "category": "preparation",
       "config": {
@@ -965,6 +1049,79 @@
       "output_ports": [
         "accepted",
         "rejected"
+      ]
+    },
+    "multi_row_formula": {
+      "category": "transform",
+      "config": {
+        "expression": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "group_by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": true,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": false,
+          "type": "array"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "places": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        },
+        "type": {
+          "default": null,
+          "enum": [
+            "String",
+            "Int64",
+            "Float64",
+            "Decimal",
+            "Boolean",
+            "Date",
+            "Datetime",
+            "Time"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
       ]
     },
     "normalize_text": {
@@ -1560,6 +1717,70 @@
           },
           "non_empty": true,
           "required": true,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
+    "running_total": {
+      "category": "transform",
+      "config": {
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "column": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "output": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "group_by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": false,
+          "required": false,
           "type": "array"
         }
       },
