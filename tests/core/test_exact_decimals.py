@@ -39,7 +39,6 @@ from dantron_etl.column_types import (
 from dantron_etl.tools.cast_columns import CastColumns
 from dantron_etl.tools.read_csv import ReadCsv
 from dantron_etl.tools.unpivot import Unpivot
-from dantron_etl.tools.write_excel import WriteExcel
 
 
 def exact_series(values: list[str | None], places: int, *, precision: int = 38, name: str = "x") -> pl.Series:
@@ -168,22 +167,6 @@ def test_unpivot_refuses_decimal_for_now() -> None:
     rows = pl.DataFrame({"order": ["A"], "jan": [1.5], "feb": [2.5]})
     config = {"by": ["order"], "names_to": "month", "values_to": "amount", "values_type": "Decimal"}
     _says_not_yet(_refused(Unpivot(), config, {"rows": rows}), "unpivot", "values_type")
-
-
-@pytest.mark.parametrize(
-    ("setting", "rule"),
-    [
-        ("formats", {"type": "Decimal", "format": "0.00"}),
-        ("widths", {"type": "Decimal", "width": 12}),
-        ("wrap", {"type": "Decimal"}),
-    ],
-)
-def test_write_excel_refuses_a_decimal_rule_for_now(tmp_path: Path, setting: str, rule: dict[str, Any]) -> None:
-    sheet = {"port": "orders", "sheet": "Orders", setting: [rule]}
-    config = {"path": str(tmp_path / "pack.xlsx"), "sheets": [sheet]}
-    message = _refused(WriteExcel(), config, {"orders": pl.DataFrame({"amount": [1.5]})})
-    _says_not_yet(message, "write_excel", f"sheets[0].{setting}[0].type")
-    assert not (tmp_path / "pack.xlsx").exists()
 
 
 # ---------------------------------------------------------------------------

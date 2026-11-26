@@ -587,8 +587,8 @@ Each of these has caught a real pipeline.
   because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **`Decimal` is the exact type, and its places are written beside it.** `{type: Decimal, places: 2}`
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
-  the point, from 0 to 38. No tool takes it yet. `cast_columns`, `read_csv`, `unpivot` and
-  `write_excel`'s rules refuse it by name; use `Float64` until they do.
+  the point, from 0 to 38. No tool takes it yet. `cast_columns`, `read_csv` and `unpivot` refuse
+  it by name; use `Float64` until they do.
 - **Exact keys pair by value.** `join` pairs a `Decimal` key with a `Decimal` key of other places
   (1.50 with 1.5000) and with a whole-number key (5.00 with 5), as SQL's `=` does; the key on
   `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
@@ -607,6 +607,11 @@ Each of these has caught a real pipeline.
   digits first (10.25 fits `numeric(12,2)`, 10.255 does not). A `Decimal` column never goes into a
   `double precision`, `real` or `float` column; `cast_columns` it to `Float64` first. A `Float64`
   into a float column is written as it always was.
+- **`write_excel` writes a `Decimal` column when a cell keeps every value.** A cell holds a double,
+  which keeps 15 significant digits, so a value with more (12,345,678,901,234.56) refuses the column,
+  naming the rows: round it upstream, or cast it to `String`. A rule for `type: Decimal` in
+  `formats`, `widths` or `wrap` reaches every `Decimal` column, whatever its places; a `Float64`
+  rule does not. `write_csv` writes a `Decimal` with every place it holds.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

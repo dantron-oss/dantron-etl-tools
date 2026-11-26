@@ -63,7 +63,9 @@ More on some settings:
 - A port with no rows stops the run, because an empty tab caused by a failure upstream looks like a quiet month. Set allow_empty: true on its sheet entry to allow it.
 - An allowed empty port gets its tab with the headings and nothing under them, never a missing tab and never a phrase such as '(no rows)'.
 - A whole number beyond 2**53 - 1, either way, is refused, because a cell cannot hold it exactly. Cast it to text upstream if that is what you want.
-- A Time, Duration, Decimal, list or nested record column is refused, not turned into text.
+- A Time, Duration, list or nested record column is refused, not turned into text.
+- A Decimal column is written as numbers when every value has at most 15 significant digits, the most a cell keeps, so the tab shows the figures as held. A value with more refuses the column, naming the rows: round it upstream, or cast it to String.
+- A rule for type Decimal reaches every Decimal column, whatever its places. A rule for Float64 does not reach a Decimal column.
 - Text longer than 32,767 characters, the most a cell holds, is refused, naming the column. It is never cut short.
 - Not-a-number or infinity in a decimal column is refused, naming the tab, the column and the rows, because a cell would show it as a blank. A null is written as an empty cell.
 - A frame with more than 1,048,575 rows, more than a tab holds, is refused, never cut short.

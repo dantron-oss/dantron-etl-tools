@@ -10,13 +10,17 @@ things; each such release says how to upgrade.
 ### Added
 
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
-  listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv`, `unpivot` and
-  `write_excel`'s format, width and wrap rules refuse it, now with a message that says so.
+  listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv` and `unpivot` refuse
+  it, now with a message that says so.
 - **`join` pairs exact keys by value**: a `Decimal` key with a `Decimal` key of other places (1.50
   with 1.5000), and with a whole-number key (5.00 with 5). Both used to be refused, so no join that
   ran before gives a different answer. A `Decimal` key beside a `Float64` key is still refused, now
   naming the float column to convert. `make_groups` links two `Decimal` columns of different places
   by value too, at the larger places.
+- **`write_excel` writes a `Decimal` column** when every value has at most 15 significant digits,
+  the most a cell keeps; it used to refuse every `Decimal` column. A value with more refuses the
+  column, naming the rows. A `formats`, `widths` or `wrap` rule for `type: Decimal` reaches every
+  `Decimal` column, whatever its places.
 - **`union` stacks `Decimal` columns of different places** at the larger places (0.07 over 0.0725
   gives 0.0700 and 0.0725), where it used to refuse them. A `Decimal` column over a `Float64` or
   whole-number column is still refused; that refusal, and every other type refusal in `union`, now
