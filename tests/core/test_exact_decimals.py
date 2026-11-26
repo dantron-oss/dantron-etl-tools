@@ -37,7 +37,6 @@ from dantron_etl.column_types import (
     to_exact,
 )
 from dantron_etl.tools.cast_columns import CastColumns
-from dantron_etl.tools.unpivot import Unpivot
 from dantron_etl.tools.write_excel import WriteExcel
 
 
@@ -146,12 +145,6 @@ def _says_not_yet(message: str, tool: str, field: str) -> None:
     assert repr(field) in message
     assert "Decimal" in message
     assert f"{tool} does not take exact decimals yet" in message
-
-
-def test_unpivot_refuses_decimal_for_now() -> None:
-    rows = pl.DataFrame({"order": ["A"], "jan": [1.5], "feb": [2.5]})
-    config = {"by": ["order"], "names_to": "month", "values_to": "amount", "values_type": "Decimal"}
-    _says_not_yet(_refused(Unpivot(), config, {"rows": rows}), "unpivot", "values_type")
 
 
 @pytest.mark.parametrize(

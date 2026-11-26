@@ -714,6 +714,14 @@ gives no note, unlike cast_columns: there the columns were named one by one, so 
 leftover line; here the set is everything not named, and "some already right" is normal. A decimal with
 a fraction does not convert to a whole number (owner's ruling E-01).
 
+**Exact columns of different places stack at the larger places.** Adding zeros loses nothing, so 1.50
+beside 0.0725 is not a rewrite, and every exact column comes out at 38 digits. The widening goes
+through `to_exact`, because the engine rounds wherever it narrows and a value with 36 digits before
+the point has no room for two more places; that one is refused by name. An exact column beside a
+float is refused, as everywhere an exact column meets a float (owner's ruling 3). Exact beside a
+whole number stays refused, as every other pair of types is. `values_type: Decimal` converts by
+cast_columns' rule.
+
 **`on_invalid` follows cast_columns.** `error` (when absent) stops the run; `set_null` empties, counts
 before replacing, notes only columns that lost a value (most are clean), and marks each emptied row.
 The marks follow the output rows, so they are built one block per turned column and stacked like the

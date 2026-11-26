@@ -1733,6 +1733,15 @@
           "required": false,
           "type": "string"
         },
+        "values_places": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        },
         "values_to": {
           "default": null,
           "enum": null,

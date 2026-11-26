@@ -587,8 +587,7 @@ Each of these has caught a real pipeline.
   because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **`Decimal` is the exact type, and its places are written beside it.** `{type: Decimal, places: 2}`
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
-  the point, from 0 to 38. `unpivot` and `write_excel`'s rules refuse it by name for now; use
-  `Float64` there until they take it.
+  the point, from 0 to 38. `write_excel`'s rules refuse it by name for now.
 - **`cast_columns` converts to `Decimal` without rounding.** Text written as plain digits (`-12.50`),
   whole numbers, exact columns of other places and floats all convert, but only a value that fits:
   `'1.005'` does not fit 2 places, so the step stops and says to `round` first, or under
@@ -598,6 +597,10 @@ Each of these has caught a real pipeline.
   otherwise worked out as `Float64`; nothing is guessed to be exact. Each value must be plain digits
   that fit the places (`1.005` at 2 places, `1e3` and `+1.25` stop the run), and a blank field is
   null. A column `write_csv` wrote from an exact column reads back as itself.
+- **`unpivot` stacks exact columns of different places at the larger places.** `1.50` beside
+  `0.0725` comes out as `1.5000` and `0.0725`. An exact column beside a `Float64` column is refused,
+  naming the float column: convert one side with `cast_columns`. `values_type: Decimal` with
+  `values_places: 2` reads every turned column exactly, by `cast_columns`' rule.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

@@ -10,8 +10,8 @@ things; each such release says how to upgrade.
 ### Added
 
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
-  listed in `COLUMN_TYPES`. `unpivot` and `write_excel`'s format, width and wrap rules refuse it
-  for now, with a message that says so.
+  listed in `COLUMN_TYPES`. `write_excel`'s format, width and wrap rules refuse it for now, with a
+  message that says so.
 - **`cast_columns` converts to `Decimal`**, written `{column: price, type: Decimal, places: 2}`. Text
   written as plain digits, whole numbers, exact columns of other places and `Float64` convert
   exactly; a float is read to 15 significant digits first. A value that does not fit the places
@@ -20,6 +20,10 @@ things; each such release says how to upgrade.
 - **`read_csv` reads `Decimal` columns**, named in `column_types` with `places`. Each value must be
   written as plain digits that fit the places, or the run stops naming it; a blank field is null.
   A column is never worked out as `Decimal` by itself.
+- **`unpivot` takes `values_type: Decimal`** with `values_places`, converting every turned column
+  exactly by `cast_columns`' rule. Without `values_type`, exact columns of different places, which
+  were refused, are stacked at the larger places. An exact column beside a `Float64` one is refused,
+  naming the float column.
 
 ### Changed
 
@@ -29,6 +33,9 @@ things; each such release says how to upgrade.
   places: there the old conversion could miss by one step (457,200,000,000,000,000,000,000.00 gave
   4.5720000000000004e+23, and gives 4.572e+23 now). Any 2-place price under 90 trillion converts
   exactly as before. Nothing to do.
+- **`unpivot` of exact columns gives 38 digits in all.** Turned exact columns that all held, say,
+  `Decimal(18, 2)` came out as `Decimal(18, 2)`; they come out as `Decimal(38, 2)` now, with the same
+  values. Nothing to do, unless a later step compared the type by its digits.
 
 ## [0.3.0] - 2026-11-20
 
