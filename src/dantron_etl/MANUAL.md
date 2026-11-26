@@ -729,8 +729,11 @@ Two more rulings you will meet:
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
 - **`mean`, `median`, `std` and `quantile` skip nulls**, as SQL's `AVG` does, so a mean divides by
-  the values that are there. A group with no value gives null. They refuse an exact `Decimal`
-  column, which they would work out in binary floating point; cast it to `Float64` first.
+  the values that are there. A group with no value gives null. Of an exact `Decimal` column,
+  `mean` is the exact total divided by the count and `median` the middle value (or the two middle
+  values divided by 2), at 16 places or the column's own if more, the last rounded half away from
+  zero: the mean of 1, 0 and 0 is 0.3333333333333333. `std` and `quantile` refuse an exact column,
+  since their answer cannot be exact; convert it to `Float64` first.
   `quantile` needs `fraction`, from 0 to 1, beside it. `any_true` and `all_true` skip nulls too, and
   a group of nulls gives null, as SQL's `BOOL_OR` and `BOOL_AND`.
 - **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a

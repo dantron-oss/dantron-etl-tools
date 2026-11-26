@@ -79,18 +79,24 @@ NARROW_SUM_LIMITS: Final[dict[pl.DataType, tuple[int, int]]] = {
 }
 
 
+# The statistics whose answer cannot be exact, and why, for the refusal of an exact column.
+_INEXACT_STATISTICS: Final[dict[str, str]] = {
+    "std": "A standard deviation takes a square root, so its answer cannot be exact. Convert the column "
+    "to Float64 first with cast_columns, so the change is written in the pipeline",
+    "quantile": "'quantile' interpolates between two values by a fraction, so its answer cannot be exact. "
+    "Convert the column to Float64 first with cast_columns, so the change is written in the pipeline; "
+    "for the exact middle value, use 'median'",
+}
+
+
 def unsuitable(function: str, dtype: pl.DataType) -> str | None:
     """Why ``function`` cannot summarise a column of ``dtype``, worded to follow "which holds <dtype>, "; None if it can.
 
     Shared with cross_tab, so the two refuse the same columns in the same words.
     """
     if function in STATISTICS:
-        if isinstance(dtype, pl.Decimal):
-            return (
-                f"an exact decimal. {function!r} would work it out in binary floating point, where 0.20 and "
-                f"0.70 have a median of 0.44999999999999996. Cast the column to Float64 first with "
-                f"cast_columns, so the change is written in the pipeline"
-            )
+        if isinstance(dtype, pl.Decimal) and function in _INEXACT_STATISTICS:
+            return f"an exact decimal. {_INEXACT_STATISTICS[function]}"
         if not dtype.is_numeric():
             return "not a number"
     if function in TRUTH_AGGREGATES and dtype != pl.Boolean:
@@ -163,46 +169,121 @@ def widened(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
 #: Where an exact value's digits are split in two, so each part's total fits a 128-bit whole number.
 _PART: Final[int] = 10**19
 
+#: The places a mean or median of an exact column gives, at least: the division rule's 16.
+DIVISION_PLACES: Final[int] = 16
 
-def exact_sum_parts(expression: pl.Expr) -> pl.Expr:
-    """The total of an exact column, as two whole-number parts that cannot overflow. Shared with cross_tab.
+#: The aggregates of an exact column the library works out itself, rather than the engine.
+EXACT_AGGREGATES: Final[frozenset[str]] = frozenset({"sum", "mean", "median"})
 
-    Each value is read as a whole number of its smallest place (12.34 at 2 places is 1234) and split
-    at 10**19 into a high and a low part, which are added up separately as 128-bit whole numbers.
-    Each part is under 10**19, so neither total can overflow. ``exact_totals`` puts them back
-    together, or reports that the total needs more than 38 digits. The engine's own sum is not used:
-    past 38 digits it gives a wrong total silently, and on polars 1.38 a crash when it is read.
+
+def exact_places(function: str, places: int) -> int:
+    """The places of ``function`` over an exact column of ``places``. Shared with cross_tab.
+
+    A sum keeps the column's places. A mean or median divides, so it gives 16 places, or the
+    column's own if it holds more.
     """
-    part = pl.lit(_PART, dtype=pl.Int128)
-    whole = expression.cast(pl.String).str.replace(".", "", literal=True).cast(pl.Int128)
-    return pl.struct((whole // part).sum().alias("high"), (whole % part).sum().alias("low"))
+    return places if function == "sum" else max(DIVISION_PLACES, places)
 
 
-def exact_totals(parts: pl.Series, places: int) -> tuple[pl.Series, pl.Series]:
-    """Put the parts from ``exact_sum_parts`` back together as ``Decimal(38, places)``. Shared with cross_tab.
+def exact_parts(expression: pl.Expr, function: str) -> pl.Expr:
+    """What ``exact_results`` needs to work out ``function`` of an exact column, gathered per group.
 
-    Returns the totals, null where the parts were null or the total does not fit, and a Boolean
-    series, true exactly where the total needs more than 38 digits.
+    Shared with cross_tab. Null for a group with no value. For 'sum' and 'mean', the total in two
+    whole-number parts that cannot overflow: each value is read as a whole number of its smallest
+    place (12.34 at 2 places is 1234), split at 10**19 into a high and a low part, and the parts are
+    added up separately as 128-bit whole numbers, each under 10**19 per value. 'mean' adds the count.
+    For 'median', the two middle values, which are the same value when the count is odd. The engine's
+    own sum is not used: past 38 digits it gives a wrong total silently, and on polars 1.38 a crash
+    when it is read.
     """
-    part = pl.lit(_PART, dtype=pl.Int128)
-    high, low = pl.col("parts").struct.field("high"), pl.col("parts").struct.field("low")
-    # Carry the low total's excess into the high part, so the low part is back under 10**19.
-    high, low = high + low // part, low % part
-    # The total is high * 10**19 + low with 0 <= low < 10**19; it fits while it lies strictly
-    # between -10**38 and 10**38.
-    fits = (high < part) & ((high > -part) | ((high == -part) & (low > 0)))
-    total = pl.when(fits).then(high * part + low)
-    digits = total.abs().cast(pl.String).str.zfill(places + 1)
+    if function == "median":
+        ordered = expression.drop_nulls().sort()
+        count = expression.count().cast(pl.Int64)
+        parts = pl.struct(
+            ordered.slice((count - 1) // 2, 1).first().alias("low"),
+            ordered.slice(count // 2, 1).first().alias("high"),
+        )
+    else:
+        part = pl.lit(_PART, dtype=pl.Int128)
+        whole = _whole(expression)
+        fields = [(whole // part).sum().alias("high"), (whole % part).sum().alias("low")]
+        if function == "mean":
+            fields.append(expression.count().cast(pl.Int128).alias("count"))
+        parts = pl.struct(*fields)
+    return pl.when(expression.is_not_null().any()).then(parts).otherwise(None)
+
+
+def exact_results(parts: pl.Series, function: str, places: int) -> tuple[pl.Series, pl.Series]:
+    """Work out ``function`` from the parts ``exact_parts`` gathered, as ``Decimal(38, exact_places(...))``.
+
+    Shared with cross_tab. Returns the results, null where the parts were null or the answer does not
+    fit, and a Boolean series, true exactly where the answer (or, for a mean, the total it divides)
+    needs more than 38 digits. A mean or median rounds its last place half away from zero.
+    """
+    column = pl.col("parts")
+    part, extra = pl.lit(_PART, dtype=pl.Int128), exact_places(function, places) - places
+    if function == "median":
+        # Half of low + high, without adding the two: each is halved, and the halves' remainders
+        # (0 or 1 each) added back.
+        two = pl.lit(2, dtype=pl.Int128)
+        low, high = _whole(column.struct.field("low")), _whole(column.struct.field("high"))
+        spare = low % two + high % two
+        result, fits = _divided(low // two + high // two + spare // two, spare % two, two, extra)
+    else:
+        high, low = column.struct.field("high"), column.struct.field("low")
+        # Carry the low total's excess into the high part, so the low part is back under 10**19. The
+        # total is then high * 10**19 + low with 0 <= low < 10**19, and it fits while it lies
+        # strictly between -10**38 and 10**38.
+        high, low = high + low // part, low % part
+        fits = (high < part) & ((high > -part) | ((high == -part) & (low > 0)))
+        total = pl.when(fits).then(high * part + low)
+        if function == "sum":
+            result = total
+        else:
+            count = column.struct.field("count")
+            result, quotient_fits = _divided(total // count, total % count, count, extra)
+            fits = fits & quotient_fits
+    worked = parts.to_frame("parts").select(
+        _written_at(result, places + extra).alias("text"),
+        (column.is_not_null() & ~fits.fill_null(False)).alias("too_large"),
+    )
+    values = exact_from_text(worked["text"], places + extra).values.alias(parts.name)
+    return values, worked["too_large"].alias(parts.name)
+
+
+def _whole(expression: pl.Expr) -> pl.Expr:
+    """An exact value as a 128-bit whole number of its smallest place: 12.34 at 2 places is 1234."""
+    return expression.cast(pl.String).str.replace(".", "", literal=True).cast(pl.Int128)
+
+
+def _divided(quotient: pl.Expr, remainder: pl.Expr, divisor: pl.Expr, extra: int) -> tuple[pl.Expr, pl.Expr]:
+    """``quotient + remainder / divisor`` with ``extra`` more places, the last rounded half away from zero.
+
+    All three are 128-bit whole numbers with ``0 <= remainder < divisor``, as floor division gives.
+    Returns the answer as a whole number of its new smallest place, and whether it fits 38 digits.
+    """
+    scale = pl.lit(10**extra, dtype=pl.Int128)
+    room = (quotient.abs() < pl.lit(10 ** (EXACT_DIGITS - extra), dtype=pl.Int128)).fill_null(False)
+    spread = remainder * scale
+    # floor(value * 10**extra), and what is left over, as a fraction of the divisor.
+    floor = pl.when(room).then(quotient * scale + spread // divisor)
+    left = spread % divisor
+    # Half away from zero: a positive value goes up at a half, a negative one only past a half.
+    up = ((floor >= 0) & (left * 2 >= divisor)) | ((floor < 0) & (left * 2 > divisor))
+    result = floor + up.cast(pl.Int128)
+    return result, room & (result.abs() < pl.lit(10**EXACT_DIGITS, dtype=pl.Int128))
+
+
+def _written_at(whole: pl.Expr, places: int) -> pl.Expr:
+    """A whole number of the smallest place, written as plain digits with ``places`` after the point."""
+    digits = whole.abs().cast(pl.String).str.zfill(places + 1)
     point = digits.str.len_chars() - places
-    written = pl.concat_str(
-        pl.when(total < 0).then(pl.lit("-")).otherwise(pl.lit("")),
+    return pl.concat_str(
+        pl.when(whole < 0).then(pl.lit("-")).otherwise(pl.lit("")),
         digits.str.slice(0, point),
         pl.lit("." if places else ""),
         digits.str.slice(point),
     )
-    worked = parts.to_frame("parts").select(written.alias("text"), (~fits).fill_null(False).alias("too_large"))
-    values = exact_from_text(worked["text"], places).values.alias(parts.name)
-    return values, worked["too_large"].alias(parts.name)
 
 
 def describe_rows(frame: pl.DataFrame, columns: list[str]) -> str:
@@ -317,8 +398,12 @@ class GroupBy:
                 "'std' is the sample standard deviation, as SQL's STDDEV and Excel's STDEV.S.",
                 "'quantile' reads 'fraction', from 0 to 1, and interpolates between the two nearest "
                 "values, as SQL's PERCENTILE_CONT and Excel's PERCENTILE.INC: 0.25 of 1, 2, 3, 4 is 1.75.",
-                "The statistics refuse an exact Decimal column, since they would work it out in binary "
-                "floating point. Cast it to Float64 first.",
+                "'mean' and 'median' of an exact Decimal column are exact: the total divided by the "
+                "count, or the middle value (the two middle values added and divided by 2). They give "
+                "16 places after the point, or the column's own if it holds more, the last rounded half "
+                "away from zero: the mean of 1, 0 and 0 is 0.3333333333333333.",
+                "'std' and 'quantile' refuse an exact Decimal column, because their answer cannot be "
+                "exact. Convert it to Float64 first, or use 'median' for the exact middle value.",
                 "'any_true' and 'all_true' read a true/false column, skip nulls, and give null for a "
                 "group with no value, as SQL's BOOL_OR and BOOL_AND.",
                 "'count' counts the rows of a group and reads no column. 'count_non_null' counts the "
@@ -469,30 +554,39 @@ def _by_columns(config: Mapping[str, Any]) -> list[str]:
 def _exact_totals_back(
     frame: pl.DataFrame, grouped: pl.DataFrame, config: Mapping[str, Any], by_columns: list[str]
 ) -> pl.DataFrame:
-    """Put each exact sum back together from its parts, or stop if a group's total needs more than 38 digits."""
+    """Work out each exact sum, mean and median from its parts, or stop where one needs more than 38 digits."""
     for index, aggregation in enumerate(config["aggregations"]):
-        if aggregation["function"] != "sum":
+        function = aggregation["function"]
+        if function not in EXACT_AGGREGATES:
             continue
         field = f"aggregations[{index}].value"
         column, dtype = compiled_dtype(frame, aggregation["value"], field)
         if not isinstance(dtype, pl.Decimal):
             continue
-        name, places = aggregation["name"], dtype.scale
-        totals, too_large = exact_totals(grouped[name], places)
+        name = aggregation["name"]
+        results, too_large = exact_results(grouped[name], function, dtype.scale)
         if too_large.any():
             offending = grouped.filter(too_large).select(by_columns)
             raise DataError(
-                f"aggregation {name!r} ({field}) adds up exact column {column!r}, and the total of some "
-                f"groups needs more than {EXACT_DIGITS} digits, the most an exact column holds: at {places} "
-                f"places that is {EXACT_DIGITS - places} before the point. The first is the group "
-                f"{describe_rows(offending, by_columns)}. No total is given rather than a wrong one. Convert "
-                f"the column to Float64 with cast_columns for figures this large, or round it to fewer places "
-                f"first",
+                f"aggregation {name!r} ({field}) asks {function!r} of exact column {column!r}, and for some "
+                f"groups {too_large_because(function, dtype.scale)}. The first is the group "
+                f"{describe_rows(offending, by_columns)}. No answer is given rather than a wrong one. Convert "
+                f"the column to Float64 with cast_columns for figures this large",
                 offending=offending,
                 total=grouped.height,
             )
-        grouped = grouped.with_columns(totals)
+        grouped = grouped.with_columns(results)
     return grouped
+
+
+def too_large_because(function: str, places: int) -> str:
+    """Why an exact answer of ``function`` did not fit, worded to follow "for some groups". Shared with cross_tab."""
+    room = f"{EXACT_DIGITS} digits, the most an exact column holds"
+    if function == "sum":
+        return f"the total needs more than {room}: at {places} places that is {EXACT_DIGITS - places} before the point"
+    result = exact_places(function, places)
+    answer = f"the {function} needs more than {room}: it keeps {result} places, which leaves {EXACT_DIGITS - result} before the point"
+    return answer + (", or the total it divides needs more than 38 digits" if function == "mean" else "")
 
 
 def _narrow_totals_back(frame: pl.DataFrame, grouped: pl.DataFrame, config: Mapping[str, Any]) -> pl.DataFrame:
@@ -532,8 +626,10 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
     _, dtype = compiled_dtype(frame, value, f"aggregations[{index}].value")
     expression = widened(compile_for(frame, value, f"aggregations[{index}].value"), dtype)
 
+    if isinstance(dtype, pl.Decimal) and function in EXACT_AGGREGATES:
+        return exact_parts(expression, function).alias(name)
     if function == "sum":
-        total = exact_sum_parts(expression) if isinstance(dtype, pl.Decimal) else sum_without_wrapping(expression, dtype)
+        total = sum_without_wrapping(expression, dtype)
         return pl.when(expression.is_not_null().any()).then(total).otherwise(None).alias(name)
     if function == "count_non_null":
         return expression.count().cast(pl.Int64).alias(name)

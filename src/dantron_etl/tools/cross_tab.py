@@ -9,7 +9,6 @@ Why: docs/design/tools.md#cross_tab
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..column_types import EXACT_DIGITS
 
 import polars as pl
 
@@ -30,12 +29,14 @@ from .group_by import (
     SHARED_AGGREGATES,
     STATISTICS,
     TRUTH_AGGREGATES,
+    EXACT_AGGREGATES,
     describe_rows,
-    exact_sum_parts,
-    exact_totals,
+    exact_parts,
+    exact_results,
     fraction_problem,
     shared_aggregate,
     sum_without_wrapping,
+    too_large_because,
     totals_that_do_not_fit,
     unsuitable,
     widened,
@@ -130,7 +131,8 @@ class CrossTab:
                 "'quantile' reads 'fraction', from 0 to 1. Leave 'fraction' out for every other "
                 "function; it is refused there, not ignored.",
                 "'mean', 'median', 'std', 'quantile', 'last', 'last_non_null', 'any_true' and "
-                "'all_true' fill a cell as they fill a group in group_by, from the same code.",
+                "'all_true' fill a cell as they fill a group in group_by, from the same code, "
+                "including the exact mean and median of a Decimal column.",
             ),
             field_help={
                 "by": "For example ['customer_id']. Each different combination becomes one row.",
@@ -212,8 +214,8 @@ class CrossTab:
         wide = frame.group_by(by_columns, maintain_order=True).agg(cells)
         if config["function"] == "sum" and measure_dtype in NARROW_SUM_LIMITS:
             wide = _narrow_cells_back(wide, names, config["values_from"], measure_dtype)
-        if config["function"] == "sum" and isinstance(measure_dtype, pl.Decimal):
-            wide = _exact_cells_back(wide, names, config["values_from"], measure_dtype.scale, by_columns)
+        if config["function"] in EXACT_AGGREGATES and isinstance(measure_dtype, pl.Decimal):
+            wide = _exact_cells_back(wide, names, config, measure_dtype.scale, by_columns)
         return Ports({"rows": wide})
 
 
@@ -268,23 +270,23 @@ def _narrow_cells_back(wide: pl.DataFrame, names: Sequence[str], measure: str, d
 
 
 def _exact_cells_back(
-    wide: pl.DataFrame, names: Sequence[str], measure: str, places: int, by_columns: list[str]
+    wide: pl.DataFrame, names: Sequence[str], config: Mapping[str, Any], places: int, by_columns: list[str]
 ) -> pl.DataFrame:
-    """Put each exact cell total back together from its parts, or stop if one needs more than 38 digits."""
+    """Work out each exact cell from its parts, or stop where one needs more than 38 digits."""
+    function, measure = config["function"], config["values_from"]
     for name in names:
-        totals, too_large = exact_totals(wide[name], places)
+        results, too_large = exact_results(wide[name], function, places)
         if too_large.any():
             offending = wide.filter(too_large).select(by_columns)
             raise DataError(
-                f"cell column {name!r} adds up exact column {measure!r}, and some totals need more than "
-                f"{EXACT_DIGITS} digits, the most an exact column holds: at {places} places that is "
-                f"{EXACT_DIGITS - places} before the point. The first is the row {describe_rows(offending, by_columns)}. "
-                f"No total is given rather than a wrong one. Convert {measure!r} to Float64 with cast_columns "
-                f"for figures this large, or round it to fewer places first",
+                f"cell column {name!r} asks {function!r} of exact column {measure!r}, and for some rows "
+                f"{too_large_because(function, places)}. The first is the row {describe_rows(offending, by_columns)}. "
+                f"No answer is given rather than a wrong one. Convert {measure!r} to Float64 with cast_columns "
+                f"for figures this large",
                 offending=offending,
                 total=wide.height,
             )
-        wide = wide.with_columns(totals)
+        wide = wide.with_columns(results)
     return wide
 
 
@@ -303,11 +305,11 @@ def _cell(config: Mapping[str, Any], name: str, measure_dtype: pl.DataType) -> p
 
 def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType, fraction: float | None) -> pl.Expr:
     """The chosen aggregate over one cell's values; `_cell` makes an empty cell null."""
+    if isinstance(measure_dtype, pl.Decimal) and aggregate in EXACT_AGGREGATES:
+        return exact_parts(measure, aggregate)
     if aggregate == "count":
         return measure.len().cast(pl.Int64)
     if aggregate == "sum":
-        if isinstance(measure_dtype, pl.Decimal):
-            return exact_sum_parts(measure)
         return sum_without_wrapping(measure, measure_dtype)
     if aggregate == "count_non_null":
         return measure.count().cast(pl.Int64)

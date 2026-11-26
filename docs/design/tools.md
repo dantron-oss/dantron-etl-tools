@@ -61,8 +61,14 @@ cannot drift. cross_tab imports the same list, so adding an aggregate adds it to
 deviation (`STDDEV`, Excel's `STDEV.S`), so one value has none. `quantile` interpolates
 (`PERCENTILE_CONT`, Excel's `PERCENTILE.INC`) and needs `fraction`, placed beside it as `separator`
 sits beside `join_text`. On an exact `Decimal` the engine answers in binary floating point (the
-median of 0.20 and 0.70 comes back as 0.44999999999999996), so a `Decimal` column is refused and the
-cast to `Float64` is written in the pipeline. `any_true` and `all_true` are `BOOL_OR` and `BOOL_AND`:
+median of 0.20 and 0.70 comes back as 0.44999999999999996), so the library works out `mean` and
+`median` itself, by the division rule (owner's ruling 2): the exact total divided by the count, or
+the two middle values divided by 2, at 16 places or the column's own if more, the last rounded half
+away from zero. Both use the exact-total parts below, with whole-number division and the remainder
+compared with half the divisor, so no tie is rounded to even. `std` takes a square root and
+`quantile` interpolates by a fraction written as a float, so neither answer can be exact: both refuse
+a `Decimal` column, and the cast to `Float64` is written in the pipeline. No second quantile rule
+(such as picking a value without interpolating) is offered; `median` is the exact middle. `any_true` and `all_true` are `BOOL_OR` and `BOOL_AND`:
 the engine answers false and true for a group of nulls, so that case is guarded to give null.
 These eight are worked out by one function, `shared_aggregate`, that cross_tab calls too.
 

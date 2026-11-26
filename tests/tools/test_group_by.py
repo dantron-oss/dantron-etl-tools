@@ -1343,8 +1343,10 @@ class TestTheNewAggregatesRefuse:
         [
             pytest.param("mean", "[term]", ("term", "String", "not a number"), id="a_mean_of_text"),
             pytest.param("std", "[flag]", ("flag", "Boolean", "not a number"), id="a_deviation_of_true_and_false"),
-            pytest.param("median", "[money]", ("money", "Decimal", "Float64", "cast_columns"), id="an_exact_decimal"),
-            pytest.param("quantile", "[money]", ("money", "Float64"), id="a_quantile_of_an_exact_decimal"),
+            pytest.param("std", "[money]", ("money", "Decimal", "square root", "Float64", "cast_columns"), id="an_exact_std"),
+            pytest.param(
+                "quantile", "[money]", ("money", "Decimal", "Float64", "cast_columns", "median"), id="an_exact_quantile"
+            ),
             pytest.param("any_true", "[qty]", ("qty", "Int64", "true/false"), id="any_true_of_a_number"),
             pytest.param("all_true", "[term]", ("term", "true/false"), id="all_true_of_text"),
         ],
@@ -1499,3 +1501,94 @@ class TestAnExactTotalPast38DigitsStopsTheStep:
         assert self._sum([None, None])["total"].to_list() == [None]
         empty = self._sum([]).schema
         assert empty["total"] == pl.Decimal(38, 2)
+
+
+#: The tenth of a millionth of a billionth: the 16th place after the point.
+ULP = "0.0000000000000001"
+
+
+class TestTheMeanAndMedianOfAnExactColumn:
+    """The mean is the exact total divided by the count; the median is the middle value, or the two middle
+    values added and divided by 2. Each division gives 16 places after the point, or the column's own if it
+    holds more, with the last place rounded half away from zero (the owner's ruling for division).
+    """
+
+    def _stat(self, function: str, values: list[str | None], places: int, codes: list[str] | None = None) -> pl.DataFrame:
+        codes = codes or ["A"] * len(values)
+        frame = pl.DataFrame({"code": codes, "x": _exact(values, places)})
+        return _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", function, "[x]")]})
+
+    @pytest.mark.parametrize(
+        ("values", "places", "mean"),
+        [
+            (["100.00", "0", "0", "0", "0", "0", "0"], 2, "14.2857142857142857"),
+            (["1", "0", "0"], 0, "0.3333333333333333"),
+            (["2", "0", "0"], 0, "0.6666666666666667"),
+            (["-2", "0", "0"], 0, "-0.6666666666666667"),
+            ([ULP, "0.0000000000000002"], 16, "0.0000000000000002"),
+            (["-" + ULP, "-0.0000000000000002"], 16, "-0.0000000000000002"),
+            ([ULP, ULP, "0.0000000000000002"], 16, "0.0000000000000001"),
+            (["1.10", None, "2.20"], 2, "1.6500000000000000"),
+            (["0.00000000000000000001", "0.00000000000000000002"], 20, "0.00000000000000000002"),
+        ],
+        ids=["100_over_7", "1_over_3", "2_over_3", "minus_2_over_3", "tie", "tie_negative", "under_half", "skips_null", "more_places"],
+    )
+    def test_the_mean_divides_the_exact_total_by_the_count(self, values: list[str | None], places: int, mean: str) -> None:
+        rows = self._stat("mean", values, places)
+        assert rows.schema["out"] == pl.Decimal(38, max(16, places))
+        assert _written(rows["out"]) == [mean]
+
+    @pytest.mark.parametrize(
+        ("values", "places", "median"),
+        [
+            (["9.00", "2.20", "3.35"], 2, "3.3500000000000000"),
+            (["3.35", None, "2.20"], 2, "2.7750000000000000"),
+            (["-3.35", "-2.20"], 2, "-2.7750000000000000"),
+            ([ULP, "0.0000000000000002"], 16, "0.0000000000000002"),
+            (["-" + ULP, "-0.0000000000000002"], 16, "-0.0000000000000002"),
+            (["-" + ULP, "0.0000000000000002"], 16, "0.0000000000000001"),
+            (["9" * 36 + ".00", "9" * 36 + ".00"], 2, None),
+        ],
+        ids=["odd_count", "even_count", "even_negative", "tie", "tie_negative", "tie_across_zero", "too_large"],
+    )
+    def test_the_median_is_the_middle_value_or_the_two_middle_values_divided_by_2(
+        self, values: list[str | None], places: int, median: str | None
+    ) -> None:
+        if median is None:
+            with pytest.raises(DataError) as caught:
+                self._stat("median", values, places)
+            assert "'out'" in str(caught.value) and "38 digits" in str(caught.value)
+            return
+        rows = self._stat("median", values, places)
+        assert rows.schema["out"] == pl.Decimal(38, max(16, places))
+        assert _written(rows["out"]) == [median]
+
+    @pytest.mark.parametrize("function", ["mean", "median"])
+    def test_a_group_of_nulls_is_null_and_no_rows_keeps_the_type(self, function: str) -> None:
+        rows = self._stat(function, ["1.00", None], 2, codes=["A", "B"])
+        assert _written(rows["out"]) == ["1.0000000000000000", None]
+        assert self._stat(function, [], 2).schema["out"] == pl.Decimal(38, 16)
+
+    @pytest.mark.parametrize(
+        ("values", "fits"),
+        [(["1" + "0" * 21 + ".00", "1" + "0" * 21 + ".00"], True), (["1" + "0" * 22 + ".00", "1" + "0" * 22 + ".00"], False)],
+        ids=["22_digits_before_the_point", "23_digits_before_the_point"],
+    )
+    @pytest.mark.parametrize("function", ["mean", "median"])
+    def test_a_result_with_no_room_for_16_places_stops_naming_the_group(
+        self, function: str, values: list[str], fits: bool
+    ) -> None:
+        if fits:
+            assert _written(self._stat(function, values, 2)["out"]) == ["1" + "0" * 21 + "." + "0" * 16]
+            return
+        with pytest.raises(DataError) as caught:
+            self._stat(function, [*values, "1.00"], 2, codes=["A", "A", "B"])
+        message = str(caught.value)
+        for word in ("'out'", "'x'", "'A'", "38 digits", "16 places", "Float64"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1
+
+    def test_a_mean_whose_total_needs_more_than_38_digits_stops(self) -> None:
+        with pytest.raises(DataError) as caught:
+            self._stat("mean", ["9" * 36 + ".00", "9" * 36 + ".00"], 2)
+        assert "38 digits" in str(caught.value)

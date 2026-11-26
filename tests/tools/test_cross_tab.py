@@ -1288,11 +1288,21 @@ class TestTheNewAggregatesInACell:
         assert self._cells("any_true", "flag") == {"p1": [True, None], "p2": [None, None]}
         assert self._cells("all_true", "flag") == {"p1": [False, None], "p2": [None, None]}
 
-    def test_an_exact_decimal_is_refused_with_what_to_do(self) -> None:
+    @pytest.mark.parametrize("function", ["std", "quantile"])
+    def test_an_exact_decimal_is_refused_with_what_to_do(self, function: str) -> None:
         with pytest.raises(ConfigError) as caught:
-            self._cells("mean", "money")
-        for word in ("money", "Decimal", "Float64", "cast_columns", "mean"):
+            self._cells(function, "money", **({"fraction": 0.5} if function == "quantile" else {}))
+        for word in ("money", "Decimal", "Float64", "cast_columns", function):
             assert word in str(caught.value), str(caught.value)
+
+    def test_the_mean_and_median_of_an_exact_decimal_are_exact(self) -> None:
+        # p1 holds 1.25 and 2.50 for a, and 1.00 and 3.00 for b; p2 holds 0.20 for a only.
+        expected = {"p1": ["1.8750000000000000", "2.0000000000000000"], "p2": ["0.2000000000000000", None]}
+        for function in ("mean", "median"):
+            config = {"by": ["code"], "names_from": "period", "values_from": "money", "function": function}
+            rows = run_tool(CrossTab(), Ports({"rows": self.ROWS}), config)["rows"]
+            assert rows.schema["p1"] == pl.Decimal(38, 16)
+            assert {name: rows[name].cast(pl.String).to_list() for name in ("p1", "p2")} == expected
 
     def test_the_fraction_is_an_optional_number_with_no_default(self) -> None:
         field = CrossTab().config_template()["fraction"]
@@ -1365,3 +1375,25 @@ class TestAnExactCellTotalPast38DigitsStopsTheStep:
         for word in ("'p1'", "'price'", "'a'", "38 digits", "Float64"):
             assert word in message, message
         assert caught.value.offending_rows == 1
+
+
+def test_a_tied_mean_in_a_cell_rounds_half_away_from_zero() -> None:
+    frame = pl.DataFrame(
+        {
+            "code": ["a", "a", "b", "b"],
+            "period": ["p1", "p1", "p1", "p1"],
+            "x": _exact(["0.0000000000000001", "0.0000000000000002", "-0.0000000000000001", "-0.0000000000000002"], 16),
+        }
+    )
+    config = {"by": ["code"], "names_from": "period", "values_from": "x", "function": "mean"}
+    rows = run_tool(CrossTab(), Ports({"rows": frame}), config)["rows"]
+    assert rows["p1"].cast(pl.String).to_list() == ["0.0000000000000002", "-0.0000000000000002"]
+
+
+def test_a_cell_mean_with_no_room_for_16_places_stops_naming_the_cell() -> None:
+    frame = pl.DataFrame({"code": ["a"], "period": ["p1"], "x": _exact(["1" + "0" * 22 + ".00"], 2)})
+    config = {"by": ["code"], "names_from": "period", "values_from": "x", "function": "mean"}
+    with pytest.raises(DataError) as caught:
+        run_tool(CrossTab(), Ports({"rows": frame}), config)
+    for word in ("'p1'", "'x'", "'a'", "38 digits"):
+        assert word in str(caught.value), str(caught.value)

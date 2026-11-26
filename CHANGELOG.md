@@ -24,6 +24,11 @@ things; each such release says how to upgrade.
   exactly by `cast_columns`' rule. Without `values_type`, exact columns of different places, which
   were refused, are stacked at the larger places. An exact column beside a `Float64` one is refused,
   naming the float column.
+- **`mean` and `median` of an exact `Decimal` column**, which were refused, are exact in `group_by`
+  and `cross_tab`: the total divided by the count, or the middle value (the two middle values divided
+  by 2), at 16 places or the column's own if more, the last rounded half away from zero. One that
+  needs more than 38 digits stops the step. `std` and `quantile` still refuse an exact column, now
+  saying why.
 
 ### Changed
 
