@@ -335,6 +335,13 @@ would force a select_columns step whose only job is to please this tool.
 whichever side was rewritten, it happened silently; the refusal names both types. A column of nothing
 has no type to disagree with: null belongs to every type, and an empty branch is an ordinary frame.
 
+**Exact columns of different places widen.** 1.5 at 1 place and 1.50 at 2 are the same value, and
+adding zeros loses nothing, so they stack at the larger places. The tool widens them itself: the
+engine's own stacking keeps the first side's places and rounds the second (1.2345 under 2 places
+becomes 1.23). A value with so many digits before the point that the larger places cannot hold it is
+refused by name. An exact column over a whole number stays refused, as Int32 over Int64 is: union
+refuses every other type difference.
+
 **Rows keep their order and nothing is de-duplicated.** All of `top`, then all of `bottom`. Stacking
 is not judging; remove_duplicates reports what it removes.
 

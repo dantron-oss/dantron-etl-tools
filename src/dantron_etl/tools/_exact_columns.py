@@ -19,11 +19,14 @@ def larger_exact_type(first: pl.DataType, second: pl.DataType) -> pl.DataType | 
     return exact_dtype(max(first.scale or 0, second.scale or 0))
 
 
-def widen_exact(frame: pl.DataFrame, column: str, places: int, *, where: str, wider: str) -> pl.Series:
+def widen_exact(
+    frame: pl.DataFrame, column: str, places: int, *, where: str, wider: str, wider_where: str = ""
+) -> pl.Series:
     """``frame[column]`` at ``places`` places and 38 digits, refusing a value the widening cannot hold.
 
-    ``where`` says where the column is, such as "on input port 'bottom'". ``wider`` is the name of the
-    column with more places, which the refusal says to round. Raises ``DataError`` listing the rows.
+    ``where`` says where the column is, such as "on input port 'top'". ``wider`` is the name of the
+    column with more places, which the refusal says to round, and ``wider_where`` says where that one
+    is when it is somewhere else. Raises ``DataError`` listing the rows.
     """
     conversion = exact_from_exact(frame[column], places)
     if conversion.misfits.any():
@@ -31,10 +34,10 @@ def widen_exact(frame: pl.DataFrame, column: str, places: int, *, where: str, wi
         shown = ", ".join(str(value) for value in frame[column].filter(conversion.misfits).head(3).to_list())
         raise DataError(
             f"column {column!r} {where} holds values with more than {EXACT_DIGITS - places} digits before "
-            f"the point, such as {shown}; at the {places} places of column {wider!r} an exact column holds at most "
-            f"{EXACT_DIGITS - places} digits before the point, so they cannot be widened without losing "
-            f"digits. Round {wider!r} to {held} places first, with round([{wider}], {held}) in a "
-            f"formula step",
+            f"the point, such as {shown}, so they cannot be widened to the {places} places of column "
+            f"{wider!r}{wider_where}: an exact column at {places} places holds at most {EXACT_DIGITS - places} "
+            f"digits before the point. Round {wider!r}{wider_where} to {held} places first, with "
+            f"round([{wider}], {held}) in a formula step",
             offending=frame.filter(conversion.misfits),
             total=frame.height,
         )

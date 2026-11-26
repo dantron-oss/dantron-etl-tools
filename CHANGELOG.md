@@ -17,6 +17,10 @@ things; each such release says how to upgrade.
   ran before gives a different answer. A `Decimal` key beside a `Float64` key is still refused, now
   naming the float column to convert. `make_groups` links two `Decimal` columns of different places
   by value too, at the larger places.
+- **`union` stacks `Decimal` columns of different places** at the larger places (0.07 over 0.0725
+  gives 0.0700 and 0.0725), where it used to refuse them. A `Decimal` column over a `Float64` or
+  whole-number column is still refused; that refusal, and every other type refusal in `union`, now
+  says to use `cast_columns` on one side.
 
 ## [0.3.0] - 2026-11-20
 

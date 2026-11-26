@@ -594,6 +594,9 @@ Each of these has caught a real pipeline.
   `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
   places the same way, writing the records at the larger places. A `Decimal` key beside a `Float64`
   key is refused, naming the float column: convert one side with `cast_columns` first.
+- **`union` stacks `Decimal` columns of different places at the larger places.** 0.07 over 0.0725
+  comes out as 0.0700 and 0.0725. Nothing is rounded. A `Decimal` column over a `Float64` or a
+  whole-number column is refused, as every other type difference is.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
