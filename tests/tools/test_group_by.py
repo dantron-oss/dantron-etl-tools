@@ -65,6 +65,7 @@ no caller's nouns; these are the shapes of three real aggregation steps, not the
 
 from collections.abc import Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -1342,8 +1343,10 @@ class TestTheNewAggregatesRefuse:
         [
             pytest.param("mean", "[term]", ("term", "String", "not a number"), id="a_mean_of_text"),
             pytest.param("std", "[flag]", ("flag", "Boolean", "not a number"), id="a_deviation_of_true_and_false"),
-            pytest.param("median", "[money]", ("money", "Decimal", "Float64", "cast_columns"), id="an_exact_decimal"),
-            pytest.param("quantile", "[money]", ("money", "Float64"), id="a_quantile_of_an_exact_decimal"),
+            pytest.param("std", "[money]", ("money", "Decimal", "square root", "Float64", "cast_columns"), id="an_exact_std"),
+            pytest.param(
+                "quantile", "[money]", ("money", "Decimal", "Float64", "cast_columns", "median"), id="an_exact_quantile"
+            ),
             pytest.param("any_true", "[qty]", ("qty", "Int64", "true/false"), id="any_true_of_a_number"),
             pytest.param("all_true", "[term]", ("term", "true/false"), id="all_true_of_text"),
         ],
@@ -1373,3 +1376,219 @@ class TestTheNewAggregatesRefuse:
             GroupBy().validate_config(
                 {"by": ["code"], "aggregations": [_aggregation("q", "quantile", "[x]", fraction=fraction)]}
             )
+
+
+def _exact(values: list[str | None], places: int, *, precision: int = 38) -> pl.Series:
+    """Exact decimals written as text, so nothing passes through a float on the way in."""
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+def _written(series: pl.Series) -> list[str | None]:
+    """Each value as the digits it holds, so a test pins the places as well as the value."""
+    return series.cast(pl.String).to_list()
+
+
+class TestAnExactColumnKeepsItsPlaces:
+    """A sum, min, max, first or last of an exact column is exact, at its places, with 38 digits in all.
+
+    The engine gives a sum 18 or 38 digits depending on its version, and keeps a source's 18 for the
+    rest; the library gives 38 on every version.
+    """
+
+    @pytest.mark.parametrize(
+        ("function", "expected"),
+        [
+            ("sum", ["3.35", None]),
+            ("min", ["1.10", None]),
+            ("max", ["2.25", None]),
+            ("first", [None, None]),
+            ("first_non_null", ["1.10", None]),
+            ("last", [None, None]),
+            ("last_non_null", ["2.25", None]),
+        ],
+    )
+    @pytest.mark.parametrize("precision", [18, 38])
+    def test_each_keeps_the_places_at_38_digits(self, function: str, expected: list[Any], precision: int) -> None:
+        frame = pl.DataFrame(
+            {"code": ["A", "A", "A", "A", "B"], "price": _exact([None, "1.10", "2.25", None, None], 2, precision=precision)}
+        )
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", function, "[price]")]})
+
+        assert rows.schema["out"] == pl.Decimal(38, 2)
+        assert _written(rows["out"]) == expected
+
+    def test_a_total_past_18_digits_from_an_18_digit_column_is_right(self) -> None:
+        """Widened before summing: on the lowest engine version, widening the total afterwards is too late."""
+        frame = pl.DataFrame({"code": ["A", "A"], "price": _exact(["9999999999999999.99", "1.00"], 2, precision=18)})
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[price]")]})
+        assert _written(rows["out"]) == ["10000000000000000.99"]
+
+    def test_a_total_of_an_expression_keeps_the_places_it_gives(self) -> None:
+        frame = pl.DataFrame({"code": ["A", "A"], "rate": _exact(["0.0725", "1.1"], 4, precision=18)})
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[rate] + [rate]")]})
+        assert rows.schema["out"] == pl.Decimal(38, 4)
+        assert _written(rows["out"]) == ["2.3450"]
+
+    def test_a_frame_with_no_rows_gives_the_same_type(self) -> None:
+        frame = pl.DataFrame({"code": ["A"], "price": _exact(["1.10"], 2, precision=18)}).head(0)
+        rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[price]")]})
+        assert rows.schema["out"] == pl.Decimal(38, 2)
+
+
+#: The largest exact figure at 2 places: 36 nines before the point, 38 digits in all.
+LARGEST_AT_2 = "9" * 36 + ".99"
+
+
+class TestAnExactTotalPast38DigitsStopsTheStep:
+    """A group total that needs more than 38 digits stops the step, naming the group and the column.
+
+    The engine gives such a total silently wrong, and on polars 1.38 a later read of it crashes the
+    process. The library works each total out itself, in parts that cannot overflow, so the answer
+    is the right total or a refusal, on every version.
+    """
+
+    def _sum(self, values: list[str | None], places: int = 2, codes: list[str] | None = None) -> pl.DataFrame:
+        codes = codes or ["A"] * len(values)
+        frame = pl.DataFrame({"code": codes, "price": _exact(values, places)})
+        return _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("total", "sum", "[price]")]})
+
+    @pytest.mark.parametrize(
+        ("values", "total"),
+        [
+            (["9" * 36 + ".98", "0.01"], LARGEST_AT_2),
+            (["-" + "9" * 36 + ".98", "-0.01"], "-" + LARGEST_AT_2),
+            (["9" * 36 + ".00", "9" * 36 + ".00", "-" + "9" * 36 + ".00"], "9" * 36 + ".00"),
+            (["99999999999999999.99", "99999999999999999.99"], "199999999999999999.98"),
+            (["-0.05", "0.03", None], "-0.02"),
+        ],
+        ids=["just_fits", "just_fits_negative", "running_total_passes_the_limit", "carry_between_parts", "small"],
+    )
+    def test_a_total_that_fits_is_exact(self, values: list[str | None], total: str) -> None:
+        assert _written(self._sum(values)["total"]) == [total]
+
+    @pytest.mark.parametrize(
+        "values",
+        [[LARGEST_AT_2, "0.01"], ["-" + LARGEST_AT_2, "-0.01"], ["9" * 36 + ".00", "9" * 36 + ".00"]],
+        ids=["one_cent_over", "one_cent_under_negative", "far_over"],
+    )
+    def test_a_total_past_38_digits_stops_naming_the_group_and_the_column(self, values: list[str]) -> None:
+        with pytest.raises(DataError) as caught:
+            self._sum([*values, "1.00"], codes=["A"] * len(values) + ["B"])
+
+        message = str(caught.value)
+        for word in ("'total'", "'price'", "38 digits", "'A'", "Float64"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1, "group B fits and is not shown"
+
+    @pytest.mark.parametrize(
+        ("places", "values", "total"),
+        [
+            (0, ["5" + "0" * 37, "4" + "9" * 37], "9" * 38),
+            (0, ["5" + "0" * 37, "5" + "0" * 37], None),
+            (0, ["-5" + "0" * 37, "-5" + "0" * 37], None),
+            (38, ["0." + "5" * 38, "0." + "4" * 38], "0." + "9" * 38),
+            (38, ["0.5", "0.5"], None),
+        ],
+    )
+    def test_the_limit_moves_with_the_places(self, places: int, values: list[str], total: str | None) -> None:
+        if total is not None:
+            assert _written(self._sum(values, places)["total"]) == [total]
+        else:
+            with pytest.raises(DataError):
+                self._sum(values, places)
+
+    def test_a_group_of_nulls_is_null_and_no_rows_keeps_the_type(self) -> None:
+        assert self._sum([None, None])["total"].to_list() == [None]
+        empty = self._sum([]).schema
+        assert empty["total"] == pl.Decimal(38, 2)
+
+
+#: The tenth of a millionth of a billionth: the 16th place after the point.
+ULP = "0.0000000000000001"
+
+
+class TestTheMeanAndMedianOfAnExactColumn:
+    """The mean is the exact total divided by the count; the median is the middle value, or the two middle
+    values added and divided by 2. Each division gives 16 places after the point, or the column's own if it
+    holds more, with the last place rounded half away from zero (the owner's ruling for division).
+    """
+
+    def _stat(self, function: str, values: list[str | None], places: int, codes: list[str] | None = None) -> pl.DataFrame:
+        codes = codes or ["A"] * len(values)
+        frame = pl.DataFrame({"code": codes, "x": _exact(values, places)})
+        return _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", function, "[x]")]})
+
+    @pytest.mark.parametrize(
+        ("values", "places", "mean"),
+        [
+            (["100.00", "0", "0", "0", "0", "0", "0"], 2, "14.2857142857142857"),
+            (["1", "0", "0"], 0, "0.3333333333333333"),
+            (["2", "0", "0"], 0, "0.6666666666666667"),
+            (["-2", "0", "0"], 0, "-0.6666666666666667"),
+            ([ULP, "0.0000000000000002"], 16, "0.0000000000000002"),
+            (["-" + ULP, "-0.0000000000000002"], 16, "-0.0000000000000002"),
+            ([ULP, ULP, "0.0000000000000002"], 16, "0.0000000000000001"),
+            (["1.10", None, "2.20"], 2, "1.6500000000000000"),
+            (["0.00000000000000000001", "0.00000000000000000002"], 20, "0.00000000000000000002"),
+        ],
+        ids=["100_over_7", "1_over_3", "2_over_3", "minus_2_over_3", "tie", "tie_negative", "under_half", "skips_null", "more_places"],
+    )
+    def test_the_mean_divides_the_exact_total_by_the_count(self, values: list[str | None], places: int, mean: str) -> None:
+        rows = self._stat("mean", values, places)
+        assert rows.schema["out"] == pl.Decimal(38, max(16, places))
+        assert _written(rows["out"]) == [mean]
+
+    @pytest.mark.parametrize(
+        ("values", "places", "median"),
+        [
+            (["9.00", "2.20", "3.35"], 2, "3.3500000000000000"),
+            (["3.35", None, "2.20"], 2, "2.7750000000000000"),
+            (["-3.35", "-2.20"], 2, "-2.7750000000000000"),
+            ([ULP, "0.0000000000000002"], 16, "0.0000000000000002"),
+            (["-" + ULP, "-0.0000000000000002"], 16, "-0.0000000000000002"),
+            (["-" + ULP, "0.0000000000000002"], 16, "0.0000000000000001"),
+            (["9" * 36 + ".00", "9" * 36 + ".00"], 2, None),
+        ],
+        ids=["odd_count", "even_count", "even_negative", "tie", "tie_negative", "tie_across_zero", "too_large"],
+    )
+    def test_the_median_is_the_middle_value_or_the_two_middle_values_divided_by_2(
+        self, values: list[str | None], places: int, median: str | None
+    ) -> None:
+        if median is None:
+            with pytest.raises(DataError) as caught:
+                self._stat("median", values, places)
+            assert "'out'" in str(caught.value) and "38 digits" in str(caught.value)
+            return
+        rows = self._stat("median", values, places)
+        assert rows.schema["out"] == pl.Decimal(38, max(16, places))
+        assert _written(rows["out"]) == [median]
+
+    @pytest.mark.parametrize("function", ["mean", "median"])
+    def test_a_group_of_nulls_is_null_and_no_rows_keeps_the_type(self, function: str) -> None:
+        rows = self._stat(function, ["1.00", None], 2, codes=["A", "B"])
+        assert _written(rows["out"]) == ["1.0000000000000000", None]
+        assert self._stat(function, [], 2).schema["out"] == pl.Decimal(38, 16)
+
+    @pytest.mark.parametrize(
+        ("values", "fits"),
+        [(["1" + "0" * 21 + ".00", "1" + "0" * 21 + ".00"], True), (["1" + "0" * 22 + ".00", "1" + "0" * 22 + ".00"], False)],
+        ids=["22_digits_before_the_point", "23_digits_before_the_point"],
+    )
+    @pytest.mark.parametrize("function", ["mean", "median"])
+    def test_a_result_with_no_room_for_16_places_stops_naming_the_group(
+        self, function: str, values: list[str], fits: bool
+    ) -> None:
+        if fits:
+            assert _written(self._stat(function, values, 2)["out"]) == ["1" + "0" * 21 + "." + "0" * 16]
+            return
+        with pytest.raises(DataError) as caught:
+            self._stat(function, [*values, "1.00"], 2, codes=["A", "A", "B"])
+        message = str(caught.value)
+        for word in ("'out'", "'x'", "'A'", "38 digits", "16 places", "Float64"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1
+
+    def test_a_mean_whose_total_needs_more_than_38_digits_stops(self) -> None:
+        with pytest.raises(DataError) as caught:
+            self._stat("mean", ["9" * 36 + ".00", "9" * 36 + ".00"], 2)
+        assert "38 digits" in str(caught.value)

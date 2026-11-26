@@ -43,7 +43,8 @@ More on some settings:
 - 'mean', 'median', 'std' and 'quantile' skip nulls, as SQL's AVG does. A group with no value gives null, and 'std' of a single value is null.
 - 'std' is the sample standard deviation, as SQL's STDDEV and Excel's STDEV.S.
 - 'quantile' reads 'fraction', from 0 to 1, and interpolates between the two nearest values, as SQL's PERCENTILE_CONT and Excel's PERCENTILE.INC: 0.25 of 1, 2, 3, 4 is 1.75.
-- The statistics refuse an exact Decimal column, since they would work it out in binary floating point. Cast it to Float64 first.
+- 'mean' and 'median' of an exact Decimal column are exact: the total divided by the count, or the middle value (the two middle values added and divided by 2). They give 16 places after the point, or the column's own if it holds more, the last rounded half away from zero: the mean of 1, 0 and 0 is 0.3333333333333333.
+- 'std' and 'quantile' refuse an exact Decimal column, because their answer cannot be exact. Convert it to Float64 first, or use 'median' for the exact middle value.
 - 'any_true' and 'all_true' read a true/false column, skip nulls, and give null for a group with no value, as SQL's BOOL_OR and BOOL_AND.
 - 'count' counts the rows of a group and reads no column. 'count_non_null' counts the values of one column that are not null.
 - Some other libraries call the non-null count 'count'. Check which one you mean when copying a step from them.
@@ -55,6 +56,8 @@ More on some settings:
 - 'join_text' only joins text. Turn numbers or dates into text in an earlier step.
 - A 'separator' on any function other than 'join_text' is refused, not ignored.
 - A 'value' that reads no column, such as '1', is refused. It would be worked out once per group, so 'sum' of 1 would not count rows. Use 'count' for that.
+- 'sum', 'min', 'max', 'first' and 'last' of an exact Decimal column keep its places, with 38 digits in all.
+- A 'sum' of an exact Decimal column whose total needs more than 38 digits stops the run, naming the group, instead of giving a wrong number. Convert to Float64 for figures that large.
 - 'sum' keeps the type of the column it adds up. If an Int32 or UInt32 total is too big for that type, the run stops and names the aggregation, instead of giving a wrong number. Cast the column to Int64 first if totals can be that large.
 
 ## Example 1

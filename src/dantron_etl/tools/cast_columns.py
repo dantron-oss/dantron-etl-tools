@@ -1,18 +1,30 @@
 """CastColumns: change named columns to the types the flow states.
 
 A value that will not convert stops the run, or with `on_invalid: set_null` becomes null and is
-counted and marked. Rows and column positions never move.
+counted and marked. Rows and column positions never move. A conversion to `Decimal` never rounds:
+a value that does not fit its places is a value that will not convert.
 
 Why: docs/design/tools.md#cast_columns
 """
 
 from collections.abc import Mapping
 from datetime import date
+from decimal import Decimal
 from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE, DECLARED_TYPES, EXACT_TYPE, cut_fractions, fraction_refusal, not_yet_exact
+from ..column_types import (
+    DECLARED_TYPES,
+    EXACT_TYPE,
+    check_places,
+    cut_fractions,
+    declared_dtype,
+    exact_misfit_refusal,
+    exact_to_float,
+    fraction_refusal,
+    to_exact,
+)
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -32,7 +44,6 @@ from ..authoring import (
 # 'set_null', not 'null': YAML reads an unquoted null as no value at all.
 _ON_INVALID_ENUM: Final[tuple[str, ...]] = ("error", "set_null")
 
-_FLOAT_OR_TEXT: Final[str] = "use Float64 for figures, or String to keep the digits as written"
 
 
 class CastColumns:
@@ -63,10 +74,15 @@ class CastColumns:
                         ),
                         "type": ConfigField(
                             type="string",
-                            description="The new type, such as 'Float64' for decimals, 'Int64' for "
-                            "whole numbers, 'Date' or 'String'.",
+                            description="The new type, such as 'Float64' for decimals, 'Decimal' for "
+                            "exact decimals, 'Int64' for whole numbers, 'Date' or 'String'.",
                             required=True,
                             enum=DECLARED_TYPES,
+                        ),
+                        "places": ConfigField(
+                            type="integer",
+                            description="Only with type 'Decimal', and required there: the digits "
+                            "after the point, from 0 to 38, such as 2.",
                         ),
                         "in_zone": ConfigField(
                             type="string",
@@ -94,7 +110,7 @@ class CastColumns:
                 "types change. A value that will not convert stops the run unless 'on_invalid' is "
                 "'set_null'."
             ),
-            examples=(_settles_a_text_number(), _two_columns_at_once()),
+            examples=(_settles_a_text_number(), _two_columns_at_once(), _exact_prices()),
             notes=(
                 "Put this in front of a union whose two sides disagree about a column's type. union "
                 "refuses rather than choosing which side to change.",
@@ -112,6 +128,15 @@ class CastColumns:
                 "the pipeline loads.",
                 "A decimal becomes a whole number only when it already is one: 12.0 becomes 12, but "
                 "1.99 stops the run, or is emptied and counted under 'set_null'. Round it first.",
+                "'Decimal' is an exact decimal with 'places' digits after the point. A value converts "
+                "only when it fits without rounding: '1.005' does not fit 2 places, so it stops the run, "
+                "or is emptied and counted under 'set_null'. Round it first.",
+                "Text becomes a Decimal only when written as plain digits, with an optional point and "
+                "minus sign, such as -12.50. Exponents, spaces and commas do not convert.",
+                "A Float64 becomes a Decimal read to 15 significant digits, as round reads it: 0.1 + 0.2 "
+                "becomes 0.30. Not-a-number and infinity do not convert.",
+                "A Decimal becomes a Float64 through its digits, so each value lands on the nearest "
+                "double, however many digits it has.",
                 "A timestamp with a time zone becomes a Date only with 'in_zone', because the day "
                 "depends on the zone: 23:30 on 31 January in Toronto is 1 February in UTC. There is "
                 "no default.",
@@ -121,8 +146,8 @@ class CastColumns:
                 "milliseconds. To count days or months between dates, use date_diff.",
             ),
             field_help={
-                "columns": "For example [{column: amount, type: Float64}, {column: opened_on, type: "
-                "Date}]. The order of the entries does not matter.",
+                "columns": "For example [{column: amount, type: Float64}, {column: price, type: Decimal, "
+                "places: 2}, {column: opened_on, type: Date}]. The order of the entries does not matter.",
                 "on_invalid": "Use 'set_null' for a large, messy source where a few bad values should "
                 "not stop a nightly run.",
             },
@@ -132,8 +157,7 @@ class CastColumns:
         named: set[str] = set()
         for index, entry in enumerate(config["columns"]):
             column = entry["column"]
-            if entry["type"] == EXACT_TYPE:
-                raise ConfigError(not_yet_exact("cast_columns", f"columns[{index}].type", _FLOAT_OR_TEXT))
+            check_places(entry["type"], entry.get("places"), f"columns[{index}].places")
             zone = entry.get("in_zone")
             if zone is not None:
                 check_zone_name(zone, f"columns[{index}].in_zone")
@@ -153,11 +177,7 @@ class CastColumns:
         frame = inputs["rows"]
         require_columns(frame, [entry["column"] for entry in config["columns"]], "columns", "rows")
 
-        inert = [
-            entry["column"]
-            for entry in config["columns"]
-            if frame.schema[entry["column"]] == DECLARED_DTYPE[entry["type"]]
-        ]
+        inert = [entry["column"] for entry in config["columns"] if frame.schema[entry["column"]] == _target(entry)]
         if inert:
             raise ConfigError(
                 f"config field 'columns' reads {inert[0]!r} as the type it already holds; a cast "
@@ -167,6 +187,11 @@ class CastColumns:
         for index, entry in enumerate(config["columns"]):
             column, zone, dtype = entry["column"], entry.get("in_zone"), frame.schema[entry["column"]]
             field = f"columns[{index}].in_zone"
+            if entry["type"] == EXACT_TYPE and not _converts_to_exact(dtype):
+                raise ConfigError(
+                    f"config field 'columns[{index}].type' reads {column!r} as Decimal, but it holds {dtype}, "
+                    f"which is not a number; only text, whole numbers, decimals and floats become exact decimals"
+                )
             if entry["type"] == "Date":
                 require_stated_zone(dtype, zone, field.rpartition(".")[2], reading=f"column {column!r}")
             if zone is not None and not (isinstance(dtype, pl.Datetime) and dtype.time_zone is not None):
@@ -183,16 +208,23 @@ class CastColumns:
         marks: list[tuple[str, pl.Series]] = []
 
         for entry in config["columns"]:
-            column, declared = entry["column"], entry["type"]
+            column, declared, target = entry["column"], entry["type"], _target(entry)
             if declared == "Date" and entry.get("in_zone") is not None:
                 # A timestamp in a zone, read as the date it falls on in the zone the author stated.
                 frame = frame.with_columns(as_calendar_date(pl.col(column), frame.schema[column], entry["in_zone"]))
                 continue
+            if declared == EXACT_TYPE:
+                frame = _to_exact(inputs["rows"], frame, column, entry["places"], lenient, marks, notes)
+                continue
+            if declared == "Float64" and isinstance(frame.schema[column], pl.Decimal):
+                # Through the digits, so every value lands on the nearest double. Nothing can fail here.
+                frame = frame.with_columns(exact_to_float(frame[column]))
+                continue
             if lenient:
                 # Counted before the values are replaced; afterwards a failed value and a null look
                 # alike. The count and the row marks come from the same mask.
-                cut = cut_fractions(frame[column], DECLARED_DTYPE[declared])
-                read = frame.select(pl.col(column).cast(DECLARED_DTYPE[declared], strict=False)).to_series()
+                cut = cut_fractions(frame[column], target)
+                read = frame.select(pl.col(column).cast(target, strict=False)).to_series()
                 read = pl.select(pl.when(cut).then(None).otherwise(read)).to_series().alias(column)
                 failed = frame[column].is_not_null() & read.is_null()
                 if failed.any():
@@ -201,7 +233,7 @@ class CastColumns:
                     notes.append(note)
                 frame = frame.with_columns(read.alias(column))
                 continue
-            cut = cut_fractions(frame[column], DECLARED_DTYPE[declared])
+            cut = cut_fractions(frame[column], target)
             if cut.any():
                 raise DataError(
                     fraction_refusal(column, frame[column].filter(cut), declared),
@@ -209,14 +241,14 @@ class CastColumns:
                     total=inputs["rows"].height,
                 )
             try:
-                frame = frame.with_columns(pl.col(column).cast(DECLARED_DTYPE[declared]))
+                frame = frame.with_columns(pl.col(column).cast(target))
             except Exception as error:
                 # A data refusal: the values stopped it, not the configuration. The sample rows are
                 # best effort, so a type pair polars refuses outright does not crash the report.
                 try:
                     offending = inputs["rows"].filter(
                         pl.col(column).is_not_null()
-                        & pl.col(column).cast(DECLARED_DTYPE[declared], strict=False).is_null()
+                        & pl.col(column).cast(target, strict=False).is_null()
                     )
                 except Exception:  # noqa: BLE001 - the report is best-effort; the refusal is not
                     offending = inputs["rows"].head(0)
@@ -227,6 +259,44 @@ class CastColumns:
                 ) from error
         status = {"rows": row_status(marks, frame.height)} if marks else None
         return Ports({"rows": frame}, notes=notes, status=status)
+
+
+def _target(entry: Mapping[str, Any]) -> pl.DataType:
+    """The dtype one entry asks for: its type, with its places for a Decimal."""
+    return declared_dtype(entry["type"], entry.get("places"))
+
+
+def _converts_to_exact(dtype: pl.DataType) -> bool:
+    """Whether a column of ``dtype`` can become an exact decimal: text, a number, or nothing at all."""
+    return dtype in (pl.String, pl.Null) or dtype.is_numeric()
+
+
+def _to_exact(
+    source: pl.DataFrame,
+    frame: pl.DataFrame,
+    column: str,
+    places: int,
+    lenient: bool,
+    marks: list[tuple[str, pl.Series]],
+    notes: list[str],
+) -> pl.DataFrame:
+    """``frame`` with ``column`` converted to an exact decimal, or a refusal naming what does not fit.
+
+    Under 'set_null' a value that does not fit is emptied, and the note and the row marks are added
+    to ``notes`` and ``marks``.
+    """
+    converted = to_exact(frame[column], places)
+    if converted.misfits.any():
+        if not lenient:
+            raise DataError(
+                exact_misfit_refusal(column, frame[column].filter(converted.misfits), places),
+                offending=source.filter(converted.misfits),
+                total=source.height,
+            )
+        reasons, note = unreadable_report(frame, column, converted.misfits, f"Decimal with {places} places")
+        marks.append((column, reasons))
+        notes.append(note)
+    return frame.with_columns(converted.values)
 
 
 def _settles_a_text_number() -> WorkedExample:
@@ -258,6 +328,27 @@ def _two_columns_at_once() -> WorkedExample:
         },
         explanation="Each entry names a column and its type. A date is read as year-month-day; for digits in "
         "another order, use assemble_date.",
+        inputs=inputs,
+        outputs=outputs,
+        check_row_order=True,
+    )
+
+
+def _exact_prices() -> WorkedExample:
+    inputs = Ports({"rows": pl.DataFrame({"code": ["A1", "B2", "C3"], "price": ["812.40", "19.9", None]})})
+    outputs = Ports(
+        {
+            "rows": pl.DataFrame(
+                {"code": ["A1", "B2", "C3"], "price": [Decimal("812.40"), Decimal("19.90"), None]},
+                schema={"code": pl.String, "price": pl.Decimal(38, 2)},
+            )
+        }
+    )
+    return WorkedExample(
+        scenario="turn prices held as text into exact decimals with two places",
+        configuration={"columns": [{"column": "price", "type": "Decimal", "places": 2}]},
+        explanation="Each price is held exactly, with two places: 19.9 becomes 19.90. A price written with "
+        "more places, such as 1.005, would stop the run rather than be rounded.",
         inputs=inputs,
         outputs=outputs,
         check_row_order=True,

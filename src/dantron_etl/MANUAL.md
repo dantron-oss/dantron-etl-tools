@@ -587,8 +587,27 @@ Each of these has caught a real pipeline.
   because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **`Decimal` is the exact type, and its places are written beside it.** `{type: Decimal, places: 2}`
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
-  the point, from 0 to 38. No tool takes it yet. `cast_columns`, `read_csv`, `unpivot` and
-  `write_excel`'s rules refuse it by name; use `Float64` until they do.
+  the point, from 0 to 38. `write_excel`'s rules refuse it by name for now.
+- **`cast_columns` converts to `Decimal` without rounding.** Text written as plain digits (`-12.50`),
+  whole numbers, exact columns of other places and floats all convert, but only a value that fits:
+  `'1.005'` does not fit 2 places, so the step stops and says to `round` first, or under
+  `on_invalid: set_null` empties, counts and marks it. A float is read to 15 significant digits, so
+  `0.1 + 0.2` becomes `0.30`. Back to `Float64`, each value lands on the nearest double.
+- **`read_csv` reads `Decimal` only where `column_types` says so**, with its `places`. A figure is
+  otherwise worked out as `Float64`; nothing is guessed to be exact. Each value must be plain digits
+  that fit the places (`1.005` at 2 places, `1e3` and `+1.25` stop the run), and a blank field is
+  null. A column `write_csv` wrote from an exact column reads back as itself.
+- **`unpivot` stacks exact columns of different places at the larger places.** `1.50` beside
+  `0.0725` comes out as `1.5000` and `0.0725`. An exact column beside a `Float64` column is refused,
+  naming the float column: convert one side with `cast_columns`. `values_type: Decimal` with
+  `values_places: 2` reads every turned column exactly, by `cast_columns`' rule.
+- **A total of an exact column is exact, at the column's places.** `sum`, `min`, `max`, `first`,
+  `last` and their `_non_null` forms in `group_by` and `cross_tab` keep the places, with 38 digits in
+  all, on every engine version, even when the source held fewer digits.
+- **An exact total that needs more than 38 digits stops the step.** A `sum` in `group_by` or a
+  cell in `cross_tab` past 38 digits (at 2 places, 36 before the point) names the group and the
+  column instead of giving the wrong number the engine would. Convert to `Float64` for figures that
+  large, or round to fewer places first.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
@@ -710,8 +729,11 @@ Two more rulings you will meet:
 - **`count` counts rows. `count_non_null` counts the values that are there.** Other libraries spell
   the non-null count `count`, so a step ported from one silently returns the other number.
 - **`mean`, `median`, `std` and `quantile` skip nulls**, as SQL's `AVG` does, so a mean divides by
-  the values that are there. A group with no value gives null. They refuse an exact `Decimal`
-  column, which they would work out in binary floating point; cast it to `Float64` first.
+  the values that are there. A group with no value gives null. Of an exact `Decimal` column,
+  `mean` is the exact total divided by the count and `median` the middle value (or the two middle
+  values divided by 2), at 16 places or the column's own if more, the last rounded half away from
+  zero: the mean of 1, 0 and 0 is 0.3333333333333333. `std` and `quantile` refuse an exact column,
+  since their answer cannot be exact; convert it to `Float64` first.
   `quantile` needs `fraction`, from 0 to 1, beside it. `any_true` and `all_true` skip nulls too, and
   a group of nulls gives null, as SQL's `BOOL_OR` and `BOOL_AND`.
 - **`count_distinct` skips nulls, as SQL's `COUNT(DISTINCT)` does.** `a, a, null, b` counts 2, and a

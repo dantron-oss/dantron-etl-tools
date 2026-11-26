@@ -61,10 +61,36 @@ cannot drift. cross_tab imports the same list, so adding an aggregate adds it to
 deviation (`STDDEV`, Excel's `STDEV.S`), so one value has none. `quantile` interpolates
 (`PERCENTILE_CONT`, Excel's `PERCENTILE.INC`) and needs `fraction`, placed beside it as `separator`
 sits beside `join_text`. On an exact `Decimal` the engine answers in binary floating point (the
-median of 0.20 and 0.70 comes back as 0.44999999999999996), so a `Decimal` column is refused and the
-cast to `Float64` is written in the pipeline. `any_true` and `all_true` are `BOOL_OR` and `BOOL_AND`:
+median of 0.20 and 0.70 comes back as 0.44999999999999996), so the library works out `mean` and
+`median` itself, by the division rule (owner's ruling 2): the exact total divided by the count, or
+the two middle values divided by 2, at 16 places or the column's own if more, the last rounded half
+away from zero. Both use the exact-total parts below, with whole-number division and the remainder
+compared with half the divisor, so no tie is rounded to even. `std` takes a square root and
+`quantile` interpolates by a fraction written as a float, so neither answer can be exact: both refuse
+a `Decimal` column, and the cast to `Float64` is written in the pipeline. No second quantile rule
+(such as picking a value without interpolating) is offered; `median` is the exact middle. `any_true` and `all_true` are `BOOL_OR` and `BOOL_AND`:
 the engine answers false and true for a group of nulls, so that case is guarded to give null.
 These eight are worked out by one function, `shared_aggregate`, that cross_tab calls too.
+
+**An exact column is widened to 38 digits before it is aggregated.** Every exact column the library
+makes has 38 digits, but a source can hold fewer, and on polars 1.38 a sum keeps them: the total of
+a `Decimal(18, 2)` column comes back typed with 18 digits even when it needs more, and its value is
+then wrong. Widening the total afterwards is too late, so `widened` casts the column first, keeping
+its places. It is the same in group_by and cross_tab.
+
+### Exact totals
+
+**An exact total is worked out by the library, in two parts.** Past 38 digits the engine's sum of an
+exact column is silently wrong inside a group, and on polars 1.38 a plain sum gives a wrong value that
+crashes the process when it is read (a Rust panic, which no `except Exception` catches). Catching an
+error after the sum cannot work, so the check comes first, and it is exact: each value is read as a
+whole number of its smallest place (12.34 is 1234), split at 10**19 into a high and a low part, and
+each part is added up as a 128-bit whole number, where neither total can overflow
+(`exact_sum_parts`). `exact_totals` carries the low total's excess into the high one and puts the
+total back together through its digits, or marks it as needing more than 38 digits. A float check
+was rejected because near the limit it refuses totals that fit. Such a group stops the step, naming
+the group and the column (owner's ruling: never a wrong number). The engine's sum is not used for
+exact columns at all, so a running total that passes the limit before coming back is still right.
 
 **Groups keep first-appearance order.** A key of several columns has no obvious sort order, and the
 order the input already has is the one a reader knows. polars promises no group order unless asked,
@@ -442,6 +468,12 @@ The refusal is a `DataError` (the values stopped it, not the configuration) nami
 type and the rows. Owner's ruling (2026-11-18, finding E-01): a decimal becomes a whole number only
 when it already is one, because polars would cut 1.99 to 1 silently.
 
+**A `Decimal` is converted by the library, not the engine.** The engine rounds half to even wherever
+it narrows, so `cast_columns` converts through the helpers in `column_types`, which convert a value
+exactly or mark it (core.md#exact-conversions). A value that does not fit is one that will not
+convert: the same refusal, or under `set_null` the same count and mark. Going back to `Float64` it
+reads the digits, because the engine's own conversion can miss the nearest double by one step.
+
 **`set_null` reports and marks.** It suits a large messy source, where three bad values in 46,000
 should not stop a nightly build. It counts the failures out of the total and their share, which makes
 the step a warning, so the fact travels into the log and onto the canvas. The count is taken before
@@ -708,6 +740,14 @@ gives no note, unlike cast_columns: there the columns were named one by one, so 
 leftover line; here the set is everything not named, and "some already right" is normal. A decimal with
 a fraction does not convert to a whole number (owner's ruling E-01).
 
+**Exact columns of different places stack at the larger places.** Adding zeros loses nothing, so 1.50
+beside 0.0725 is not a rewrite, and every exact column comes out at 38 digits. The widening goes
+through `to_exact`, because the engine rounds wherever it narrows and a value with 36 digits before
+the point has no room for two more places; that one is refused by name. An exact column beside a
+float is refused, as everywhere an exact column meets a float (owner's ruling 3). Exact beside a
+whole number stays refused, as every other pair of types is. `values_type: Decimal` converts by
+cast_columns' rule.
+
 **`on_invalid` follows cast_columns.** `error` (when absent) stops the run; `set_null` empties, counts
 before replacing, notes only columns that lost a value (most are clean), and marks each emptied row.
 The marks follow the output rows, so they are built one block per turned column and stacked like the
@@ -747,6 +787,11 @@ both give a frame that looks right and is not. The refusal names the line or the
 **A number that would change a value is refused.** A leading zero (02134, a postcode) is lost by a
 number, and a whole number past 64 bits can only be read as a float, which rounds it. The author
 decides in `column_types`.
+
+**`Decimal` is declared, never worked out.** A file's `12.50` is as much a measurement as a price, and
+only the author knows which needs to stay exact, so inference stays Int64, Float64, true/false or
+text. A declared column is read through `exact_from_text`, which takes plain digits only and never
+rounds: `1.005` at 2 places is a value that will not convert. Blanks are already null by then.
 
 **A blank field is null, and a blank line is a row.** write_csv writes a row of nulls as an empty line,
 so dropping it here would lose that row on a round trip.
