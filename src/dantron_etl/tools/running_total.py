@@ -105,6 +105,7 @@ class RunningTotal:
                 "comes back still stops the run.",
                 "A column that is not a number is refused. So is an 'output' name the input already "
                 "has, or one used twice. There is no setting to overwrite a column.",
+                "No rows in gives no rows out, with the new columns added.",
             ),
             field_help={
                 "columns": "For example [{column: amount, output: balance}]. Each entry adds one new "
@@ -202,13 +203,16 @@ def _running_total(frame: pl.DataFrame, index: int, entry: Mapping[str, Any], wi
     return total.cast(pl.Int64)
 
 
-def _refuse(offending: pl.DataFrame, total: int, index: int, column: str, within: list[str], why: str) -> None:
-    """Stop the step: the running total of ``column`` does not fit, first in the group of ``offending``'s first row."""
+def _refuse(offending: pl.DataFrame, height: int, index: int, column: str, within: list[str], why: str) -> None:
+    """Stop the step, naming ``column`` and the group of ``offending``'s first row, where the total first does not fit.
+
+    ``height`` is the number of rows in the input, and ``why`` says what the total does not fit.
+    """
     where = f"in the group {describe_rows(offending, within)}" if within else "over all the rows"
     raise DataError(
         f"config field 'columns[{index}]' adds up column {column!r}, and its running total {where} {why}",
         offending=offending,
-        total=total,
+        total=height,
     )
 
 

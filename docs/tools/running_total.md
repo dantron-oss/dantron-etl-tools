@@ -38,6 +38,7 @@ More on some settings:
 - An exact Decimal column gives exact totals at its places, with 38 digits in all. A total that needs more than 38 digits stops the run, naming the group and the column.
 - Every running value must fit, not only the last: a total that goes past the limit and comes back still stops the run.
 - A column that is not a number is refused. So is an 'output' name the input already has, or one used twice. There is no setting to overwrite a column.
+- No rows in gives no rows out, with the new columns added.
 
 ## Example 1
 
