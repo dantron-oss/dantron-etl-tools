@@ -442,6 +442,12 @@ The refusal is a `DataError` (the values stopped it, not the configuration) nami
 type and the rows. Owner's ruling (2026-11-18, finding E-01): a decimal becomes a whole number only
 when it already is one, because polars would cut 1.99 to 1 silently.
 
+**A `Decimal` is converted by the library, not the engine.** The engine rounds half to even wherever
+it narrows, so `cast_columns` converts through the helpers in `column_types`, which convert a value
+exactly or mark it (core.md#exact-conversions). A value that does not fit is one that will not
+convert: the same refusal, or under `set_null` the same count and mark. Going back to `Float64` it
+reads the digits, because the engine's own conversion can miss the nearest double by one step.
+
 **`set_null` reports and marks.** It suits a large messy source, where three bad values in 46,000
 should not stop a nightly build. It counts the failures out of the total and their share, which makes
 the step a warning, so the fact travels into the log and onto the canvas. The count is taken before

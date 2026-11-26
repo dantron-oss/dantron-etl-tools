@@ -587,8 +587,13 @@ Each of these has caught a real pipeline.
   because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **`Decimal` is the exact type, and its places are written beside it.** `{type: Decimal, places: 2}`
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
-  the point, from 0 to 38. No tool takes it yet. `cast_columns`, `read_csv`, `unpivot` and
-  `write_excel`'s rules refuse it by name; use `Float64` until they do.
+  the point, from 0 to 38. `read_csv`, `unpivot` and `write_excel`'s rules refuse it by name for
+  now; use `Float64` there until they take it.
+- **`cast_columns` converts to `Decimal` without rounding.** Text written as plain digits (`-12.50`),
+  whole numbers, exact columns of other places and floats all convert, but only a value that fits:
+  `'1.005'` does not fit 2 places, so the step stops and says to `round` first, or under
+  `on_invalid: set_null` empties, counts and marks it. A float is read to 15 significant digits, so
+  `0.1 + 0.2` becomes `0.30`. Back to `Float64`, each value lands on the nearest double.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

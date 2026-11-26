@@ -1,8 +1,8 @@
 """The exact decimal type: its name, its places, and the helpers that convert to and from it.
 
 A flow names the type ``Decimal`` and states ``places`` beside it, from 0 to 38. Total digits are
-always 38. These tests pin the type name and the places check, that every tool that names column
-types still refuses ``Decimal`` until its own support is built, and the helpers that convert a
+always 38. These tests pin the type name and the places check, that a tool that names column
+types refuses ``Decimal`` until its own support is built, and the helpers that convert a
 column to an exact one and back. A conversion never rounds: each value converts exactly, or its row
 is reported as not fitting.
 """
@@ -133,7 +133,7 @@ def test_places_that_are_not_a_whole_number_are_refused(places: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# No tool takes the type yet
+# Tools that do not take the type yet
 # ---------------------------------------------------------------------------
 
 
@@ -147,14 +147,6 @@ def _says_not_yet(message: str, tool: str, field: str) -> None:
     assert repr(field) in message
     assert "Decimal" in message
     assert f"{tool} does not take exact decimals yet" in message
-
-
-def test_cast_columns_refuses_decimal_for_now() -> None:
-    rows = pl.DataFrame({"amount": ["1.50"], "price": ["2.25"]})
-    alone = {"columns": [{"column": "amount", "type": "Decimal"}]}
-    _says_not_yet(_refused(CastColumns(), alone, {"rows": rows}), "cast_columns", "columns[0].type")
-    second = {"columns": [{"column": "price", "type": "Float64"}, {"column": "amount", "type": "Decimal"}]}
-    _says_not_yet(_refused(CastColumns(), second, {"rows": rows}), "cast_columns", "columns[1].type")
 
 
 def test_read_csv_refuses_decimal_for_now(tmp_path: Path) -> None:
@@ -450,19 +442,22 @@ def _figures(places: int, count: int, seed: int) -> list[Decimal]:
 
 
 @pytest.mark.parametrize("places", [0, 1, 2, 3, 4, 6, 10, 16, 22])
-def test_todays_conversion_to_float_already_lands_on_the_nearest_double_for_these_figures(places: int) -> None:
-    """cast_columns to Float64 keeps giving what it gives today, and so does the helper.
+def test_converting_to_float_gives_what_the_engine_gave_for_these_figures(places: int) -> None:
+    """cast_columns to Float64 gives the same floats as the engine's own conversion it used before.
 
-    A project converts its exact prices this way before any arithmetic. Today's conversion is the
-    nearest double whenever the figure's digits, counting every place the column holds, form a
+    A project converts its exact prices this way before any arithmetic. The engine's conversion is
+    the nearest double whenever the figure's digits, counting every place the column holds, form a
     whole number no larger than 2**53, and the column holds 22 places or fewer. That covers every
-    figure of 15 digits or fewer at those places, such as any price under 10 trillion at 2 places.
+    figure of 15 digits or fewer at those places, such as any price under 90 trillion at 2 places.
+    cast_columns now goes through the digits, which is the nearest double for every figure, so for
+    these figures nothing changes.
     """
     figures = _figures(places, 3000, seed=places)
     held = pl.DataFrame({"price": pl.Series(figures, dtype=pl.Decimal(38, places))})
-    today = run_tool(CastColumns(), Ports({"rows": held}), {"columns": [{"column": "price", "type": "Float64"}]})
+    result = run_tool(CastColumns(), Ports({"rows": held}), {"columns": [{"column": "price", "type": "Float64"}]})
     nearest = [float(figure) for figure in figures]
-    assert today["rows"]["price"].to_list() == nearest
+    assert held["price"].cast(pl.Float64).to_list() == nearest, "the engine's conversion, which cast_columns used"
+    assert result["rows"]["price"].to_list() == nearest
     assert exact_to_float(held["price"]).to_list() == nearest
 
 
@@ -474,9 +469,13 @@ def test_todays_conversion_to_float_already_lands_on_the_nearest_double_for_thes
         ("0.0000000000000000000000125", 25, 1.2499999999999999e-23),
     ],
 )
-def test_where_todays_conversion_to_float_misses_the_nearest_double(written: str, places: int, today: float) -> None:
-    """Past 2**53 in the digits held, or past 22 places, today's conversion can miss by one step."""
+def test_where_the_engines_conversion_to_float_misses_the_nearest_double(written: str, places: int, today: float) -> None:
+    """Past 2**53 in the digits held, or past 22 places, the engine's conversion can miss by one step.
+
+    cast_columns used it before; it now lands on the nearest double.
+    """
     held = pl.DataFrame({"price": exact_series([written], places)})
     result = run_tool(CastColumns(), Ports({"rows": held}), {"columns": [{"column": "price", "type": "Float64"}]})
-    assert result["rows"]["price"].to_list() == [today]
-    assert exact_to_float(held["price"]).to_list() == [float(written)] != [today]
+    assert held["price"].cast(pl.Float64).to_list() == [today]
+    assert result["rows"]["price"].to_list() == [float(written)] != [today]
+    assert exact_to_float(held["price"]).to_list() == [float(written)]

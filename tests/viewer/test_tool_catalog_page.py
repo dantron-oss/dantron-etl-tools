@@ -132,8 +132,8 @@ def _rendered_depth(rendered: dict[str, Any]) -> int:
 
 
 def _as_json(value: Any) -> str:
-    """``value`` as JSON text. Dates are written as ISO text, the way the catalog's JSON file holds them."""
-    return json.dumps(value, default=lambda v: v.isoformat())
+    """``value`` as JSON text. Dates are written as ISO text and exact decimals as their digits."""
+    return json.dumps(value, default=lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v))
 
 class TestCatalogCompleteness:
     """The catalog says everything the registry declares, for every tool the registry holds."""

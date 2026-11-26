@@ -388,3 +388,149 @@ class TestATimestampInAZoneIsReadAsADateInAStatedZone:
                 {"columns": [{"column": "paid_at", "type": "Date", "in_zone": "Mars/Olympus"}], "on_invalid": "error"}
             )
         assert "Mars/Olympus" in str(caught.value)
+
+
+def _exact(values: list[str | None], places: int, *, precision: int = 38) -> pl.Series:
+    """Exact decimals written as text, so nothing passes through a float on the way in."""
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+def _to_decimal(frame: pl.DataFrame, places: int, **config: Any) -> Any:
+    entry = {"column": "price", "type": "Decimal", "places": places}
+    return run_tool(CastColumns(), Ports({"rows": frame}), {"columns": [entry], **config})
+
+
+def _written(series: pl.Series) -> list[str | None]:
+    """Each value as the digits it holds, so a test pins the places as well as the value."""
+    return series.cast(pl.String).to_list()
+
+
+class TestConvertingToAnExactDecimal:
+    """`type: Decimal` with `places` converts every value exactly, or names the ones that do not fit.
+
+    Nothing is rounded: '1.005' does not fit 2 places, and the step stops saying to round first. With
+    'on_invalid: set_null' such a value is emptied, counted and marked, as a value that does not read
+    is today.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "written"),
+        [
+            (pl.Series(["812.40", "0.07", "-3", "1.2300", None]), ["812.40", "0.07", "-3.00", "1.23", None]),
+            (pl.Series([812, -3, 0, None, 7]), ["812.00", "-3.00", "0.00", None, "7.00"]),
+            (pl.Series([812, -3, 0, None, 7], dtype=pl.Int32), ["812.00", "-3.00", "0.00", None, "7.00"]),
+            (_exact(["812.4000", "0.0700", "-3", "1.23", None], 4), ["812.40", "0.07", "-3.00", "1.23", None]),
+            (_exact(["812.40", "0.07", "-3", "1.23", None], 2, precision=18), ["812.40", "0.07", "-3.00", "1.23", None]),
+            (pl.Series([812.4, 0.1 + 0.2, -3.0, 1.23, None]), ["812.40", "0.30", "-3.00", "1.23", None]),
+        ],
+        ids=["text", "Int64", "Int32", "four places", "18 digits", "Float64"],
+    )
+    def test_each_kind_of_number_converts_exactly(self, source: pl.Series, written: list[str | None]) -> None:
+        rows = _to_decimal(pl.DataFrame({"key": list("abcde"), "price": source}), 2)["rows"]
+
+        assert rows.schema["price"] == pl.Decimal(38, 2), "every exact column holds 38 digits in all"
+        assert _written(rows["price"]) == written
+        assert rows.columns == ["key", "price"]
+
+    def test_more_places_pad_with_zeros(self) -> None:
+        rows = _to_decimal(pl.DataFrame({"price": _exact(["1.5", "-0.25"], 2)}), 6)["rows"]
+        assert _written(rows["price"]) == ["1.500000", "-0.250000"]
+
+    @pytest.mark.parametrize(
+        ("source", "places", "shown"),
+        [
+            (pl.Series(["12.50", "1.005", "abc"]), 2, "'1.005'"),
+            (pl.Series(["1e3", " 1.50", "1,000.00", "12.50"]), 2, "'1e3'"),
+            (_exact(["1.2300", "1.2350"], 4), 2, "1.2350"),
+            (pl.Series([1.5, 1.005]), 2, "1.005"),
+            (pl.Series([1.5, float("nan")]), 2, "nan"),
+            (pl.Series([10**8 - 1, 10**8]), 30, "100000000"),
+        ],
+        ids=["more places than asked", "not plain digits", "fewer places", "float", "not a number", "too many digits"],
+    )
+    def test_a_value_that_does_not_fit_stops_the_step(self, source: pl.Series, places: int, shown: str) -> None:
+        with pytest.raises(DataError) as caught:
+            _to_decimal(pl.DataFrame({"price": source}), places)
+
+        message = str(caught.value)
+        for word in ("'price'", f"Decimal with {places} places", shown, "set_null"):
+            assert word in message, message
+        assert caught.value.offending_rows == source.len() - 1, "only the values that did not fit are shown"
+
+    def test_a_number_that_does_not_fit_says_to_round_it_first(self) -> None:
+        with pytest.raises(DataError) as caught:
+            _to_decimal(pl.DataFrame({"price": [1.005]}), 2)
+        assert "round([price], 2)" in str(caught.value)
+
+    def test_set_null_empties_counts_and_marks_what_does_not_fit(self) -> None:
+        frame = pl.DataFrame({"price": ["1.50", "1.005", None, "abc"]})
+
+        result = _to_decimal(frame, 2, on_invalid="set_null")
+
+        assert _written(result["rows"]["price"]) == ["1.50", None, None, None]
+        assert result["rows"].schema["price"] == pl.Decimal(38, 2)
+        assert len(result.notes) == 1
+        note = result.notes[0]
+        for word in ("2 of 4", "'price'", "Decimal with 2 places", "1.005"):
+            assert word in note, note
+        status = result.status["rows"]
+        assert status["level"].to_list() == ["ok", "warning", "ok", "warning"], "a blank did not fail"
+
+    def test_set_null_with_everything_fitting_reports_nothing(self) -> None:
+        result = _to_decimal(pl.DataFrame({"price": ["1.50", None]}), 2, on_invalid="set_null")
+        assert result.notes == ()
+        assert result.status is None or "rows" not in result.status
+
+    def test_a_frame_with_no_rows_still_becomes_exact(self) -> None:
+        rows = _to_decimal(pl.DataFrame({"price": pl.Series([], dtype=pl.String)}), 4)["rows"]
+        assert rows.height == 0
+        assert rows.schema["price"] == pl.Decimal(38, 4)
+
+    def test_converting_to_the_places_it_already_has_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            _to_decimal(pl.DataFrame({"price": _exact(["1.50"], 2)}), 2)
+        assert "'price'" in str(caught.value)
+
+    @pytest.mark.parametrize("height", [0, 2])
+    @pytest.mark.parametrize(
+        ("values", "dtype"),
+        [([date(2026, 1, 1), None], pl.Date), ([True, None], pl.Boolean)],
+        ids=["date", "boolean"],
+    )
+    def test_a_column_that_holds_no_number_is_refused_on_its_type(
+        self, values: list[Any], dtype: pl.DataType, height: int
+    ) -> None:
+        frame = pl.DataFrame({"price": pl.Series(values, dtype=dtype)}).head(height)
+        with pytest.raises(ConfigError) as caught:
+            _to_decimal(frame, 2)
+        message = str(caught.value)
+        assert "'price'" in message and str(dtype) in message and "Decimal" in message, message
+
+    def test_places_are_required_beside_decimal_and_refused_beside_any_other_type(self) -> None:
+        frame = pl.DataFrame({"price": ["1.50"]})
+        with pytest.raises(ConfigError) as missing:
+            run_tool(CastColumns(), Ports({"rows": frame}), {"columns": [{"column": "price", "type": "Decimal"}]})
+        assert "'columns[0].places'" in str(missing.value)
+        with pytest.raises(ConfigError) as extra:
+            run_tool(
+                CastColumns(),
+                Ports({"rows": frame}),
+                {"columns": [{"column": "price", "type": "Float64", "places": 2}]},
+            )
+        assert "'columns[0].places'" in str(extra.value)
+
+
+class TestAnExactColumnBecomesAFloat:
+    """Decimal to Float64 goes through the digits, so every value lands on the nearest double."""
+
+    def test_a_figure_past_fifteen_digits_lands_on_the_nearest_double(self) -> None:
+        frame = pl.DataFrame({"price": _exact(["99999999999999.99", "-0.10", None], 2)})
+        rows = _cast(frame, ("price", "Float64"))
+        assert rows["price"].to_list() == [99999999999999.98, -0.1, None]
+        assert rows.schema["price"] == pl.Float64
+
+    def test_an_exact_column_still_becomes_text_and_whole_numbers_as_before(self) -> None:
+        frame = pl.DataFrame({"a": _exact(["12.00", "-0.50"], 2), "b": _exact(["12.00", "-3.00"], 2)})
+        rows = _cast(frame, ("a", "String"), ("b", "Int64"))
+        assert rows["a"].to_list() == ["12.00", "-0.50"]
+        assert rows["b"].to_list() == [12, -3]

@@ -10,8 +10,22 @@ things; each such release says how to upgrade.
 ### Added
 
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
-  listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv`, `unpivot` and
-  `write_excel`'s format, width and wrap rules refuse it, now with a message that says so.
+  listed in `COLUMN_TYPES`. `read_csv`, `unpivot` and `write_excel`'s format, width and wrap rules
+  refuse it for now, with a message that says so.
+- **`cast_columns` converts to `Decimal`**, written `{column: price, type: Decimal, places: 2}`. Text
+  written as plain digits, whole numbers, exact columns of other places and `Float64` convert
+  exactly; a float is read to 15 significant digits first. A value that does not fit the places
+  without rounding (`1.005` at 2 places) stops the step, saying to round first, or with
+  `on_invalid: set_null` is emptied, counted and marked.
+
+### Changed
+
+- **`cast_columns` from an exact decimal to `Float64` lands on the nearest double.** It now goes
+  through the value's digits. The figure changes only where the value's digits, counting every
+  place the column holds, make a whole number larger than 2^53, or the column holds more than 22
+  places: there the old conversion could miss by one step (457,200,000,000,000,000,000,000.00 gave
+  4.5720000000000004e+23, and gives 4.572e+23 now). Any 2-place price under 90 trillion converts
+  exactly as before. Nothing to do.
 
 ## [0.3.0] - 2026-11-20
 
