@@ -85,13 +85,13 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-30 tools, by category:
+31 tools, by category:
 
 | category | tools |
 |---|---|
 | `input` | `read_csv`, `read_excel`, `read_table` |
 | `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
+| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `running_total`, `unpivot` |
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
@@ -544,8 +544,8 @@ Each of these has caught a real pipeline.
   cannot see -- in `formula`'s `columns[].name`, `group_by`'s `aggregations[].name`, the `output`
   of `assemble_date`, `case_when`, `date_diff`, `normalize_text` and `record_id`, `unpivot`'s
   `names_to` and `values_to`, `expand_date_range`'s `period_column`, `rename_columns`' `to`,
-  `make_groups`' `record_column` and `group_column`, and `regex_extract_groups`' `position_column`
-  and `match_number_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
+  `make_groups`' `record_column` and `group_column`, `running_total`'s `columns[].output`, and
+  `regex_extract_groups`' `position_column` and `match_number_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
   you can write — and it reads as an unnamed column in every rendering, so the step that wrote it
   reports success and the step after it cannot see what it produced. The rule is about a name that
   is *nothing*, not one that is unusual: `" total "` keeps its spaces and is written as spelled.
@@ -606,6 +606,10 @@ Each of these has caught a real pipeline.
   cell in `cross_tab` past 38 digits (at 2 places, 36 before the point) names the group and the
   column instead of giving the wrong number the engine would. Convert to `Float64` for figures that
   large, or round to fewer places first.
+- **A running total must fit at every row, not only the last.** `running_total` of an exact column
+  gives exact totals at its places, with 38 digits in all; of a whole-number column, `Int64` totals.
+  A running value past 38 digits, or past `Int64`'s range, stops the step naming the group and the
+  column, even when a later row brings the total back inside.
 - **Exact keys pair by value.** `join` pairs a `Decimal` key with a `Decimal` key of other places
   (1.50 with 1.5000) and with a whole-number key (5.00 with 5), as SQL's `=` does; the key on
   `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
@@ -725,7 +729,7 @@ Each of these has caught a real pipeline.
   `last_non_null` are the same from the other end.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
-  and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
+  and `join_text`, `record_id`, `running_total` and `limit_rows` read an order nobody chose when they sit after a
   `read_table` with no `sort` in between. Put a `sort` there.
 
 ### Paths
@@ -767,6 +771,9 @@ Two more rulings you will meet:
 
 - **`sum` of a group whose values are all missing is null, not `0`.** Zero is a measurement; null is
   the absence of one, and nothing downstream can tell a fabricated zero from a real one.
+- **A null adds nothing to a running total.** `running_total` of null, 5, null, 3 is null, 5, 5, 8,
+  as SQL's `SUM(...) OVER (...)`: null only before a group's first value, and a group of nulls
+  stays null.
 - **`join_text` of the same group is the empty string** — deliberately the opposite. Joining no
   strings together produces the empty string in any language that has both; adding no numbers
   together produces a total nobody measured.

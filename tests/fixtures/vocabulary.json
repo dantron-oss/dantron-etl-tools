@@ -1570,6 +1570,70 @@
         "rows"
       ]
     },
+    "running_total": {
+      "category": "transform",
+      "config": {
+        "columns": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": {
+              "column": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              },
+              "output": {
+                "default": null,
+                "enum": null,
+                "fields": null,
+                "items": null,
+                "non_empty": true,
+                "required": true,
+                "type": "string"
+              }
+            },
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "object"
+          },
+          "non_empty": true,
+          "required": true,
+          "type": "array"
+        },
+        "group_by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": false,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": false,
+          "required": false,
+          "type": "array"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
     "select_columns": {
       "category": "preparation",
       "config": {
