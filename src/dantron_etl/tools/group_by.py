@@ -12,7 +12,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import exact_dtype
+from ..column_types import EXACT_DIGITS, exact_dtype, exact_from_text
 from ..authoring import (
     REGISTRY,
     ConfigError,
@@ -159,6 +159,58 @@ def widened(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
     return expression
 
 
+# Why: docs/design/tools.md#exact-totals
+#: Where an exact value's digits are split in two, so each part's total fits a 128-bit whole number.
+_PART: Final[int] = 10**19
+
+
+def exact_sum_parts(expression: pl.Expr) -> pl.Expr:
+    """The total of an exact column, as two whole-number parts that cannot overflow. Shared with cross_tab.
+
+    Each value is read as a whole number of its smallest place (12.34 at 2 places is 1234) and split
+    at 10**19 into a high and a low part, which are added up separately as 128-bit whole numbers.
+    Each part is under 10**19, so neither total can overflow. ``exact_totals`` puts them back
+    together, or reports that the total needs more than 38 digits. The engine's own sum is not used:
+    past 38 digits it gives a wrong total silently, and on polars 1.38 a crash when it is read.
+    """
+    part = pl.lit(_PART, dtype=pl.Int128)
+    whole = expression.cast(pl.String).str.replace(".", "", literal=True).cast(pl.Int128)
+    return pl.struct((whole // part).sum().alias("high"), (whole % part).sum().alias("low"))
+
+
+def exact_totals(parts: pl.Series, places: int) -> tuple[pl.Series, pl.Series]:
+    """Put the parts from ``exact_sum_parts`` back together as ``Decimal(38, places)``. Shared with cross_tab.
+
+    Returns the totals, null where the parts were null or the total does not fit, and a Boolean
+    series, true exactly where the total needs more than 38 digits.
+    """
+    part = pl.lit(_PART, dtype=pl.Int128)
+    high, low = pl.col("parts").struct.field("high"), pl.col("parts").struct.field("low")
+    # Carry the low total's excess into the high part, so the low part is back under 10**19.
+    high, low = high + low // part, low % part
+    # The total is high * 10**19 + low with 0 <= low < 10**19; it fits while it lies strictly
+    # between -10**38 and 10**38.
+    fits = (high < part) & ((high > -part) | ((high == -part) & (low > 0)))
+    total = pl.when(fits).then(high * part + low)
+    digits = total.abs().cast(pl.String).str.zfill(places + 1)
+    point = digits.str.len_chars() - places
+    written = pl.concat_str(
+        pl.when(total < 0).then(pl.lit("-")).otherwise(pl.lit("")),
+        digits.str.slice(0, point),
+        pl.lit("." if places else ""),
+        digits.str.slice(point),
+    )
+    worked = parts.to_frame("parts").select(written.alias("text"), (~fits).fill_null(False).alias("too_large"))
+    values = exact_from_text(worked["text"], places).values.alias(parts.name)
+    return values, worked["too_large"].alias(parts.name)
+
+
+def describe_rows(frame: pl.DataFrame, columns: list[str]) -> str:
+    """The first row of ``frame`` as column='value' pairs, such as "code='A', month='2026-01'"."""
+    first = frame.select(columns).row(0, named=True)
+    return ", ".join(f"{column}={value!r}" for column, value in first.items())
+
+
 def sum_without_wrapping(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
     """The sum of ``expression``, worked out as Int64 when its type would wrap past its limit."""
     return expression.cast(pl.Int64).sum() if dtype in NARROW_SUM_LIMITS else expression.sum()
@@ -288,6 +340,9 @@ class GroupBy:
                 "once per group, so 'sum' of 1 would not count rows. Use 'count' for that.",
                 "'sum', 'min', 'max', 'first' and 'last' of an exact Decimal column keep its places, "
                 "with 38 digits in all.",
+                "A 'sum' of an exact Decimal column whose total needs more than 38 digits stops the "
+                "run, naming the group, instead of giving a wrong number. Convert to Float64 for "
+                "figures that large.",
                 "'sum' keeps the type of the column it adds up. If an Int32 or UInt32 total is too "
                 "big for that type, the run stops and names the aggregation, instead of giving a "
                 "wrong number. Cast the column to Int64 first if totals can be that large.",
@@ -402,12 +457,42 @@ class GroupBy:
             _compile_aggregation(frame, index, aggregation) for index, aggregation in enumerate(config["aggregations"])
         ]
         grouped = frame.group_by(by_columns, maintain_order=True).agg(aggregates)
+        grouped = _exact_totals_back(frame, grouped, config, by_columns)
         return Ports({"rows": _narrow_totals_back(frame, grouped, config)})
 
 
 def _by_columns(config: Mapping[str, Any]) -> list[str]:
     """The group key, a column named twice counted once, in the order it was first written."""
     return list(dict.fromkeys(config["by"]))
+
+
+def _exact_totals_back(
+    frame: pl.DataFrame, grouped: pl.DataFrame, config: Mapping[str, Any], by_columns: list[str]
+) -> pl.DataFrame:
+    """Put each exact sum back together from its parts, or stop if a group's total needs more than 38 digits."""
+    for index, aggregation in enumerate(config["aggregations"]):
+        if aggregation["function"] != "sum":
+            continue
+        field = f"aggregations[{index}].value"
+        column, dtype = compiled_dtype(frame, aggregation["value"], field)
+        if not isinstance(dtype, pl.Decimal):
+            continue
+        name, places = aggregation["name"], dtype.scale
+        totals, too_large = exact_totals(grouped[name], places)
+        if too_large.any():
+            offending = grouped.filter(too_large).select(by_columns)
+            raise DataError(
+                f"aggregation {name!r} ({field}) adds up exact column {column!r}, and the total of some "
+                f"groups needs more than {EXACT_DIGITS} digits, the most an exact column holds: at {places} "
+                f"places that is {EXACT_DIGITS - places} before the point. The first is the group "
+                f"{describe_rows(offending, by_columns)}. No total is given rather than a wrong one. Convert "
+                f"the column to Float64 with cast_columns for figures this large, or round it to fewer places "
+                f"first",
+                offending=offending,
+                total=grouped.height,
+            )
+        grouped = grouped.with_columns(totals)
+    return grouped
 
 
 def _narrow_totals_back(frame: pl.DataFrame, grouped: pl.DataFrame, config: Mapping[str, Any]) -> pl.DataFrame:
@@ -448,7 +533,7 @@ def _compile_aggregation(frame: pl.DataFrame, index: int, aggregation: Mapping[s
     expression = widened(compile_for(frame, value, f"aggregations[{index}].value"), dtype)
 
     if function == "sum":
-        total = sum_without_wrapping(expression, dtype)
+        total = exact_sum_parts(expression) if isinstance(dtype, pl.Decimal) else sum_without_wrapping(expression, dtype)
         return pl.when(expression.is_not_null().any()).then(total).otherwise(None).alias(name)
     if function == "count_non_null":
         return expression.count().cast(pl.Int64).alias(name)

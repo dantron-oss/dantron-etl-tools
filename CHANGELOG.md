@@ -40,6 +40,10 @@ things; each such release says how to upgrade.
   `first` or `last` of a `Decimal(18, 2)` column gave `Decimal(18, 2)` (and on polars 1.38 a sum
   past 16 digits before the point came out wrong); it gives `Decimal(38, 2)` now, with the right
   value. Nothing to do.
+- **An exact total past 38 digits stops the step.** A `sum` in `group_by`, or a `cross_tab` cell,
+  of an exact column whose total needs more than 38 digits gave a wrong number without a word (and
+  on polars 1.38 could crash the run later); it now stops, naming the group and the column. Convert
+  the column to `Float64` for figures that large, or round it to fewer places first.
 
 ## [0.3.0] - 2026-11-20
 

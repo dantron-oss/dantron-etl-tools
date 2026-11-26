@@ -1431,3 +1431,71 @@ class TestAnExactColumnKeepsItsPlaces:
         frame = pl.DataFrame({"code": ["A"], "price": _exact(["1.10"], 2, precision=18)}).head(0)
         rows = _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("out", "sum", "[price]")]})
         assert rows.schema["out"] == pl.Decimal(38, 2)
+
+
+#: The largest exact figure at 2 places: 36 nines before the point, 38 digits in all.
+LARGEST_AT_2 = "9" * 36 + ".99"
+
+
+class TestAnExactTotalPast38DigitsStopsTheStep:
+    """A group total that needs more than 38 digits stops the step, naming the group and the column.
+
+    The engine gives such a total silently wrong, and on polars 1.38 a later read of it crashes the
+    process. The library works each total out itself, in parts that cannot overflow, so the answer
+    is the right total or a refusal, on every version.
+    """
+
+    def _sum(self, values: list[str | None], places: int = 2, codes: list[str] | None = None) -> pl.DataFrame:
+        codes = codes or ["A"] * len(values)
+        frame = pl.DataFrame({"code": codes, "price": _exact(values, places)})
+        return _grouped(frame, {"by": ["code"], "aggregations": [_aggregation("total", "sum", "[price]")]})
+
+    @pytest.mark.parametrize(
+        ("values", "total"),
+        [
+            (["9" * 36 + ".98", "0.01"], LARGEST_AT_2),
+            (["-" + "9" * 36 + ".98", "-0.01"], "-" + LARGEST_AT_2),
+            (["9" * 36 + ".00", "9" * 36 + ".00", "-" + "9" * 36 + ".00"], "9" * 36 + ".00"),
+            (["99999999999999999.99", "99999999999999999.99"], "199999999999999999.98"),
+            (["-0.05", "0.03", None], "-0.02"),
+        ],
+        ids=["just_fits", "just_fits_negative", "running_total_passes_the_limit", "carry_between_parts", "small"],
+    )
+    def test_a_total_that_fits_is_exact(self, values: list[str | None], total: str) -> None:
+        assert _written(self._sum(values)["total"]) == [total]
+
+    @pytest.mark.parametrize(
+        "values",
+        [[LARGEST_AT_2, "0.01"], ["-" + LARGEST_AT_2, "-0.01"], ["9" * 36 + ".00", "9" * 36 + ".00"]],
+        ids=["one_cent_over", "one_cent_under_negative", "far_over"],
+    )
+    def test_a_total_past_38_digits_stops_naming_the_group_and_the_column(self, values: list[str]) -> None:
+        with pytest.raises(DataError) as caught:
+            self._sum([*values, "1.00"], codes=["A"] * len(values) + ["B"])
+
+        message = str(caught.value)
+        for word in ("'total'", "'price'", "38 digits", "'A'", "Float64"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1, "group B fits and is not shown"
+
+    @pytest.mark.parametrize(
+        ("places", "values", "total"),
+        [
+            (0, ["5" + "0" * 37, "4" + "9" * 37], "9" * 38),
+            (0, ["5" + "0" * 37, "5" + "0" * 37], None),
+            (0, ["-5" + "0" * 37, "-5" + "0" * 37], None),
+            (38, ["0." + "5" * 38, "0." + "4" * 38], "0." + "9" * 38),
+            (38, ["0.5", "0.5"], None),
+        ],
+    )
+    def test_the_limit_moves_with_the_places(self, places: int, values: list[str], total: str | None) -> None:
+        if total is not None:
+            assert _written(self._sum(values, places)["total"]) == [total]
+        else:
+            with pytest.raises(DataError):
+                self._sum(values, places)
+
+    def test_a_group_of_nulls_is_null_and_no_rows_keeps_the_type(self) -> None:
+        assert self._sum([None, None])["total"].to_list() == [None]
+        empty = self._sum([]).schema
+        assert empty["total"] == pl.Decimal(38, 2)

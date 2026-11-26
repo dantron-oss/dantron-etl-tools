@@ -72,6 +72,20 @@ a `Decimal(18, 2)` column comes back typed with 18 digits even when it needs mor
 then wrong. Widening the total afterwards is too late, so `widened` casts the column first, keeping
 its places. It is the same in group_by and cross_tab.
 
+### Exact totals
+
+**An exact total is worked out by the library, in two parts.** Past 38 digits the engine's sum of an
+exact column is silently wrong inside a group, and on polars 1.38 a plain sum gives a wrong value that
+crashes the process when it is read (a Rust panic, which no `except Exception` catches). Catching an
+error after the sum cannot work, so the check comes first, and it is exact: each value is read as a
+whole number of its smallest place (12.34 is 1234), split at 10**19 into a high and a low part, and
+each part is added up as a 128-bit whole number, where neither total can overflow
+(`exact_sum_parts`). `exact_totals` carries the low total's excess into the high one and puts the
+total back together through its digits, or marks it as needing more than 38 digits. A float check
+was rejected because near the limit it refuses totals that fit. Such a group stops the step, naming
+the group and the column (owner's ruling: never a wrong number). The engine's sum is not used for
+exact columns at all, so a running total that passes the limit before coming back is still right.
+
 **Groups keep first-appearance order.** A key of several columns has no obvious sort order, and the
 order the input already has is the one a reader knows. polars promises no group order unless asked,
 so `maintain_order=True` is set.

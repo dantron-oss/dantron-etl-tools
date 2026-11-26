@@ -1337,3 +1337,31 @@ class TestAnExactColumnKeepsItsPlacesInACell:
         config = {"by": ["code"], "names_from": "period", "values_from": "price", "function": "sum"}
         rows = run_tool(CrossTab(), Ports({"rows": frame}), config)["rows"]
         assert rows["p1"].cast(pl.String).to_list() == ["10000000000000000.99"]
+
+
+class TestAnExactCellTotalPast38DigitsStopsTheStep:
+    """A cell total that needs more than 38 digits stops the step, naming the row, the cell and the column."""
+
+    def _cross(self, values: list[str]) -> pl.DataFrame:
+        frame = pl.DataFrame(
+            {
+                "code": ["a", "a", "b", "b"],
+                "period": ["p1", "p1", "p1", "p2"],
+                "price": _exact(values, 2),
+            }
+        )
+        config = {"by": ["code"], "names_from": "period", "values_from": "price", "function": "sum"}
+        return run_tool(CrossTab(), Ports({"rows": frame}), config)["rows"]
+
+    def test_a_cell_that_fits_is_exact_beside_the_limit(self) -> None:
+        rows = self._cross(["9" * 36 + ".98", "0.01", "1.00", "-2.50"])
+        assert rows["p1"].cast(pl.String).to_list() == ["9" * 36 + ".99", "1.00"]
+        assert rows["p2"].cast(pl.String).to_list() == [None, "-2.50"]
+
+    def test_a_cell_past_38_digits_stops_naming_the_cell_the_row_and_the_column(self) -> None:
+        with pytest.raises(DataError) as caught:
+            self._cross(["9" * 36 + ".99", "0.01", "1.00", "-2.50"])
+        message = str(caught.value)
+        for word in ("'p1'", "'price'", "'a'", "38 digits", "Float64"):
+            assert word in message, message
+        assert caught.value.offending_rows == 1

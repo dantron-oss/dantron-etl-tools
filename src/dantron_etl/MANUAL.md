@@ -604,6 +604,10 @@ Each of these has caught a real pipeline.
 - **A total of an exact column is exact, at the column's places.** `sum`, `min`, `max`, `first`,
   `last` and their `_non_null` forms in `group_by` and `cross_tab` keep the places, with 38 digits in
   all, on every engine version, even when the source held fewer digits.
+- **An exact total that needs more than 38 digits stops the step.** A `sum` in `group_by` or a
+  cell in `cross_tab` past 38 digits (at 2 places, 36 before the point) names the group and the
+  column instead of giving the wrong number the engine would. Convert to `Float64` for figures that
+  large, or round to fewer places first.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

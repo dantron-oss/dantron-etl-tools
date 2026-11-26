@@ -42,7 +42,7 @@ More on some settings:
 - The functions are group_by's, with group_by's rules: 'first' takes the first row's value even when null, 'first_non_null' the first value there is, and 'count_distinct' skips nulls, as SQL's COUNT(DISTINCT) does.
 - 'join_text' fills a cell as it fills a group: values in arrival order, joined with a comma and a space, nulls skipped. A cell whose values are all null is empty text.
 - So with 'join_text', a cell with rows but no values is empty text, while a cell with no rows is null. group_by never has the second case.
-- A cell of an exact Decimal column keeps its places, with 38 digits in all.
+- A cell of an exact Decimal column keeps its places, with 38 digits in all. A 'sum' that needs more than 38 digits stops the run, naming the row and the cell.
 - 'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that type, the run stops instead of giving a wrong number. Cast to Int64 first if totals can be that large.
 - 'quantile' reads 'fraction', from 0 to 1. Leave 'fraction' out for every other function; it is refused there, not ignored.
 - 'mean', 'median', 'std', 'quantile', 'last', 'last_non_null', 'any_true' and 'all_true' fill a cell as they fill a group in group_by, from the same code.

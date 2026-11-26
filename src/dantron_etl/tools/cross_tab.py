@@ -9,6 +9,8 @@ Why: docs/design/tools.md#cross_tab
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ..column_types import EXACT_DIGITS
+
 import polars as pl
 
 from ..authoring import (
@@ -28,6 +30,9 @@ from .group_by import (
     SHARED_AGGREGATES,
     STATISTICS,
     TRUTH_AGGREGATES,
+    describe_rows,
+    exact_sum_parts,
+    exact_totals,
     fraction_problem,
     shared_aggregate,
     sum_without_wrapping,
@@ -117,7 +122,8 @@ class CrossTab:
                 "comma and a space, nulls skipped. A cell whose values are all null is empty text.",
                 "So with 'join_text', a cell with rows but no values is empty text, while a cell with "
                 "no rows is null. group_by never has the second case.",
-                "A cell of an exact Decimal column keeps its places, with 38 digits in all.",
+                "A cell of an exact Decimal column keeps its places, with 38 digits in all. A 'sum' "
+                "that needs more than 38 digits stops the run, naming the row and the cell.",
                 "'sum' keeps the type of 'values_from'. If an Int32 or UInt32 total is too big for that "
                 "type, the run stops instead of giving a wrong number. Cast to Int64 first if totals "
                 "can be that large.",
@@ -206,6 +212,8 @@ class CrossTab:
         wide = frame.group_by(by_columns, maintain_order=True).agg(cells)
         if config["function"] == "sum" and measure_dtype in NARROW_SUM_LIMITS:
             wide = _narrow_cells_back(wide, names, config["values_from"], measure_dtype)
+        if config["function"] == "sum" and isinstance(measure_dtype, pl.Decimal):
+            wide = _exact_cells_back(wide, names, config["values_from"], measure_dtype.scale, by_columns)
         return Ports({"rows": wide})
 
 
@@ -259,6 +267,27 @@ def _narrow_cells_back(wide: pl.DataFrame, names: Sequence[str], measure: str, d
     return wide.with_columns(pl.col(name).cast(dtype) for name in names)
 
 
+def _exact_cells_back(
+    wide: pl.DataFrame, names: Sequence[str], measure: str, places: int, by_columns: list[str]
+) -> pl.DataFrame:
+    """Put each exact cell total back together from its parts, or stop if one needs more than 38 digits."""
+    for name in names:
+        totals, too_large = exact_totals(wide[name], places)
+        if too_large.any():
+            offending = wide.filter(too_large).select(by_columns)
+            raise DataError(
+                f"cell column {name!r} adds up exact column {measure!r}, and some totals need more than "
+                f"{EXACT_DIGITS} digits, the most an exact column holds: at {places} places that is "
+                f"{EXACT_DIGITS - places} before the point. The first is the row {describe_rows(offending, by_columns)}. "
+                f"No total is given rather than a wrong one. Convert {measure!r} to Float64 with cast_columns "
+                f"for figures this large, or round it to fewer places first",
+                offending=offending,
+                total=wide.height,
+            )
+        wide = wide.with_columns(totals)
+    return wide
+
+
 def _cell(config: Mapping[str, Any], name: str, measure_dtype: pl.DataType) -> pl.Expr:
     """One value column: the aggregate of `values_from` over this cell's rows, or null if it has none."""
     here = pl.col(config["names_from"]) == name
@@ -277,6 +306,8 @@ def _aggregate(measure: pl.Expr, aggregate: str, measure_dtype: pl.DataType, fra
     if aggregate == "count":
         return measure.len().cast(pl.Int64)
     if aggregate == "sum":
+        if isinstance(measure_dtype, pl.Decimal):
+            return exact_sum_parts(measure)
         return sum_without_wrapping(measure, measure_dtype)
     if aggregate == "count_non_null":
         return measure.count().cast(pl.Int64)
