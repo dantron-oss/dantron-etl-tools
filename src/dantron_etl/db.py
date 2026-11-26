@@ -570,6 +570,27 @@ def declared_type_of(sql_type: str) -> str | None:
     return _SQL_TYPE_NAMES.get(name.strip())
 
 
+#: A numeric or decimal type, with the digits and places it states, if any.
+_NUMERIC: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:numeric|decimal)\s*(?:\(\s*(?P<digits>[0-9]+)\s*(?:,\s*(?P<places>-?[0-9]+)\s*)?\))?\s*",
+    re.IGNORECASE,
+)
+
+
+def numeric_declaration(sql_type: str) -> tuple[int | None, int | None] | None:
+    """Return the total digits and the places a ``numeric`` or ``decimal`` type states; ``None`` for any other type.
+
+    ``numeric(12,2)`` gives (12, 2). ``numeric(5)`` gives (5, 0), as Postgres reads it. ``numeric``
+    with nothing stated gives (None, None): its values keep whatever places they were written with.
+    """
+    match = _NUMERIC.fullmatch(sql_type)
+    if match is None:
+        return None
+    if match["digits"] is None:
+        return (None, None)
+    return int(match["digits"]), int(match["places"] or 0)
+
+
 # The type of value psycopg returns for each Postgres type, where that never varies.
 _POSTGRES_VALUE_TYPES: Final[dict[str, str]] = {
     "smallint": "Int64",
@@ -703,6 +724,16 @@ class RowLoader:
 
         Used for a read with no rows to look at. ``None`` where the answer depends on the value. The default
         is an empty answer.
+        """
+        return {}
+
+    def exact_columns(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Return each column that holds exact decimals, with the digits and places it declares.
+
+        Both are None where the declaration states none. The default, and SQLite, which has no exact
+        type, answer with no columns.
         """
         return {}
 
@@ -956,6 +987,26 @@ class _PostgresLoader(RowLoader):
             return {name: _POSTGRES_VALUE_TYPES.get(_bare_type_name(spelling)) for name, spelling in cursor.fetchall()}
         finally:
             cursor.close()
+
+    def exact_columns(
+        self, connection: Any, schema: str | None, table: str
+    ) -> dict[str, tuple[int | None, int | None]]:
+        """Read each ``numeric`` column and what it declares with ``format_type`` over ``pg_attribute``.
+
+        A domain over numeric, or an array of it, is not counted: its values arrive as the driver gives them.
+        """
+        qualified = qualified_name(schema, table)
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "select attname, format_type(atttypid, atttypmod) from pg_attribute "
+                "where attrelid = %s::regclass and attnum > 0 and not attisdropped",
+                (qualified,),
+            )
+            declared = {name: numeric_declaration(spelling) for name, spelling in cursor.fetchall()}
+        finally:
+            cursor.close()
+        return {name: stated for name, stated in declared.items() if stated is not None}
 
     def merge_rows(
         self,

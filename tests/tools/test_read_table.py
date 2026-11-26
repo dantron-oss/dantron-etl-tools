@@ -50,6 +50,7 @@ import sqlite3
 import sys
 from collections.abc import Mapping
 from contextlib import closing
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,7 @@ import pytest
 from dantron_etl.authoring import (
     CATEGORIES,
     ConfigError,
+    DataError,
     PortError,
     Ports,
     REGISTRY,
@@ -66,6 +68,8 @@ from dantron_etl.authoring import (
     check_tool,
     run_tool,
 )
+from dantron_etl.db import numeric_declaration
+from dantron_etl.tools import read_table
 from dantron_etl.tools.read_table import ReadTable
 
 # The name of the variable the tests export. A name, because that is all a configuration ever holds.
@@ -231,9 +235,238 @@ class TestReadTableOnPostgres:
             "ok": pl.Boolean,
             "d": pl.Date,
             "t": pl.Datetime("us"),
-            "n": pl.Null,
+            "n": pl.Decimal(38, 2),
             "z": pl.Null,
         }
+
+
+# ---------------------------------------------------------------------------
+# Exact decimals: a Postgres numeric
+# ---------------------------------------------------------------------------
+
+
+def _exact(values: list[str | None], places: int, precision: int = 38) -> pl.Series:
+    return pl.Series([None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+class TestANumericIsDeclaredOrNot:
+    """Which SQL spellings are an exact numeric, and the digits and places each states."""
+
+    @pytest.mark.parametrize(
+        ("spelling", "declared"),
+        [
+            ("numeric(12,2)", (12, 2)),
+            ("numeric(12, 2)", (12, 2)),
+            ("NUMERIC(38,0)", (38, 0)),
+            ("decimal(10,4)", (10, 4)),
+            ("numeric(5)", (5, 0)),
+            ("numeric(5,-2)", (5, -2)),
+            ("numeric", (None, None)),
+            ("decimal", (None, None)),
+        ],
+    )
+    def test_a_numeric_spelling_gives_its_digits_and_places(
+        self, spelling: str, declared: tuple[int | None, int | None]
+    ) -> None:
+        assert numeric_declaration(spelling) == declared
+
+    @pytest.mark.parametrize("spelling", ["double precision", "real", "integer", "numeric[]", "text", "numerical"])
+    def test_any_other_spelling_is_not_a_numeric(self, spelling: str) -> None:
+        assert numeric_declaration(spelling) is None
+
+
+class TestNumericTextBecomesExact:
+    """A numeric is read as its text, and made exact at the declared places, or at the data's."""
+
+    def _convert(self, frame: pl.DataFrame, declared: Mapping[str, tuple[int | None, int | None]]) -> pl.DataFrame:
+        return read_table.exact_from_numeric_text(frame, declared, "sales.orders")
+
+    def test_a_declared_numeric_arrives_at_its_places_whatever_the_values(self) -> None:
+        frame = pl.DataFrame({"amount": ["1.5", "-2.25", None, "7"], "code": ["a", "b", "c", "d"]})
+
+        result = self._convert(frame, {"amount": (12, 2)})
+
+        assert result.schema == {"amount": pl.Decimal(38, 2), "code": pl.String}
+        assert result["amount"].to_list() == [Decimal("1.50"), Decimal("-2.25"), None, Decimal("7.00")]
+
+    @pytest.mark.parametrize("empty", [pl.String, pl.Null], ids=["text", "untyped"])
+    def test_a_declared_numeric_with_no_values_is_typed_from_the_declaration(self, empty: pl.DataType) -> None:
+        for frame in (
+            pl.DataFrame({"amount": pl.Series([], dtype=empty)}),
+            pl.DataFrame({"amount": pl.Series([None, None], dtype=empty)}),
+        ):
+            result = self._convert(frame, {"amount": (12, 2)})
+            assert result.schema == {"amount": pl.Decimal(38, 2)}
+            assert result["amount"].null_count() == result.height
+
+    def test_a_numeric_with_no_places_stated_arrives_at_the_most_places_any_value_has(self) -> None:
+        frame = pl.DataFrame({"rate": ["1.5", "2.255", "-3", None, "0.10"]})
+
+        result = self._convert(frame, {"rate": (None, None)})
+
+        assert result.schema == {"rate": pl.Decimal(38, 3)}
+        assert [None if v is None else str(v) for v in result["rate"]] == ["1.500", "2.255", "-3.000", None, "0.100"]
+
+    def test_a_numeric_with_no_places_and_whole_values_arrives_with_no_places(self) -> None:
+        result = self._convert(pl.DataFrame({"count": ["12", "-4"]}), {"count": (None, None)})
+
+        assert result.schema == {"count": pl.Decimal(38, 0)}
+
+    @pytest.mark.parametrize("empty", [pl.String, pl.Null], ids=["text", "untyped"])
+    def test_a_numeric_with_no_places_and_no_values_stays_null(self, empty: pl.DataType) -> None:
+        result = self._convert(pl.DataFrame({"rate": pl.Series([None], dtype=empty)}), {"rate": (None, None)})
+
+        assert result.schema == {"rate": pl.Null}
+
+    def test_a_negative_scale_holds_whole_numbers(self) -> None:
+        result = self._convert(pl.DataFrame({"rounded": ["1200", "-300"]}), {"rounded": (5, -2)})
+
+        assert result.schema == {"rounded": pl.Decimal(38, 0)}
+        assert result["rounded"].to_list() == [Decimal(1200), Decimal(-300)]
+
+    def test_38_digits_arrive_and_39_are_refused_by_name(self) -> None:
+        fits = "9" * 36 + ".99"
+        frame = pl.DataFrame({"total": [fits, "1.00"]})
+        assert self._convert(frame, {"total": (None, None)})["total"].to_list() == [Decimal(fits), Decimal("1.00")]
+
+        too_wide = "9" * 37 + ".99"
+        with pytest.raises(DataError) as caught:
+            self._convert(pl.DataFrame({"total": [too_wide, "1.00"], "code": ["x", "y"]}), {"total": (None, None)})
+        message = str(caught.value)
+        for word in ("'total'", "'sales.orders'", too_wide, "36 digits", "numeric(", "1 of 2"):
+            assert word in message, f"refusal should name {word!r}: {message}"
+
+    def test_a_declared_numeric_wider_than_38_digits_refuses_only_the_values_past_them(self) -> None:
+        fits, too_wide = "9" * 36 + ".00", "1" + "0" * 36 + ".00"
+        assert self._convert(pl.DataFrame({"t": [fits]}), {"t": (50, 2)})["t"].to_list() == [Decimal(fits)]
+
+        with pytest.raises(DataError) as caught:
+            self._convert(pl.DataFrame({"t": [fits, too_wide]}), {"t": (50, 2)})
+        assert too_wide in str(caught.value) and "numeric(50,2)" in str(caught.value)
+
+    @pytest.mark.parametrize("special", ["NaN", "Infinity", "-Infinity"])
+    def test_not_a_number_and_infinity_are_refused_by_name(self, special: str) -> None:
+        with pytest.raises(DataError) as caught:
+            self._convert(pl.DataFrame({"rate": ["1.5", special]}), {"rate": (12, 2)})
+
+        assert "'rate'" in str(caught.value) and special in str(caught.value)
+
+    @pytest.mark.parametrize("height", [1, 0], ids=["with_rows", "with_no_rows"])
+    def test_a_numeric_declared_with_more_than_38_places_is_refused(self, height: int) -> None:
+        frame = pl.DataFrame({"ratio": ["0." + "1" * 40]}).head(height)
+
+        with pytest.raises(ConfigError) as caught:
+            self._convert(frame, {"ratio": (60, 40)})
+
+        for word in ("'ratio'", "'sales.orders'", "numeric(60,40)", "40 places", "38"):
+            assert word in str(caught.value), f"refusal should name {word!r}: {caught.value}"
+
+
+class TestEveryExactColumnHas38Digits:
+    """An exact column a driver hands over with fewer digits in all is widened to 38, keeping its places."""
+
+    def test_a_narrow_exact_column_is_widened_and_nothing_else_changes(self) -> None:
+        frame = pl.DataFrame(
+            {"price": _exact(["12.50", None], 2, precision=12), "rate": _exact(["0.0725", "1"], 4), "n": [1, 2]}
+        )
+
+        result = read_table.exact_at_full_width(frame)
+
+        assert result.schema == {"price": pl.Decimal(38, 2), "rate": pl.Decimal(38, 4), "n": pl.Int64}
+        assert result["price"].to_list() == [Decimal("12.50"), None]
+
+    def test_a_frame_with_no_exact_column_is_returned_as_it_was(self) -> None:
+        frame = pl.DataFrame({"amount": [1.5], "code": ["a"]})
+
+        assert read_table.exact_at_full_width(frame) is frame
+
+
+class TestTheReadAsksForNumericsAsText:
+    """The query reads every column as it is, except each numeric, which it reads as its text."""
+
+    def test_only_the_numeric_columns_are_read_as_text_in_table_order(self) -> None:
+        query = read_table.select_statement('"sales"."orders"', ("id", "Order Amount", "code"), {"Order Amount"})
+
+        assert query == 'SELECT "id", "Order Amount"::text AS "Order Amount", "code" FROM "sales"."orders"'
+
+    def test_a_table_with_no_numeric_is_read_with_a_plain_select(self) -> None:
+        assert read_table.select_statement("orders", ("id", "code"), set()) == "SELECT * FROM orders"
+
+
+class TestSqliteHasNoExactType:
+    """SQLite stores no exact decimal, so its numbers arrive as they always did."""
+
+    def test_a_column_declared_decimal_on_sqlite_arrives_as_before(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "decimals.db"
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("create table priced (amount decimal(12,2), rate numeric, whole numeric(10))")
+            connection.execute("insert into priced values (1.5, 0.0725, 3)")
+            connection.commit()
+        monkeypatch.setenv(_VARIABLE, f"sqlite:///{path}")
+
+        frame = run_tool(ReadTable(), Ports({}), _read(_VARIABLE, table="priced"))["rows"]
+
+        assert frame.schema == {"amount": pl.Float64, "rate": pl.Float64, "whole": pl.Int64}
+        assert frame.rows() == [(1.5, 0.0725, 3)]
+
+
+class TestNumericOnPostgres:
+    """The same rules against a real server. They run where DANTRON_TEST_POSTGRES names one."""
+
+    def _read_scratch(self, postgres_dsn: str, monkeypatch: pytest.MonkeyPatch, table: str) -> pl.DataFrame:
+        monkeypatch.setenv(_VARIABLE, postgres_dsn)
+        return run_tool(ReadTable(), Ports({}), _read(_VARIABLE, schema="read_table_numeric", table=table))["rows"]
+
+    def test_a_declared_numeric_arrives_at_its_places_full_or_empty(
+        self, postgres_scratch: Any, postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = postgres_scratch("read_table_numeric")
+        for table in ("full_table", "empty_table"):
+            session.execute(
+                f'create table read_table_numeric.{table} (id integer, "Order Amount" numeric(12,2), '
+                f"rate numeric(10,4), loose numeric, note text)"
+            )
+        session.execute(
+            "insert into read_table_numeric.full_table values (1, 1.5, 0.07, 1.5, 'a'), "
+            "(2, -2.25, null, 2.255, null), (3, null, 1, null, 'c')"
+        )
+
+        full = self._read_scratch(postgres_dsn, monkeypatch, "full_table").sort("id")
+        empty = self._read_scratch(postgres_dsn, monkeypatch, "empty_table")
+
+        assert full.schema == {
+            "id": pl.Int64,
+            "Order Amount": pl.Decimal(38, 2),
+            "rate": pl.Decimal(38, 4),
+            "loose": pl.Decimal(38, 3),
+            "note": pl.String,
+        }
+        assert full["Order Amount"].to_list() == [Decimal("1.50"), Decimal("-2.25"), None]
+        assert [str(v) for v in full["rate"].drop_nulls()] == ["0.0700", "1.0000"]
+        assert full["loose"].to_list() == [Decimal("1.5"), Decimal("2.255"), None]
+        assert empty.schema == {
+            "id": pl.Int64,
+            "Order Amount": pl.Decimal(38, 2),
+            "rate": pl.Decimal(38, 4),
+            "loose": pl.Null,
+            "note": pl.String,
+        }
+
+    def test_a_value_past_38_digits_and_not_a_number_are_refused_by_name(
+        self, postgres_scratch: Any, postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session = postgres_scratch("read_table_numeric")
+        session.execute("create table read_table_numeric.wide (id integer, total numeric)")
+        session.execute(f"insert into read_table_numeric.wide values (1, 1.5), (2, {'9' * 37}.99)")
+        session.execute("create table read_table_numeric.not_a_number (id integer, rate numeric(12,2))")
+        session.execute("insert into read_table_numeric.not_a_number values (1, 'NaN')")
+
+        for table, column in (("wide", "'total'"), ("not_a_number", "'rate'")):
+            with pytest.raises(DataError) as caught:
+                self._read_scratch(postgres_dsn, monkeypatch, table)
+            assert column in str(caught.value)
 
 
 # ---------------------------------------------------------------------------

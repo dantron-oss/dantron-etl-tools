@@ -867,8 +867,19 @@ fail on the first value, or infer too narrow a type silently. Reading every row 
 means the tool cannot invent a schema the table does not have.
 
 **An empty table is typed from its definition**, where that is certain; a column whose values could be
-of more than one kind (numeric, zone-aware timestamp, most SQLite types) stays Null. A read with rows
-never takes this path.
+of more than one kind (numeric with no places stated, zone-aware timestamp, most SQLite types) stays
+Null. A read with rows never takes this path.
+
+**A Postgres numeric is read as its text and made exact by the tool.** The query names each numeric
+column as `"col"::text`, and the tool converts the text with the same plain-digit reader every exact
+conversion uses. That gives one answer whichever driver is installed, types a `numeric(p,s)` from its
+declaration even with no rows, and turns a value no exact column can hold (more than 38 digits, NaN,
+Infinity) into a refusal naming the column, where the engine would raise its own error. A `numeric`
+with no places stated keeps arriving at the most places in its data, as it did when the driver's
+Python decimals decided; the notes recommend declaring the places at the source, because otherwise a
+night with one 3-place value changes the column's type. An exact column from any driver is widened to
+38 digits in all, so `numeric(12,2)` and a computed 2-place column always match. SQLite has no exact
+type and is read as before.
 
 **Rows come in no particular order.** A database promises none without ORDER BY; a step that needs
 order sorts first.

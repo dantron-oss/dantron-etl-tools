@@ -21,6 +21,18 @@ things; each such release says how to upgrade.
   gives 0.0700 and 0.0725), where it used to refuse them. A `Decimal` column over a `Float64` or
   whole-number column is still refused; that refusal, and every other type refusal in `union`, now
   says to use `cast_columns` on one side.
+- **`read_table` reads a Postgres `numeric` as an exact `Decimal` it controls.** A value a `Decimal`
+  cannot hold (more than 38 digits, or `NaN`) stops the step naming the column, instead of an engine
+  error. A `numeric` with no places stated still arrives at the places of its data; the notes now say
+  so and recommend declaring them.
+
+### Changed
+
+- **`read_table` types a Postgres `numeric(p,s)` from its declaration.** An empty table's column used
+  to arrive as `Null`; it now arrives as `Decimal` with s places, as a full table's does. A column a
+  driver handed over with fewer than 38 digits in all (`numeric(12,2)` through ADBC) now arrives with
+  38, keeping its places. The figures are the same. If a later step compared that column's type
+  with a `Null` one, look at it again.
 
 ## [0.3.0] - 2026-11-20
 

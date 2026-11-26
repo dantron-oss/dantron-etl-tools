@@ -597,6 +597,10 @@ Each of these has caught a real pipeline.
 - **`union` stacks `Decimal` columns of different places at the larger places.** 0.07 over 0.0725
   comes out as 0.0700 and 0.0725. Nothing is rounded. A `Decimal` column over a `Float64` or a
   whole-number column is refused, as every other type difference is.
+- **A Postgres `numeric(p,s)` column arrives as `Decimal` with s places**, whatever its values, and an
+  empty table's does too. A `numeric` with no places stated arrives at the most places any of its
+  values has, so the type can change from night to night: declare the places at the source. A value
+  past 38 digits, or `NaN`, stops `read_table` naming the column. SQLite has no exact type.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
