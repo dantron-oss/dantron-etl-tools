@@ -147,13 +147,22 @@ class DerivesInputPorts(Protocol):
 
 @runtime_checkable
 class DerivesColumnReferences(Protocol):
-    """An optional member for a tool whose expressions read columns other than the ones in brackets.
+    """An optional member for a tool whose brackets are not all input column names.
 
-    Before a step runs, the runner checks that every column its expressions name is on its input,
-    so a misspelling is refused by name. For most tools that is every name in brackets. A tool
-    whose expression language reads more, such as multi_row_formula's [Row-1:amount], implements
-    ``column_references(config)``: for each expression field, the input columns it reads.
-    ``config`` is the settings as written, with no defaults filled in.
+    Before a step runs, the runner checks that every column its expressions read is on its input,
+    so a misspelling is refused by name. For most tools that is every name in brackets. A tool that
+    reads its brackets another way, as multi_row_formula reads ``[Row-1:amount]`` as the column
+    ``amount``, implements ``column_references(config)``. It returns, for each expression field, the
+    input columns that field reads.
+
+    Two rules:
+
+    - Return every expression field, and every input column each one reads. A column left out is
+      not checked before the step runs.
+    - ``config`` is the settings as written, with no defaults filled in, as for
+      :class:`DerivesInputPorts`.
+
+    Why: docs/design/core.md#columns-read-from-the-settings
     """
 
     def column_references(self, config: Mapping[str, Any]) -> Mapping[str, frozenset[str]]: ...

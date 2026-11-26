@@ -129,10 +129,11 @@ class MultiRowFormula:
                 "coalesce([amount], [Row-1:amount]) written to 'amount' fills every run of blanks with "
                 "the last value above it. [Row+N:<output>] is refused: that value is not written yet.",
                 "A plain [<output>] on a column already there reads the current row's value as it arrived.",
-                "A formula that reads earlier rows of its own output is worked out in order, which is "
-                "slower. A fill-down takes as many passes over the rows as its longest run of blanks; a "
-                "running balance over one long group takes a pass per row, so it is slow on a large "
-                "group. Any other formula is worked out for all rows at once.",
+                "A formula that reads earlier rows of its own output is worked out a few rows at a time, "
+                "so it is slower than any other formula, which is worked out for all rows at once. A "
+                "fill-down stays quick. A running balance over one very long group (tens of thousands of "
+                "rows) takes seconds to tens of seconds; for a running balance, running_total is the "
+                "fast choice.",
                 "'type' is needed when the expression reads earlier rows of a new output column, because "
                 "its type cannot be worked out otherwise. When it reads earlier rows of a column already "
                 "there, the output keeps that column's type.",
@@ -212,9 +213,9 @@ def _plan(frame: pl.DataFrame, config: Mapping[str, Any]) -> _Plan:
     """Check the settings against the frame's schema and work out what the step reads and writes."""
     text, output = config["expression"], config["output"]
     require_columns(frame, config.get("group_by") or [], "group_by", "rows")
-    references = row_references_for(text, "expression")
-    reads = tuple(reference for reference in references if reference.column != output)
-    writes_back = tuple(reference for reference in references if reference.column == output)
+    found = row_references_for(text, "expression")
+    reads = tuple(reference for reference in found if reference.column != output)
+    writes_back = tuple(reference for reference in found if reference.column == output)
     for reference in reads:
         if reference.column not in frame.columns:
             raise ConfigError(
@@ -348,8 +349,7 @@ def _converted_or_null(values: pl.Series, target: pl.DataType) -> tuple[pl.Serie
     return pl.select(pl.when(misfits).then(None).otherwise(read)).to_series().alias(values.name), misfits
 
 
-# How many row positions are worked out together at first, and the fewest after that. Why:
-# docs/design/tools.md#multi_row_formula
+# How many places in a group are worked out together at first, and the fewest after that.
 _FIRST_WINDOW: Final[int] = 1024
 _SMALLEST_WINDOW: Final[int] = 256
 
@@ -357,14 +357,18 @@ _SMALLEST_WINDOW: Final[int] = 256
 def _worked_out_in_turn(
     work: pl.DataFrame, plan: _Plan, config: Mapping[str, Any], group_by: Sequence[str]
 ) -> pl.Series:
-    """Work out a formula that reads its own earlier rows, so a row's earlier rows are written before it is.
+    """Work out a formula that reads earlier rows of its own output, giving what a row-by-row walk gives.
 
-    The rows are taken a window of row positions at a time: every group's first rows, then the
-    rows after them. Within a window the formula is worked out for all the rows at once, again and
-    again, each time reading what the last time wrote, until nothing changes. Once nothing changes
-    every row holds the one answer the rows above it allow, the same as working the rows out one
-    after another, because each row reads only rows above it. `work` is the input with the plain
-    row references already added.
+    Rows are put in order of their place in their group (every group's first row, then every
+    group's second, and so on) and taken a window of places at a time. Within a window, the formula
+    is worked out for all its rows at once, reading what the last pass wrote, and repeated until a
+    pass changes nothing. That is the row-by-row answer: a row reads only rows above it, so when a
+    pass changes nothing, every row equals the formula worked out on the final rows above it. Each
+    pass makes at least one more place final, so the repeating always ends.
+
+    `work` is the input with the reads of other columns already added.
+
+    Why: docs/design/tools.md#multi_row_formula
     """
     text, target, total = config["expression"], plan.target, work.height
     assert target is not None
@@ -419,6 +423,8 @@ def _worked_out_in_turn(
             )
         done = pl.concat([done, guess])
         first = last
+        # Widen the window while it settles in few passes (a fill-down), narrow it while it needs
+        # many (a running balance needs one pass per place).
         window = window * 2 if turns * 4 <= window else max(window // 2, _SMALLEST_WINDOW)
 
     return done.gather(keys.get_column("placed"))

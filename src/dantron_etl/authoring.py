@@ -10,7 +10,15 @@ example of a tool.
 from .boundary import run_tool
 from .config import FIELD_TYPES, ConfigField, require_not_blank
 from .conformance import YAML_UNSAFE_VALUES, check_registry, check_tool
-from .contract import CATEGORIES, TERMINAL_CATEGORIES, DerivesInputPorts, Tool, ToolHelp, WorkedExample
+from .contract import (
+    CATEGORIES,
+    TERMINAL_CATEGORIES,
+    DerivesColumnReferences,
+    DerivesInputPorts,
+    Tool,
+    ToolHelp,
+    WorkedExample,
+)
 from .errors import (
     MAX_REPORTED_ROWS,
     ConfigError,
@@ -38,9 +46,9 @@ from .frame_checks import (
     refuse_exact_too_large,
     refuse_rows_without_an_answer,
     require_columns,
+    require_stated_zone,
     row_references_for,
     rows_without_an_answer,
-    require_stated_zone,
 )
 from .ports import Ports
 from .registry import REGISTRY, ToolRegistry
@@ -60,6 +68,7 @@ __all__ = [
     "FIELD_TYPES",
     "TERMINAL_CATEGORIES",
     "ConfigField",
+    "DerivesColumnReferences",
     "DerivesInputPorts",
     "Ports",
     "Tool",

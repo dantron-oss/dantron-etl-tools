@@ -291,8 +291,8 @@ def _next_visible(text: str, index: int) -> str:
     return text[index : index + 1]
 
 
-# A row reference, read only for the multi_row_formula tool: [Row-1:amount] is 'amount' one row up.
-# Every other tool reads the same brackets as a column of that name, so they refuse it as before.
+# A row reference, read only by the multi_row_formula tool: [Row-1:amount] is 'amount' one row up.
+# Every other tool reads the same brackets as a column of that whole name, and refuses it.
 ROW_REACH: Final[int] = 1000
 _ROW_REFERENCE: Final[re.Pattern[str]] = re.compile(r"Row\s*([+-])\s*([0-9]+)\s*:(.*)", re.DOTALL)
 

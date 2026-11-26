@@ -711,8 +711,9 @@ and repeated until a pass changes nothing. Each row reads only rows above it, so
 values that a pass leaves unchanged, and it is the set a row-by-row walk gives. A pass also fixes at
 least one more place for good, so it always ends. A fill-down settles in as many passes as the
 longest run of blanks; 50,000 rows with a value every hundredth row take under a second. A running
-balance in one long group needs a pass per row and is slow (about half a minute for 50,000 rows in
-one group); across many groups it is quick.
+balance in one long group needs a pass per row and is slow (about 45 seconds for 50,000 rows in one
+group); across many groups it is quick (under a second for the same rows in 500 groups). The help
+points a running balance at `running_total`, which is fast in every case.
 
 **Refusals read the same as formula's.** A division by zero or a value that does not convert is
 acted on only at the first place where it happens, once every row above it is final, so the rows

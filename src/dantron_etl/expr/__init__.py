@@ -124,9 +124,9 @@ def references(text: str) -> frozenset[str]:
 def row_references(text: str) -> tuple[RowReference, ...]:
     """Every distinct ``[Row-N:column]`` and ``[Row+N:column]`` in `text`, in the order first written.
 
-    Only the multi_row_formula tool reads these. Everywhere else the brackets name a column of that
-    name, which the frame does not have, so the expression is refused there as before. A reach of 0
-    rows or past ``ROW_REACH`` is refused here.
+    Only the multi_row_formula tool reads these. Every other tool reads the brackets as a column of
+    that whole name, which the frame does not have, and refuses it. A reach of 0 rows or past
+    ``ROW_REACH`` is refused here.
     """
     found = (read_row_reference(text, name) for name in scan(text).columns)
     return tuple(reference for reference in found if reference is not None)

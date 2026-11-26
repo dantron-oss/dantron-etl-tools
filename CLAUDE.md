@@ -99,7 +99,7 @@ than the one you are editing. If anything looks impossible, run
 | `config.py` | `ConfigField`, the template a tool's settings are checked against, default filling, and finding the expressions a configuration holds. |
 | `ports.py` | `Ports`, the named-frame envelope a step reads and returns. |
 | `status.py` | Per-row status: its shape and the helpers that build one. |
-| `contract.py` | The `Tool` protocol, the optional `DerivesInputPorts` member, `ToolHelp`, `WorkedExample`, the categories, and asking which ports a step reads. |
+| `contract.py` | The `Tool` protocol, the optional `DerivesInputPorts` and `DerivesColumnReferences` members, `ToolHelp`, `WorkedExample`, the categories, and asking which ports and columns a step reads. |
 | `boundary.py` | `run_tool`, the boundary every call to a tool goes through. |
 | `frame_checks.py` | The helpers a tool calls to check its configuration against the frames it was given (`require_columns`, `compile_for`, `check_output_column` ...). |
 | `registry.py` | `ToolRegistry`, the shipped `REGISTRY`, and `get_tool`. |
@@ -300,6 +300,10 @@ everything it needs from `authoring.py`. Checklist:
 
 A tool whose input ports depend on its configuration (like `write_excel`, one port per sheet)
 implements `input_ports_for` and leaves `input_ports` empty. Never both. See `DerivesInputPorts`.
+
+A tool whose brackets are not all input column names (like `multi_row_formula`'s `[Row-1:amount]`)
+implements `column_references`, so the runner checks the columns it really reads. See
+`DerivesColumnReferences`.
 
 ### Renaming something a pipeline file says
 

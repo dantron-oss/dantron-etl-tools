@@ -15,7 +15,9 @@ from .config import ConfigField
 from .errors import ConfigError, DataError
 from .column_types import EXACT_DIGITS
 from .expr import (
+    Division,
     ExpressionError,
+    RowCheck,
     RowReference,
     compile_exact,
     compile_expr,
@@ -74,11 +76,7 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
 
     Why: docs/design/core.md#division-by-zero-stops-the-step
     """
-    try:
-        found = divisions(text, frame.schema)
-        checks = row_checks(text, frame.schema)
-    except ExpressionError as error:
-        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+    found, checks = _answer_checks(frame, text, field)
     if not (found or checks) or frame.height == 0:
         return
     used = pl.lit(True) if among is None else among.fill_null(False)
@@ -108,10 +106,18 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
         )
 
 
+def _answer_checks(frame: pl.DataFrame, text: str, field: str) -> tuple[tuple[Division, ...], tuple[RowCheck, ...]]:
+    """The divisions and per-row checks of ``text`` against ``frame``'s columns. Refuses as :func:`compile_for`."""
+    try:
+        return divisions(text, frame.schema), row_checks(text, frame.schema)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+
+
 def row_references_for(text: str, field: str) -> tuple[RowReference, ...]:
     """The row references ``[Row-N:column]`` and ``[Row+N:column]`` in ``text``, for multi_row_formula.
 
-    A reach of 0 rows, or past 1000, is refused as a :class:`ConfigError` naming ``field``.
+    A reach of 0 rows, or past ``ROW_REACH``, is refused as a :class:`ConfigError` naming ``field``.
     """
     try:
         return row_references(text)
@@ -122,16 +128,11 @@ def row_references_for(text: str, field: str) -> tuple[RowReference, ...]:
 def rows_without_an_answer(frame: pl.DataFrame, text: str, field: str) -> pl.Expr | None:
     """A true/false expression, true on each row of ``frame`` that ``text`` has no answer for.
 
-    These are the rows :func:`refuse_rows_without_an_answer` stops on. None when no row can be one.
-    For a tool that works rows out a few at a time and asks this of each few; it stops on a row
-    with :func:`refuse_rows_without_an_answer`, so the refusal reads the same. Refuses as
-    :func:`compile_for`.
+    These are the rows :func:`refuse_rows_without_an_answer` stops on, or None when no row can be
+    one. It is for a tool that works its rows out a few at a time: it finds the failing row with
+    this, then stops on it with :func:`refuse_rows_without_an_answer`, so the refusal reads the same.
     """
-    try:
-        found = divisions(text, frame.schema)
-        checks = row_checks(text, frame.schema)
-    except ExpressionError as error:
-        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+    found, checks = _answer_checks(frame, text, field)
     parts = [(division.expr == 0).fill_null(False) for division in found]
     parts += [check.failing.fill_null(False) for check in checks]
     return pl.any_horizontal(parts) if parts else None

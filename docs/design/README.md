@@ -14,6 +14,7 @@ why, and what was rejected. The code links here where a choice would otherwise s
 - [Worked examples are run](core.md#worked-examples-are-run)
 - [A worked example database](core.md#a-worked-example-database)
 - [Input ports from the settings](core.md#input-ports-from-the-settings)
+- [Columns read from the settings](core.md#columns-read-from-the-settings)
 - [Errors from a tool's own code](core.md#errors-from-a-tools-own-code)
 - [One error family](core.md#one-error-family)
 - [Unexpected failures are wrapped](core.md#unexpected-failures-are-wrapped)
