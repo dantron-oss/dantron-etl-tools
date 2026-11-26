@@ -195,16 +195,16 @@ class TestNoFileNamesAClient:
 
     @needs_terms
     def test_no_tracked_file_holds_a_client_word(self) -> None:
-        found: dict[str, list[str]] = {}
+        found: list[str] = []
         for path in tracked_files():
             text = _text(path)
             if text is None:
                 continue
             lowered = text.lower()
-            matched = [word for word in CLIENT_TERMS if word in lowered]
-            if matched:
-                found[str(path.relative_to(PROJECT_ROOT))] = matched
-        assert not found, f"files that name a client, with the words found: {found}"
+            if any(word in lowered for word in CLIENT_TERMS):
+                found.append(path.relative_to(PROJECT_ROOT).as_posix())
+        # The words themselves are never printed: in a public repository the test log is public.
+        assert not found, f"files that name a client (grep them for the words in {TERMS_FILE.name}): {found}"
 
     @needs_terms
     def test_no_file_or_folder_is_named_with_a_client_word(self) -> None:
