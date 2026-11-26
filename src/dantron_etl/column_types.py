@@ -110,11 +110,6 @@ def check_places(declared: str, places: object, field: str) -> int | None:
     return places
 
 
-def not_yet_exact(tool: str, field: str, instead: str) -> str:
-    """Return the refusal for a tool that does not take ``Decimal`` yet, naming the field and what to do."""
-    return f"config field {field!r} names type Decimal, and {tool} does not take exact decimals yet; {instead}"
-
-
 def _is_whole(value: object) -> bool:
     """Whether ``value`` is a whole number. ``True`` is not, though Python counts it as 1."""
     return isinstance(value, int) and not isinstance(value, bool)

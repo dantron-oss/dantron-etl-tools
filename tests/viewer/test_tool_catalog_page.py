@@ -51,6 +51,7 @@ that are not the catalog's.
 
 import html
 import json
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -132,8 +133,8 @@ def _rendered_depth(rendered: dict[str, Any]) -> int:
 
 
 def _as_json(value: Any) -> str:
-    """``value`` as JSON text. Dates are written as ISO text and exact decimals as their digits."""
-    return json.dumps(value, default=lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v))
+    """``value`` as JSON text: dates as ISO text and exact decimals as digits, as the catalog file holds them."""
+    return json.dumps(value, default=lambda v: str(v) if isinstance(v, Decimal) else v.isoformat())
 
 class TestCatalogCompleteness:
     """The catalog says everything the registry declares, for every tool the registry holds."""

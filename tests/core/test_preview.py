@@ -23,7 +23,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from dantron_etl.preview import MAX_WINDOW, PortStore, PreviewError, persist_ports
+from dantron_etl.preview import MAX_WINDOW, PortStore, PreviewError, persist_ports, type_label
 
 
 def _entries() -> pl.DataFrame:
@@ -509,3 +509,56 @@ class TestAStepIdIsNotAFilename:
         finally:
             server.shutdown()
             server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Exact decimals: a type a person can read, and the digits as held
+# ---------------------------------------------------------------------------
+
+
+def _exact(values: list[str | None], places: int, precision: int = 38) -> pl.Series:
+    from decimal import Decimal
+
+    return pl.Series("amount", [None if v is None else Decimal(v) for v in values], dtype=pl.Decimal(precision, places))
+
+
+class TestAnExactColumnIsShownInWords:
+    @pytest.mark.parametrize(
+        ("dtype", "label"),
+        [
+            (pl.Decimal(38, 6), "Decimal, 6 places"),
+            (pl.Decimal(38, 1), "Decimal, 1 place"),
+            (pl.Decimal(38, 0), "Decimal, 0 places"),
+            (pl.Decimal(18, 2), "Decimal, 2 places, 18 digits"),
+        ],
+    )
+    def test_an_exact_type_is_named_by_its_places(self, dtype: pl.DataType, label: str) -> None:
+        assert type_label(dtype) == label
+
+    @pytest.mark.parametrize(
+        "dtype", [pl.Float64(), pl.Int64(), pl.String(), pl.Date(), pl.Datetime("us"), pl.Null(), pl.List(pl.Int64)]
+    )
+    def test_every_other_type_keeps_the_name_it_always_had(self, dtype: pl.DataType) -> None:
+        assert type_label(dtype) == str(dtype)
+
+    def test_a_saved_port_names_its_exact_column_and_shows_the_digits_as_held(self, tmp_path: Path) -> None:
+        frame = pl.DataFrame({"amount": _exact(["58.899", "-0.5", "0.0000001", None], 10)})
+        manifest = persist_ports({"step.rows": frame}, tmp_path / "ports")
+
+        found = PortStore(tmp_path / "ports").window("step.rows")
+
+        assert manifest["step.rows"]["dtypes"] == ["Decimal, 10 places"]
+        assert found.dtypes == ("Decimal, 10 places",)
+        assert [row[0] for row in found.rows] == ["58.8990000000", "-0.5000000000", "0.0000001000", None]
+
+    def test_a_port_saved_without_rows_names_its_exact_column_too(self, tmp_path: Path) -> None:
+        manifest = persist_ports({"step.rows": pl.DataFrame({"amount": _exact(["1.50"], 2)})}, tmp_path / "p", rows=False)
+
+        assert manifest["step.rows"]["dtypes"] == ["Decimal, 2 places"]
+
+    def test_a_filter_finds_an_exact_value_by_the_digits_shown(self, tmp_path: Path) -> None:
+        persist_ports({"step.rows": pl.DataFrame({"amount": _exact(["58.899", "1.5"], 3)})}, tmp_path / "ports")
+
+        found = PortStore(tmp_path / "ports").window("step.rows", filters={"amount": "58.899"})
+
+        assert [row[0] for row in found.rows] == ["58.899"]

@@ -23,13 +23,15 @@ from ..authoring import (
     Ports,
     ToolHelp,
 )
-from ..column_types import DECLARED_TYPES, EXACT_TYPE, not_yet_exact
+from ..column_types import DECLARED_TYPES
 from ._spreadsheet import (
     MAX_CELL_TEXT,
     MAX_DATA_ROWS,
+    MAX_CELL_DIGITS,
     MAX_EXACT_INTEGER,
     MAX_SHEET_ROWS,
     require_xlsx_path,
+    past_cell_digits,
     unsupported_dtype_reason,
 )
 from ._files import refuse_to_overwrite, require_output_folder
@@ -282,8 +284,12 @@ class WriteExcel:
                 "a missing tab and never a phrase such as '(no rows)'.",
                 "A whole number beyond 2**53 - 1, either way, is refused, because a cell cannot hold "
                 "it exactly. Cast it to text upstream if that is what you want.",
-                "A Time, Duration, Decimal, list or nested record column is refused, not turned "
-                "into text.",
+                "A Time, Duration, list or nested record column is refused, not turned into text.",
+                "A Decimal column is written as numbers when every value has at most 15 significant "
+                "digits, the most a cell keeps, so the tab shows the figures as held. A value with "
+                "more refuses the column, naming the rows: round it upstream, or cast it to String.",
+                "A rule for type Decimal reaches every Decimal column, whatever its places. A rule for "
+                "Float64 does not reach a Decimal column.",
                 "Text longer than 32,767 characters, the most a cell holds, is refused, naming the "
                 "column. It is never cut short.",
                 "Not-a-number or infinity in a decimal column is refused, naming the tab, the column "
@@ -365,18 +371,7 @@ class WriteExcel:
             tabs[sheet] = port
             ports.add(port)
 
-        for index, entry in enumerate(config["sheets"]):
-            for setting in ("formats", "widths", "wrap"):
-                for number, rule in enumerate(entry.get(setting) or ()):
-                    if rule.get("type") == EXACT_TYPE:
-                        raise ConfigError(
-                            not_yet_exact(
-                                "write_excel",
-                                f"sheets[{index}].{setting}[{number}].type",
-                                "an exact column cannot be written to a tab yet, so convert it to Float64 "
-                                "with cast_columns and write the rule for Float64",
-                            )
-                        )
+        for entry in config["sheets"]:
             validate_format_rules(entry)
             validate_layout(entry)
         validate_table_names(config["sheets"])
@@ -473,6 +468,21 @@ class WriteExcel:
                         f"there, or turn those rows into null with case_when if a blank is what the "
                         f"tab should show",
                         offending=not_a_figure,
+                        total=frame.height,
+                    )
+
+            for name, dtype in frame.schema.items():
+                if not isinstance(dtype, pl.Decimal):
+                    continue
+                too_long = frame.filter(past_cell_digits(frame[name]))
+                if too_long.height:
+                    shown = ", ".join(str(value) for value in too_long[name].head(3).to_list())
+                    raise DataError(
+                        f"write_excel refuses column {name!r} on port {port!r}, bound for tab {sheet!r}: "
+                        f"a cell holds a double, which keeps {MAX_CELL_DIGITS} significant digits, and "
+                        f"values such as {shown} have more, so the tab would show a different figure. "
+                        f"Round the column upstream, or cast it to String to show every digit as text",
+                        offending=too_long,
                         total=frame.height,
                     )
 

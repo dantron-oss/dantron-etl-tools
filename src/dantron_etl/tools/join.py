@@ -21,6 +21,7 @@ from ..authoring import (
     WorkedExample,
     require_columns,
 )
+from ..column_types import EXACT_TYPE, exact_dtype
 
 # The key fields, in the order a refusal quotes them.
 _KEY_FIELDS: Final[tuple[str, str, str]] = ("keys", "left_keys", "right_keys")
@@ -89,8 +90,7 @@ class Join:
                 "'how' only decides which rows go to `joined`. With 'left', a left row that found no "
                 "partner is on `joined` with empty right-hand columns, and also on `left_only`.",
                 "There is no 'right' option: a right join is this join with the inputs swapped.",
-                "A row whose key is null never pairs, as with SQL's JOIN, so it goes to its own "
-                "side's unpaired port.",
+                "A row whose key is null never pairs, as with SQL's JOIN, so it goes to its own side's unpaired port.",
                 "remove_duplicates treats null keys the opposite way: two nulls count as the same value "
                 "there, as with SQL's DISTINCT.",
                 "A key that appears twice on the right gives each matching left row two copies.",
@@ -101,12 +101,16 @@ class Join:
                 "That order keeps written files stable between runs; a step that needs a meaningful "
                 "order still needs a sort.",
                 "The two columns of a key pair must hold comparable types. Whole numbers of different "
-                "sizes pair; a whole number against a decimal, or a date against a timestamp, is "
+                "sizes pair; a whole number against a Float64, or a date against a timestamp, is "
                 "refused before any row moves. Use cast_columns first.",
+                "Exact decimal (Decimal) keys pair by value, as SQL's = does: 1.50 pairs with 1.5000, "
+                "and 5.00 pairs with the whole number 5. The key on `joined` keeps the left side's type.",
+                "A Decimal key against a Float64 key is refused, naming the Float64 column. Convert one "
+                "side with cast_columns first, so both are Decimal or both are Float64.",
                 "A key column of type Null, as an empty branch gives, takes the other side's type, "
                 "and none of its rows pair.",
-                "Decimal (Float) keys pair only when exactly equal: 0.1 + 0.2 and 0.3 look alike but "
-                "do not pair. Round a calculated key, or cast it to text, first.",
+                "Float64 keys pair only when exactly equal: 0.1 + 0.2 and 0.3 look alike but do not "
+                "pair. Round a calculated key, or cast it to text or Decimal, first.",
             ),
             field_help={
                 "how": "Write 'left' to keep every left row, which is the usual choice. Either way "
@@ -182,49 +186,23 @@ class Join:
         left_keys, right_keys = _key_columns(config)
         right_names = _joined_right_names(left.columns, right.columns, right_keys, suffix)
 
+        how = "inner" if config["how"] == "inner" else "left"
+
         if _a_key_is_typed_null(left, right, left_keys, right_keys):
             # A Null-typed key holds only nulls, so nothing pairs. It takes the other side's type so
             # `joined` keeps its usual columns and types.
             left_typed, right_typed = _null_keys_typed(left, right, left_keys, right_keys)
-            joined = left_typed.join(
-                right_typed,
-                left_on=left_keys,
-                right_on=right_keys,
-                how="inner" if config["how"] == "inner" else "left",
-                suffix=suffix,
-                nulls_equal=False,
-                maintain_order="left_right",
-            ).select(*left.columns, *right_names.values())
-            return Ports({"joined": joined, "left_only": left, "right_only": right})
+            joined = _pair(left_typed, right_typed, left_keys, right_keys, how, suffix)
+            return Ports(
+                {"joined": joined.select(*left.columns, *right_names.values()), "left_only": left, "right_only": right}
+            )
 
         # maintain_order gives the documented row order. Both modes give the same columns.
-        joined = left.join(
-            right,
-            left_on=left_keys,
-            right_on=right_keys,
-            how="inner" if config["how"] == "inner" else "left",
-            suffix=suffix,
-            nulls_equal=False,
-            maintain_order="left_right",
-        ).select(*left.columns, *right_names.values())
+        joined = _pair(left, right, left_keys, right_keys, how, suffix).select(*left.columns, *right_names.values())
 
         # Why an anti join: docs/design/tools.md#join
-        left_only = left.join(
-            right.select(right_keys),
-            left_on=left_keys,
-            right_on=right_keys,
-            how="anti",
-            nulls_equal=False,
-            maintain_order="left",
-        )
-        right_only = right.join(
-            left.select(left_keys),
-            left_on=right_keys,
-            right_on=left_keys,
-            how="anti",
-            nulls_equal=False,
-            maintain_order="left",
-        )
+        left_only = _pair(left, right.select(right_keys), left_keys, right_keys, "anti", suffix)
+        right_only = _pair(right, left.select(left_keys), right_keys, left_keys, "anti", suffix)
 
         return Ports({"joined": joined, "left_only": left_only, "right_only": right_only})
 
@@ -246,25 +224,130 @@ def _refuse_keys_that_cannot_be_compared(
 ) -> None:
     """Refuse a key pair whose two types cannot be compared, naming both columns.
 
-    It asks polars directly with two empty frames, so it accepts exactly what a join accepts. A side
-    typed Null is skipped: it takes the other side's type when the join runs.
+    An exact key against a float key is refused, naming the float column. Exact keys the tool pairs
+    by value itself are accepted. Anything else is asked of polars directly with two empty frames,
+    so it accepts exactly what a join accepts. A side typed Null is skipped: it takes the other
+    side's type when the join runs.
     """
+    field = "keys" if shared else "left_keys' and 'right_keys"
     for left_key, right_key in zip(left_keys, right_keys, strict=True):
         left_type, right_type = left.schema[left_key], right.schema[right_key]
         if pl.Null in (left_type, right_type):
+            continue
+        floating = _float_beside_exact(left_type, right_type)
+        if floating is not None:
+            side, column, exact_column = (
+                ("left", left_key, right_key) if floating == "left" else ("right", right_key, left_key)
+            )
+            float_type = left_type if floating == "left" else right_type
+            raise ConfigError(
+                f"config field '{field}' pairs {side} column {column!r}, which holds {float_type}, with the "
+                f"exact column {exact_column!r}, which holds {EXACT_TYPE}; a float is not an exact value, so "
+                f"pairing them could match the wrong rows. Use cast_columns before this step to convert one "
+                f"side, so both are {EXACT_TYPE} or both are Float64"
+            )
+        if _common_key_type(left_type, right_type) is not None:
             continue
         probe_left = pl.DataFrame(schema={"key": left_type})
         probe_right = pl.DataFrame(schema={"key": right_type})
         try:
             probe_left.join(probe_right, on="key", how="inner")
         except pl.exceptions.PolarsError:
-            field = "keys" if shared else "left_keys' and 'right_keys"
             raise ConfigError(
                 f"config field '{field}' pairs left column {left_key!r}, which holds {left_type}, with "
                 f"right column {right_key!r}, which holds {right_type}; the two types cannot be "
                 f"compared, so no row could pair. Use cast_columns before this step so both hold the "
                 f"same type"
             ) from None
+
+
+def _float_beside_exact(left_type: pl.DataType, right_type: pl.DataType) -> str | None:
+    """Which side, 'left' or 'right', holds a float paired with an exact key on the other; None if neither."""
+    if isinstance(right_type, pl.Decimal) and left_type.is_float():
+        return "left"
+    if isinstance(left_type, pl.Decimal) and right_type.is_float():
+        return "right"
+    return None
+
+
+def _common_key_type(left_type: pl.DataType, right_type: pl.DataType) -> pl.DataType | None:
+    """The type a key pair is compared in when the tool, not the engine, must make the two agree.
+
+    Two exact keys of different places are compared at the larger places, and an exact key with a
+    whole-number key at the exact side's places: SQL's = compares both by value. None for every
+    other pair, which the engine compares as it is or refuses.
+    """
+    if left_type == right_type:
+        return None
+    left_exact, right_exact = isinstance(left_type, pl.Decimal), isinstance(right_type, pl.Decimal)
+    if left_exact and right_exact:
+        return exact_dtype(max(left_type.scale, right_type.scale))
+    if left_exact and right_type.is_integer():
+        return exact_dtype(left_type.scale)
+    if right_exact and left_type.is_integer():
+        return exact_dtype(right_type.scale)
+    return None
+
+
+def _pair(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    left_keys: Sequence[str],
+    right_keys: Sequence[str],
+    how: str,
+    suffix: str,
+) -> pl.DataFrame:
+    """Join ``left`` to ``right`` on the key pairs, comparing exact keys by value.
+
+    When no key pair needs it, this is the engine's own join. Otherwise both sides get a copy of
+    each key in the type the pair is compared in, the join runs on the copies, and the copies are
+    dropped, so every original column keeps its own type and digits. A value too wide for the
+    larger places becomes null in its copy and pairs nothing, which is right: no value on the
+    other side can equal it.
+    """
+    order = "left" if how == "anti" else "left_right"
+    common = [
+        _common_key_type(left.schema[left_key], right.schema[right_key])
+        for left_key, right_key in zip(left_keys, right_keys, strict=True)
+    ]
+    if all(dtype is None for dtype in common):
+        return left.join(
+            right,
+            left_on=list(left_keys),
+            right_on=list(right_keys),
+            how=how,
+            suffix=suffix,
+            nulls_equal=False,
+            maintain_order=order,
+        )
+    taken = set(left.columns) | set(right.columns)
+    copies = [_unused_name(f"__key_{index}", taken) for index in range(len(common))]
+
+    def copied(frame: pl.DataFrame, keys: Sequence[str]) -> pl.DataFrame:
+        return frame.with_columns(
+            (pl.col(key) if dtype is None else pl.col(key).cast(dtype, strict=False)).alias(copy)
+            for key, dtype, copy in zip(keys, common, copies, strict=True)
+        )
+
+    # The right keys repeat the left ones, so they are dropped before the join, as the engine does.
+    right_side = right if how == "anti" else right.drop(right_keys)
+    paired = copied(left, left_keys).join(
+        copied(right, right_keys).select(*right_side.columns, *copies),
+        on=copies,
+        how=how,
+        suffix=suffix,
+        nulls_equal=False,
+        maintain_order=order,
+    )
+    return paired.drop(copies)
+
+
+def _unused_name(name: str, taken: set[str]) -> str:
+    """``name``, lengthened with underscores until no column carries it."""
+    while name in taken:
+        name += "_"
+    taken.add(name)
+    return name
 
 
 def _a_key_is_typed_null(

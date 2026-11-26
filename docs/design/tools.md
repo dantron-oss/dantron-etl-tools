@@ -48,6 +48,14 @@ the types compare, so the check accepts exactly what a join accepts (Int32 with 
 Float64 no). A key column typed Null, as an empty branch gives, takes the other side's type so
 `joined` keeps its usual columns; none of its rows pair.
 
+**Exact keys are compared by value, by the tool.** polars joins only keys of one type, so it refuses
+`Decimal(38,2)` against `Decimal(38,4)` and against a whole number. SQL's `=` compares both by value,
+so the tool gives each side a copy of the key at the larger places, joins on the copies and drops
+them; every original column keeps its own type. A value with too many digits before the point to be
+held at the larger places becomes null in its copy and pairs nothing, which is the right answer: no
+value on the other side can equal it. A float key against an exact key is refused (the owner's ruling
+that an exact column meeting a float stops the step), naming the float column.
+
 ## group_by
 
 **Aggregates are settings, not expression functions.** The expression language works one row at a
@@ -352,6 +360,13 @@ would force a select_columns step whose only job is to please this tool.
 **Types must agree, except an all-null column.** Text stacked onto a number turns money into text, and
 whichever side was rewritten, it happened silently; the refusal names both types. A column of nothing
 has no type to disagree with: null belongs to every type, and an empty branch is an ordinary frame.
+
+**Exact columns of different places widen.** 1.5 at 1 place and 1.50 at 2 are the same value, and
+adding zeros loses nothing, so they stack at the larger places. The tool widens them itself: the
+engine's own stacking keeps the first side's places and rounds the second (1.2345 under 2 places
+becomes 1.23). A value with so many digits before the point that the larger places cannot hold it is
+refused by name. An exact column over a whole number stays refused, as Int32 over Int64 is: union
+refuses every other type difference.
 
 **Rows keep their order and nothing is de-duplicated.** All of `top`, then all of `bottom`. Stacking
 is not judging; remove_duplicates reports what it removes.
@@ -662,6 +677,8 @@ record. A pair of a record with itself is how a record with no links is listed.
 
 **Types must match.** The number 2 and the text '2' are not the same record, so the tool refuses rather
 than guess.
+Two exact columns of different places are the exception, as in `union`: 1.50 and 1.5000 are one
+record, widened to the larger places. A value too wide to widen is refused by name, never rounded.
 
 **How it runs on whole columns.** Each distinct record gets a number: its position when sorted, so a
 smaller number is a smaller record. In each round, every group touching a smaller group points at the
@@ -895,8 +912,19 @@ fail on the first value, or infer too narrow a type silently. Reading every row 
 means the tool cannot invent a schema the table does not have.
 
 **An empty table is typed from its definition**, where that is certain; a column whose values could be
-of more than one kind (numeric, zone-aware timestamp, most SQLite types) stays Null. A read with rows
-never takes this path.
+of more than one kind (numeric with no places stated, zone-aware timestamp, most SQLite types) stays
+Null. A read with rows never takes this path.
+
+**A Postgres numeric is read as its text and made exact by the tool.** The query names each numeric
+column as `"col"::text`, and the tool converts the text with the same plain-digit reader every exact
+conversion uses. That gives one answer whichever driver is installed, types a `numeric(p,s)` from its
+declaration even with no rows, and turns a value no exact column can hold (more than 38 digits, NaN,
+Infinity) into a refusal naming the column, where the engine would raise its own error. A `numeric`
+with no places stated keeps arriving at the most places in its data, as it did when the driver's
+Python decimals decided; the notes recommend declaring the places at the source, because otherwise a
+night with one 3-place value changes the column's type. An exact column from any driver is widened to
+38 digits in all, so `numeric(12,2)` and a computed 2-place column always match. SQLite has no exact
+type and is read as before.
 
 **Rows come in no particular order.** A database promises none without ORDER BY; a step that needs
 order sorts first.

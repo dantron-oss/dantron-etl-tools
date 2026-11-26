@@ -35,6 +35,7 @@ why, and what was rejected. The code links here where a choice would otherwise s
 - [A missing SQLite file is refused](database.md#a-missing-sqlite-file-is-refused)
 - [Dates in SQLite](database.md#dates-in-sqlite)
 - [One type vocabulary for both engines](database.md#one-type-vocabulary-for-both-engines)
+- [Numbers into a numeric column](database.md#numbers-into-a-numeric-column)
 - [Reading a table's rules](database.md#reading-a-tables-rules)
 - [One loader per driver](database.md#one-loader-per-driver)
 - [Postgres loading](database.md#postgres-loading)

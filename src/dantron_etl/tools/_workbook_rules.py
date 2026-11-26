@@ -9,7 +9,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..column_types import DECLARED_DTYPE
+from ..column_types import DECLARED_DTYPE, EXACT_TYPE
 
 _DATE_FORMAT: Final[str] = "yyyy-mm-dd"
 _DATETIME_FORMAT: Final[str] = "yyyy-mm-dd hh:mm:ss"
@@ -52,12 +52,15 @@ def resolve_rules(
 
 
 def _declared_name(dtype: pl.DataType) -> str | None:
-    """The type name a rule uses for `dtype`. Every whole-number width counts as Int64.
+    """The type name a rule uses for `dtype`. Every whole-number width counts as Int64, and every
+    exact column as Decimal, whatever its places.
 
     A formula makes a whole-number literal 32-bit, so an Int64 rule must also reach Int32 columns.
     """
     if dtype.is_integer():
         return "Int64"
+    if isinstance(dtype, pl.Decimal):
+        return EXACT_TYPE
     return _DECLARED_NAME.get(dtype.base_type())
 
 

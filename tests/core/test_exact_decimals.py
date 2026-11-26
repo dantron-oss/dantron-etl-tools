@@ -8,10 +8,8 @@ is reported as not fitting.
 """
 
 import random
-from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -37,7 +35,6 @@ from dantron_etl.column_types import (
     to_exact,
 )
 from dantron_etl.tools.cast_columns import CastColumns
-from dantron_etl.tools.write_excel import WriteExcel
 
 
 def exact_series(values: list[str | None], places: int, *, precision: int = 38, name: str = "x") -> pl.Series:
@@ -133,34 +130,6 @@ def test_places_that_are_not_a_whole_number_are_refused(places: Any) -> None:
 # ---------------------------------------------------------------------------
 # Tools that do not take the type yet
 # ---------------------------------------------------------------------------
-
-
-def _refused(tool: Any, config: Mapping[str, Any], inputs: Mapping[str, pl.DataFrame] | None = None) -> str:
-    with pytest.raises(ConfigError) as caught:
-        run_tool(tool, Ports(dict(inputs or {})), config)
-    return str(caught.value)
-
-
-def _says_not_yet(message: str, tool: str, field: str) -> None:
-    assert repr(field) in message
-    assert "Decimal" in message
-    assert f"{tool} does not take exact decimals yet" in message
-
-
-@pytest.mark.parametrize(
-    ("setting", "rule"),
-    [
-        ("formats", {"type": "Decimal", "format": "0.00"}),
-        ("widths", {"type": "Decimal", "width": 12}),
-        ("wrap", {"type": "Decimal"}),
-    ],
-)
-def test_write_excel_refuses_a_decimal_rule_for_now(tmp_path: Path, setting: str, rule: dict[str, Any]) -> None:
-    sheet = {"port": "orders", "sheet": "Orders", setting: [rule]}
-    config = {"path": str(tmp_path / "pack.xlsx"), "sheets": [sheet]}
-    message = _refused(WriteExcel(), config, {"orders": pl.DataFrame({"amount": [1.5]})})
-    _says_not_yet(message, "write_excel", f"sheets[0].{setting}[0].type")
-    assert not (tmp_path / "pack.xlsx").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +423,9 @@ def test_converting_to_float_gives_what_the_engine_gave_for_these_figures(places
         ("0.0000000000000000000000125", 25, 1.2499999999999999e-23),
     ],
 )
-def test_where_the_engines_conversion_to_float_misses_the_nearest_double(written: str, places: int, today: float) -> None:
+def test_where_the_engines_conversion_to_float_misses_the_nearest_double(
+    written: str, places: int, today: float
+) -> None:
     """Past 2**53 in the digits held, or past 22 places, the engine's conversion can miss by one step.
 
     cast_columns used it before; it now lands on the nearest double.

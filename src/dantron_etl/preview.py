@@ -71,6 +71,21 @@ def _beside(columns: list[str]) -> str:
     return name
 
 
+def type_label(dtype: pl.DataType) -> str:
+    """A column's type as a reader sees it: an exact column by its places, every other type by its name.
+
+    ``Decimal(38, 6)`` reads "Decimal, 6 places", as a flow writes it. Total digits are named only when
+    they are not the 38 every exact column in a pipeline has.
+    """
+    if not isinstance(dtype, pl.Decimal):
+        return str(dtype)
+    places = dtype.scale or 0
+    label = f"Decimal, {places} {'place' if places == 1 else 'places'}"
+    if dtype.precision is not None and dtype.precision != 38:
+        label += f", {dtype.precision} digits"
+    return label
+
+
 class PreviewError(ValueError):
     """A request the store cannot answer: an unknown port, step or column, or a bad window."""
 
@@ -125,7 +140,7 @@ def persist_ports(
                 "file": None,
                 "rows": frame.height,
                 "columns": list(frame.columns),
-                "dtypes": [str(d) for d in frame.dtypes],
+                "dtypes": [type_label(d) for d in frame.dtypes],
             }
             continue
         frame.write_parquet(directory / name)
@@ -133,7 +148,7 @@ def persist_ports(
             "file": name,
             "rows": frame.height,
             "columns": list(frame.columns),
-            "dtypes": [str(d) for d in frame.dtypes],
+            "dtypes": [type_label(d) for d in frame.dtypes],
         }
         marks = marked.get(key)
         if marks is not None:

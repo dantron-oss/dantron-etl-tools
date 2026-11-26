@@ -587,7 +587,7 @@ Each of these has caught a real pipeline.
   because the engine would cut it to `1` without a word. Round it first: `round([seats], 0)`.
 - **`Decimal` is the exact type, and its places are written beside it.** `{type: Decimal, places: 2}`
   names a column that holds figures such as 812.40 exactly: 38 digits in all, `places` of them after
-  the point, from 0 to 38. `write_excel`'s rules refuse it by name for now.
+  the point, from 0 to 38.
 - **`cast_columns` converts to `Decimal` without rounding.** Text written as plain digits (`-12.50`),
   whole numbers, exact columns of other places and floats all convert, but only a value that fits:
   `'1.005'` does not fit 2 places, so the step stops and says to `round` first, or under
@@ -608,6 +608,32 @@ Each of these has caught a real pipeline.
   cell in `cross_tab` past 38 digits (at 2 places, 36 before the point) names the group and the
   column instead of giving the wrong number the engine would. Convert to `Float64` for figures that
   large, or round to fewer places first.
+- **Exact keys pair by value.** `join` pairs a `Decimal` key with a `Decimal` key of other places
+  (1.50 with 1.5000) and with a whole-number key (5.00 with 5), as SQL's `=` does; the key on
+  `joined` keeps the left side's type. `make_groups` treats two `Decimal` columns of different
+  places the same way, writing the records at the larger places. A `Decimal` key beside a `Float64`
+  key is refused, naming the float column: convert one side with `cast_columns` first.
+- **`union` stacks `Decimal` columns of different places at the larger places.** 0.07 over 0.0725
+  comes out as 0.0700 and 0.0725. Nothing is rounded. A `Decimal` column over a `Float64` or a
+  whole-number column is refused, as every other type difference is.
+- **A Postgres `numeric(p,s)` column arrives as `Decimal` with s places**, whatever its values, and an
+  empty table's does too. A `numeric` with no places stated arrives at the most places any of its
+  values has, so the type can change from night to night: declare the places at the source. A value
+  past 38 digits, or `NaN`, stops `read_table` naming the column. SQLite has no exact type.
+- **A database's `numeric(p,s)` column takes a number only when every value fits.** `write_table`
+  and `publish_tables` check each value against s places and p digits before anything is written,
+  because the database would round the rest without a word. A `Float64` is read to 15 significant
+  digits first (10.25 fits `numeric(12,2)`, 10.255 does not). A `Decimal` column never goes into a
+  `double precision`, `real` or `float` column; `cast_columns` it to `Float64` first. A `Float64`
+  into a float column is written as it always was.
+- **`write_excel` writes a `Decimal` column when a cell keeps every value.** A cell holds a double,
+  which keeps 15 significant digits, so a value with more (12,345,678,901,234.56) refuses the column,
+  naming the rows: round it upstream, or cast it to `String`. A rule for `type: Decimal` in
+  `formats`, `widths` or `wrap` reaches every `Decimal` column, whatever its places; a `Float64`
+  rule does not. `write_csv` writes a `Decimal` with every place it holds.
+- **The viewer names an exact column by its places.** A column heading reads `Decimal, 2 places`,
+  as a flow writes the type, and each cell shows the digits as held (`58.899000`), never a rounded
+  or scientific spelling. A saved run's `ports.json` records the type the same way.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
