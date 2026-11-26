@@ -4,12 +4,18 @@ This is the per-row writer behind format_number(): the digits grouped in threes,
 places, and the separators the author stated.
 """
 
-from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_EVEN, Context, Decimal, localcontext
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal, localcontext
 from typing import Any, Final
 
 # The one rounding format_number uses, whatever the process-wide decimal context says. Every field is
 # stated, because a bare Context() copies the process-wide defaults, which can be changed too.
 _ROUNDING: Final[Context] = Context(prec=MAX_PREC, rounding=ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)
+
+
+def rounded_half_away(value: Decimal, decimals: int) -> Decimal:
+    """An exact value rounded half away from zero to ``decimals`` places, as round() rounds it."""
+    with localcontext(_ROUNDING):
+        return value.quantize(Decimal((0, (1,), -decimals)), rounding=ROUND_HALF_UP)
 
 
 def _grouped(digits: str, separator: str) -> str:

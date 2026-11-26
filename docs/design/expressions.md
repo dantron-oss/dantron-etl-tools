@@ -237,7 +237,14 @@ names the rows. In `case_when` a row no case reaches is not checked, and its unu
   since each is compared. `nullif` compares by value and gives its first value back in its own
   type. `mod` works on the digits held, as 128-bit whole numbers at the larger places, and takes
   the dividend's sign as PostgreSQL's `mod(numeric, numeric)` does. `floor`, `ceil` and `sign` keep
-  the column's type, as they did.
+  the column's type, as they did, and stop the step where the answer needs one more whole digit
+  than the column holds (the engine writes it there anyway, as a value too large for its type).
+- `round(x, n)` gives exactly `n` places, as PostgreSQL's does. To fewer places it works on the
+  digits held, as whole numbers, so a value that rounds up to one more whole digit (99.5 to 100) is
+  still held; the engine would round within the column's own type and could not hold it. To more
+  places it pads, and a value with too many whole digits for them stops the step. `format_number`
+  rounds an exact value in Python's exact decimals, row by row as it already writes, so it never
+  meets that limit.
 - `/`: the ruling is 16 places, or more if either side has more, the last rounded half away from
   zero. The engine divides at the larger places of its two sides and rounds half to even, so both
   sides are written at the answer's places first; at 16 places that leaves each side 22 whole

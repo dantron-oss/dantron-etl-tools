@@ -44,6 +44,12 @@ things; each such release says how to upgrade.
   `Decimal` column matched as floats; it now matches 0.30 and 812.40 exactly, and never rounds
   (0.12 is not in `(0.125)`). A value with many whole digits compared with one with many places,
   such as a 30-digit count against a price with 10 places, gave a blank; it now gives the answer.
+- **`round(x, n)` on an exact value gives exactly `n` places.** `round([price], 2)` on a `Decimal`
+  column with 3 places kept the 3 places (1.005 became 1.010); it now gives a `Decimal` with 2 places
+  (1.01), as PostgreSQL's `round` does, and pads with zeros when the value has fewer. `round` of an
+  exact product gave a `Float64`; it is now exact. `floor`, `ceil` and `round` on a value at the very
+  top of what its column holds, which gave a number too large for the column without a word, now
+  stop the step and name the rows. Figures are unchanged; only the places written after them move.
 
 ## [0.3.0] - 2026-11-20
 

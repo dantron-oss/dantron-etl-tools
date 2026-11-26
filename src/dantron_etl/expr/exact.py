@@ -222,6 +222,60 @@ def _away_from_a_tie(held: pl.Expr, by: pl.Expr, quotient: pl.Expr, places: int)
     )
 
 
+def round_to(subject: Part, digits: int) -> Exact:
+    """``subject`` rounded half away from zero to exactly ``digits`` places: 1.005 to 2 is 1.01, and 1.5 is 1.50.
+
+    Fewer places are worked out on the digits held, as whole numbers, so nothing is rounded twice
+    and a value that rounds up to one more whole digit is still held. More places are padded with
+    zeros; a value with too many whole digits for them is too large.
+    """
+    value, dtype = subject
+    if not 0 <= digits <= EXACT_DIGITS:
+        from .errors import Refusal
+
+        raise Refusal(
+            f"round() was asked for {digits} places of an exact decimal, which holds {EXACT_DIGITS} digits in "
+            f"all, so at most {EXACT_DIGITS} places"
+        )
+    places = places_of(dtype)
+    if digits >= places:
+        written, misfit = at_places(value, dtype, digits)
+        return Exact(written, digits, misfit)
+    held = _digits_held(value, dtype)
+    unit = 10 ** (places - digits)
+    size = (held.abs() + pl.lit(unit // 2, dtype=pl.Int128)) // pl.lit(unit, dtype=pl.Int128)
+    signed = pl.when(held < 0).then(pl.lit(0, dtype=pl.Int128) - size).otherwise(size)
+    return Exact(_with_places(signed, digits), digits, pl.lit(False))
+
+
+def floor(subject: Part) -> Exact:
+    """The whole number at or below, in the column's own type; too large where that needs another digit."""
+    value, dtype = subject
+    too_large = (value < -_largest_whole(dtype)).fill_null(False)
+    return Exact(_unless(too_large, value).floor(), places_of(dtype), too_large, dtype)
+
+
+def ceil(subject: Part) -> Exact:
+    """The whole number at or above, in the column's own type; too large where that needs another digit."""
+    value, dtype = subject
+    too_large = (value > _largest_whole(dtype)).fill_null(False)
+    return Exact(_unless(too_large, value).ceil(), places_of(dtype), too_large, dtype)
+
+
+def sign(subject: Part) -> Exact:
+    """-1, 0 or 1 in the column's own type; too large only in a column with no room for a whole digit."""
+    value, dtype = subject
+    too_large = (value != 0).fill_null(False) & (_largest_whole(dtype) < 1)
+    return Exact(_unless(too_large, value).sign(), places_of(dtype), too_large, dtype)
+
+
+def _largest_whole(dtype: pl.DataType) -> pl.Expr:
+    """The largest whole number a column of this type holds: 38 digits less its places, all nines."""
+    precision = dtype.precision if isinstance(dtype, pl.Decimal) and dtype.precision else EXACT_DIGITS  # type: ignore[attr-defined]
+    whole = precision - places_of(dtype)
+    return pl.lit(Decimal(10**whole - 1), dtype=exact_dtype(0))
+
+
 def coalesce(*parts: Part) -> Exact:
     """The first value that is not null, with the largest places of them all.
 

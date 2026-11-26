@@ -534,3 +534,80 @@ class TestDividingExactValues:
         # The difference of two wrapped products is the true one whenever the true one fits.
         assert found.to_list()[0] == 10**38
 
+
+# ---------------------------------------------------------------------------
+# Unit 15: round(x, n) on an exact value gives exactly n places
+# ---------------------------------------------------------------------------
+
+
+class TestRoundingAnExactValue:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r", "s", "t"],
+            "x": exact(["1.005", "-2.345", "2.500", "-0.004", None], 3),
+            "y": exact(["58.899000", "-0.000500", "0.125000", "7", "0"], 6),
+        }
+    )
+
+    def test_rounds_half_away_from_zero_to_exactly_that_many_places(self) -> None:
+        _exactly(_formula(self.FRAME, "round([x], 2)"), 2, ["1.01", "-2.35", "2.50", "0.00", None])
+        _exactly(_formula(self.FRAME, "round([x], 0)"), 0, ["1", "-2", "3", "0", None])
+        _exactly(_formula(self.FRAME, "round([y], 3)"), 3, ["58.899", "-0.001", "0.125", "7.000", "0.000"])
+
+    def test_fewer_places_than_asked_are_padded(self) -> None:
+        _exactly(_formula(self.FRAME, "round([x], 5)"), 5, ["1.00500", "-2.34500", "2.50000", "-0.00400", None])
+
+    def test_a_product_rounded_stays_exact(self) -> None:
+        _exactly(_formula(self.FRAME, "round([x] * [y], 2)"), 2, ["59.19", "0.00", "0.31", "-0.03", None])
+
+    def test_38_places_is_the_most_and_39_is_refused_when_the_step_starts(self) -> None:
+        from dantron_etl.authoring import ConfigError
+
+        tiny = pl.DataFrame({"z": exact(["0.5"], 1)})
+        _exactly(_formula(tiny, "round([z], 38)"), 38, ["0.5" + "0" * 37])
+        with pytest.raises(ConfigError) as raised:
+            _formula(tiny, "round([z], 39)")
+        assert "38" in str(raised.value) and "round()" in str(raised.value)
+
+    def test_a_value_too_large_for_the_places_asked_stops_the_step(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "w": exact(["1", "9" * 37], 0)})
+        said = _formula_refusal(frame, "round([w], 2)")
+        assert "38 digits" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "round([w], 1)"), 1, ["1.0"])
+
+    def test_rounding_up_to_one_more_whole_digit_is_exact(self) -> None:
+        frame = pl.DataFrame({"m": exact(["9" * 37 + ".5", "-" + "9" * 37 + ".5"], 1)})
+        _exactly(_formula(frame, "round([m], 0)"), 0, ["1" + "0" * 37, "-1" + "0" * 37])
+
+    def test_a_float_column_rounds_as_it_always_did(self) -> None:
+        frame = pl.DataFrame({"f": [1.005, 2.675]})
+        assert _formula(frame, "round([f], 2)").to_list() == [1.01, 2.68]
+
+    def test_format_number_writes_what_round_gives(self) -> None:
+        out = _formula(self.FRAME, "format_number([x], 2, ',', '.')").to_list()
+        assert out == ["1.01", "-2.35", "2.50", "-0.00", None]
+        edge = pl.DataFrame({"m": exact(["9" * 37 + ".5"], 1)})
+        assert _formula(edge, "format_number([m], 0, ',', '')").to_list() == ["10" + ",000" * 12]
+
+
+class TestFloorAndCeilOnAnExactValue:
+    def test_keep_the_column_type_and_stop_where_the_answer_needs_another_digit(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "m": exact(["-1.25", "-" + "9" * 36 + ".50"], 2)})
+        out = _formula(frame.head(1), "floor([m])")
+        assert out.dtype == pl.Decimal(38, 2) and out.to_list() == [Decimal("-2.00")]
+        said = _formula_refusal(frame, "floor([m])")
+        assert "38 digits" in said and "'key': 'large'" in said
+        _exactly(_formula(frame, "ceil([m])"), 2, ["-1.00", "-" + "9" * 36 + ".00"])
+        assert "'key': 'large'" in _formula_refusal(frame, "ceil(-[m])")
+
+    def test_a_narrower_column_stops_where_its_own_digits_run_out(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "m": exact(["9999999.50", "99999999.50"], 2, precision=10)})
+        assert "'key': 'large'" in _formula_refusal(frame, "ceil([m])")
+        assert _formula(frame.head(1), "ceil([m])").to_list() == [Decimal("10000000.00")]
+
+    def test_sign_keeps_the_type_and_stops_only_where_the_column_has_no_whole_digit(self) -> None:
+        frame = pl.DataFrame({"m": exact(["-1.25", "0.00", "3.50"], 2), "t": exact(["-0.5", "0", "0.25"], 38)})
+        _exactly(_formula(frame, "sign([m])"), 2, ["-1.00", "0.00", "1.00"])
+        assert "38 digits" in _formula_refusal(frame.with_columns(key=pl.Series(["a", "b", "c"])), "sign([t])")
+        _exactly(_formula(frame.slice(1, 1), "sign([t])"), 38, ["0." + "0" * 38])
+

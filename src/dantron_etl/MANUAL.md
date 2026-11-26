@@ -597,6 +597,9 @@ Each of these has caught a real pipeline.
 - **`/` gives 16 places, or more if either side has more,** and rounds the last place half away from
   zero: 100.00 / 7.00 is 14.2857142857142857. Round the answer to the places you report. At 16 places
   each side may have at most 22 whole digits; a larger one stops the step.
+- **`round(x, n)` on an exact value gives exactly `n` places**, half away from zero: `round(58.899000,
+  2)` is 58.90 and `round(1.5, 2)` is 1.50. `n` runs to 38. Apart from the last place of a division, it is
+  the only place an exact figure is rounded.
 - **An exact value never meets a float.** `[amount] + [ratio]`, `[amount] = [ratio]`,
   `coalesce([amount], [ratio])` and every other function that combines values stop the step when
   `amount` is `Decimal` and `ratio` is `Float64`, naming the float. Convert one side first with

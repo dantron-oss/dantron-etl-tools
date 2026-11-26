@@ -31,7 +31,7 @@ from . import exact
 from .dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .errors import Refusal
 from .families import Family
-from .formatting import written_as_text
+from .formatting import rounded_half_away, written_as_text
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,8 @@ def _round(subject: pl.Expr, digits: int, *, dtype: pl.DataType | None = None) -
 
 def _rounded(subject: pl.Expr, digits: int, dtype: pl.DataType) -> pl.Expr:
     if isinstance(dtype, pl.Decimal):
-        return subject.round(digits, mode="half_away_from_zero")
+        # Reached only without a schema; with one, the compiler uses exact.round_to and checks the rows.
+        return exact.round_to((subject, dtype), digits).expr
     read = _READ_DIGITS.get(dtype)
     if read is None:
         if dtype.is_integer() or dtype == pl.Null:
@@ -340,6 +341,14 @@ def _format_number(
     to zero keeps its minus sign (-0.004 reads -0.00). A null stays null. Written row by row, since polars
     has no kernel for grouping digits. The width and separators come from the file, never from a row.
     """
+    if isinstance(dtype, pl.Decimal):
+        # An exact value is rounded here, in Python's exact decimals, so no figure is too large to round.
+        return subject.map_elements(
+            lambda value: written_as_text(
+                rounded_half_away(value, decimals), decimals, thousands, point, negative=value < 0
+            ),
+            return_dtype=pl.String,
+        )
     # Digits from round()'s answer; the sign from the value itself, so -0.004 reads -0.00.
     return pl.struct(value=subject, rounded=_round(subject, decimals, dtype=dtype)).map_elements(
         lambda row: None
@@ -496,6 +505,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A number rounded to some decimal places, halves away from zero like a spreadsheet: 2.5 gives 3.",
         example="round([amount], 2)",
+        on_exact=exact.round_to,
     ),
     Function(
         "year",
@@ -688,6 +698,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A number taken down to the whole number at or below it, in the number's own type: -2.5 gives -3.",
         example="floor([hours])",
+        on_exact=exact.floor,
     ),
     Function(
         "ceil",
@@ -698,6 +709,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="A number taken up to the whole number at or above it, in the number's own type: 2.1 gives 3.",
         example="ceil([hours])",
+        on_exact=exact.ceil,
     ),
     Function(
         "sign",
@@ -708,6 +720,7 @@ DEFINITIONS: Final[tuple[Function, ...]] = (
         typed=True,
         summary="-1 for a number below zero, 0 for zero, 1 above zero.",
         example="sign([balance])",
+        on_exact=exact.sign,
     ),
     Function(
         "mod",
