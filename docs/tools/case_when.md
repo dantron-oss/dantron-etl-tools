@@ -28,6 +28,7 @@ Use case_when to label or work out a column by rules, like a spreadsheet's neste
 - A condition that is null because of a missing value does not count as met, so the row moves on to the next case.
 - Every 'then' and 'otherwise' must give the same kind of value: text, a number, a date, or true/false. A mix is refused before any row runs, naming the case.
 - A value of null fits with any kind, so it is never the mismatch that gets refused.
+- When one branch gives an exact decimal, every branch is written with the largest places among them. A whole number, or a number typed in the expression such as 0.0, is exact beside it; a float branch is refused, naming it.
 - With 'replace', the whole column is rewritten, so a row no case reached gets 'otherwise', or null if there is none, instead of keeping its old value.
 - With 'replace', the cases read the column's values as they were before this step, so a case can read the column it writes.
 - A name already on the input is refused unless 'replace' is true, and 'replace' on a column that is not there is refused too.
@@ -146,6 +147,42 @@ Rows out:
 | 3 | Beta |
 
 'replace: true' says to overwrite 'company', so it keeps its position and no column is added. The cases read the values as they were before this step.
+
+## Example 4
+
+keep an exact amount exact, with a typed zero for the blanks
+
+```yaml fragment
+tool: case_when
+config:
+  cases:
+  - when: '[amount] is null'
+    then: '0.000'
+  otherwise: '[amount]'
+  output: owed
+```
+
+Rows in:
+
+`rows`
+
+| key | amount |
+|---|---|
+| 1 | 812.40 |
+| 2 | null |
+| 3 | -7.50 |
+
+Rows out:
+
+`rows`
+
+| key | amount | owed |
+|---|---|---|
+| 1 | 812.40 | 812.400 |
+| 2 | null | 0.000 |
+| 3 | -7.50 | -7.500 |
+
+'amount' is an exact decimal with 2 places, and 0.000 is typed with 3, so every row is written with 3 places, exactly. A Float64 branch here would be refused.
 
 ---
 

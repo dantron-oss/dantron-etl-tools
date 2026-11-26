@@ -13,7 +13,9 @@ import polars as pl
 
 from .config import ConfigField
 from .errors import ConfigError, DataError
-from .expr import ExpressionError, compile_expr, divisions, row_checks
+from .column_types import EXACT_DIGITS
+from .expr import ExpressionError, compile_exact, compile_expr, divisions, exact_places, row_checks
+from .expr.exact import TOO_LARGE_REMEDY
 
 __all__ = [
     "REPLACE_FIELD",
@@ -23,7 +25,10 @@ __all__ = [
     "ZONE_FIELD",
     "as_calendar_date",
     "check_zone_name",
+    "compile_exact_for",
     "compiled_dtype",
+    "exact_places_for",
+    "refuse_exact_too_large",
     "refuse_rows_without_an_answer",
     "require_stated_zone",
     "require_columns",
@@ -90,6 +95,55 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
             offending=offending,
             total=frame.height,
         )
+
+
+def exact_places_for(frame: pl.DataFrame, text: str, field: str) -> int | None:
+    """The places ``text`` gives as an exact value against ``frame``, or None when it gives none.
+
+    An exact decimal gives its places, a whole number 0, a typed number the places it was written
+    with (``0.0`` has 1). A float, text, a date or a null gives None. Refuses as :func:`compile_for`.
+    """
+    try:
+        return exact_places(text, frame.schema)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+
+
+def compile_exact_for(frame: pl.DataFrame, text: str, field: str, places: int) -> tuple[pl.Expr, pl.Expr]:
+    """Compile ``text`` as an exact decimal with ``places`` places, to sit beside other exact values.
+
+    Returns the expression and a true/false expression that is true on a row whose value has too
+    many whole digits for those places; pass it to :func:`refuse_exact_too_large`. A float is refused
+    as a :class:`ConfigError` naming the field.
+    """
+    try:
+        return compile_exact(text, frame.schema, places)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+
+
+def refuse_exact_too_large(
+    frame: pl.DataFrame, too_large: pl.Expr, field: str, what: str, *, among: pl.Expr | None = None
+) -> None:
+    """Stop the step on a row of ``frame`` where an exact answer needs more than 38 digits.
+
+    ``too_large`` is true on such a row. ``what`` says what the step works out, in words that follow
+    the field's name, such as "sums [amount] as an exact decimal with 2 places". Raises
+    :class:`DataError` naming the field and up to five rows, and saying to round first. ``among``
+    limits the check to the rows the answer is used on, as in :func:`refuse_rows_without_an_answer`.
+    """
+    if frame.height == 0:
+        return
+    used = pl.lit(True) if among is None else among.fill_null(False)
+    failing = too_large.fill_null(False) & used
+    if not frame.select(failing.any()).item():
+        return
+    raise DataError(
+        f"config field {field!r} {what}, and on some rows the answer needs more than {EXACT_DIGITS} "
+        f"digits. {TOO_LARGE_REMEDY}",
+        offending=frame.filter(failing),
+        total=frame.height,
+    )
 
 
 # How many different values a refusal quotes back, beside the rows it shows.

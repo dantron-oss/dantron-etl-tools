@@ -54,6 +54,12 @@ things; each such release says how to upgrade.
   compared as floats, so 0.30 was not equal to it; it is now. `[amount] * (1 + 0.0725)` gave a
   `Float64`; it now gives an exact decimal, 871.299000 for 812.40. Beside a float column, or on its
   own, such a calculation is the float it always was.
+- **`case_when` keeps an exact ladder exact.** A ladder with one `Decimal` branch and one `Float64`
+  branch gave a `Float64` column; it is now refused when the step starts, naming the float branch.
+  A typed number beside an exact branch, such as `then: "0.0"`, gave a `Float64`; it is now exact.
+  Branches of different places gave the engine's own type, which held only 18 digits; every branch
+  is now written with the largest places among them, in 38 digits. Convert a float branch with
+  `cast_columns` first.
 
 ## [0.3.0] - 2026-11-20
 

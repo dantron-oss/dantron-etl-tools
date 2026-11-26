@@ -110,6 +110,42 @@ def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | 
     return tuple(compiler.divisions)
 
 
+def exact_places(text: str, columns: Mapping[str, pl.DataType]) -> int | None:
+    """The places ``text`` gives as an exact value, or None when it gives no exact value.
+
+    An exact decimal gives its places, a whole number 0, and a typed number, or a calculation of
+    typed numbers, the places it is written with. A float, text, a date or a null gives None.
+    """
+    tree, scanned, schema = front_door(text, columns)
+    typed = _Compiler(text, scanned, schema)._typed(tree.body)
+    if typed.constant is not None:
+        return exact.places_of(dtype_of_value(typed.constant))
+    if isinstance(typed.dtype, pl.Decimal) or (typed.dtype is not None and typed.dtype.is_integer()):
+        return exact.places_of(typed.dtype)
+    return None
+
+
+def compile_exact(text: str, columns: Mapping[str, pl.DataType], places: int) -> tuple[pl.Expr, pl.Expr]:
+    """``text`` as an exact decimal with ``places`` places, and where a value has too many whole digits for that.
+
+    For a value that sits beside exact values, such as one branch of a ladder. A typed number is exact
+    as written. A float is refused, as everywhere an exact value meets one.
+    """
+    tree, scanned, schema = front_door(text, columns)
+    compiler = _Compiler(text, scanned, schema)
+    typed = compiler._typed(tree.body)
+    if typed.constant is not None:
+        typed = compiler._exact_literal(typed, None)
+    elif typed.dtype is not None and typed.dtype.is_float():
+        raise error(
+            text,
+            f"{compiler._describe(typed)}, a float, where it sits beside an exact decimal: an exact value meeting a "
+            f"float would give a float without a word. Convert one side first with the cast_columns tool",
+        )
+    assert typed.dtype is not None
+    return exact.at_places(typed.expr, typed.dtype, places)
+
+
 def exact_constant(text: str) -> Decimal | None:
     """The exact value of ``text`` when it is a typed number, as written; None for anything else."""
     tree, scanned, schema = front_door(text, None)

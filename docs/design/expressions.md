@@ -276,6 +276,13 @@ answers that way. `in` writes its list in the column's own type, so the column i
 and leaves out a listed number that cannot be written there once its trailing zeros are dropped:
 0.125 can equal no value of a column with 2 places, and 1.5000 is written 1.50.
 
+**`case_when` branches are compiled one at a time,** so the tool asks the language for each
+branch's places (`exact_places_for`: an exact decimal's, 0 for a whole number, a typed number's as
+written) and, when any branch is exact, compiles every branch at the largest of them
+(`compile_exact_for`). A value too large for those places stops the step only on the rows that take
+that branch, through `refuse_exact_too_large`, the same helper a tool uses for any exact answer it
+works out itself.
+
 ## Quoting and literals
 
 - **Text is single-quoted; a quote inside is doubled**, as in SQL and Excel: `'O''Brian'`. The doubling is
