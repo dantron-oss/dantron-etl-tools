@@ -7,6 +7,14 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **`running_total` adds running sums of number columns**, like Alteryx's Running Total: each row
+  gets the total so far, in the order the rows arrive, starting again for each `group_by` group. A
+  null adds nothing. Whole numbers give `Int64` totals, floats `Float64`, and an exact `Decimal`
+  column exact totals at its places. A running value that does not fit stops the step, naming the
+  group and the column. Put a `sort` in front for a meaningful order.
+
 ## [0.4.2] - 2026-11-26
 
 ### Changed
