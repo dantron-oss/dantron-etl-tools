@@ -1023,8 +1023,11 @@ class _PostgresLoader(RowLoader):
         """Read each ``numeric`` column and what it declares with ``format_type`` over ``pg_attribute``.
 
         A domain over numeric, or an array of it, is not counted: its values arrive as the driver gives them.
+        A read on an idle connection ends the transaction psycopg began for it. Left open, a write's own
+        transaction would become a savepoint inside it, and closing the connection would discard the rows.
         """
         qualified = qualified_name(schema, table)
+        idle = not connection.autocommit and connection.info.transaction_status.name == "IDLE"
         cursor = connection.cursor()
         try:
             cursor.execute(
@@ -1035,6 +1038,8 @@ class _PostgresLoader(RowLoader):
             declared = {name: numeric_declaration(spelling) for name, spelling in cursor.fetchall()}
         finally:
             cursor.close()
+            if idle:
+                connection.rollback()
         return {name: stated for name, stated in declared.items() if stated is not None}
 
     def merge_rows(
