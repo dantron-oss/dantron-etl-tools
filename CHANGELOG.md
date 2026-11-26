@@ -21,6 +21,10 @@ things; each such release says how to upgrade.
   the most a cell keeps; it used to refuse every `Decimal` column. A value with more refuses the
   column, naming the rows. A `formats`, `widths` or `wrap` rule for `type: Decimal` reaches every
   `Decimal` column, whatever its places.
+- **The viewer shows an exact column's type in words**: `Decimal, 6 places` where it showed
+  `Decimal(precision=38, scale=6)`, in each column heading and in a saved run's `ports.json`. Cells
+  show the digits as held, including a tiny figure such as `0.0000001000`, which a drawn slice used
+  to show as `1.000E-7`.
 - **`union` stacks `Decimal` columns of different places** at the larger places (0.07 over 0.0725
   gives 0.0700 and 0.0725), where it used to refuse them. A `Decimal` column over a `Float64` or
   whole-number column is still refused; that refusal, and every other type refusal in `union`, now

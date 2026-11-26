@@ -12,6 +12,7 @@ from typing import Any
 import polars as pl
 
 from ..focus import FocusSpec
+from ..preview import type_label
 from ..spec import Pipeline
 from ..status import STATUS_LEVELS
 from ..trace import PipelineTrace
@@ -43,7 +44,7 @@ def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -
 
     levels = "".join(f'<option value="{_e(v)}">{_e(v or "any level")}</option>' for v in ("", *STATUS_LEVELS))
     head = ('<th class="lvl">status</th>' if marked else "") + "".join(
-        f"<th>{_e(c)}<em>{_e(frame.schema[c])}</em></th>" for c in frame.columns
+        f"<th>{_e(c)}<em>{_e(type_label(frame.schema[c]))}</em></th>" for c in frame.columns
     )
     # Every box says which cell of a row it narrows and the script reads that number straight off
     # it, so inserting a column at the front moves all of them along: left alone, each box would
@@ -61,6 +62,8 @@ def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -
     # one entity is not a served port, so it still carries its rows.
     lazy = port is not None
     shown = frame.head(0) if lazy else frame.head(MAX_ROWS)
+    # An exact value as its digits, as the served windows show it: Python would write 1.000E-7.
+    shown = shown.with_columns(pl.col(pl.Decimal).cast(pl.String))
     body = "".join(
         "<tr>" + "".join(f"<td>{'<span class=nul>null</span>' if v is None else _e(v)}</td>" for v in row) + "</tr>"
         for row in shown.iter_rows()
@@ -90,7 +93,7 @@ def _table(frame: pl.DataFrame, port: str | None = None, marked: bool = False) -
 
 def _columns_only(frame: pl.DataFrame) -> str:
     """A port's column names and types, and why its rows are not here, for a pipeline that keeps none."""
-    head = "".join(f"<th>{_e(c)}<em>{_e(frame.schema[c])}</em></th>" for c in frame.columns)
+    head = "".join(f"<th>{_e(c)}<em>{_e(type_label(frame.schema[c]))}</em></th>" for c in frame.columns)
     table = f'<div class="scroll"><table class="data"><thead><tr>{head}</tr></thead></table></div>' if head else ""
     return f'<div class="tbl norows">{table}<p class="more">{_e(ROWS_NOT_SAVED)}</p></div>'
 

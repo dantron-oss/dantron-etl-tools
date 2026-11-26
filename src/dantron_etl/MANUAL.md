@@ -612,6 +612,9 @@ Each of these has caught a real pipeline.
   naming the rows: round it upstream, or cast it to `String`. A rule for `type: Decimal` in
   `formats`, `widths` or `wrap` reaches every `Decimal` column, whatever its places; a `Float64`
   rule does not. `write_csv` writes a `Decimal` with every place it holds.
+- **The viewer names an exact column by its places.** A column heading reads `Decimal, 2 places`,
+  as a flow writes the type, and each cell shows the digits as held (`58.899000`), never a rounded
+  or scientific spelling. A saved run's `ports.json` records the type the same way.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

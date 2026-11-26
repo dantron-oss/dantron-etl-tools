@@ -1578,3 +1578,26 @@ def test_each_setting_that_names_a_file_is_marked_for_the_page_and_no_other(page
         assert sections[step.id].count("data-file=") == len(wanted)
         marked_somewhere = marked_somewhere or bool(wanted)
     assert marked_somewhere
+
+
+class TestAnExactColumnOnThePage:
+    """A slice drawn into the page names an exact column's type in words and shows its digits as held."""
+
+    def test_the_heading_says_decimal_and_its_places_and_the_cells_keep_every_digit(self) -> None:
+        from decimal import Decimal
+
+        import polars as pl
+
+        from dantron_etl.viewer import render
+
+        values = [Decimal("58.899"), Decimal("0.0000001"), None]
+        frame = pl.DataFrame({"amount": pl.Series(values, dtype=pl.Decimal(38, 10)), "ratio": [0.5, 1.0, 2.0]})
+
+        table = render._table(frame)
+        headings = re.findall(r"<em>([^<]*)</em>", table)
+        cells = re.findall(r"<td>([^<]*)</td>", table)
+
+        assert headings == ["Decimal, 10 places", "Float64"]
+        assert "58.8990000000" in cells and "0.0000001000" in cells
+        assert not any("E-" in cell for cell in cells), "never a scientific spelling"
+        assert re.findall(r"<em>([^<]*)</em>", render._columns_only(frame)) == ["Decimal, 10 places", "Float64"]
