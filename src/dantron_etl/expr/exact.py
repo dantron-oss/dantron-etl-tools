@@ -9,7 +9,7 @@ before it writes anything, which stops the step and names the rows.
 Why: docs/design/expressions.md#exact-decimals
 """
 
-from decimal import Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from typing import Any, Final, NamedTuple
 
 import polars as pl
@@ -22,6 +22,10 @@ TOO_LARGE_REMEDY: Final[str] = (
     "the answer needs fewer places, or convert the columns to Float64 with the cast_columns tool for "
     "figures that large"
 )
+
+
+#: Python's decimals with no limit that matters, so working out typed numbers never rounds.
+_UNLIMITED: Final[Context] = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN, traps=[])
 
 
 class Exact(NamedTuple):
@@ -211,15 +215,59 @@ def remainder(dividend: Part, divisor: Part) -> Exact:
     return Exact(_with_places(signed, places), places, first_misfit | second_misfit)
 
 
+def compare(operation: Any, first: Part, second: Part) -> pl.Expr:
+    """``first`` compared with ``second`` by value, whatever the places of each: 1.50 equals 1.5000.
+
+    Both are written at the larger places. A value with too many whole digits to be written there is
+    larger than anything the other side can hold, so only its sign decides the answer.
+    """
+    places = max(places_of(first[1]), places_of(second[1]))
+    left, left_misfit = at_places(*first, places)
+    right, right_misfit = at_places(*second, places)
+    zero = pl.lit(0)
+    left_side = pl.when(first[0] > 0).then(pl.lit(1)).otherwise(pl.lit(-1))
+    right_side = pl.when(second[0] > 0).then(pl.lit(1)).otherwise(pl.lit(-1))
+    return (
+        pl.when(left_misfit)
+        .then(operation(left_side, zero))
+        .when(right_misfit)
+        .then(operation(zero, right_side))
+        .otherwise(operation(left, right))
+    )
+
+
+def member(subject: Part, values: list[Decimal | None]) -> pl.Expr:
+    """Whether ``subject`` equals one of the typed ``values``, by value, as `in` asks.
+
+    The list is written at the subject's own places, so the subject is never converted. A listed
+    number that cannot be written there, with more places once its trailing zeros are dropped or too
+    many whole digits, can equal no value the subject holds, so it is left out: 0.125 is never in a
+    column of 2 places.
+    """
+    dtype = subject[1]
+    places = places_of(dtype)
+    digits = (dtype.precision or EXACT_DIGITS) if isinstance(dtype, pl.Decimal) else EXACT_DIGITS  # type: ignore[attr-defined]
+    kept: list[Decimal | None] = []
+    for value in values:
+        if value is None:
+            kept.append(None)
+            continue
+        plain = value.normalize(context=_UNLIMITED)
+        if _places(plain) <= places and _fits(plain, places, digits):
+            kept.append(plain.quantize(Decimal((0, (1,), -places)), context=_UNLIMITED))
+    listed = pl.Series(kept, dtype=pl.Decimal(digits, places))
+    return subject[0].is_in(listed.implode())
+
+
 def _places(value: Decimal) -> int:
     exponent = value.as_tuple().exponent
     return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
-def _fits(value: Decimal, places: int) -> bool:
-    """Whether a typed number can be written with ``places`` places in 38 digits."""
+def _fits(value: Decimal, places: int, total: int = EXACT_DIGITS) -> bool:
+    """Whether a typed number can be written with ``places`` places in ``total`` digits."""
     _, digits, exponent = value.as_tuple()
-    return isinstance(exponent, int) and max(len(digits) + exponent, 0) + places <= EXACT_DIGITS
+    return isinstance(exponent, int) and max(len(digits) + exponent, 0) + places <= total
 
 
 def _unless(too_large: pl.Expr, value: pl.Expr) -> pl.Expr:

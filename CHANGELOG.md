@@ -35,6 +35,10 @@ things; each such release says how to upgrade.
   They now stop when the step starts, naming the float. Convert one side first with `cast_columns`.
   A typed number or a whole number beside an exact column is exact instead: `coalesce([amount], 0.0)`
   gives 0.00, where it gave a `Float64`. `mod` on a `Decimal`, which was refused, is now exact.
+- **Exact values compare by value, whatever their places.** `[amount] in (0.3, 812.4)` on a
+  `Decimal` column matched as floats; it now matches 0.30 and 812.40 exactly, and never rounds
+  (0.12 is not in `(0.125)`). A value with many whole digits compared with one with many places,
+  such as a 30-digit count against a price with 10 places, gave a blank; it now gives the answer.
 
 ## [0.3.0] - 2026-11-20
 

@@ -212,7 +212,6 @@ author's spelling of it. `Spelling.written_number` reads it back as a Python `De
 its two places. Each compiled part carries that value as `constant`. Beside an exact column the
 constant is used, as a literal with its written places; anywhere else the float is used, as before,
 so a flow with no exact column computes what it always did.
-
 **Every answer is checked before it is worked out.** The engine's exact arithmetic is not safe to
 hand a value: it stops with its own error when a sum passes 38 digits, gives a blank when a value
 with many whole digits meets one with many places (it writes both at the larger places first), and
@@ -245,6 +244,13 @@ in arithmetic, comparisons, `coalesce` and the rest, and a comparison is where t
 not 0.1 + 0.2 in floats. So the compiler refuses an exact operand beside a float operand that is not
 a typed number, and names the float part as written, whether a column (`[ratio]`) or a calculation
 that gives a float (`[qty] / 2`). A whole number meets an exact value as an exact value with no places.
+
+**Comparisons are by value.** The engine compares two exact values by writing both at the larger
+places, and gives a blank where one has too many whole digits for that. Such a value is larger
+than anything the other side can hold, so only its sign decides the comparison, and the library
+answers that way. `in` writes its list in the column's own type, so the column is never converted,
+and leaves out a listed number that cannot be written there once its trailing zeros are dropped:
+0.125 can equal no value of a column with 2 places, and 1.5000 is written 1.50.
 
 ## Quoting and literals
 

@@ -290,7 +290,9 @@ class _Compiler:
         self._refuse_timestamp_against_date(left, right, operation)
         exact_pair = self._exact_operands([left, right])
         if exact_pair is not None:
-            left, right = exact_pair
+            first, second = exact_pair
+            built = exact.compare(_COMPARISONS[type(operation)], (first.expr, first.dtype), (second.expr, second.dtype))
+            return Typed(built, Family.BOOLEAN, node, "gives a truth value")
         built = _COMPARISONS[type(operation)](left.expr, right.expr)
         return Typed(built, Family.BOOLEAN, node, "gives a truth value")
 
@@ -347,7 +349,7 @@ class _Compiler:
             if isinstance(value, int) and not isinstance(value, bool):
                 self._check_whole_number(value)
             values.append(value)
-            parts.append(self._typed_value(value, candidate))
+            parts.append(self._typed_value(value, candidate)._replace(constant=self._spelling.written_number(candidate)))
 
         listed = self._one_family(parts, "a list of values to match needs every value in the same type family")
         left = self._typed(node.left)
@@ -359,6 +361,13 @@ class _Compiler:
             )
         for part in parts:
             self._refuse_timestamp_against_date(left, part, None)
+        if self._schema is not None and isinstance(left.dtype, pl.Decimal):
+            numbers = [part.constant for part in parts]
+            for part in parts:
+                if part.constant is not None:
+                    self._exact_literal(part, left)  # refuses a number no exact decimal holds
+            built = exact.member((left.expr, left.dtype), numbers)
+            return Typed(~built if negated else built, Family.BOOLEAN, node, "gives a truth value")
         if listed is Family.NUMBER and any(isinstance(value, float) for value in values):
             values = [value if value is None else float(value) for value in values]
         built = left.expr.is_in(list(values))
@@ -659,9 +668,10 @@ class _Compiler:
                 met.append(self._exact_literal(operand, exact_column))
             elif dtype is not None and dtype.is_float():
                 rendered = self._spelling.render(operand.node)
+                described = self._describe(operand) if operand.holds.startswith("holds") else f"{rendered} gives {dtype}"
                 raise error(
                     self._text,
-                    f"{self._describe(exact_column)}, an exact decimal, and {self._describe(operand)}, a float: "
+                    f"{self._describe(exact_column)}, an exact decimal, and {described}, a float: "
                     f"an exact value meeting a float would give a float without a word, and the figure would no "
                     f"longer be exact. Convert one side first with the cast_columns tool, {rendered} to Decimal "
                     f"or {self._spelling.render(exact_column.node)} to Float64",
@@ -677,9 +687,10 @@ class _Compiler:
         if not exact.holds(value):
             raise error(
                 self._text,
-                f"{self._spelling.render(operand.node)} is a number beside {self._describe(beside)}, and an exact "
-                f"decimal holds {EXACT_DIGITS} digits in all, counting its places, so it cannot hold that number as "
-                f"written; round it to fewer places, or convert the column to Float64 with the cast_columns tool",
+                f"{self._spelling.render(operand.node)} is a number beside {self._spelling.render(beside.node)}, an "
+                f"exact decimal, and an exact decimal holds {EXACT_DIGITS} digits in all, counting its places, so it "
+                f"cannot hold that number as written; round it to fewer places, or convert the column to Float64 "
+                f"with the cast_columns tool",
             )
         literal = exact.literal(value)
         return operand._replace(expr=literal, dtype=exact_dtype(exact.places_of(dtype_of_value(value))))

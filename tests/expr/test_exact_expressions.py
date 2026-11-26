@@ -381,3 +381,59 @@ class TestFunctionsThatCombineExactValues:
         _exactly(_formula(frame.head(1), "coalesce([w], [d])"), 2, ["1.25"])
         assert "'key': 'large'" in _formula_refusal(frame, "greatest([w], [d])")
 
+
+# ---------------------------------------------------------------------------
+# Unit 13: comparing exact values of different places, by value
+# ---------------------------------------------------------------------------
+
+
+class TestComparingExactValuesByValue:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r", "s"],
+            "d2": exact(["1.50", "0.12", "812.40", None], 2),
+            "d4": exact(["1.5000", "0.1250", "812.3999", "1.0000"], 4),
+            "w": exact(["9" * 37, "-" + "9" * 37, "1", "2"], 0),
+            "d30": exact(["12345678.5", "1.25", None, "0"], 30),
+        }
+    )
+
+    def _truth(self, text: str) -> list[bool | None]:
+        out = _formula(self.FRAME, text)
+        assert out.dtype == pl.Boolean
+        return out.to_list()
+
+    def test_equal_values_of_different_places_are_equal(self) -> None:
+        assert self._truth("[d2] = [d4]") == [True, False, False, None]
+        assert self._truth("[d4] != [d2]") == [False, True, True, None]
+        assert self._truth("[d2] > [d4]") == [False, False, True, None]
+        assert self._truth("[d2] <= 1.5000") == [True, True, False, None]
+
+    def test_a_value_with_more_whole_digits_than_the_other_places_allow_still_compares(self) -> None:
+        """The engine gives a blank here, because it writes both sides at the larger places first."""
+        assert self._truth("[w] > [d2]") == [True, False, False, None]
+        assert self._truth("[d2] < [w]") == [True, False, False, None]
+        assert self._truth("[w] = [d4]") == [False, False, False, False]
+        assert self._truth("[w] != [d4]") == [True, True, True, True]
+        assert self._truth("[w] <= 0.5") == [False, True, False, False]
+        assert self._truth("[w] >= [d30]") == [True, False, None, True]
+
+    def test_in_matches_by_value_and_never_rounds(self) -> None:
+        assert self._truth("[d2] in (0.125)") == [False, False, False, None]
+        assert self._truth("[d4] in (0.125)") == [False, True, False, False]
+        assert self._truth("[d2] in (1.5, 812.4)") == [True, False, True, None]
+        assert self._truth("[d2] not in (1.5, 812.4)") == [False, True, False, None]
+        assert self._truth("[d4] in (1, 0.1250)") == [False, True, False, True]
+        assert self._truth("[w] in (2, 1.25)") == [False, False, False, True]
+        assert self._truth("[d30] in (123456789, 1.25)") == [False, True, None, False]
+        # A listed number with many places must not push a large value out of reach.
+        frame = pl.DataFrame({"w": exact(["1" + "0" * 36, "1"], 0)})
+        assert _formula(frame, "[w] in (1e36, 0.0000000000000000000000000001)").to_list() == [True, False]
+        narrow = pl.DataFrame({"d": exact(["100.00", "7.50", None], 2, precision=12)})
+        assert _formula(narrow, "[d] in (100, 7.5000, 123456789012345678)").to_list() == [True, True, None]
+
+    def test_with_no_exact_column_in_matches_as_it_did(self) -> None:
+        frame = pl.DataFrame({"f": [0.3, 0.1 + 0.2, 1.0], "n": [1, 2, 3]})
+        assert _formula(frame, "[f] in (0.3, 1)").to_list() == [True, False, True]
+        assert _formula(frame, "[n] in (1, 2.5)").to_list() == [True, False, False]
+

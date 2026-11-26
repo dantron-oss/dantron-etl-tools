@@ -601,6 +601,8 @@ Each of these has caught a real pipeline.
   `amount` is `Decimal` and `ratio` is `Float64`, naming the float. Convert one side first with
   `cast_columns`. A whole number or a typed number beside an exact value is exact:
   `coalesce([amount], 0.0)` gives 0.00 where `amount` is blank.
+- **Exact values compare by value.** 1.50 equals 1.5000, and `[amount] in (1.5, 812.4)` matches
+  1.50 and 812.40. Nothing is rounded to match: 0.12 is not in `(0.125)`.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days
