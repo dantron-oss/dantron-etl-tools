@@ -14,7 +14,16 @@ import polars as pl
 from .config import ConfigField
 from .errors import ConfigError, DataError
 from .column_types import EXACT_DIGITS
-from .expr import ExpressionError, compile_exact, compile_expr, divisions, exact_places, row_checks
+from .expr import (
+    ExpressionError,
+    RowReference,
+    compile_exact,
+    compile_expr,
+    divisions,
+    exact_places,
+    row_checks,
+    row_references,
+)
 from .expr.exact import TOO_LARGE_REMEDY
 
 __all__ = [
@@ -30,6 +39,8 @@ __all__ = [
     "exact_places_for",
     "refuse_exact_too_large",
     "refuse_rows_without_an_answer",
+    "rows_without_an_answer",
+    "row_references_for",
     "require_stated_zone",
     "require_columns",
 ]
@@ -95,6 +106,35 @@ def refuse_rows_without_an_answer(frame: pl.DataFrame, text: str, field: str, *,
             offending=offending,
             total=frame.height,
         )
+
+
+def row_references_for(text: str, field: str) -> tuple[RowReference, ...]:
+    """The row references ``[Row-N:column]`` and ``[Row+N:column]`` in ``text``, for multi_row_formula.
+
+    A reach of 0 rows, or past 1000, is refused as a :class:`ConfigError` naming ``field``.
+    """
+    try:
+        return row_references(text)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+
+
+def rows_without_an_answer(frame: pl.DataFrame, text: str, field: str) -> pl.Expr | None:
+    """A true/false expression, true on each row of ``frame`` that ``text`` has no answer for.
+
+    These are the rows :func:`refuse_rows_without_an_answer` stops on. None when no row can be one.
+    For a tool that works rows out a few at a time and asks this of each few; it stops on a row
+    with :func:`refuse_rows_without_an_answer`, so the refusal reads the same. Refuses as
+    :func:`compile_for`.
+    """
+    try:
+        found = divisions(text, frame.schema)
+        checks = row_checks(text, frame.schema)
+    except ExpressionError as error:
+        raise ConfigError(f"config field {field!r} does not compile: {error}") from error
+    parts = [(division.expr == 0).fill_null(False) for division in found]
+    parts += [check.failing.fill_null(False) for check in checks]
+    return pl.any_horizontal(parts) if parts else None
 
 
 def exact_places_for(frame: pl.DataFrame, text: str, field: str) -> int | None:

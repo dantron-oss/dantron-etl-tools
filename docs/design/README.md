@@ -114,6 +114,7 @@ why, and what was rejected. The code links here where a choice would otherwise s
 - [regex_extract_groups](tools.md#regex_extract_groups)
 - [match_one_to_one](tools.md#match_one_to_one)
 - [make_groups](tools.md#make_groups)
+- [multi_row_formula](tools.md#multi_row_formula)
 - [cross_tab](tools.md#cross_tab)
 - [unpivot](tools.md#unpivot)
 - [read_csv](tools.md#read_csv)

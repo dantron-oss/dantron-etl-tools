@@ -85,13 +85,13 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-30 tools, by category:
+31 tools, by category:
 
 | category | tools |
 |---|---|
 | `input` | `read_csv`, `read_excel`, `read_table` |
 | `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
+| `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `multi_row_formula`, `unpivot` |
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
 | `assert` | `assert_rows` |
@@ -99,7 +99,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
 
-Four capabilities that each replace a shape you would otherwise build badly:
+Five capabilities that each replace a shape you would otherwise build badly:
 
 - **Records that belong together through a chain** (A links to B, B to C, so A and C are one
   group) — `make_groups`. A fixed run of joins follows a chain only as deep as you wrote
@@ -113,6 +113,10 @@ Four capabilities that each replace a shape you would otherwise build badly:
   number of single-match steps, which caps the count.
 - **Every tab of a workbook whose name follows a pattern** — `read_excel` with `sheets_matching`.
   Not one read step per tab, which has to be edited every time the workbook gains a tab.
+- **A value that reads the row above or below** (the change from the last row, a fill-down, a
+  running balance) — `multi_row_formula`, Alteryx's Multi-Row Formula. `[Row-1:amount]` is the
+  amount one row up, within each group of `group_by`. Not a self-join on a row number, which pairs
+  the wrong rows the moment a group has a gap.
 
 ---
 
@@ -306,6 +310,10 @@ on every run and every computer. Use it where the natural key is several columns
 
 Operators: `and`, `or`, `not`, `+`, `-`, `*`, `/`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`,
 `is null`, `is not null`.
+
+**Row references belong to `multi_row_formula` alone.** There, `[Row-1:amount]` is `amount` one row
+up and `[Row+2:amount]` two rows down, from 1 to 1000 rows. Every other tool reads `[Row-1:amount]`
+as a column of that whole name, which the input does not have, so it is refused.
 
 **Extend it by whitelisting a function, never by growing syntax.** There are no user-defined
 functions, no attribute access, no subscripting, no lambdas. Those are refused by name, and that
@@ -542,8 +550,9 @@ Each of these has caught a real pipeline.
 - **A blank name for an output column is refused by every tool that takes one.** Empty, or nothing
   but whitespace -- a non-breaking space pasted from a spreadsheet counts, and is the one you
   cannot see -- in `formula`'s `columns[].name`, `group_by`'s `aggregations[].name`, the `output`
-  of `assemble_date`, `case_when`, `date_diff`, `normalize_text` and `record_id`, `unpivot`'s
-  `names_to` and `values_to`, `expand_date_range`'s `period_column`, `rename_columns`' `to`,
+  of `assemble_date`, `case_when`, `date_diff`, `multi_row_formula`, `normalize_text` and
+  `record_id`, `unpivot`'s `names_to` and `values_to`, `expand_date_range`'s `period_column`,
+  `rename_columns`' `to`,
   `make_groups`' `record_column` and `group_column`, and `regex_extract_groups`' `position_column`
   and `match_number_column`. A column called `   ` cannot be referenced later — `[   ]` is not something
   you can write — and it reads as an unnamed column in every rendering, so the step that wrote it
@@ -725,8 +734,8 @@ Each of these has caught a real pipeline.
   `last_non_null` are the same from the other end.
 - **A database hands rows over in no fixed order.** `read_table` keeps whatever order the database
   sent, and the database promises none. So `remove_duplicates` with `keep`, `group_by`'s `first`
-  and `join_text`, `record_id` and `limit_rows` read an order nobody chose when they sit after a
-  `read_table` with no `sort` in between. Put a `sort` there.
+  and `join_text`, `record_id`, `multi_row_formula` and `limit_rows` read an order nobody chose
+  when they sit after a `read_table` with no `sort` in between. Put a `sort` there.
 
 ### Paths
 

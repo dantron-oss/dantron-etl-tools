@@ -967,6 +967,79 @@
         "rejected"
       ]
     },
+    "multi_row_formula": {
+      "category": "transform",
+      "config": {
+        "expression": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": true,
+          "type": "expression"
+        },
+        "group_by": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": {
+            "default": null,
+            "enum": null,
+            "fields": null,
+            "items": null,
+            "non_empty": true,
+            "required": false,
+            "type": "string"
+          },
+          "non_empty": true,
+          "required": false,
+          "type": "array"
+        },
+        "output": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": true,
+          "required": true,
+          "type": "string"
+        },
+        "places": {
+          "default": null,
+          "enum": null,
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "integer"
+        },
+        "type": {
+          "default": null,
+          "enum": [
+            "String",
+            "Int64",
+            "Float64",
+            "Decimal",
+            "Boolean",
+            "Date",
+            "Datetime",
+            "Time"
+          ],
+          "fields": null,
+          "items": null,
+          "non_empty": false,
+          "required": false,
+          "type": "string"
+        }
+      },
+      "input_ports": [
+        "rows"
+      ],
+      "output_ports": [
+        "rows"
+      ]
+    },
     "normalize_text": {
       "category": "text",
       "config": {

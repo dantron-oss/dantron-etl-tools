@@ -6,8 +6,9 @@ has, and dates are read here too.
 """
 
 import math
+import re
 from datetime import date
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from .errors import error
 
@@ -288,3 +289,48 @@ def _next_visible(text: str, index: int) -> str:
     while index < len(text) and text[index].isspace():
         index += 1
     return text[index : index + 1]
+
+
+# A row reference, read only for the multi_row_formula tool: [Row-1:amount] is 'amount' one row up.
+# Every other tool reads the same brackets as a column of that name, so they refuse it as before.
+ROW_REACH: Final[int] = 1000
+_ROW_REFERENCE: Final[re.Pattern[str]] = re.compile(r"Row\s*([+-])\s*([0-9]+)\s*:(.*)", re.DOTALL)
+
+
+class RowReference(NamedTuple):
+    """One ``[Row-N:column]`` or ``[Row+N:column]``: the name as written, the rows away, and the column.
+
+    ``offset`` is negative for a row above and positive for a row below.
+    """
+
+    written: str
+    offset: int
+    column: str
+
+
+def read_row_reference(text: str, name: str) -> RowReference | None:
+    """``name`` read as a row reference, or None when it is a plain column name.
+
+    ``name`` is what stood between the brackets, as the scan lifted it. A reach of 0 rows, a reach
+    past ``ROW_REACH``, and a reference that names no column are refused.
+    """
+    found = _ROW_REFERENCE.fullmatch(name)
+    if found is None:
+        return None
+    sign, digits, column = found[1], found[2], found[3].strip()
+    rows = int(digits)
+    if not column:
+        raise error(text, f"[{name}] names no column after the ':', so write the column to read, like [Row{sign}1:amount]")
+    if rows == 0:
+        raise error(
+            text,
+            f"[{name}] reads Row{sign}0, which is the current row: write [{column}] for the current row, or a "
+            f"reach from Row{sign}1 to Row{sign}{ROW_REACH} for another row",
+        )
+    if rows > ROW_REACH:
+        raise error(
+            text,
+            f"[{name}] reaches {rows} rows away, past the limit of {ROW_REACH}: a row reference reads from 1 to "
+            f"{ROW_REACH} rows up or down",
+        )
+    return RowReference(name, rows if sign == "+" else -rows, column)

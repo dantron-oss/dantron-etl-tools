@@ -123,13 +123,13 @@ tables. A real run writes, and tells you exactly what before it starts.
 output nothing uses, a rule with no value: each is refused when the file loads, before any data is
 read. `dantron-etl check <file>` does just that check.
 
-## The 30 tools
+## The 31 tools
 
 | category | tools |
 |---|---|
 | **input** | `read_csv`, `read_excel`, `read_table` |
 | **preparation** | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
-| **transform** | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `unpivot` |
+| **transform** | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `multi_row_formula`, `unpivot` |
 | **combine** | `join`, `union` |
 | **text** | `normalize_text`, `regex_extract_groups` |
 | **assert** | `assert_rows` |

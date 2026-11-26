@@ -49,6 +49,7 @@ DIVIDING: dict[str, tuple[dict[str, Any], str]] = {
         {"source": "format_number([amount] / [months], 2, ',', '.')", "output": "clean", "operations": ["lower"]},
         "source",
     ),
+    "multi_row_formula": ({"output": "each", "expression": "[amount] / [months]"}, "expression"),
     "regex_extract_groups": (
         {"source": "format_number([amount] / [months], 2, ',', '.')", "pattern": "(?P<digits>\\d+)"},
         "source",

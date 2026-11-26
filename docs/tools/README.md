@@ -2,7 +2,7 @@
 
 # The tools
 
-30 tools, grouped by what they do. Each page lists the tool's ports and settings, the rules it follows, and worked examples. Every worked example is run by the test suite, so the rows shown are what the tool really gives.
+31 tools, grouped by what they do. Each page lists the tool's ports and settings, the rules it follows, and worked examples. Every worked example is run by the test suite, so the rows shown are what the tool really gives.
 
 The same text is in the terminal: `dantron-etl tools` and `dantron-etl help <tool>`.
 
@@ -40,6 +40,7 @@ The same text is in the terminal: `dantron-etl tools` and `dantron-etl help <too
 | [`formula`](formula.md) | Add a calculated column, or change one, using an expression such as [price] * [quantity]. |
 | [`group_by`](group_by.md) | Make one row per group, with totals, counts or other summaries for each group. |
 | [`make_groups`](make_groups.md) | Put records that are linked, directly or through others, into the same group. |
+| [`multi_row_formula`](multi_row_formula.md) | Work out a column from other rows, such as the change from the row above or a running balance. |
 | [`unpivot`](unpivot.md) | Turn columns into rows, such as one column per month into one row per month. |
 
 ## combine

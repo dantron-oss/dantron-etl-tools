@@ -23,7 +23,7 @@ from .errors import (
 )
 from .expr.dates import MAX_YEAR, MIN_YEAR, count_between, date_or_null, days_in_month
 from .example_world import SCRATCH_TOKEN, example_database, scratch_path, temporary_environment
-from .expr import references
+from .expr import ROW_REACH, RowReference, references
 from .frame_checks import (
     REPLACE_FIELD,
     ZONE_FIELD,
@@ -38,6 +38,8 @@ from .frame_checks import (
     refuse_exact_too_large,
     refuse_rows_without_an_answer,
     require_columns,
+    row_references_for,
+    rows_without_an_answer,
     require_stated_zone,
 )
 from .ports import Ports
@@ -76,7 +78,11 @@ __all__ = [
     "exact_places_for",
     "refuse_exact_too_large",
     "refuse_rows_without_an_answer",
+    "row_references_for",
+    "rows_without_an_answer",
     "references",
+    "ROW_REACH",
+    "RowReference",
     "require_columns",
     "require_not_blank",
     "require_stated_zone",

@@ -10,18 +10,21 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, TypeVar, runtime_checkable
 
-from .config import ConfigField
+from .config import ConfigField, expression_values
 from .errors import ExecutionError, ToolError
+from .expr import references
 from .ports import Ports
 
 __all__ = [
     "CATEGORIES",
     "TERMINAL_CATEGORIES",
+    "DerivesColumnReferences",
     "DerivesInputPorts",
     "Tool",
     "ToolHelp",
     "WorkedExample",
     "catalog_input_ports",
+    "column_references_for",
     "call_tool_code",
     "input_ports_for",
     "ports_from_config",
@@ -47,6 +50,7 @@ _PHASE_VERBS: Final[dict[str, str]] = {
     "execute": "running",
     "help": "documenting itself",
     "input_ports_for": "working out which input ports it reads",
+    "column_references": "working out which columns its expressions read",
 }
 
 
@@ -139,6 +143,31 @@ class DerivesInputPorts(Protocol):
     """
 
     def input_ports_for(self, config: Mapping[str, Any]) -> Sequence[str]: ...
+
+
+@runtime_checkable
+class DerivesColumnReferences(Protocol):
+    """An optional member for a tool whose expressions read columns other than the ones in brackets.
+
+    Before a step runs, the runner checks that every column its expressions name is on its input,
+    so a misspelling is refused by name. For most tools that is every name in brackets. A tool
+    whose expression language reads more, such as multi_row_formula's [Row-1:amount], implements
+    ``column_references(config)``: for each expression field, the input columns it reads.
+    ``config`` is the settings as written, with no defaults filled in.
+    """
+
+    def column_references(self, config: Mapping[str, Any]) -> Mapping[str, frozenset[str]]: ...
+
+
+def column_references_for(tool: Tool, config: Mapping[str, Any]) -> dict[str, frozenset[str]]:
+    """Return the input columns each expression field of a step reads: ``{field path: column names}``.
+
+    A field with no expression is left out. Every name in brackets, unless the tool works its own
+    out (:class:`DerivesColumnReferences`).
+    """
+    if isinstance(tool, DerivesColumnReferences):
+        return dict(call_tool_code(tool, "column_references", lambda: tool.column_references(config)))
+    return {path: references(text) for path, text in expression_values(tool.config_template(), config)}
 
 
 def ports_from_config(tool: Tool) -> bool:
