@@ -44,14 +44,15 @@ More on some settings:
 - Exactly one set adds up: its rows are matched, and the whole's other rows are rejected with 'not in the matched set'.
 - A part in the matched sets of two or more wholes: every row of each of those wholes is rejected with 'a part is claimed by more than one whole'. Nothing is tried again.
 - A row missing its whole key or its part key is rejected with 'missing key', even when its amount is missing too.
-- A row missing its part amount, or whose whole has no amount, is rejected with 'missing amount'.
+- A row missing its part amount is rejected with 'missing amount'. So is every row of a whole whose amount is missing on all its rows.
 - Rows rejected for a missing key or amount take no part in any search, do not count towards 'max_candidates', and keep their reason whatever happens to their whole.
 - A whole with more candidates than 'max_candidates' is not searched. Its rows are rejected with 'more candidates than the search allows'.
 - These stop the step, naming the keys: the same whole and part on two rows; one whole with two different amounts; one part with two different amounts. A missing amount beside a value counts as different.
 - Zero and negative amounts are allowed. A part of zero can join any set, so it makes a second set that adds up, if there is room for it under 'max_parts'.
-- A set has at least one part, so a whole of zero is not matched by no parts.
+- A set has at least one part: a whole of zero is never matched by an empty set.
 - A Float64 amount is refused: totals of decimal-point numbers do not add up exactly. Convert it to Decimal with cast_columns first. A whole-number amount beside a Decimal one is compared by value.
 - The answer does not depend on the order of the rows. Both ports keep the input order.
+- An input with no rows gives two empty outputs with the right columns.
 
 ## Example 1
 

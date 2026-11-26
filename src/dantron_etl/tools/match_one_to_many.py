@@ -127,7 +127,8 @@ class MatchOneToMany:
                 "rejected with 'a part is claimed by more than one whole'. Nothing is tried again.",
                 "A row missing its whole key or its part key is rejected with 'missing key', even when "
                 "its amount is missing too.",
-                "A row missing its part amount, or whose whole has no amount, is rejected with 'missing amount'.",
+                "A row missing its part amount is rejected with 'missing amount'. So is every row of a "
+                "whole whose amount is missing on all its rows.",
                 "Rows rejected for a missing key or amount take no part in any search, do not count "
                 "towards 'max_candidates', and keep their reason whatever happens to their whole.",
                 "A whole with more candidates than 'max_candidates' is not searched. Its rows are "
@@ -137,11 +138,12 @@ class MatchOneToMany:
                 "beside a value counts as different.",
                 "Zero and negative amounts are allowed. A part of zero can join any set, so it makes a "
                 "second set that adds up, if there is room for it under 'max_parts'.",
-                "A set has at least one part, so a whole of zero is not matched by no parts.",
+                "A set has at least one part: a whole of zero is never matched by an empty set.",
                 "A Float64 amount is refused: totals of decimal-point numbers do not add up exactly. "
                 "Convert it to Decimal with cast_columns first. A whole-number amount beside a Decimal "
                 "one is compared by value.",
                 "The answer does not depend on the order of the rows. Both ports keep the input order.",
+                "An input with no rows gives two empty outputs with the right columns.",
             ),
             field_help={
                 "whole_key": "For example 'deposit_id'. It must be a different column from 'part_key'.",
@@ -222,11 +224,8 @@ class MatchOneToMany:
         _refuse_contradictions(frame, work, config)
 
         # The smallest unit common to both amount columns and the tolerance.
-        tolerance = (
-            Decimal(repr(config["tolerance"]))
-            if isinstance(config["tolerance"], float)
-            else Decimal(config["tolerance"])
-        )
+        # Read through its text, so a tolerance of 0.01 is exactly one cent.
+        tolerance = Decimal(str(config["tolerance"]))
         whole_places, part_places = _places(whole_dtype), _places(part_dtype)
         places = max(whole_places, part_places, _decimal_places(tolerance))
         whole_scale = 10 ** (places - whole_places)
@@ -264,6 +263,7 @@ class MatchOneToMany:
             if found == 1:
                 chosen.extend(row for bit, row in enumerate(rows) if mask >> bit & 1)
 
+        # One row per searched candidate: its whole, that whole's outcome, and whether it is in the one set.
         index_type = pl.get_index_type()
         per_row = (
             pl.DataFrame(
@@ -277,6 +277,7 @@ class MatchOneToMany:
             .join(to_search.select("i", "p"), on="i")
             .with_columns(chosen=pl.col("i").is_in(pl.Series(chosen, dtype=index_type).implode()))
         )
+        # A part chosen by two or more wholes rejects every one of those wholes.
         tentative = per_row.filter(pl.col("chosen"))
         claimed = tentative.filter(pl.len().over("p") > 1)["g"].unique()
         searched = per_row.select(
@@ -326,17 +327,22 @@ def _decimal_units(value: Decimal, places: int) -> int:
 
 
 def _search(amounts: Sequence[int], target: int, tolerance: int, max_parts: int) -> tuple[int, int]:
-    """How many sets of 1 to ``max_parts`` amounts are within ``tolerance`` of ``target``: 0, 1 or 2 (meaning 2 or more).
+    """Count the sets of 1 to ``max_parts`` amounts whose total is within ``tolerance`` of ``target``.
 
-    With exactly one, the second value is that set, as a bit mask over ``amounts``. Meet in the
-    middle: every small enough set of each half is listed once, the right half's totals sorted by
-    set size, and each left set looks up the right totals that complete it. It never relies on
-    totals growing with size, so negative amounts are safe. It stops at the second set.
+    Returns 0, 1 or 2 (2 means two or more), and with exactly one, that set as a bit mask over
+    ``amounts``. It stops at the second set.
+
+    The amounts are split into two halves, and every set of each half is listed. Any set of all the
+    amounts is one left set plus one right set. So for each left set, the right sets that complete it
+    are those whose total falls in a known range, found by a binary search in the sorted right totals.
+    Listing two halves is far quicker than listing every set of the whole. Nothing assumes that adding
+    an amount makes a total larger, so negative amounts are safe.
     """
     size = len(amounts)
     most = min(max_parts, size)
     half = size // 2
     left = _subsets(amounts[:half], 0, most)
+    # The right sets grouped by how many amounts they hold, each group sorted by total.
     right_by_size: list[tuple[list[int], list[int]]] = []
     right = sorted(_subsets(amounts[half:], half, most))
     for count in range(most + 1):
@@ -348,6 +354,7 @@ def _search(amounts: Sequence[int], target: int, tolerance: int, max_parts: int)
     for total, used, mask in left:
         low = target - tolerance - total
         high = target + tolerance - total
+        # Right sets small enough to keep the whole set within max_parts, and not empty on both sides.
         for count in range(0 if used else 1, most - used + 1):
             totals, masks = right_by_size[count]
             start = bisect_left(totals, low)
