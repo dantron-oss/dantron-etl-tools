@@ -611,3 +611,52 @@ class TestFloorAndCeilOnAnExactValue:
         assert "38 digits" in _formula_refusal(frame.with_columns(key=pl.Series(["a", "b", "c"])), "sign([t])")
         _exactly(_formula(frame.slice(1, 1), "sign([t])"), 38, ["0." + "0" * 38])
 
+
+# ---------------------------------------------------------------------------
+# Unit 16: a calculation made only of typed numbers is exact beside an exact column
+# ---------------------------------------------------------------------------
+
+
+class TestACalculationOfTypedNumbers:
+    FRAME = pl.DataFrame({"d": exact(["812.40", "0.30", None], 2), "f": [812.40, 0.30, None]})
+
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [
+            ("1 + 0.0725", "1.0725"),
+            ("2 * 0.50 - 0.25", "0.75"),
+            ("-(0.5 + 0.25)", "-0.75"),
+            ("1 / 3", "0.3333333333333333"),
+            ("2 / 3", "0.6666666666666667"),
+            ("-2 / 3", "-0.6666666666666667"),
+            ("1 / -3", "-0.3333333333333333"),
+            ("-1 / -3", "0.3333333333333333"),
+            ("0.0000000000000001 / 2", "0.0000000000000001"),
+            ("1 / 0.000000000000000003", "333333333333333333.333333333333333333"),
+        ],
+    )
+    def test_is_worked_out_exactly_as_the_operators_would(self, text: str, value: str) -> None:
+        found = exact_constant(text)
+        assert found is not None and format(found, "f") == value
+
+    def test_beside_an_exact_column_it_is_exact(self) -> None:
+        _exactly(_formula(self.FRAME, "[d] * (1 + 0.0725)"), 6, ["871.299000", "0.321750", None])
+        _exactly(_formula(self.FRAME, "[d] + 1 / 3"), 16, ["812.7333333333333333", "0.6333333333333333", None])
+        _exactly(_formula(self.FRAME, "[d] * -(0.5 + 0.25)"), 4, ["-609.3000", "-0.2250", None])
+        assert _formula(self.FRAME, "[d] = 0.1 + 0.2").to_list() == [False, True, None]
+
+    def test_beside_a_float_column_or_alone_it_is_the_float_it_was(self) -> None:
+        assert _formula(self.FRAME, "[f] = 0.1 + 0.2").to_list() == [False, False, None]
+        out = _formula(self.FRAME, "[f] * (1 + 0.0725)")
+        assert out.dtype == pl.Float64 and out.to_list()[:2] == [812.40 * (1 + 0.0725), 0.30 * (1 + 0.0725)]
+        alone = _formula(self.FRAME, "1 / 3 + 0.5")
+        assert alone.dtype == pl.Float64 and alone.to_list() == [1 / 3 + 0.5] * 3
+
+    def test_one_an_exact_decimal_cannot_hold_is_refused_beside_an_exact_column(self) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        with pytest.raises(ExpressionError) as raised:
+            compile_expr("[d] + 1e30 * 1e30", self.FRAME.schema)
+        assert "1e+30 * 1e+30" in str(raised.value) and "38 digits" in str(raised.value)
+        assert exact_constant("1 / (1 - 1)") is None
+

@@ -9,7 +9,7 @@ before it writes anything, which stops the step and names the rows.
 Why: docs/design/expressions.md#exact-decimals
 """
 
-from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, Inexact, localcontext
 from typing import Any, Final, NamedTuple
 
 import polars as pl
@@ -274,6 +274,37 @@ def _largest_whole(dtype: pl.DataType) -> pl.Expr:
     precision = dtype.precision if isinstance(dtype, pl.Decimal) and dtype.precision else EXACT_DIGITS  # type: ignore[attr-defined]
     whole = precision - places_of(dtype)
     return pl.lit(Decimal(10**whole - 1), dtype=exact_dtype(0))
+
+
+def constant(operation: str, first: Decimal, second: Decimal) -> Decimal | None:
+    """Two typed numbers worked out as the exact operators work them, or None where there is no answer.
+
+    `+` and `-` keep the larger places and `*` adds them, as Python's decimals do when nothing rounds.
+    `/` gives 16 places, or more if either side has more, the last rounded half away from zero; a zero
+    divisor has no answer.
+    """
+    if operation == "/":
+        return _constant_quotient(first, second)
+    with localcontext(_UNLIMITED) as context:
+        answer = {"+": first + second, "-": first - second, "*": first * second}[operation]
+        return None if context.flags[Inexact] else answer
+
+
+def _constant_quotient(first: Decimal, second: Decimal) -> Decimal | None:
+    """``first / second`` by the division rule, on whole numbers so nothing is rounded twice."""
+    if second == 0:
+        return None
+    places = max(DIVISION_PLACES, _places(first), _places(second))
+    # first / second = (top / bottom) * 10^-places, with both as whole numbers.
+    top = int(first.scaleb(_places(first), context=_UNLIMITED))
+    bottom = int(second.scaleb(_places(second), context=_UNLIMITED))
+    shift = places + _places(second) - _places(first)
+    numerator = top * 10**shift
+    size, left = divmod(abs(numerator), abs(bottom))
+    if 2 * left >= abs(bottom):
+        size += 1
+    negative = (numerator < 0) != (bottom < 0) and size != 0
+    return Decimal((1 if negative else 0, tuple(int(digit) for digit in str(size)), -places))
 
 
 def coalesce(*parts: Part) -> Exact:

@@ -594,6 +594,8 @@ Each of these has caught a real pipeline.
 - **`*` adds the two places, and never rounds.** 812.40 × 0.0725 is 58.899000, six places. Places
   grow quickly in a chain of products, and a product whose places pass 38 is refused when the step
   starts. Round one side first, such as `round([rate], 4)`, when a figure only needs so many.
+- **A calculation of typed numbers alone is exact beside an exact column:** `[amount] * (1 + 0.0725)`
+  multiplies by exactly 1.0725, and `1 / 3` there is 0.3333333333333333 by the division rule.
 - **`/` gives 16 places, or more if either side has more,** and rounds the last place half away from
   zero: 100.00 / 7.00 is 14.2857142857142857. Round the answer to the places you report. At 16 places
   each side may have at most 22 whole digits; a larger one stops the step.

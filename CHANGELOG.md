@@ -50,6 +50,10 @@ things; each such release says how to upgrade.
   exact product gave a `Float64`; it is now exact. `floor`, `ceil` and `round` on a value at the very
   top of what its column holds, which gave a number too large for the column without a word, now
   stop the step and name the rows. Figures are unchanged; only the places written after them move.
+- **A calculation made only of typed numbers is exact beside an exact column.** `[amount] = 0.1 + 0.2`
+  compared as floats, so 0.30 was not equal to it; it is now. `[amount] * (1 + 0.0725)` gave a
+  `Float64`; it now gives an exact decimal, 871.299000 for 812.40. Beside a float column, or on its
+  own, such a calculation is the float it always was.
 
 ## [0.3.0] - 2026-11-20
 

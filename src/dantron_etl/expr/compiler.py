@@ -219,7 +219,8 @@ class _Compiler:
             return Typed(negative, Family.NULL, node, operand.holds, operand.dtype)
         # The type comes along, because a minus sign does not change it: the negative of a whole
         # number is a whole number, and the negative of a decimal is a decimal.
-        return Typed(negative, Family.NUMBER, node, "gives a number", operand.dtype)
+        constant = None if operand.constant is None else operand.constant.copy_negate()
+        return Typed(negative, Family.NUMBER, node, "gives a number", operand.dtype, constant)
 
     def _binary_op(self, node: ast.BinOp) -> Typed:
         operation = type(node.op)
@@ -246,7 +247,11 @@ class _Compiler:
             return self._exact_quotient(node, exact_pair)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
         dtype = arithmetic_dtype(operation, left.dtype, right.dtype)
-        return Typed(built, Family.NUMBER, node, "gives a number", dtype)
+        # A calculation made only of typed numbers is worked out exactly too, for use beside an exact column.
+        constant = None
+        if left.constant is not None and right.constant is not None:
+            constant = exact.constant(symbol, left.constant, right.constant)
+        return Typed(built, Family.NUMBER, node, "gives a number", dtype, constant)
 
     def _compare(self, node: ast.Compare) -> Typed:
         if len(node.ops) != 1:

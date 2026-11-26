@@ -212,6 +212,11 @@ author's spelling of it. `Spelling.written_number` reads it back as a Python `De
 its two places. Each compiled part carries that value as `constant`. Beside an exact column the
 constant is used, as a literal with its written places; anywhere else the float is used, as before,
 so a flow with no exact column computes what it always did.
+A calculation made only of typed numbers (`1 + 0.0725`) carries an exact value too, worked out in
+Python's decimals by the same rules as the columns: no rounding for `+`, `-` and `*`, and the
+division rule for `/`, on whole numbers so nothing is rounded twice. A zero divisor leaves it
+without one, and it is then the float it always was.
+
 **Every answer is checked before it is worked out.** The engine's exact arithmetic is not safe to
 hand a value: it stops with its own error when a sum passes 38 digits, gives a blank when a value
 with many whole digits meets one with many places (it writes both at the larger places first), and
