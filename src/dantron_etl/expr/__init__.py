@@ -16,7 +16,10 @@ from collections.abc import Collection, Mapping
 
 import polars as pl
 
+from decimal import Decimal
+
 from .compiler import Division, RowCheck, build
+from .compiler import exact_constant as _exact_constant
 from .compiler import divisions as _divisions
 from .compiler import row_checks as _row_checks
 from .errors import ExpressionError
@@ -36,6 +39,7 @@ __all__ = [
     "compile_expr",
     "divisions",
     "escape_text",
+    "exact_constant",
     "quote_text",
     "references",
     "row_checks",
@@ -72,6 +76,14 @@ def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] |
     exactly as `compile_expr` checks it.
     """
     return _row_checks(text, columns)
+
+
+def exact_constant(text: str) -> Decimal | None:
+    """The exact value of a typed number, as written: `1.10` is 1.10 with its 2 places, `-0.5` is -0.5.
+
+    None when `text` is anything else. The text is checked exactly as `compile_expr` checks it.
+    """
+    return _exact_constant(text)
 
 
 def references(text: str) -> frozenset[str]:

@@ -9,6 +9,7 @@ import ast
 import operator
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from decimal import Decimal
 from typing import Any, Final, NamedTuple
 
 import polars as pl
@@ -107,6 +108,12 @@ def divisions(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | 
     return tuple(compiler.divisions)
 
 
+def exact_constant(text: str) -> Decimal | None:
+    """The exact value of ``text`` when it is a typed number, as written; None for anything else."""
+    tree, scanned, schema = front_door(text, None)
+    return _Compiler(text, scanned, schema)._typed(tree.body).constant
+
+
 def row_checks(text: str, columns: Mapping[str, pl.DataType] | Collection[str] | None) -> tuple[RowCheck, ...]:
     """Every function call in ``text`` that has rows with no answer, in the order written."""
     tree, scanned, schema = front_door(text, columns)
@@ -195,7 +202,7 @@ class _Compiler:
         folded = self._spelling.literal(node)
         if isinstance(folded, (int, float)) and not isinstance(folded, bool):
             self._check_whole_number(folded)
-            return self._typed_value(folded, node)
+            return self._typed_value(folded, node)._replace(constant=self._spelling.written_number(node))
 
         operand = _signed(self._typed(node.operand))
         self._require(operand, Family.NUMBER, "a minus sign needs a number")
@@ -368,7 +375,7 @@ class _Compiler:
         if isinstance(value, int):
             self._check_whole_number(value)
         if isinstance(value, (int, float)):
-            return self._typed_value(value, node)
+            return self._typed_value(value, node)._replace(constant=self._spelling.written_number(node))
         raise error(
             self._text,
             f"{value!r} is not a literal this language supports (it is a {type(value).__name__}): the literals are "
