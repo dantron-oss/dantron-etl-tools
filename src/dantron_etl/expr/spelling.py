@@ -7,6 +7,7 @@ file, and spells any part of the expression back for a refusal that has to point
 
 import ast
 from datetime import date
+from decimal import Decimal
 from typing import Any, Final
 
 from .errors import error
@@ -49,18 +50,25 @@ def render_value(value: Any) -> str:
         return quote_text(value)
     if isinstance(value, date):
         return f"date'{value.isoformat()}'"
+    if isinstance(value, Decimal):
+        return str(value)
     return repr(value)
 
 
 class Spelling:
     """One expression's scanned tables, and the author's own spelling of any part of it."""
 
-    __slots__ = ("_columns", "_literals", "_text")
+    __slots__ = ("_columns", "_line_starts", "_literals", "_source", "_text")
 
     def __init__(self, text: str, scanned: Scanned) -> None:
         self._text = text
         self._columns = scanned.columns
         self._literals = scanned.literals
+        self._source = scanned.source
+        starts = [0]
+        for line in scanned.source.split("\n")[:-1]:
+            starts.append(starts[-1] + len(line) + 1)
+        self._line_starts = tuple(starts)
 
     def render(self, node: ast.expr) -> str:
         """The author's own spelling of one part of the expression, for a refusal that points at it.
@@ -109,6 +117,22 @@ class Spelling:
             if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < size:
                 return index
         raise error(self._text, "the expression could not be understood")  # pragma: no cover
+
+    def written_number(self, node: ast.expr) -> Decimal | None:
+        """A number typed in the expression, as the exact value of the text written: `1.10` keeps its 2 places.
+
+        A minus sign in front is part of the number. None for anything that is not a typed number.
+        """
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            inner = self.written_number(node.operand)
+            return None if inner is None else inner.copy_negate()
+        if not isinstance(node, ast.Constant) or isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            return None
+        # The scan passes a number's characters through unchanged, and the parser reads only ASCII here,
+        # so the node's place in the parsed text is the author's own spelling of it.
+        start = self._line_starts[node.lineno - 1] + node.col_offset
+        end = self._line_starts[(node.end_lineno or node.lineno) - 1] + (node.end_col_offset or 0)
+        return Decimal(self._source[start:end])
 
     def literal(self, node: ast.expr) -> Any:
         """The value of `node` if it is a literal, else MISSING, so each caller can word its own refusal."""

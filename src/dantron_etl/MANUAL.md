@@ -270,8 +270,8 @@ the step and names the values: it never becomes a blank date. A format without a
 **Numbers.** `floor` and `ceil` go down or up to a whole number and keep the number's type, so a
 `Decimal` stays a `Decimal`. `sign` gives -1, 0 or 1. `mod(a, b)` is the remainder with the sign of
 `a`, as SQL's `MOD` and Alteryx's `Mod`: `mod(-7, 3)` is -1, where the engine's own `%` would give 2.
-`mod` by zero stops the step, as `/` by zero does, and a `Decimal` is refused: cast it to `Float64`
-first. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
+`mod` by zero stops the step, as `/` by zero does. On a `Decimal` it is exact, with the larger of the
+two places: `mod(812.40, 3)` is 2.40. `least` and `greatest` take two or more values of one kind and skip nulls, as PostgreSQL does:
 only all nulls give null. `nullif(a, b)` is null where `a` equals `b`, otherwise `a`;
 `nullif([code], '')` turns empty text into a null.
 
@@ -326,8 +326,6 @@ Some expressions that look reasonable never give the answer they seem to, and ar
   `[posted_at] <= date'2025-01-31'` leaves out the 31st after midnight and `[posted_at] =
   date'2025-01-31'` is almost never true. `>=` and `<` mean what they say and are allowed; for the
   rest, cast the timestamp to `Date` first, or write the range as `>= start and < next day`.
-- `/` on a `Decimal` column keeps the column's own number of places (100.00 / 3 is 33.33). Cast the
-  column to `Float64` first.
 - A `#` outside quotes is not a comment; put notes in the step's `why`.
 
 **Only some fields are expressions, and it matters.** A tool's template says which: `filter`'s
@@ -634,6 +632,30 @@ Each of these has caught a real pipeline.
 - **The viewer names an exact column by its places.** A column heading reads `Decimal, 2 places`,
   as a flow writes the type, and each cell shows the digits as held (`58.899000`), never a rounded
   or scientific spelling. A saved run's `ports.json` records the type the same way.
+- **Arithmetic on an exact column is exact.** `+` and `-` give the larger of the two places:
+  `[amount] + 0.0725` on 812.40 is 812.4725. A number typed in the expression is exact as written,
+  so `1.10` has 2 places, and a whole number counts as 0 places. An answer that needs more than 38
+  digits stops the step and names the rows; it never rounds or wraps round.
+- **`*` adds the two places, and never rounds.** 812.40 × 0.0725 is 58.899000, six places. Places
+  grow quickly in a chain of products, and a product whose places pass 38 is refused when the step
+  starts. Round one side first, such as `round([rate], 4)`, when a figure only needs so many.
+- **A calculation of typed numbers alone is exact beside an exact column:** `[amount] * (1 + 0.0725)`
+  multiplies by exactly 1.0725, and `1 / 3` there is 0.3333333333333333 by the division rule.
+- **`/` gives 16 places, or more if either side has more,** and rounds the last place half away from
+  zero: 100.00 / 7.00 is 14.2857142857142857. Round the answer to the places you report. At 16 places
+  each side may have at most 22 whole digits; a larger one stops the step.
+- **`round(x, n)` on an exact value gives exactly `n` places**, half away from zero: `round(58.899000,
+  2)` is 58.90 and `round(1.5, 2)` is 1.50. `n` runs to 38. Apart from the last place of a division, it is
+  the only place an exact figure is rounded.
+- **An exact value never meets a float.** `[amount] + [ratio]`, `[amount] = [ratio]`,
+  `coalesce([amount], [ratio])` and every other function that combines values stop the step when
+  `amount` is `Decimal` and `ratio` is `Float64`, naming the float. Convert one side first with
+  `cast_columns`. A whole number or a typed number beside an exact value is exact:
+  `coalesce([amount], 0.0)` gives 0.00 where `amount` is blank.
+- **Exact values compare by value.** 1.50 equals 1.5000, and `[amount] in (1.5, 812.4)` matches
+  1.50 and 812.40. Nothing is rounded to match: 0.12 is not in `(0.125)`.
+- **`case_when` with an exact branch writes every branch with the largest places among them.** A
+  whole number or a typed number (`then: "0.0"`) is exact there; a `Float64` branch is refused.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

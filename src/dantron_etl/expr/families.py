@@ -8,6 +8,7 @@ literal, or from the parts of a value built out of other values.
 import ast
 import enum
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any, Final, NamedTuple
 
 import polars as pl
@@ -54,7 +55,7 @@ def family_of_value(value: Any) -> Family:
         return Family.NULL
     if isinstance(value, bool):
         return Family.BOOLEAN
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, Decimal)):
         return Family.NUMBER
     if isinstance(value, str):
         return Family.TEXT
@@ -71,9 +72,17 @@ def dtype_of_value(value: Any) -> pl.DataType:
         return pl.Int64()
     if isinstance(value, float):
         return pl.Float64()
+    if isinstance(value, Decimal):
+        return pl.Decimal(38, places_of(value))
     if isinstance(value, str):
         return pl.String()
     return pl.Date()
+
+
+def places_of(value: Decimal) -> int:
+    """The places a typed number was written with: 1.10 has 2, 7 has 0, and 1e-9 has 9."""
+    exponent = value.as_tuple().exponent
+    return max(0, -exponent) if isinstance(exponent, int) else 0
 
 
 def combined_dtype(dtypes: Sequence[pl.DataType | None]) -> pl.DataType | None:
@@ -122,7 +131,7 @@ def holding_phrase(value: Any) -> str:
         return "is a truth value"
     if isinstance(value, int):
         return "is a whole number"
-    if isinstance(value, float):
+    if isinstance(value, (float, Decimal)):
         return "is a decimal"
     if isinstance(value, str):
         return "is text"
@@ -140,7 +149,8 @@ class Typed(NamedTuple):
     `node` is kept, not a rendered string, because rendering is only needed for an error. `holds` is a
     phrase, so a refusal can say what a column actually holds. `expr` is the polars expression so far.
     `dtype` is the exact type where it can be worked out (from the schema, the literal, or the parts), or
-    None; add_months() refuses a count of months whose type is None or a decimal.
+    None; add_months() refuses a count of months whose type is None or a decimal. `constant` is the exact
+    value of a typed number, as written; it is used in place of `expr` beside an exact column.
     """
 
     expr: Any
@@ -148,3 +158,4 @@ class Typed(NamedTuple):
     node: ast.expr
     holds: str
     dtype: pl.DataType | None = None
+    constant: Decimal | None = None

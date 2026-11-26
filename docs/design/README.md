@@ -51,6 +51,7 @@ why, and what was rejected. The code links here where a choice would otherwise s
 - [Rounding like a spreadsheet: 15 significant digits](expressions.md#rounding-like-a-spreadsheet-15-significant-digits)
 - [Division by zero](expressions.md#division-by-zero)
 - [Types and widths](expressions.md#types-and-widths)
+- [Exact decimals](expressions.md#exact-decimals)
 - [Quoting and literals](expressions.md#quoting-and-literals)
 - [Refusals](expressions.md#refusals)
 - [The SQL target that was removed](expressions.md#the-sql-target-that-was-removed)

@@ -131,11 +131,18 @@ class TestWhatPassesThrough:
         result = frame.select(compile_expr("round([x], 0)", frame.schema).alias("out"))["out"]
         assert result.dtype == pl.Int64 and result.to_list() == [125, -125, None]
 
-    def test_a_decimal_typed_column_rounds_its_exact_value_away_from_zero(self) -> None:
+    def test_a_decimal_typed_column_rounds_its_exact_value_away_from_zero_to_exactly_those_places(self) -> None:
         values = [Decimal("1.005"), Decimal("-2.500"), Decimal("1.004"), None]
         frame = pl.DataFrame({"x": pl.Series(values, dtype=pl.Decimal(10, 3))})
-        result = frame.select(compile_expr("round([x], 2)", frame.schema).alias("out"))["out"]
-        assert result.to_list() == [Decimal("1.010"), Decimal("-2.500"), Decimal("1.000"), None]
+        for schema in (frame.schema, None):
+            result = frame.select(compile_expr("round([x], 2)", schema).alias("out"))["out"]
+            assert result.dtype == pl.Decimal(38, 2)
+            assert [None if value is None else format(value, "f") for value in result.to_list()] == [
+                "1.01",
+                "-2.50",
+                "1.00",
+                None,
+            ]
 
     def test_a_32_bit_decimal_is_read_to_the_digits_it_carries_and_keeps_its_type(self) -> None:
         frame = pl.DataFrame({"x": pl.Series([1.005, 2.5, 0.125], dtype=pl.Float32)})
