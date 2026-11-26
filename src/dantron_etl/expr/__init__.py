@@ -28,6 +28,7 @@ from .errors import ExpressionError
 from .functions import ALLOWED_FUNCTIONS
 from .parse import ALLOWED_NODES, MAX_DEPTH, MAX_NODES, MAX_TEXT_LENGTH
 from .quoting import escape_text, quote_text
+from .scan import ROW_REACH, RowReference, read_row_reference, scan
 
 __all__ = [
     "ALLOWED_FUNCTIONS",
@@ -37,7 +38,9 @@ __all__ = [
     "MAX_TEXT_LENGTH",
     "Division",
     "ExpressionError",
+    "ROW_REACH",
     "RowCheck",
+    "RowReference",
     "compile_exact",
     "compile_expr",
     "divisions",
@@ -47,6 +50,7 @@ __all__ = [
     "quote_text",
     "references",
     "row_checks",
+    "row_references",
 ]
 
 
@@ -115,3 +119,14 @@ def references(text: str) -> frozenset[str]:
     """
     _, names = build(text, None)
     return names
+
+
+def row_references(text: str) -> tuple[RowReference, ...]:
+    """Every distinct ``[Row-N:column]`` and ``[Row+N:column]`` in `text`, in the order first written.
+
+    Only the multi_row_formula tool reads these. Every other tool reads the brackets as a column of
+    that whole name, which the frame does not have, and refuses it. A reach of 0 rows or past
+    ``ROW_REACH`` is refused here.
+    """
+    found = (read_row_reference(text, name) for name in scan(text).columns)
+    return tuple(reference for reference in found if reference is not None)
