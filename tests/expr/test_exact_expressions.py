@@ -210,3 +210,77 @@ class TestAnAnswerTooLargeToHold:
         out = run_tool(REGISTRY.get("case_when"), Ports({"rows": self.FRAME}), config)["rows"]["out"]
         _exactly(out, 2, ["3.00", None])
 
+
+# ---------------------------------------------------------------------------
+# Unit 11: multiplying exact values adds their places, with no rounding
+# ---------------------------------------------------------------------------
+
+
+class TestMultiplyingExactValues:
+    FRAME = pl.DataFrame(
+        {
+            "key": ["p", "q", "r", "s"],
+            "a": exact(["812.40", "0.07", "-19.99", None], 2),
+            "b": exact(["0.0725", "0.0700", "3.0000", "1.0000"], 4),
+            "c": exact(["0.07", "0.07", "0.15", "1.00"], 2),
+            "n": [3, -2, 0, None],
+        }
+    )
+
+    def test_the_product_has_both_places_and_is_never_rounded(self) -> None:
+        _exactly(_formula(self.FRAME, "[a] * [b]"), 6, ["58.899000", "0.004900", "-59.970000", None])
+        _exactly(_formula(self.FRAME, "[c] * [a]"), 4, ["56.8680", "0.0049", "-2.9985", None])
+
+    def test_a_typed_number_or_a_whole_number_adds_its_own_places(self) -> None:
+        _exactly(_formula(self.FRAME, "[a] * 0.0725"), 6, ["58.899000", "0.005075", "-1.449275", None])
+        _exactly(_formula(self.FRAME, "0.5 * [a]"), 3, ["406.200", "0.035", "-9.995", None])
+        _exactly(_formula(self.FRAME, "[a] * 3"), 2, ["2437.20", "0.21", "-59.97", None])
+        _exactly(_formula(self.FRAME, "[n] * [a]"), 2, ["2437.20", "-0.14", "0.00", None])
+        _exactly(_formula(self.FRAME, "[a] * -1.0"), 3, ["-812.400", "-0.070", "19.990", None])
+
+    def test_with_no_exact_column_a_product_is_the_float_it_was(self) -> None:
+        frame = pl.DataFrame({"f": [812.40], "n": [3]})
+        assert _formula(frame, "[f] * 0.0725").to_list() == [812.40 * 0.0725]
+        assert _formula(frame, "[n] * 0.5").dtype == pl.Float64
+        assert _formula(frame, "[n] * 2").dtype == pl.Int64
+
+    def test_places_past_38_are_refused_when_the_step_starts(self) -> None:
+        from dantron_etl.authoring import ConfigError
+
+        frame = pl.DataFrame({"x": exact(["1.5"], 20), "y": exact(["2.5"], 19), "z": exact(["0.5"], 18)})
+        with pytest.raises(ConfigError) as raised:
+            _formula(frame.head(0), "[x] * [y]")
+        said = str(raised.value)
+        assert "39 places" in said and "[x]" in said and "[y]" in said and "round" in said
+        _exactly(_formula(frame, "[x] * [z]"), 38, ["0." + "75" + "0" * 36])
+        with pytest.raises(ConfigError):
+            _formula(frame, "[x] * 0.0000000000000000001")
+
+    WHOLE = pl.DataFrame(
+        {
+            "key": ["under", "over", "cross under", "cross over"],
+            "a": exact(["9999999999999999999", "10000000000000000000", "1000000000000000000", "1000000000000000000"], 0),
+            "b": exact(["10000000000000000001", "10000000000000000000", "99999999999999999999", "100000000000000000000"], 0),
+        }
+    )
+
+    @pytest.mark.parametrize("text", ["[a] * [b]", "[b] * [a]", "-[a] * [b]"])
+    def test_a_product_past_38_digits_stops_the_step_and_one_just_under_is_exact(self, text: str) -> None:
+        said = _formula_refusal(self.WHOLE, text)
+        assert "38 digits" in said and "2 of 4 row(s)" in said and "'key': 'over'" in said and "cross over" in said
+        under = self.WHOLE.filter(pl.col("key").str.contains("under"))
+        sign = "-" if text.startswith("-") else ""
+        _exactly(_formula(under, text), 0, [sign + "9" * 38, sign + "99999999999999999999" + "0" * 18])
+
+    def test_a_large_value_times_a_small_one_is_exact_when_the_product_fits(self) -> None:
+        frame = pl.DataFrame({"big": exact(["1" + "0" * 31], 0), "tiny": exact(["0.0000003"], 7)})
+        _exactly(_formula(frame, "[big] * [tiny]"), 7, ["3" + "0" * 24 + ".0000000"])
+        _exactly(_formula(frame, "[tiny] * [big]"), 7, ["3" + "0" * 24 + ".0000000"])
+
+    def test_on_a_row_a_case_never_reaches_a_product_too_large_neither_stops_nor_breaks(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        config = {"cases": [{"when": "[key] = 'under'", "then": "[a] * [b]"}], "output": "out"}
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": self.WHOLE}), config)["rows"]["out"]
+        _exactly(out, 0, ["9" * 38, None, None, None])
+

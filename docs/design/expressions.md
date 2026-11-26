@@ -226,6 +226,13 @@ names the rows. In `case_when` a row no case reaches is not checked, and its unu
 - `+` and `-`: both sides are written at the larger places first; a side that does not fit there
   is too large. Otherwise the sum is too large only when both lean the same way and `|a| > 38 nines
   - |b|`, worked out on values that each fit.
+- `*`: the engine writes both sides at the larger places before it multiplies, so it rounds the
+  product half to even, and a large value times a small one comes back blank. The library multiplies
+  the digits each side holds (812.40 holds 81240) as 128-bit whole numbers, read from the value's
+  own text, and puts the point back through text. Those hold 38 digits, so a product of two of them
+  is checked first: split each at 10^19; if both high halves are above zero the product is at least
+  10^38; otherwise one cross term is left and the product reaches 10^38 exactly when
+  `cross + low // 10^19` reaches 10^19. No step of the check passes 128 bits.
 
 ## Quoting and literals
 

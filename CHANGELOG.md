@@ -22,6 +22,13 @@ things; each such release says how to upgrade.
   names the rows, where the engine stopped with its own error, and a column whose places differ no
   longer turns such a sum into a blank. If a step relied on the float, convert the column with
   `cast_columns` to `Float64` first.
+- **Multiplying exact values no longer rounds.** `[price] * [rate]` on two `Decimal` columns gave the
+  larger of the two places, rounded half to even: 0.07 × 0.07 was 0.00, and 812.40 × 0.07 was
+  56.87. It now gives the two places added, with nothing rounded: 0.0049 and 56.8680. A typed
+  number counts its written places, so `[price] * 0.0725` is exact too, where it gave a `Float64`.
+  A product whose places would pass 38 is refused when the step starts, and one too large for 38
+  digits stops the step and names the rows. Where a step needs the old figure, write
+  `round([price] * [rate], 2)`.
 
 ## [0.3.0] - 2026-11-20
 

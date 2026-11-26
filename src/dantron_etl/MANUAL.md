@@ -593,6 +593,9 @@ Each of these has caught a real pipeline.
   `[amount] + 0.0725` on 812.40 is 812.4725. A number typed in the expression is exact as written,
   so `1.10` has 2 places, and a whole number counts as 0 places. An answer that needs more than 38
   digits stops the step and names the rows; it never rounds or wraps round.
+- **`*` adds the two places, and never rounds.** 812.40 × 0.0725 is 58.899000, six places. Places
+  grow quickly in a chain of products, and a product whose places pass 38 is refused when the step
+  starts. Round one side first, such as `round([rate], 4)`, when a figure only needs so many.
 - **A date cast to a number is a count, and its unit depends on the type.** `cast_columns` turns a
   `Date` into the days since 1 January 1970, and a `Datetime` into a count in the column's own time
   unit (microseconds for one this library typed; a source may use nanoseconds). To count the days

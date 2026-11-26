@@ -243,6 +243,10 @@ class _Compiler:
             first, second = exact_pair
             answer = exact.add(first.expr, first.dtype, second.expr, second.dtype, subtract=operation is ast.Sub)
             return self._exact_answer(answer, node, exact_pair)
+        if exact_pair is not None and operation is ast.Mult:
+            first, second = exact_pair
+            self._refuse_too_many_places(first, second)
+            return self._exact_answer(exact.multiply(first.expr, first.dtype, second.expr, second.dtype), node, exact_pair)
         if operation is ast.Div:
             self._record_division(node.right, right)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
@@ -666,6 +670,17 @@ class _Compiler:
         literal = exact.literal(value)
         return operand._replace(expr=literal, dtype=exact_dtype(exact.places_of(dtype_of_value(value))))
 
+    def _refuse_too_many_places(self, first: Typed, second: Typed) -> None:
+        """Refuse a product whose places pass 38: no row of it could be held, so it is refused before any is read."""
+        places = exact.places_of(first.dtype) + exact.places_of(second.dtype)  # type: ignore[arg-type]
+        if places > EXACT_DIGITS:
+            raise error(
+                self._text,
+                f"{self._describe(first)} and {self._describe(second)}, and their product would have {places} "
+                f"places, more than the {EXACT_DIGITS} digits an exact decimal holds; round one side first, such "
+                f"as round({self._spelling.render(first.node)}, 2), so the product needs fewer places",
+            )
+
     def _exact_answer(self, answer: exact.Exact, node: ast.expr, operands: Sequence[Typed]) -> Typed:
         """An exact answer as a compiled part, with the check that stops the step where it is too large to hold."""
         shown = next((operand for operand in operands if operand.constant is None), operands[0])
@@ -675,7 +690,8 @@ class _Compiler:
         )
         written = (self._spelling.render(node), self._spelling.render(shown.node))
         self.row_checks.append(RowCheck(answer.too_large, shown.expr, problem, exact.TOO_LARGE_REMEDY, written))
-        return Typed(answer.expr, Family.NUMBER, node, "gives a number", exact_dtype(answer.places))
+        dtype = answer.dtype if answer.dtype is not None else exact_dtype(answer.places)
+        return Typed(answer.expr, Family.NUMBER, node, "gives a number", dtype)
 
     # -- helpers -----------------------------------------------------------
 
