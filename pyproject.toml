@@ -57,11 +57,11 @@ dev = [
 dantron-etl = "dantron_etl.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/DanTron-Inc/dantron-etl-tools"
-Documentation = "https://github.com/DanTron-Inc/dantron-etl-tools/tree/main/docs"
-Source = "https://github.com/DanTron-Inc/dantron-etl-tools"
-Issues = "https://github.com/DanTron-Inc/dantron-etl-tools/issues"
-Changelog = "https://github.com/DanTron-Inc/dantron-etl-tools/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/dantron-oss/dantron-etl-tools"
+Documentation = "https://github.com/dantron-oss/dantron-etl-tools/tree/main/docs"
+Source = "https://github.com/dantron-oss/dantron-etl-tools"
+Issues = "https://github.com/dantron-oss/dantron-etl-tools/issues"
+Changelog = "https://github.com/dantron-oss/dantron-etl-tools/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
