@@ -85,12 +85,12 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 ### 3.1 The tools that ship
 
-31 tools, by category:
+32 tools, by category:
 
 | category | tools |
 |---|---|
 | `input` | `read_csv`, `read_excel`, `read_table` |
-| `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
+| `preparation` | `cast_columns`, `filter`, `limit_rows`, `match_one_to_many`, `match_one_to_one`, `record_id`, `remove_duplicates`, `rename_columns`, `select_columns`, `sort` |
 | `transform` | `assemble_date`, `case_when`, `cross_tab`, `date_diff`, `expand_date_range`, `formula`, `group_by`, `make_groups`, `running_total`, `unpivot` |
 | `combine` | `join`, `union` |
 | `text` | `normalize_text`, `regex_extract_groups` |
@@ -99,7 +99,7 @@ nulls, what is refused and why. Read them. They are where the money bugs live.
 
 "Preparation" selects among what is already there. "Transform" produces something that was not.
 
-Four capabilities that each replace a shape you would otherwise build badly:
+Five capabilities that each replace a shape you would otherwise build badly:
 
 - **Records that belong together through a chain** (A links to B, B to C, so A and C are one
   group) — `make_groups`. A fixed run of joins follows a chain only as deep as you wrote
@@ -109,6 +109,11 @@ Four capabilities that each replace a shape you would otherwise build badly:
   express it, because whether a candidate is still free depends on which were accepted before it.
   Remove exact duplicate candidates first: under `ties: refuse`, two identical rows tie with each
   other and both keys are refused.
+- **One whole made of several parts** (a deposit and the payments it holds) —
+  `match_one_to_many`. Build the candidates with a `join` and a `filter` on a date window first; the
+  tool then tries every set of up to `max_parts` parts and matches a whole only when exactly one set
+  adds up. No set, two sets, or a part two wholes both need: those rows are set aside with a reason.
+  Amounts must be whole numbers or `Decimal`; convert a `Float64` amount with `cast_columns` first.
 - **Every match in a text, one row each** — `regex_extract_groups` with `all_matches`. Not a fixed
   number of single-match steps, which caps the count.
 - **Every tab of a workbook whose name follows a pattern** — `read_excel` with `sheets_matching`.

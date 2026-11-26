@@ -14,6 +14,10 @@ things; each such release says how to upgrade.
   null adds nothing. Whole numbers give `Int64` totals, floats `Float64`, and an exact `Decimal`
   column exact totals at its places. A running value that does not fit stops the step, naming the
   group and the column. Put a `sort` in front for a meaningful order.
+- **`match_one_to_many`** pairs each whole with the one set of its candidate parts whose amounts add
+  up to it, such as a deposit with the payments it holds. A whole with no such set, more than one,
+  or a part another whole also needs is set aside with a reason, never guessed. Amounts are whole
+  numbers or `Decimal`, compared exactly, within an optional `tolerance`.
 
 ## [0.4.2] - 2026-11-26
 

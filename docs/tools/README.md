@@ -2,7 +2,7 @@
 
 # The tools
 
-31 tools, grouped by what they do. Each page lists the tool's ports and settings, the rules it follows, and worked examples. Every worked example is run by the test suite, so the rows shown are what the tool really gives.
+32 tools, grouped by what they do. Each page lists the tool's ports and settings, the rules it follows, and worked examples. Every worked example is run by the test suite, so the rows shown are what the tool really gives.
 
 The same text is in the terminal: `dantron-etl tools` and `dantron-etl help <tool>`.
 
@@ -21,6 +21,7 @@ The same text is in the terminal: `dantron-etl tools` and `dantron-etl help <too
 | [`cast_columns`](cast_columns.md) | Change the type of columns, such as text to number or text to date. |
 | [`filter`](filter.md) | Split rows in two by a condition: rows that meet it, and rows that do not. |
 | [`limit_rows`](limit_rows.md) | Keep the first rows of a table, and set the rest aside on a second port. |
+| [`match_one_to_many`](match_one_to_many.md) | Pair each whole with the one set of its candidate parts whose amounts add up to it. |
 | [`match_one_to_one`](match_one_to_one.md) | Pair items one to one from a list of possible pairs, taking the best pairs first. |
 | [`record_id`](record_id.md) | Number the rows 1, 2, 3 and so on, in a new column. |
 | [`remove_duplicates`](remove_duplicates.md) | Keep one row of each group of matching rows, and set the repeats aside. |
