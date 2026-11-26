@@ -326,8 +326,6 @@ Some expressions that look reasonable never give the answer they seem to, and ar
   `[posted_at] <= date'2025-01-31'` leaves out the 31st after midnight and `[posted_at] =
   date'2025-01-31'` is almost never true. `>=` and `<` mean what they say and are allowed; for the
   rest, cast the timestamp to `Date` first, or write the range as `>= start and < next day`.
-- `/` on a `Decimal` column keeps the column's own number of places (100.00 / 3 is 33.33). Cast the
-  column to `Float64` first.
 - A `#` outside quotes is not a comment; put notes in the step's `why`.
 
 **Only some fields are expressions, and it matters.** A tool's template says which: `filter`'s
@@ -596,6 +594,9 @@ Each of these has caught a real pipeline.
 - **`*` adds the two places, and never rounds.** 812.40 × 0.0725 is 58.899000, six places. Places
   grow quickly in a chain of products, and a product whose places pass 38 is refused when the step
   starts. Round one side first, such as `round([rate], 4)`, when a figure only needs so many.
+- **`/` gives 16 places, or more if either side has more,** and rounds the last place half away from
+  zero: 100.00 / 7.00 is 14.2857142857142857. Round the answer to the places you report. At 16 places
+  each side may have at most 22 whole digits; a larger one stops the step.
 - **An exact value never meets a float.** `[amount] + [ratio]`, `[amount] = [ratio]`,
   `coalesce([amount], [ratio])` and every other function that combines values stop the step when
   `amount` is `Decimal` and `ratio` is `Float64`, naming the float. Convert one side first with

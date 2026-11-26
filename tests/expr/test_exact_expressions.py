@@ -437,3 +437,100 @@ class TestComparingExactValuesByValue:
         assert _formula(frame, "[f] in (0.3, 1)").to_list() == [True, False, True]
         assert _formula(frame, "[n] in (1, 2.5)").to_list() == [True, False, False]
 
+
+# ---------------------------------------------------------------------------
+# Unit 14: dividing exact values gives 16 places, the last rounded half away from zero
+# ---------------------------------------------------------------------------
+
+
+class TestDividingExactValues:
+    def test_sixteen_places_with_the_last_rounded_half_away_from_zero(self) -> None:
+        frame = pl.DataFrame(
+            {
+                "a": exact(["100.00", "1.00", "2.00", "10.00", "-2.00", None], 2),
+                "b": exact(["7.00", "3.00", "3.00", "4.00", "3.00", "1.00"], 2),
+            }
+        )
+        _exactly(
+            _formula(frame, "[a] / [b]"),
+            16,
+            ["14.2857142857142857", "0.3333333333333333", "0.6666666666666667", "2.5000000000000000",
+             "-0.6666666666666667", None],
+        )
+
+    def test_a_tie_at_the_sixteenth_place_goes_away_from_zero_where_the_engine_goes_to_even(self) -> None:
+        tiny = "0.000000000000000"  # fifteen zeros after the point
+        frame = pl.DataFrame({"a": exact([tiny + "1", "-" + tiny + "1", tiny + "5", tiny + "3", tiny + "1"], 16)})
+        frame = frame.with_columns(b=exact(["2", "2", "2", "2", "-2"], 0))
+        _exactly(_formula(frame, "[a] / [b]"), 16, [tiny + "1", "-" + tiny + "1", tiny + "3", tiny + "2", "-" + tiny + "1"])
+
+    def test_more_places_than_sixteen_are_kept(self) -> None:
+        frame = pl.DataFrame({"a": exact(["1"], 20), "b": exact(["3.000000000000000000000000"], 24)})
+        _exactly(_formula(frame, "[a] / 3"), 20, ["0.33333333333333333333"])
+        _exactly(_formula(frame, "[a] / [b]"), 24, ["0.333333333333333333333333"])
+
+    def test_whole_numbers_and_typed_numbers_beside_an_exact_value_are_exact(self) -> None:
+        frame = pl.DataFrame({"d": exact(["10.00", "-1.00"], 2), "n": [4, 3]})
+        _exactly(_formula(frame, "[d] / [n]"), 16, ["2.5000000000000000", "-0.3333333333333333"])
+        _exactly(_formula(frame, "[n] / [d]"), 16, ["0.4000000000000000", "-3.0000000000000000"])
+        _exactly(_formula(frame, "[d] / 0.5"), 16, ["20.0000000000000000", "-2.0000000000000000"])
+        _exactly(_formula(frame, "1 / [d]"), 16, ["0.1000000000000000", "-1.0000000000000000"])
+
+    def test_with_no_exact_column_division_is_the_float_it_was(self) -> None:
+        frame = pl.DataFrame({"a": [1, 10], "b": [3, 4]})
+        assert _formula(frame, "[a] / [b]").to_list() == [1 / 3, 2.5]
+
+    def test_a_float_divisor_or_dividend_is_refused(self) -> None:
+        from dantron_etl.expr import ExpressionError
+
+        for text in ("[d] / [f]", "[f] / [d]"):
+            with pytest.raises(ExpressionError) as raised:
+                compile_expr(text, MIXED.schema)
+            assert "[f] holds Float64" in str(raised.value) and "cast_columns" in str(raised.value)
+
+    def test_a_zero_divisor_stops_the_step_and_a_null_gives_null(self) -> None:
+        frame = pl.DataFrame({"key": ["p", "q", "r"], "a": exact(["1.00", "2.00", "3.00"], 2), "b": exact(["4.00", "0.00", None], 2)})
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "divides by zero" in said and "'key': 'q'" in said and "1 of 3 row(s)" in said
+        _exactly(_formula(frame.filter(pl.col("key") != "q"), "[a] / [b]"), 16, ["0.2500000000000000", None])
+
+    def test_a_division_guarded_by_an_earlier_case_works_on_every_engine_version(self) -> None:
+        from dantron_etl.authoring import REGISTRY, Ports, run_tool
+
+        frame = pl.DataFrame({"a": exact(["1.00", "2.00"], 2), "b": exact(["0.00", "4.00"], 2)})
+        config = {"cases": [{"when": "[b] != 0", "then": "[a] / [b]"}], "output": "out"}
+        out = run_tool(REGISTRY.get("case_when"), Ports({"rows": frame}), config)["rows"]["out"]
+        _exactly(out, 16, [None, "0.5000000000000000"])
+
+    def test_a_dividend_with_more_than_22_whole_digits_is_refused_by_name(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "a": exact(["9" * 22, "1" + "0" * 22], 0), "b": exact(["3", "3"], 0)})
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "22 whole digits" in said and "[a]" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "[a] / [b]"), 16, ["3" * 22 + ".0000000000000000"])
+
+    def test_a_divisor_with_more_than_22_whole_digits_is_refused_by_name(self) -> None:
+        frame = pl.DataFrame({"key": ["fits", "large"], "a": exact(["1", "1"], 0), "b": exact(["9" * 22, "1" + "0" * 22], 0)})
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "22 whole digits" in said and "[b]" in said and "'key': 'large'" in said
+
+    def test_a_quotient_too_large_to_hold_stops_the_step(self) -> None:
+        frame = pl.DataFrame(
+            {"key": ["fits", "large"], "a": exact(["9" * 21 + ".9", "1" + "0" * 21], 1), "b": exact(["0.1", "0.1"], 1)}
+        )
+        said = _formula_refusal(frame, "[a] / [b]")
+        assert "38 digits" in said and "1 of 2 row(s)" in said and "'key': 'large'" in said
+        _exactly(_formula(frame.head(1), "[a] / [b]"), 16, ["9" * 22 + ".0000000000000000"])
+
+    def test_the_engine_wraps_128_bit_whole_numbers_round_which_the_tie_check_relies_on(self) -> None:
+        """If a polars upgrade stops wrapping, the remainder of a division can no longer be worked out this way."""
+        def wrapped(value: int) -> int:
+            value %= 2**128
+            return value - 2**128 if value >= 2**127 else value
+
+        values = [10**38, -(10**38), 7]
+        big = pl.DataFrame({"x": pl.Series(values, dtype=pl.Int128)})
+        found = big.select(pl.col("x") * pl.col("x") - pl.col("x") * pl.lit(10**38 - 1, dtype=pl.Int128))["x"]
+        assert found.to_list() == [wrapped(x * x - x * (10**38 - 1)) for x in values]
+        # The difference of two wrapped products is the true one whenever the true one fits.
+        assert found.to_list()[0] == 10**38
+

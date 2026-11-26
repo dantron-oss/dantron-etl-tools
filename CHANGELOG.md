@@ -12,6 +12,11 @@ things; each such release says how to upgrade.
 - **`Decimal` is a type name**, for exact decimals, with `places` (0 to 38) stated beside it. It is
   listed in `COLUMN_TYPES`. No tool takes it yet: `cast_columns`, `read_csv`, `unpivot` and
   `write_excel`'s format, width and wrap rules refuse it, now with a message that says so.
+- **`/` divides exact decimals**, where it was refused. The answer has 16 places, or more if either
+  side has more, and the last place is rounded half away from zero: 100.00 / 7.00 is
+  14.2857142857142857, and 2 / 3 is 0.6666666666666667. Each side may have at most 22 whole digits
+  at 16 places; a larger one stops the step by name. A zero divisor stops the step, as before, and
+  a null gives null.
 
 ### Changed
 

@@ -238,6 +238,18 @@ names the rows. In `case_when` a row no case reaches is not checked, and its unu
   type. `mod` works on the digits held, as 128-bit whole numbers at the larger places, and takes
   the dividend's sign as PostgreSQL's `mod(numeric, numeric)` does. `floor`, `ceil` and `sign` keep
   the column's type, as they did.
+- `/`: the ruling is 16 places, or more if either side has more, the last rounded half away from
+  zero. The engine divides at the larger places of its two sides and rounds half to even, so both
+  sides are written at the answer's places first; at 16 places that leaves each side 22 whole
+  digits, and a larger one is refused by name (the divisor too, since the engine writes it at those
+  places as well and would give a blank). A tie is found from the remainder `held * 10^places -
+  quotient * divisor`, all as whole numbers of the last place. The two products pass 128 bits, but
+  the engine's 128-bit arithmetic wraps round and the remainder itself is at most half the divisor,
+  so the wrapped difference is the true remainder; a test pins the wrapping. Where the remainder is
+  exactly half the divisor and has the dividend's sign, the engine went towards zero, and the
+  answer moves one unit away. The quotient is too large only when the divisor is below 1, and then
+  `|dividend| >= |divisor| * 10^(38 - places)` is exact on whole numbers. Zero divisors are made null
+  before the engine divides, so a division a `case_when` guards works on every engine version.
 
 **An exact value meeting a float stops the step.** The engine slides to a float without a word,
 in arithmetic, comparisons, `coalesce` and the rest, and a comparison is where that hides: 0.30 is

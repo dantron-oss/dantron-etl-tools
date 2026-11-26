@@ -230,13 +230,6 @@ class _Compiler:
         right = self._typed(node.right)
         for operand in (left, right):
             self._require_arithmetic(operand, symbol)
-            if operation is ast.Div and isinstance(operand.dtype, pl.Decimal):
-                raise error(
-                    self._text,
-                    f"{self._describe(operand)}, and '/' on a decimal column keeps the column's own number of "
-                    f"places (100.00 / 3 gives 33.33, and 7 / 2 at no places gives 4) instead of dividing "
-                    f"exactly; cast the column to Float64 first, with the cast_columns tool",
-                )
         left, right = _signed(left), _signed(right)
         exact_pair = self._exact_operands([left, right])
         if exact_pair is not None and operation in (ast.Add, ast.Sub):
@@ -249,6 +242,8 @@ class _Compiler:
             return self._exact_answer(exact.multiply(first.expr, first.dtype, second.expr, second.dtype), node, exact_pair)
         if operation is ast.Div:
             self._record_division(node.right, right)
+        if exact_pair is not None and operation is ast.Div:
+            return self._exact_quotient(node, exact_pair)
         built = _BINARY_OPERATORS[operation](left.expr, right.expr)
         dtype = arithmetic_dtype(operation, left.dtype, right.dtype)
         return Typed(built, Family.NUMBER, node, "gives a number", dtype)
@@ -680,17 +675,17 @@ class _Compiler:
                 return None
         return met
 
-    def _exact_literal(self, operand: Typed, beside: Typed) -> Typed:
+    def _exact_literal(self, operand: Typed, beside: Typed | None) -> Typed:
         """A typed number beside an exact value, as an exact literal; refused if an exact decimal cannot hold it."""
         value = operand.constant
         assert value is not None
         if not exact.holds(value):
+            where = "" if beside is None else f" beside {self._spelling.render(beside.node)}, an exact decimal"
             raise error(
                 self._text,
-                f"{self._spelling.render(operand.node)} is a number beside {self._spelling.render(beside.node)}, an "
-                f"exact decimal, and an exact decimal holds {EXACT_DIGITS} digits in all, counting its places, so it "
-                f"cannot hold that number as written; round it to fewer places, or convert the column to Float64 "
-                f"with the cast_columns tool",
+                f"{self._spelling.render(operand.node)} is a number{where}, and an exact decimal holds "
+                f"{EXACT_DIGITS} digits in all, counting its places, so it cannot hold that number as written; "
+                f"round it to fewer places, or convert the column to Float64 with the cast_columns tool",
             )
         literal = exact.literal(value)
         return operand._replace(expr=literal, dtype=exact_dtype(exact.places_of(dtype_of_value(value))))
@@ -705,6 +700,25 @@ class _Compiler:
                 f"places, more than the {EXACT_DIGITS} digits an exact decimal holds; round one side first, such "
                 f"as round({self._spelling.render(first.node)}, 2), so the product needs fewer places",
             )
+
+    def _exact_quotient(self, node: ast.BinOp, operands: Sequence[Typed]) -> Typed:
+        """An exact division, with the checks that stop the step on a side too wide for the places it gives."""
+        dividend, divisor = operands
+        quotient = exact.divide((dividend.expr, dividend.dtype), (divisor.expr, divisor.dtype))
+        places = quotient.answer.places
+        for side, too_wide in ((dividend, quotient.dividend_too_wide), (divisor, quotient.divisor_too_wide)):
+            problem = (
+                f"divides exactly in {{0}}, which gives {places} places after the point, so each side may have "
+                f"at most {EXACT_DIGITS - places} whole digits: {{1}} holds {{found}}"
+            )
+            written = (self._spelling.render(node), self._spelling.render(side.node))
+            remedy = (
+                f"A division gives {exact.DIVISION_PLACES} places, or more if either side has more, and an exact "
+                f"decimal holds {EXACT_DIGITS} digits in all. Convert the columns to Float64 with the cast_columns "
+                f"tool for figures that large"
+            )
+            self.row_checks.append(RowCheck(too_wide, side.expr, problem, remedy, written))
+        return self._exact_answer(quotient.answer, node, operands)
 
     def _exact_answer(self, answer: exact.Exact, node: ast.expr, operands: Sequence[Typed]) -> Typed:
         """An exact answer as a compiled part, with the check that stops the step where it is too large to hold."""

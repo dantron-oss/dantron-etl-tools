@@ -164,6 +164,64 @@ def _product_reaches(first: pl.Expr, second: pl.Expr) -> pl.Expr:
     return reaches.fill_null(False)
 
 
+#: The places a division gives at least, by the owner's ruling: 16, or more if either side has more.
+DIVISION_PLACES: Final[int] = 16
+
+
+class Quotient(NamedTuple):
+    """One exact division: the answer, and where a side has too many whole digits for its places."""
+
+    answer: Exact
+    dividend_too_wide: pl.Expr
+    divisor_too_wide: pl.Expr
+
+
+def divide(dividend: Part, divisor: Part) -> Quotient:
+    """``dividend / divisor`` with 16 places, or more if either side has more; the last rounded half away from zero.
+
+    Both sides are written at those places first, as the engine needs, so each may have at most
+    38 minus that many whole digits (22 at 16 places). The engine divides and rounds the last place
+    half to even. Where the exact quotient lies exactly half way, the remainder shows it, and the
+    answer is moved one place away from zero. A zero divisor gives null here; the step has already
+    stopped on it.
+    """
+    places = max(DIVISION_PLACES, places_of(dividend[1]), places_of(divisor[1]))
+    top, top_misfit = at_places(*dividend, places)
+    bottom, bottom_misfit = at_places(*divisor, places)
+    held, by = _digits_held(top, exact_dtype(places)), _digits_held(bottom, exact_dtype(places))
+    one = pl.lit(10**places, dtype=pl.Int128)
+    # The quotient reaches 10^(38 - places) only when the divisor is below 1; then this product fits.
+    below_one = by.abs() < one
+    reach = pl.when(below_one).then(by.abs()).otherwise(pl.lit(0, dtype=pl.Int128)) * pl.lit(
+        10 ** (EXACT_DIGITS - places), dtype=pl.Int128
+    )
+    too_large = (below_one & (by != 0) & (held.abs() >= reach)).fill_null(False)
+    unusable = top_misfit | bottom_misfit | too_large | (by == 0).fill_null(False)
+    quotient = _unless(unusable, top) / _unless(unusable, bottom)
+    answer = quotient + _away_from_a_tie(held, by, _digits_held(quotient, exact_dtype(places)), places)
+    return Quotient(Exact(answer, places, too_large), top_misfit, bottom_misfit)
+
+
+def _away_from_a_tie(held: pl.Expr, by: pl.Expr, quotient: pl.Expr, places: int) -> pl.Expr:
+    """One unit of the last place, away from zero, where the engine rounded an exact half towards zero.
+
+    ``held / by`` is the quotient wanted, and ``quotient`` the engine's, all as whole numbers of the
+    last place. The remainder ``held * 10^places - quotient * by`` is at most half of ``by``, so it
+    is worked out exactly even though the two products wrap round past 128 bits: the engine's
+    128-bit arithmetic wraps, and the wrapped difference is the true one. A tie is a remainder of
+    exactly half of ``by``. The engine rounded it towards zero when the remainder has the dividend's
+    sign.
+    """
+    remainder = held * pl.lit(10**places, dtype=pl.Int128) - quotient * by
+    tie = (remainder != 0) & (remainder.abs() * pl.lit(2, dtype=pl.Int128) == by.abs())
+    towards_zero = tie & ((remainder > 0) == (held > 0))
+    unit = Decimal((0, (1,), -places))
+    step = pl.when((held > 0) == (by > 0)).then(pl.lit(unit)).otherwise(pl.lit(-unit))
+    return pl.when(towards_zero.fill_null(False)).then(step).otherwise(pl.lit(Decimal((0, (0,), -places)))).cast(
+        exact_dtype(places)
+    )
+
+
 def coalesce(*parts: Part) -> Exact:
     """The first value that is not null, with the largest places of them all.
 
