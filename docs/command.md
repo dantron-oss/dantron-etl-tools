@@ -12,7 +12,10 @@ Run it from anywhere inside a project. A project is a folder with an `etl-projec
 | `dantron-etl view` | Starts the viewer on this computer only, opens your browser, and prints the address. Runs until ctrl-c. A second `view` for the same project opens the one already running. |
 | `dantron-etl run <pipeline>` | Runs a preview: every step except the writers and the steps after them. Prints each step and saves the run for the viewer. |
 | `dantron-etl run <pipeline> --write` | A real run. Lists every file and table it will write and asks you to type the pipeline's name first. `--yes` skips the question, for scheduled jobs. |
-| `dantron-etl check <file>` | Loads a pipeline without running it and prints every problem it finds, or `ok, N steps`. |
+| `dantron-etl run <chain>` | Checks a chain and prints its plan: the order, the values, what passes between its pipelines. Runs nothing. |
+| `dantron-etl run <chain> --write` | Runs every pipeline of the chain for real, side by side where the order allows. `--set name=value` changes a parameter, `--from` and `--until` run part of it. See [Chains](chains.md). |
+| `dantron-etl chain suggest <name> [pipelines]` | Writes a first chain file, `chains/<name>.yaml`, from what the pipelines read and write. |
+| `dantron-etl check <file>` | Loads a pipeline or a chain without running it and prints every problem it finds, or `ok`. |
 | `dantron-etl tools` | Every tool, grouped by what it does. |
 | `dantron-etl help <tool>` | One tool in full: what it does, its ports, its settings, its notes, and a worked example you can paste. |
 | `dantron-etl functions` | The functions an expression may use, with an example each. |
@@ -76,7 +79,8 @@ options:
 commands:
   <command>
     view       Open the viewer for the project you are in.
-    run        Run a pipeline.
+    run        Run a pipeline, or a chain of pipelines.
+    chain      Write a first chain file from what your pipelines read and write.
     check      Check a pipeline file without running it.
     tools      List every tool, grouped by what it does.
     help       Show everything about one tool.
@@ -134,25 +138,34 @@ Example:
 ### `dantron-etl run`
 
 ```text
-usage: dantron-etl run [-h] [--write] [--yes] pipeline
+usage: dantron-etl run [-h] [--write] [--yes] [--set NAME=VALUE] [--from PIPELINE]
+                       [--until PIPELINE]
+                       pipeline
 
-Run a pipeline.
+Run a pipeline, or a chain of pipelines.
 
-Runs a preview by default: every step runs except the ones that write files or tables, and
-the steps after them. Nothing is written. The run is saved so the viewer can show it.
+A pipeline runs as a preview by default: every step runs except the ones that write files or
+tables, and the steps after them. Nothing is written. The run is saved so the viewer can show it.
 With --write, it lists everything the run will write and asks you to type the pipeline's
 name before it goes ahead.
 
+A chain is checked and its order printed by default; nothing runs. With --write, it lists what
+every pipeline in it will write, asks you to type the chain's name, and runs them for real,
+side by side where the order allows. --set, --from and --until are for chains only.
+
 positional arguments:
-  pipeline    the pipeline's name, or the path to its .yaml file
+  pipeline          the pipeline's or chain's name, or the path to a pipeline's .yaml file
 
 options:
-  -h, --help  show this help message and exit
-  --write     run every step, including the ones that write
-  --yes       with --write, do not ask for the pipeline's name
+  -h, --help        show this help message and exit
+  --write           run every step, including the ones that write
+  --yes             with --write, do not ask for the name
+  --set NAME=VALUE  a chain: change a parameter for this run
+  --from PIPELINE   a chain: run this pipeline and every one after it
+  --until PIPELINE  a chain: run this pipeline and every one before it
 
 Example:
-  dantron-etl run example
+  dantron-etl run month_end --write --set period=2026-12
 ```
 
 ### `dantron-etl check`
@@ -175,6 +188,43 @@ options:
 
 Example:
   dantron-etl check pipelines/example.yaml
+```
+
+### `dantron-etl chain`
+
+```text
+usage: dantron-etl chain [-h] suggest ...
+
+Write a first chain file from what your pipelines read and write.
+
+'chain suggest NAME' writes chains/NAME.yaml. Each pipeline is set to run after the pipelines
+that write a file or table it reads. Name the pipelines to put in it, or leave them out for
+every pipeline in the project. Check the file before you run it.
+
+options:
+  -h, --help  show this help message and exit
+
+what to do:
+  suggest
+    suggest   write a first chain file
+
+Example:
+  dantron-etl chain suggest month_end load_sources clean_ledger revenue --set period=2026-11
+```
+
+### `dantron-etl chain suggest`
+
+```text
+usage: dantron-etl chain suggest [-h] [--set NAME=VALUE] [--print] name [pipelines ...]
+
+positional arguments:
+  name              the chain's name: the file is chains/NAME.yaml
+  pipelines         the pipelines to put in it (default: all of them)
+
+options:
+  -h, --help        show this help message and exit
+  --set NAME=VALUE  a parameter of the chain, handed to every pipeline that uses ${rules.NAME}
+  --print           print the file instead of writing it
 ```
 
 ### `dantron-etl tools`

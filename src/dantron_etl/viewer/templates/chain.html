@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="run-token" content="">
+<title>@@title@@</title>
+<style>@@css@@</style>
+<main class="chain">
+  <p class="back"><a href="/">All pipelines and chains</a></p>
+  <h1>@@title@@</h1>
+  <p class="name">Chain <code>@@name@@</code>, written in <code>@@path@@</code></p>
+  @@refusal@@
+  <div class="graph">@@graph@@</div>
+  <p class="legend"><span class="key passes"></span>a file or table passes along the line
+  <span class="key order"></span>runs after, with nothing passed. Click a pipeline to open it.</p>
+  <p class="hint">To run the chain: <code>@@command@@</code> in a terminal, in the project folder.
+  Without <code>--write</code> it shows the plan and runs nothing.</p>
+  @@values@@
+  @@last@@
+  @@handoffs@@
+</main>
+@@pagedata@@
+<script>@@script@@</script>

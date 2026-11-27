@@ -1,7 +1,8 @@
 """The command: one name, and a word after it saying what to do.
 
-``view`` opens the viewer, ``run`` runs a pipeline, ``check`` loads one without running it,
-``new`` writes a starter project. The rest print the catalog.
+``view`` opens the viewer, ``run`` runs a pipeline or a chain, ``check`` loads one without running
+it, ``chain suggest`` writes a first chain file, ``new`` writes a starter project. The rest print
+the catalog.
 
 This module imports only the standard library at the top, so ``--help`` answers quickly. Each
 command imports what it needs when it runs.
@@ -27,6 +28,7 @@ from . import __version__
 from .paths import ProjectRootNotFound
 
 if TYPE_CHECKING:  # types only: each command imports what it needs when it runs
+    from .chains import ChainPlan, ChainRun
     from .trace import StepEvent
     from .viewer.project import PipelineEntry, Project
     from .viewer.runs import RunRecord
@@ -103,17 +105,50 @@ def _parser() -> argparse.ArgumentParser:
 
     run = command(
         "run",
-        "Run a pipeline.",
-        "Runs a preview by default: every step runs except the ones that write files or tables, and\n"
-        "the steps after them. Nothing is written. The run is saved so the viewer can show it.\n"
+        "Run a pipeline, or a chain of pipelines.",
+        "A pipeline runs as a preview by default: every step runs except the ones that write files or\n"
+        "tables, and the steps after them. Nothing is written. The run is saved so the viewer can show it.\n"
         "With --write, it lists everything the run will write and asks you to type the pipeline's\n"
-        "name before it goes ahead.",
-        f"{COMMAND} run example",
+        "name before it goes ahead.\n\n"
+        "A chain is checked and its order printed by default; nothing runs. With --write, it lists what\n"
+        "every pipeline in it will write, asks you to type the chain's name, and runs them for real,\n"
+        "side by side where the order allows. --set, --from and --until are for chains only.",
+        f"{COMMAND} run month_end --write --set period=2026-12",
     )
-    run.add_argument("pipeline", help="the pipeline's name, or the path to its .yaml file")
+    run.add_argument("pipeline", help="the pipeline's or chain's name, or the path to a pipeline's .yaml file")
     run.add_argument("--write", action="store_true", help="run every step, including the ones that write")
-    run.add_argument("--yes", action="store_true", help="with --write, do not ask for the pipeline's name")
+    run.add_argument("--yes", action="store_true", help="with --write, do not ask for the name")
+    run.add_argument(
+        "--set", action="append", default=[], metavar="NAME=VALUE", help="a chain: change a parameter for this run"
+    )
+    run.add_argument(
+        "--from", dest="start_from", action="append", metavar="PIPELINE",
+        help="a chain: run this pipeline and every one after it",
+    )
+    run.add_argument(
+        "--until", action="append", metavar="PIPELINE", help="a chain: run this pipeline and every one before it"
+    )
     run.set_defaults(action=_run)
+
+    chain = command(
+        "chain",
+        "Write a first chain file from what your pipelines read and write.",
+        "'chain suggest NAME' writes chains/NAME.yaml. Each pipeline is set to run after the pipelines\n"
+        "that write a file or table it reads. Name the pipelines to put in it, or leave them out for\n"
+        "every pipeline in the project. Check the file before you run it.",
+        f"{COMMAND} chain suggest month_end load_sources clean_ledger revenue --set period=2026-11",
+    )
+    chain_commands = chain.add_subparsers(title="what to do", metavar="suggest")
+    suggest = chain_commands.add_parser("suggest", help="write a first chain file")
+    suggest.add_argument("name", help="the chain's name: the file is chains/NAME.yaml")
+    suggest.add_argument("pipelines", nargs="*", help="the pipelines to put in it (default: all of them)")
+    suggest.add_argument(
+        "--set", action="append", default=[], metavar="NAME=VALUE",
+        help="a parameter of the chain, handed to every pipeline that uses ${rules.NAME}",
+    )
+    suggest.add_argument("--print", action="store_true", help="print the file instead of writing it")
+    suggest.set_defaults(action=_suggest)
+    chain.set_defaults(action=lambda arguments: _refuse(f"Say what to do: {COMMAND} chain suggest NAME"))
 
     check = command(
         "check",
@@ -354,9 +389,16 @@ def _run(arguments: argparse.Namespace) -> int:
 
     try:
         project = find_project(Path.cwd())
+        if arguments.pipeline in project.chains:
+            return _run_chain(arguments, project)
         entry = _entry(project, arguments.pipeline)
     except (ProjectRootNotFound, ProjectError) as error:
         return _refuse(error)
+    chain_only = [option for option, given in (("--set", arguments.set), ("--from", arguments.start_from),
+                  ("--until", arguments.until)) if given]
+    if chain_only:
+        verb = "is" if len(chain_only) == 1 else "are"
+        return _refuse(f"{' and '.join(chain_only)} {verb} for a chain, and {entry.name} is a pipeline.")
 
     if not arguments.write:
         print(f"Preview of {entry.name}: the steps that write are held back.")
@@ -399,10 +441,133 @@ def _entry(project: Project, asked: str) -> PipelineEntry:
     for entry in project.pipelines.values():
         if entry.path == path:
             return entry
+    chains = f" Its chains: {', '.join(project.chains)}." if project.chains else ""
     raise ProjectError(
         f"There is no pipeline {asked!r} in the project at {project.root}; "
-        f"{name_choices(asked, project.pipelines, 'pipelines')}"
+        f"{name_choices(asked, project.pipelines, 'pipelines')}.{chains}"
     )
+
+
+def _settings(given: Sequence[str]) -> dict[str, str]:
+    """``NAME=VALUE`` texts as a mapping. The values stay text; the chain reads each as its kind."""
+    from .chains import ChainError
+
+    found: dict[str, str] = {}
+    for text in given:
+        name, equals, value = text.partition("=")
+        if not equals or not name.strip():
+            raise ChainError(f"--set {text!r} is not NAME=VALUE. Write it as, for example, --set period=2026-12")
+        found[name.strip()] = value
+    return found
+
+
+def _run_chain(arguments: argparse.Namespace, project: Project) -> int:
+    """Check a chain and print its plan; with --write, confirm and run it."""
+    from .chains import ChainError, load_chain, run_chain
+
+    name = arguments.pipeline
+    try:
+        plan = load_chain(project, name, _settings(arguments.set))
+        covered = plan.select(arguments.start_from, arguments.until)
+    except ChainError as error:
+        return _refuse(error)
+    print(_plan_text(plan, covered))
+    if not arguments.write:
+        print(f"Nothing was run. To run it for real: {COMMAND} run {name} --write")
+        return 0
+    print("Running it will write:")
+    for member in covered:
+        for write in plan.members[member].write_list:
+            print(f"  {member}: {write.target}  [{write.detail}]")
+    if not arguments.yes:
+        try:
+            typed = input(f"Type the chain's name ({name}) to go ahead: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != name:
+            return _refuse(f"Nothing was run: you typed {typed!r}, not {name!r}.")
+    try:
+        run = run_chain(
+            project, name, parameters=_settings(arguments.set), confirm_digest=plan.digest,
+            start_from=arguments.start_from, until=arguments.until, report=lambda line: print(line, flush=True),
+        )
+    except ChainError as error:
+        return _refuse(error)
+    return _chain_report(run)
+
+
+def _plan_text(plan: ChainPlan, covered: Sequence[str]) -> str:
+    """A chain's plan in plain lines: values, order, hand-offs, and what comes from and goes outside."""
+    lines = [f"Chain {plan.name}: {plan.title}"]
+    if plan.values:
+        lines.append("Parameters:")
+        for key, value in plan.values.items():
+            changed = " (given for this run)" if key in plan.asked else ""
+            users = [name for name, member in plan.members.items() if key in member.given]
+            lines.append(f"  {key}: {value}{changed}, used by {', '.join(users)}")
+            for name in users:
+                if key in plan.members[name].replaced:
+                    lines.append(f"    replaces {name}'s own value {plan.members[name].replaced[key]}")
+    at_once = "1 pipeline at a time" if plan.max_parallel == 1 else f"up to {plan.max_parallel} pipelines at a time"
+    lines.append(f"Runs {at_once}, in this order:")
+    width = max(len(name) for name in plan.order)
+    for name in plan.order:
+        after = f"after {', '.join(plan.after(name))}" if plan.after(name) else "first"
+        skipped = "" if name in covered else "   (not in this run)"
+        lines.append(f"  {name.ljust(width)}  {after}{skipped}")
+    if plan.handoffs:
+        lines.append("What passes between them:")
+        lines += [f"  {one.writer} -> {one.reader}: {one.target.shown}" for one in plan.handoffs]
+    if plan.outside:
+        lines.append("Read from outside the chain:")
+        lines += [f"  {target.shown} ({', '.join(readers)})" for target, readers in plan.outside]
+    if plan.results:
+        lines.append("Written and not read again inside the chain:")
+        lines += [f"  {target.shown} ({writer})" for target, writer in plan.results]
+    return "\n".join(lines)
+
+
+def _chain_report(run: ChainRun) -> int:
+    """Print how a chain's run ended and where it is saved. Returns the exit code."""
+    counted: dict[str, list[str]] = {}
+    for member in run.members:
+        if member.pipeline in run.covered:
+            counted.setdefault(member.outcome, []).append(member.pipeline)
+    parts = [f"{len(names)} {outcome} ({', '.join(names)})" for outcome, names in counted.items()]
+    stream = sys.stdout if run.outcome == "finished" else sys.stderr
+    print(f"Chain {run.chain} {run.outcome}: {'; '.join(parts)}.", file=stream)
+    print(f"The chain's run is saved in {run.saved}. To look at it: {COMMAND} view")
+    return 0 if run.outcome == "finished" else 1
+
+
+def _suggest(arguments: argparse.Namespace) -> int:
+    """Write, or print, a first chain file worked out from what the pipelines read and write."""
+    from .chains import ChainError, suggest_chain
+    from .chains.chain_file import read_value
+    from .viewer.project import PIPELINE_NAME, ProjectError, find_project
+
+    try:
+        project = find_project(Path.cwd())
+        if not PIPELINE_NAME.fullmatch(arguments.name):
+            raise ChainError(f"{arguments.name!r} is not a chain name. Use letters, digits, '_' and '-'.")
+        if arguments.name in project.pipelines:
+            raise ChainError(f"A pipeline is already called {arguments.name}. Give the chain another name.")
+        # With no default to match, a value is read the way the chain file will read it back.
+        values = {key: read_value(text) for key, text in _settings(arguments.set).items()}
+        text = suggest_chain(project, arguments.name, arguments.pipelines, values)
+    except (ProjectRootNotFound, ProjectError) as error:
+        return _refuse(error)
+    if arguments.print:
+        print(text, end="")
+        return 0
+    folder = project.chain_folders[0]
+    target = folder / f"{arguments.name}.yaml"
+    if target.exists():
+        return _refuse(f"{target} is already there. Choose another name, or use --print to see the suggestion.")
+    folder.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf8")
+    print(f"Wrote {target}. Read it, then: {COMMAND} run {arguments.name}")
+    return 0
 
 
 def _print_event(event: StepEvent) -> None:
@@ -444,6 +609,9 @@ def _check(arguments: argparse.Namespace) -> int:
     path = Path(arguments.file).resolve()
     if not path.is_file():
         return _refuse(f"There is no file {arguments.file}.")
+    chain = _chain_at(path)
+    if chain is not None:
+        return _check_chain(*chain, shown=arguments.file)
     problems: list[str] = []
     try:
         document = read_yaml(path)
@@ -490,6 +658,32 @@ def _check(arguments: argparse.Namespace) -> int:
     for problem in problems:
         print(f"- {problem}", file=sys.stderr)
     return 1
+
+
+def _chain_at(path: Path) -> tuple[Project, str] | None:
+    """The project and chain name when ``path`` is one of a project's chain files."""
+    from .viewer.project import ProjectError, find_project
+
+    try:
+        project = find_project(path.parent)
+    except (ProjectRootNotFound, ProjectError):
+        return None
+    name = next((name for name, entry in project.chains.items() if entry.path == path), None)
+    return None if name is None else (project, name)
+
+
+def _check_chain(project: Project, name: str, *, shown: str) -> int:
+    """Check a chain the way a run would, without running anything."""
+    from .chains import ChainError, load_chain
+
+    try:
+        plan = load_chain(project, name)
+    except ChainError as error:
+        print(f"{shown}: the chain is refused", file=sys.stderr)
+        print(error, file=sys.stderr)
+        return 1
+    print(f"ok, a chain of {len(plan.order)} pipelines")
+    return 0
 
 
 # ---------------------------------------------------------------------------

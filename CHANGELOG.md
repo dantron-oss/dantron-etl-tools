@@ -7,6 +7,20 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- **Chains run several pipelines in order.** A chain is a YAML file in `chains/` that names the
+  pipelines and what each runs after. Before anything runs, the order is checked against the files
+  and tables the pipelines read and write: a pipeline that reads what another writes without running
+  after it is refused by name, as are two pipelines writing the same file. Parameters such as the
+  period are set once for the whole chain and replace each pipeline's own value for that run.
+  `dantron-etl run <chain>` prints the plan; `--write` runs it, side by side where the order allows,
+  at most `max_parallel` (default 2) at a time, each pipeline in a process of its own. A failure
+  stops only the pipelines that wait for it. `dantron-etl chain suggest` writes a first chain file
+  from existing pipelines. The viewer draws each chain as a graph and shows how each pipeline did.
+  The docs show how to run a chain under Prefect. See [docs/chains.md](docs/chains.md).
+- `etl-project.yaml` takes `chain_folders`, by default `[chains]`.
+
 ## [0.5.0] - 2026-11-26
 
 Three new tools. `match_one_to_many` matches each whole, such as a deposit, to the one set of parts

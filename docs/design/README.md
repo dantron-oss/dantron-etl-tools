@@ -5,6 +5,20 @@
 Why the library is built the way it is. Each note has a heading per decision: what was decided,
 why, and what was rejected. The code links here where a choice would otherwise surprise a reader.
 
+## [Chains: running several pipelines in order](chains.md)
+
+- [A worked example](chains.md#a-worked-example)
+- [A chain is not a tool](chains.md#a-chain-is-not-a-tool)
+- [Pipelines pass data through files and tables, not in memory](chains.md#pipelines-pass-data-through-files-and-tables-not-in-memory)
+- [`after` is written down, and checked against the hand-offs](chains.md#after-is-written-down-and-checked-against-the-hand-offs)
+- [Parameters shared by the whole chain](chains.md#parameters-shared-by-the-whole-chain)
+- [The chain's page is a graph and nothing more](chains.md#the-chains-page-is-a-graph-and-nothing-more)
+- [Running a chain](chains.md#running-a-chain)
+- [Prefect](chains.md#prefect)
+- [What a chain does not do](chains.md#what-a-chain-does-not-do)
+- [How we will know it works](chains.md#how-we-will-know-it-works)
+- [Settled with the owner](chains.md#settled-with-the-owner)
+
 ## [Core: the tool contract, the boundary, the registry](core.md)
 
 - [The tool protocol](core.md#the-tool-protocol)
