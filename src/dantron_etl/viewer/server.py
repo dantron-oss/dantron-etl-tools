@@ -430,7 +430,34 @@ def _progress_line(name: str, running: bool, then: str | None = None) -> str:
     )
 
 
+def _chains(project: Project | None) -> str:
+    """The home page's list of chains, with each one's latest run. Nothing when there are none."""
+    from ..chains import chain_runs
+
+    if project is None or not project.chains:
+        return ""
+    rows = []
+    for name, entry in project.chains.items():
+        runs = chain_runs(project, name)
+        last = runs[0] if runs else None
+        note = f'<p class="note">{_e(entry.problem)}</p>' if entry.problem else ""
+        outcome = last.outcome if last else "never"
+        rows.append(
+            "<tr>"
+            f'<td><a href="/{_e(name)}/">{_e(entry.title)}</a><code>{_e(name)}</code>{note}</td>'
+            f"<td>{_e(_when(last.started if last else None))}</td>"
+            f'<td class="outcome {_e(outcome)}">{_e(outcome if last else "never run")}</td>'
+            "</tr>"
+        )
+    return (
+        '<h2 class="chains">Chains</h2><p class="hint">A chain runs several pipelines in order. Open one to see '
+        'its pipelines as a graph.</p><table class="pipelines"><thead><tr><th>Chain</th><th>Last run</th>'
+        f"<th>Outcome</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def _home(state: _State) -> str:
+    project: Project | None = None
     try:
         project = state.project()
         listed = _listing(state, project)
@@ -471,6 +498,7 @@ def _home(state: _State) -> str:
         scripts=("files", "runbar"),
         root=_e(listed["project"]),
         rows=table,
+        chains=_chains(project),
         problems=problem_list,
         pagedata=page_data({"project": listed["project"], "pipelines": [p["name"] for p in listed["pipelines"]]}),
     )
@@ -653,6 +681,9 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
         def _pipeline_route(self, segments: list[str], query: Mapping[str, list[str]]) -> None:
             project = state.project()
             name, rest = segments[0], segments[1:]
+            if name in project.chains:
+                self._chain_route(project, name, rest)
+                return
             entry = project.pipelines.get(name)
             if entry is None:
                 raise _Refused(404, f"no pipeline {name!r} in this project")
@@ -689,6 +720,17 @@ def _handler(state: _State) -> type[BaseHTTPRequestHandler]:
                 self._slot_api(rest[1], record, entry, query)
             else:
                 raise _Refused(404, f"no page {'/'.join(segments)!r}")
+
+        def _chain_route(self, project: Project, name: str, rest: list[str]) -> None:
+            """A chain has one page, its graph. It runs nothing."""
+            from .chain_page import chain_page
+
+            if not rest:
+                self._redirect(f"/{name}/")
+            elif rest == [""]:
+                self._html(_served(chain_page(project, name), state.token))
+            else:
+                raise _Refused(404, f"no page {'/'.join([name, *rest])!r}")
 
         def _run_page(
             self,

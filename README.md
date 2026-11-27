@@ -119,6 +119,11 @@ shows the last run; opening it never runs anything.
 **Preview, then the real run.** A preview runs everything except the steps that write files or
 tables. A real run writes, and tells you exactly what before it starts.
 
+**Several pipelines run as a chain.** A short file in `chains/` names the pipelines and what each
+runs after. The order is checked against the files and tables they pass on, shared values such as
+the period are set once, and the viewer draws the chain as a graph. It runs from the command line or
+under Prefect. See [Chains](docs/chains.md).
+
 **Mistakes are refused early, by name.** A misspelt tool or setting, a missing input, a step whose
 output nothing uses, a rule with no value: each is refused when the file loads, before any data is
 read. `dantron-etl check <file>` does just that check.
@@ -147,6 +152,7 @@ in the terminal. Every tool's worked examples are run by the test suite.
 | [The pipeline file](docs/pipeline-file.md) | Every key the file may hold, rules, paths and the YAML traps. |
 | [Expressions](docs/expressions.md) | The formula language and every function. |
 | [Tools](docs/tools/README.md) | Every tool's ports, settings, rules and worked examples. |
+| [Chains](docs/chains.md) | Several pipelines run in order, from the command line or under Prefect. |
 | [Cookbook](docs/cookbook.md) | Common shapes, ready to copy. |
 | [Checking your pipeline](docs/checking-your-pipeline.md) | How to know the figures are right. |
 | [The command](docs/command.md) | Every `dantron-etl` command. |

@@ -1,6 +1,7 @@
 """The words a pipeline file is written in, pinned in one file.
 
-A consumer's pipeline file names tools, ports, config fields, enum values and expression functions.
+A consumer's pipeline file names tools, ports, config fields, enum values and expression functions,
+and a chain file names its own keys.
 Renaming any of them, or changing a default, breaks that file at load or quietly changes what it
 does. ``tests/fixtures/vocabulary.json`` holds all of those words as the library has them today.
 This test fails when the library and the file disagree, and prints the difference.
@@ -101,7 +102,15 @@ def current_vocabulary() -> dict[str, Any]:
         for tool in REGISTRY.tools()
     }
     functions = {name: _arity(FUNCTIONS[name]) for name in sorted(ALLOWED_FUNCTIONS)}
-    return {"tools": tools, "expression_functions": functions, "pipeline_file_keys": _pipeline_file_keys()}
+    from dantron_etl.chains.chain_file import CHAIN_KEYS, MEMBER_KEYS
+
+    chain_keys = {"document": sorted(CHAIN_KEYS), "entry": sorted(MEMBER_KEYS)}
+    return {
+        "tools": tools,
+        "expression_functions": functions,
+        "pipeline_file_keys": _pipeline_file_keys(),
+        "chain_file_keys": chain_keys,
+    }
 
 
 def _as_text(vocabulary: dict[str, Any]) -> str:

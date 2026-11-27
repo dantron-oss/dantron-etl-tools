@@ -126,6 +126,14 @@ pipelines:
 **Focus** names the column that identifies the thing you want to follow, such as a customer. In
 the viewer you can then pick one customer and see only their rows at every step.
 
+## Chains
+
+A **chain** runs several pipelines in order: a pipeline that reads another's output runs after it,
+and the ones that do not need each other run side by side. It is a short file in `chains/` that
+names the pipelines and what each runs after, with values the whole chain shares, such as the
+period. The order is checked against the files and tables the pipelines pass on before anything
+runs. See [Chains](chains.md).
+
 ## Preview and real run
 
 A **preview** runs every step except the ones that write outside the run: file and table writers,

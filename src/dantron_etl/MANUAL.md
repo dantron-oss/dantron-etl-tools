@@ -939,6 +939,45 @@ them. Those rows can be personal or financial data.
 
 ---
 
+## 7c. Several pipelines in order: chains
+
+When one pipeline's output is another's input, do not merge them into one file, do not write a
+script that runs them in turn, and do not look for a tool that runs a pipeline. Write a **chain**: a
+YAML file in the project's `chains/` folder that names the pipelines and what each runs after.
+
+```yaml chain
+title: Month-end close
+parameters:
+  period: "2026-11"
+pipelines:
+  - name: load_ledger
+  - name: clean_ledger
+    after: [load_ledger]
+  - name: revenue
+    after: [clean_ledger]
+```
+
+- **Hand-offs are files and tables.** One pipeline writes, the next reads. Nothing passes in memory.
+- **`after` must cover every hand-off.** Before anything runs, the library works out what each
+  pipeline reads and writes and refuses the chain when a reader does not run after its writer, when
+  the order is backwards, or when two pipelines write the same file or table. Fix the `after` lines
+  the refusal names; never work round it.
+- **Start from `dantron-etl chain suggest <name> [pipelines]`.** It writes the order the files and
+  tables show. Read it before running.
+- **A value every pipeline must agree on is a parameter**, such as the period. It replaces each
+  pipeline's own `${rules.<name>}` value for that run. A parameter no pipeline uses is refused.
+- **Run it:** `dantron-etl run <chain>` checks it and prints the plan; `--write` runs it for real
+  after listing every write; `--set name=value`, `--from <pipeline>`, `--until <pipeline>`.
+  `dantron-etl check chains/<chain>.yaml` checks it alone.
+- **A failure stops only what waits for it.** The other branches finish.
+- **`max_parallel`** (default 2) is how many pipelines run at the same moment. It never changes a
+  figure, only memory and time. Lower it to 1 for a large pipeline.
+- **Under Prefect**, use the recipe in the docs page `docs/chains.md`: `load_chain` once for the check,
+  then one task per pipeline calling `run_member`, with `after` as `wait_for`. The library never
+  imports Prefect.
+
+---
+
 ## 8. When a tool really is missing
 
 You have worked through §2 and no combination of existing tools does the job. Then:

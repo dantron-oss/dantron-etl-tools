@@ -1,4 +1,17 @@
 {
+  "chain_file_keys": {
+    "document": [
+      "max_parallel",
+      "parameters",
+      "pipelines",
+      "title"
+    ],
+    "entry": [
+      "after",
+      "name",
+      "why"
+    ]
+  },
   "expression_functions": {
     "abs": 1,
     "add_days": 2,

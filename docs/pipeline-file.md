@@ -218,6 +218,7 @@ YAML is forgiving in ways that change what you wrote. These are the ones that bi
 | key | what it is |
 |---|---|
 | `pipeline_folders` | Folders holding pipeline files. Default `[pipelines]`. |
+| `chain_folders` | Folders holding chain files, which run several pipelines in order. Default `[chains]`. |
 | `runs_folder` | Where runs are saved for the viewer. Default `output_files/runs`. |
 | `save_rows` | At the top, or under a pipeline to override the top: `false` saves no rows of a run, only its steps, counts and columns. Default `true`. |
 | `pipelines` | Settings for each pipeline, under its name (the file name without `.yaml`). |
