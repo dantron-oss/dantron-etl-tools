@@ -37,13 +37,15 @@ uv sync --extra dev                         # set up from uv.lock. Plain `uv syn
 .venv/bin/python docs/_build/generate.py    # rewrite the generated docs pages; a test fails while they are stale
 .venv/bin/dantron-etl view                   # the viewer for this checkout's pipelines (pipelines/fixture.yaml)
 .venv/bin/dantron-etl run fixture            # preview the fixture flow and save the run; --write for a real run
+.venv/bin/dantron-etl run <chain>            # check a chain in chains/ and print its plan; --write runs it
 .venv/bin/dantron-etl catalog                # writes output_files/tool_catalog.{html,json}
 .venv/bin/dantron-etl help join              # one tool in plain text
 ```
 
 The tests are laid out by area: `core/` (the contract, config, registry, loader, runner, trace,
 focus, preview, paths, database plumbing), `expr/`, `tools/` (one file per tool, named after it),
-`viewer/` (the page, the project, runs, the server and the command), `package/` (what ships: the client-neutral boundary, the sdist, the generated docs pages, the
+`viewer/` (the page, the project, runs, the server and the command), `chains/` (chain files, the
+hand-off check, running, suggest, the chain page and the command), `package/` (what ships: the client-neutral boundary, the sdist, the generated docs pages, the
 vocabulary snapshot, the documentation examples) and `flows/` (end-to-end flows and property checks).
 Shared fixtures are in `tests/conftest.py`, data files in `tests/fixtures/`. Test file names must
 be unique across folders: there is no `__init__.py`, so pytest imports each file by its name alone.
@@ -122,7 +124,8 @@ than the one you are editing. If anything looks impossible, run
 | `tools/*.py` | One tool per file. Each registers itself at the bottom: `REGISTRY.register(Filter())`. `tools/__init__.py` imports every module it finds, so `import dantron_etl` fills the catalog. A module whose name starts with `_` is a helper, not a tool, and is skipped: `_spreadsheet.py` holds what a cell and a tab can hold, and `_workbook_*.py` hold the parts of `write_excel`. |
 | `catalog.py` | The tool catalog as data (`catalog()`), and as text for a terminal (`describe`, `tools_text`, `functions_text`). |
 | `cli.py`, `__main__.py` | The `dantron-etl` command. Standard-library `argparse`; each subcommand imports what it needs when it runs. |
-| `viewer/` | Not imported by `import dantron_etl`. `project.py` finds a project and its pipelines (`etl-project.yaml`); `runs.py` runs one as a preview or for real and saves it safely (`save_run` saves a run a project's own script made); `server.py` is the local viewer; `render.py`, `layout.py` and `assets.py` draw a run's page from `templates/` and `static/`; `catalog_page.py` draws the catalog; `scaffold.py` and `scaffold/` are `dantron-etl new`. They render and run; they never transform data. |
+| `chains/` | Not imported by `import dantron_etl`. Several pipelines run in order. `chain_file.py` reads a chain file; `handoffs.py` works out the files and tables a loaded pipeline reads and writes; `plan.py` (`load_chain`) loads every pipeline with the chain's parameters and refuses an order that disagrees with those hand-offs; `running.py` runs a checked chain (each pipeline in its own process, at most `max_parallel` at once) and saves the chain's run; `suggest.py` writes a first chain file. It never imports an orchestrator: docs/chains.md has the Prefect recipe. |
+| `viewer/` | Not imported by `import dantron_etl`. `project.py` finds a project and its pipelines and chains (`etl-project.yaml`); `runs.py` runs one as a preview or for real and saves it safely (`save_run` saves a run a project's own script made); `server.py` is the local viewer; `render.py`, `layout.py` and `assets.py` draw a run's page from `templates/` and `static/`; `chain_page.py` draws a chain as a graph; `catalog_page.py` draws the catalog; `scaffold.py` and `scaffold/` are `dantron-etl new`. They render and run; they never transform data. |
 | `pipelines/fixture.yaml` | A small neutral flow used to prove load, run, focus and render end to end. |
 
 The counts in `MANUAL.md` and `README.md` are test-checked. Counts in docstrings are not: leave

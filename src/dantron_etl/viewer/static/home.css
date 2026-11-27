@@ -20,3 +20,4 @@ table.pipelines { width:100%; border-collapse:collapse; background:var(--surface
 .home .hint { color:var(--muted); font-size:.8rem; }
 .problems h2 { font-size:1rem; margin:1.5rem 0 .4rem; }
 .problems li { font-size:.85rem; margin-bottom:.3rem; white-space:pre-wrap; }
+.home h2.chains { font-size:1.1rem; margin:1.8rem 0 .2rem; }

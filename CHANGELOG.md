@@ -7,6 +7,27 @@ things; each such release says how to upgrade.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
+Chains run several pipelines in order. A chain is a short file in `chains/` naming the pipelines and
+what each runs after; the order is checked against the files and tables they pass on before anything
+runs. It runs from the command line, shows as a graph in the viewer, and runs under Prefect with the
+recipe in [docs/chains.md](docs/chains.md). Nothing an existing pipeline does changes.
+
+### Added
+
+- **Chains run several pipelines in order.** A chain is a YAML file in `chains/` that names the
+  pipelines and what each runs after. Before anything runs, the order is checked against the files
+  and tables the pipelines read and write: a pipeline that reads what another writes without running
+  after it is refused by name, as are two pipelines writing the same file. Parameters such as the
+  period are set once for the whole chain and replace each pipeline's own value for that run.
+  `dantron-etl run <chain>` prints the plan; `--write` runs it, side by side where the order allows,
+  at most `max_parallel` (default 2) at a time, each pipeline in a process of its own. A failure
+  stops only the pipelines that wait for it. `dantron-etl chain suggest` writes a first chain file
+  from existing pipelines. The viewer draws each chain as a graph and shows how each pipeline did.
+  The docs show how to run a chain under Prefect. See [docs/chains.md](docs/chains.md).
+- `etl-project.yaml` takes `chain_folders`, by default `[chains]`.
+
 ## [0.5.0] - 2026-11-26
 
 Three new tools. `match_one_to_many` matches each whole, such as a deposit, to the one set of parts
@@ -343,7 +364,8 @@ refused until they are migrated; one command does it. See [docs/upgrading.md](do
 
 The first version: the tools, the pipeline file, the expression language and the run trace.
 
-[Unreleased]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/dantron-oss/dantron-etl-tools/compare/v0.4.0...v0.4.1

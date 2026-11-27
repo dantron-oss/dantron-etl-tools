@@ -1,8 +1,9 @@
 """Finding a project folder and the pipelines in it.
 
-A project is a folder. Its pipelines are YAML files in one or more pipeline folders. An optional
-settings file, ``etl-project.yaml``, says where those folders are, where runs are saved, and which
-rules and focus each pipeline uses.
+A project is a folder. Its pipelines are YAML files in one or more pipeline folders. Its chains,
+which run several pipelines in order, are YAML files in chain folders. An optional settings file,
+``etl-project.yaml``, says where those folders are, where runs are saved, and which rules and focus
+each pipeline uses.
 
 Reading a project only reads YAML. Project code runs only when a pipeline's rules are asked for,
 and only when the settings name a rules loader.
@@ -35,6 +36,7 @@ from .project_settings import (
 )
 
 __all__ = [
+    "DEFAULT_CHAIN_FOLDERS",
     "DEFAULT_PIPELINE_FOLDERS",
     "DEFAULT_RUNS_FOLDER",
     "PIPELINE_NAME",
@@ -42,16 +44,21 @@ __all__ = [
     "ROWS_NOT_SAVED",
     "SAVE_ROWS",
     "SETTINGS_FILE",
+    "ChainEntry",
     "PipelineEntry",
     "Project",
     "ProjectError",
+    "combine_rules",
     "find_project",
     "load_entry",
     "load_project",
+    "own_rules",
     "pipeline_rules",
+    "read_entry",
 ]
 
 DEFAULT_PIPELINE_FOLDERS = ("pipelines",)
+DEFAULT_CHAIN_FOLDERS = ("chains",)
 DEFAULT_RUNS_FOLDER = "output_files/runs"
 PIPELINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
@@ -67,7 +74,7 @@ ROWS_NOT_SAVED = (
     f"Rows are not saved for this pipeline: {SAVE_ROWS} is false in {SETTINGS_FILE}. "
     "Its steps, row counts and columns are."
 )
-_TOP_KEYS = ("pipeline_folders", "runs_folder", SAVE_ROWS, "pipelines")
+_TOP_KEYS = ("pipeline_folders", "chain_folders", "runs_folder", SAVE_ROWS, "pipelines")
 _ENTRY_KEYS = ("rules", "rules_file", "rules_loader", "focus", SAVE_ROWS)
 _RULES_KEYS = ("rules", "rules_file", "rules_loader")
 _OLD_KEYS = ("rules", "focus")
@@ -98,8 +105,18 @@ class PipelineEntry:
 
 
 @dataclass(frozen=True)
+class ChainEntry:
+    """One chain file, found in a chain folder. Nothing in it has been checked yet."""
+
+    name: str
+    path: Path
+    title: str
+    problem: str | None
+
+
+@dataclass(frozen=True)
 class Project:
-    """A project folder, its settings and the pipelines found in it."""
+    """A project folder, its settings and the pipelines and chains found in it."""
 
     root: Path
     settings_path: Path | None
@@ -107,6 +124,8 @@ class Project:
     runs_folder: Path
     pipelines: Mapping[str, PipelineEntry]
     problems: tuple[str, ...]
+    chain_folders: tuple[Path, ...] = ()
+    chains: Mapping[str, ChainEntry] = MappingProxyType({})
 
 
 def find_project(start: Path | str) -> Project:
@@ -126,6 +145,9 @@ def load_project(root: Path) -> Project:
         settings_path = None
     settings = _read_settings(settings_path)
     folders = tuple(root / folder for folder in _text_list(settings, "pipeline_folders", settings_path))
+    chain_folders = tuple(
+        root / folder for folder in _text_list(settings, "chain_folders", settings_path, DEFAULT_CHAIN_FOLDERS)
+    )
     runs = _text(settings, "runs_folder", DEFAULT_RUNS_FOLDER, settings_path)
     save_rows = _save_rows(settings.get(SAVE_ROWS, True), f"'{SAVE_ROWS}' in {settings_path}")
     configured = _configured_pipelines(settings, settings_path)
@@ -142,6 +164,8 @@ def load_project(root: Path) -> Project:
                 f"{name}.yaml in {', '.join(_shown(folder, root) for folder in folders)}. "
                 f"Rename the entry or add the file."
             )
+    # A chain folder that is missing is a problem only when the settings name it.
+    chains = _discover_chains(root, chain_folders, entries, problems, named="chain_folders" in settings)
     return Project(
         root=root,
         settings_path=settings_path,
@@ -149,13 +173,15 @@ def load_project(root: Path) -> Project:
         runs_folder=root / runs,
         pipelines=MappingProxyType(entries),
         problems=tuple(problems),
+        chain_folders=chain_folders,
+        chains=MappingProxyType(chains),
     )
 
 
-def pipeline_rules(project: Project, entry: PipelineEntry) -> dict[str, Any]:
-    """The values for a pipeline's ``${rules.*}`` references.
+def own_rules(project: Project, entry: PipelineEntry) -> dict[str, Any]:
+    """The rule values a pipeline's own settings give it, or nothing when its settings give none.
 
-    This may run project code. A ``rules_loader`` in the settings is imported and called here.
+    This may run project code: a ``rules_loader`` in the settings is imported and called here.
     """
     if entry.problem:
         raise ProjectError(entry.problem)
@@ -166,22 +192,50 @@ def pipeline_rules(project: Project, entry: PipelineEntry) -> dict[str, Any]:
         return rules_from_file(project.root, entry.name, settings["rules_file"])
     if "rules_loader" in settings:
         return rules_from_code(project.root, entry.name, settings["rules_loader"])
-    if entry.rules_needed:
-        raise ProjectError(_missing_rules_hint(entry))
     return {}
 
 
-def load_entry(project: Project, entry: PipelineEntry) -> Pipeline:
-    """Load a pipeline with its rules, ready to run.
+def pipeline_rules(
+    project: Project, entry: PipelineEntry, given: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """The values for a pipeline's ``${rules.*}`` references.
+
+    ``given`` holds values a chain hands this run. Each replaces the pipeline's own value of the same
+    name, and a rule the chain gives needs no value of the pipeline's own. This may run project code:
+    see :func:`own_rules`.
+    """
+    return combine_rules(entry, own_rules(project, entry), given)
+
+
+def combine_rules(entry: PipelineEntry, own: Mapping[str, Any], given: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A pipeline's own rule values with a chain's ``given`` values on top.
+
+    Refuses a pipeline whose settings give no rules at all when it uses one the chain does not give.
+    """
+    given = dict(given or {})
+    if not any(key in entry.settings for key in _RULES_KEYS) and [r for r in entry.rules_needed if r not in given]:
+        raise ProjectError(_missing_rules_hint(entry, given))
+    return {**own, **given}
+
+
+def read_entry(project: Project, entry: PipelineEntry, rules: Mapping[str, Any]) -> Pipeline:
+    """Load a pipeline with the rule values given, from the project's folder.
 
     The pipeline is read with the working folder set to the project root. A writer checks its output
     folder relative to the working folder, so this makes a relative path mean the project's folder.
-    The working folder belongs to the whole process, so a lock is held while it is changed. This may
-    run project code: see :func:`pipeline_rules`.
+    The working folder belongs to the whole process, so a lock is held while it is changed.
     """
-    rules = pipeline_rules(project, entry)
     with _CHDIR_LOCK, contextlib.chdir(project.root):
-        return read_pipeline(entry.path, rules=rules)
+        return read_pipeline(entry.path, rules=dict(rules))
+
+
+def load_entry(project: Project, entry: PipelineEntry, given: Mapping[str, Any] | None = None) -> Pipeline:
+    """Load a pipeline with its rules, ready to run.
+
+    ``given`` holds rule values a chain hands this run; see :func:`pipeline_rules`. This may run
+    project code. See :func:`read_entry` for the folder the pipeline is read from.
+    """
+    return read_entry(project, entry, pipeline_rules(project, entry, given))
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +259,10 @@ def _read_settings(path: Path | None) -> Mapping[str, Any]:
     return document
 
 
-def _text_list(settings: Mapping[str, Any], key: str, path: Path | None) -> tuple[str, ...]:
-    value = settings.get(key, list(DEFAULT_PIPELINE_FOLDERS))
+def _text_list(
+    settings: Mapping[str, Any], key: str, path: Path | None, default: tuple[str, ...] = DEFAULT_PIPELINE_FOLDERS
+) -> tuple[str, ...]:
+    value = settings.get(key, list(default))
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
@@ -390,12 +446,78 @@ def _rules_source(settings: Mapping[str, Any], source: str) -> str | None:
     return None
 
 
-def _missing_rules_hint(entry: PipelineEntry) -> str:
-    """The refusal for a pipeline that uses rules when none are set, with the YAML to add."""
-    names = [f"${{rules.{rule}}}" for rule in entry.rules_needed]
+def _missing_rules_hint(entry: PipelineEntry, given: Mapping[str, Any] | None = None) -> str:
+    """The refusal for a pipeline that uses rules when none are set, with the YAML to add.
+
+    Rules a chain gives (``given``) are left out: they need no value of the pipeline's own.
+    """
+    missing = [rule for rule in entry.rules_needed if rule not in (given or {})]
+    names = [f"${{rules.{rule}}}" for rule in missing]
     used = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
-    lines = "\n".join(f"      {rule}: <value>" for rule in entry.rules_needed)
+    lines = "\n".join(f"      {rule}: <value>" for rule in missing)
     return (
         f"pipeline '{entry.name}' uses {used} and no rules are set for it. Add to {SETTINGS_FILE}:\n"
         f"pipelines:\n  {entry.name}:\n    rules:\n{lines}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Finding chain files
+# ---------------------------------------------------------------------------
+
+
+def _discover_chains(
+    root: Path,
+    folders: tuple[Path, ...],
+    pipelines: Mapping[str, PipelineEntry],
+    problems: list[str],
+    *,
+    named: bool,
+) -> dict[str, ChainEntry]:
+    """Chain files by name, directly inside each chain folder. The first folder wins a shared name.
+
+    A chain is run by its name, the same way a pipeline is, so a chain may not share a name with a
+    pipeline. ``named`` says whether the settings name the folders; a missing default folder is
+    simply a project with no chains.
+    """
+    found: dict[str, ChainEntry] = {}
+    by_folded: dict[str, str] = {}
+    pipeline_names = {name.casefold(): name for name in pipelines}
+    for folder in folders:
+        if not folder.is_dir():
+            if named:
+                problems.append(f"The chain folder {_shown(folder, root)} does not exist.")
+            continue
+        for path in sorted(p for p in folder.iterdir() if p.is_file() and p.suffix in _SUFFIXES):
+            name, shown = path.stem, _shown(path, root)
+            if not PIPELINE_NAME.fullmatch(name):
+                problems.append(
+                    f"Skipped {shown}: '{name}' is not a chain name. "
+                    f"Use letters, digits, '_' and '-' only, starting with a letter or digit."
+                )
+            elif name in RESERVED_NAMES:
+                problems.append(f"Skipped {shown}: '{name}' is reserved for the viewer's own pages. Rename the file.")
+            elif name.casefold() in pipeline_names:
+                problems.append(
+                    f"Skipped {shown}: a pipeline is already called '{pipeline_names[name.casefold()]}', and a "
+                    f"chain is run by its name the same way. Rename the chain file."
+                )
+            elif name.casefold() in by_folded:
+                problems.append(
+                    f"Skipped {shown}: a chain called '{by_folded[name.casefold()]}' was already found. "
+                    f"Rename one of them."
+                )
+            else:
+                found[name] = _chain_entry(name, path.resolve())
+                by_folded[name.casefold()] = name
+    return found
+
+
+def _chain_entry(name: str, path: Path) -> ChainEntry:
+    """The entry for one chain file: its title, or the problem reading it. Never raises."""
+    try:
+        document = read_yaml(path)
+    except ProjectError as error:
+        return ChainEntry(name, path, name, str(error))
+    title = document.get("title") if isinstance(document, Mapping) else None
+    return ChainEntry(name, path, title if isinstance(title, str) and title else name, None)

@@ -3,6 +3,7 @@
 - A block fenced ``yaml`` is a whole pipeline file: the loader must accept it.
 - A block fenced ``yaml fragment`` is part of one (a list of steps, an ``inputs:`` map, a settings
   file). It must still parse as YAML.
+- A block fenced ``yaml chain`` is a whole chain file: the chain reader must accept it.
 - A block fenced ``python`` must compile, and every name it uses must be imported or defined in
   the block (a missing import is the commonest way a copied example fails). A block fenced ``python fragment`` continues an earlier one, so only compiling is
   required.
@@ -26,6 +27,7 @@ import yaml
 
 from dantron_etl.paths import project_root
 from dantron_etl import load_pipeline
+from dantron_etl.chains.chain_file import parse_chain
 
 PROJECT_ROOT = project_root(__file__)
 DOCS = PROJECT_ROOT / "docs"
@@ -41,9 +43,12 @@ _FENCE = re.compile(r"^```(?P<info>[^\n`]*)\n(?P<body>.*?)^```\s*$", re.MULTILIN
 _FAILING_TODAY: dict[str, str] = {}
 
 
-def _blocks() -> list[tuple[str, str, bool, str]]:
-    """(id, language, is a fragment, body) for every ``yaml`` and ``python`` block in the docs."""
-    found: list[tuple[str, str, bool, str]] = []
+def _blocks() -> list[tuple[str, str, str, str]]:
+    """(id, language, kind, body) for every ``yaml`` and ``python`` block in the docs.
+
+    The kind is ``fragment``, ``chain`` or ``whole``, from the word after the language.
+    """
+    found: list[tuple[str, str, str, str]] = []
     for document in DOCUMENTS:
         counts: dict[str, int] = {}
         for match in _FENCE.finditer(document.read_text(encoding="utf8")):
@@ -54,25 +59,26 @@ def _blocks() -> list[tuple[str, str, bool, str]]:
             number = counts.get(language, 0)
             counts[language] = number + 1
             name = document.relative_to(PROJECT_ROOT).as_posix() if document.is_relative_to(DOCS) else document.name
-            found.append((f"{name} {language} #{number}", language, "fragment" in words[1:], match["body"]))
+            kind = next((word for word in ("fragment", "chain") if word in words[1:]), "whole")
+            found.append((f"{name} {language} #{number}", language, kind, match["body"]))
     return found
 
 
 def _params(language: str) -> list[Any]:
     return [
         pytest.param(
-            fragment,
+            kind,
             body,
             id=block_id,
             marks=[pytest.mark.xfail(strict=True, reason=_FAILING_TODAY[block_id])] if block_id in _FAILING_TODAY else [],
         )
-        for block_id, block_language, fragment, body in _blocks()
+        for block_id, block_language, kind, body in _blocks()
         if block_language == language
     ]
 
 
 def _bound_names(tree: ast.AST) -> set[str]:
-    """Names the block itself imports or assigns."""
+    """Names the block itself imports, assigns, or defines as a function, a class or an argument."""
     bound: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import | ast.ImportFrom):
@@ -81,15 +87,22 @@ def _bound_names(tree: ast.AST) -> set[str]:
             bound.add(node.id)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
     return bound
 
 
-@pytest.mark.parametrize(("fragment", "body"), _params("yaml"))
+@pytest.mark.parametrize(("kind", "body"), _params("yaml"))
 def test_a_yaml_example_loads_as_a_pipeline_or_is_marked_a_fragment(
-    fragment: bool, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    kind: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document = yaml.safe_load(body)
-    if fragment:
+    if kind == "fragment":
+        return
+    if kind == "chain":
+        parse_chain(document, "example", Path("chains/example.yaml"))
         return
     assert isinstance(document, dict) and "steps" in document, (
         "not a whole pipeline file; fence it as `yaml fragment` if it is meant as a part of one"
@@ -99,10 +112,10 @@ def test_a_yaml_example_loads_as_a_pipeline_or_is_marked_a_fragment(
     load_pipeline(document)
 
 
-@pytest.mark.parametrize(("fragment", "body"), _params("python"))
-def test_a_python_example_compiles_and_imports_what_it_uses(fragment: bool, body: str) -> None:
+@pytest.mark.parametrize(("kind", "body"), _params("python"))
+def test_a_python_example_compiles_and_imports_what_it_uses(kind: str, body: str) -> None:
     tree = ast.parse(body)
-    if fragment:
+    if kind == "fragment":
         return
     used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
     unbound = sorted(used - _bound_names(tree) - set(dir(builtins)) - {"__file__", "__name__"})
@@ -115,5 +128,6 @@ def test_the_examples_are_found() -> None:
     assert any(block_id.startswith("README.md yaml") for block_id in found)
     assert any(block_id.startswith("MANUAL.md python") for block_id in found)
     assert any(block_id.startswith("docs/cookbook.md yaml") for block_id in found)
+    assert any(kind == "chain" for _, _, kind, _ in _blocks())
     stale = sorted(set(_FAILING_TODAY) - found)
     assert not stale, f"_FAILING_TODAY names blocks that no longer exist: {stale}"

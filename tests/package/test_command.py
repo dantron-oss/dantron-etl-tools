@@ -34,7 +34,7 @@ from dantron_etl.viewer.project import load_project
 from dantron_etl.viewer.scaffold import write_project
 
 COMMAND = "dantron-etl"
-SUBCOMMANDS = ("view", "run", "check", "tools", "help", "functions", "catalog", "migrate", "new")
+SUBCOMMANDS = ("view", "run", "chain", "check", "tools", "help", "functions", "catalog", "migrate", "new")
 WORKTREE = Path(__file__).resolve().parents[2]
 WSL_RELEASE = "5.15.167.4-microsoft-standard-WSL2"
 LINUX_RELEASE = "6.8.0-45-generic"

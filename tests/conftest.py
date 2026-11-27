@@ -5,6 +5,7 @@
 - ``environment_restored``: puts ``os.environ`` back the way it was after a test.
 - ``fixture_flow_sandbox``: a folder to run ``pipelines/fixture.yaml`` in, so its sinks never
   write into the checkout.
+- ``chain_project``: a project folder to build pipelines and chains in, for the chain tests.
 
 Markers (registered in ``pyproject.toml``):
 
@@ -177,3 +178,98 @@ def fixture_flow_sandbox(tmp_path_factory: pytest.TempPathFactory) -> Path:
     shutil.copytree(PROJECT_ROOT / "pipelines" / "fixture", sandbox / "pipelines" / "fixture")
     (sandbox / "output_files").mkdir()
     return sandbox
+
+
+# ---------------------------------------------------------------------------
+# Chains
+# ---------------------------------------------------------------------------
+
+
+class ChainProject:
+    """A project folder for chain tests: CSV files, pipelines that copy them, and chain files.
+
+    ``copy`` writes a pipeline that reads each of its ``reads`` files, stacks them, and writes the
+    result to ``writes``. Every CSV has the columns ``id`` and ``amount``.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        (root / "pipelines").mkdir(parents=True)
+        (root / "chains").mkdir()
+        (root / "etl-project.yaml").write_text("", encoding="utf8")
+
+    def source(self, path: str, rows: int = 2) -> Path:
+        """A CSV file of ``rows`` rows at ``path``, from the project folder."""
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("id,amount\n" + "".join(f"{n},{n * 10}\n" for n in range(1, rows + 1)), encoding="utf8")
+        return target
+
+    def copy(self, name: str, reads: list[str], writes: str | None = None, **extra: Any) -> None:
+        """A pipeline that stacks the files it reads and writes them to ``writes``."""
+        import yaml
+
+        steps: list[dict[str, Any]] = [
+            {"id": f"read_{at}", "tool": "read_csv", "config": {"path": path}} for at, path in enumerate(reads)
+        ]
+        last = "read_0.rows"
+        for at in range(1, len(reads)):
+            steps.append({"id": f"stack_{at}", "tool": "union", "inputs": {"top": last, "bottom": f"read_{at}.rows"}})
+            last = f"stack_{at}.rows"
+        if writes is not None:
+            folder = (self.root / writes).parent
+            folder.mkdir(parents=True, exist_ok=True)
+            steps.append(
+                {"id": "write", "tool": "write_csv", "config": {"path": writes, "overwrite": True}, "inputs": {"rows": last}}
+            )
+        steps += extra.get("more_steps", [])
+        self.pipeline(name, yaml.safe_dump({"name": extra.get("title", name), "steps": steps}, sort_keys=False))
+
+    def pipeline(self, name: str, text: str) -> Path:
+        path = self.root / "pipelines" / f"{name}.yaml"
+        path.write_text(text, encoding="utf8")
+        return path
+
+    def chain(self, name: str, text: str) -> Path:
+        path = self.root / "chains" / f"{name}.yaml"
+        path.write_text(text, encoding="utf8")
+        return path
+
+    def settings(self, text: str) -> None:
+        (self.root / "etl-project.yaml").write_text(text, encoding="utf8")
+
+    def month_end(self) -> None:
+        """The worked example of docs/design/chains.md: four pipelines and the chain that runs them."""
+        self.source("inbox/ledger.csv", rows=3)
+        self.source("inbox/customers.csv", rows=2)
+        self.copy("load_ledger", ["inbox/ledger.csv"], "stage/ledger.csv")
+        self.copy("load_customers", ["inbox/customers.csv"], "stage/customers.csv")
+        self.copy("clean_ledger", ["stage/ledger.csv"], "clean/ledger_${rules.period}.csv")
+        self.copy("clean_customers", ["stage/customers.csv"], "clean/customers.csv")
+        self.copy("revenue", ["clean/ledger_${rules.period}.csv", "clean/customers.csv"], "reports/revenue_${rules.period}.csv")
+        self.chain(
+            "month_end",
+            "title: Month-end close\n"
+            "parameters:\n"
+            "  period: '2026-11'\n"
+            "pipelines:\n"
+            "  - name: load_ledger\n"
+            "  - name: load_customers\n"
+            "  - name: clean_ledger\n"
+            "    after: [load_ledger]\n"
+            "  - name: clean_customers\n"
+            "    after: [load_customers]\n"
+            "  - name: revenue\n"
+            "    after: [clean_ledger, clean_customers]\n",
+        )
+
+    def project(self) -> Any:
+        from dantron_etl.viewer.project import load_project
+
+        return load_project(self.root)
+
+
+@pytest.fixture
+def chain_project(tmp_path: Path) -> ChainProject:
+    """An empty project folder with ``pipelines/`` and ``chains/``. See :class:`ChainProject`."""
+    return ChainProject(tmp_path / "project")

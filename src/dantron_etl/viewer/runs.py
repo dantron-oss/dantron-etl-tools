@@ -466,7 +466,8 @@ def _write_record(directory: Path, record: Mapping[str, Any]) -> None:
 
 
 def _record(directory: Path, data: Mapping[str, Any]) -> RunRecord:
-    fields = {**data, "held_back": tuple(data["held_back"]), "directory": directory}
+    fields = {key: value for key, value in data.items() if key != "chain"}
+    fields.update(held_back=tuple(data["held_back"]), directory=directory)
     fields["rows_saved"] = data.get("rows_saved", True) is not False
     fields["focus"] = _saved_focus(data, str(data["pipeline"]))
     return RunRecord(**fields)
@@ -520,11 +521,16 @@ def execute(
     *,
     sink: Callable[[StepEvent], None] | None = None,
     confirm_digest: str | None = None,
+    given: Mapping[str, Any] | None = None,
+    chain: str | None = None,
 ) -> RunRecord:
     """Run one pipeline as a preview or for real, save the run, and return its record.
 
     A real run needs ``confirm_digest`` to equal the digest of what it writes now. Otherwise it is
     refused with a ProjectError before anything runs or is saved.
+
+    ``given`` holds rule values a chain hands this run, which replace the pipeline's own; ``chain``
+    names that chain. Both are saved with the run, so its record says where its values came from.
     """
     import yaml
 
@@ -545,8 +551,10 @@ def execute(
         "focus": _focus_data(entry.focus),
         "rows_saved": entry.save_rows,
     }
+    if chain is not None:
+        data["chain"] = {"name": chain, "values": json.loads(_compact(dict(given or {})))}
     try:
-        spec = load_entry(project, entry)
+        spec = load_entry(project, entry, given)
     except (ToolError, ExpressionError, yaml.YAMLError, OSError) as refusal:
         return _refuse(project, entry, data, str(refusal))
     data["steps_total"] = len(spec.steps)

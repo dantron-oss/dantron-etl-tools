@@ -1,0 +1,43 @@
+/* A chain's page: its pipelines as boxes, the order as lines, then its values, last run and hand-offs. */
+body { margin:0; }
+.chain { max-width:80rem; margin:2rem auto; padding:0 1.25rem; }
+.chain h1 { font-size:1.4rem; margin:0; }
+.chain h2 { font-size:1rem; margin:1.6rem 0 .4rem; }
+.chain .name { margin:.2rem 0 1rem; color:var(--muted); }
+.chain a { color:var(--accent); text-decoration:none; font-weight:600; }
+.chain .hint, .chain .legend { color:var(--muted); font-size:.82rem; }
+.chain .message { white-space:pre-wrap; font-family:var(--mono); font-size:.8rem; background:var(--surface);
+  border:1px solid var(--line); border-left:3px solid var(--bad); border-radius:6px; padding:.6rem .8rem; }
+.chain .graph { overflow-x:auto; background:var(--surface); border:1px solid var(--line); border-radius:9px; }
+.chain-graph { display:block; font-family:var(--sans); }
+.chain-graph marker path { fill:var(--muted); }
+.edge path { fill:none; stroke:var(--muted); stroke-width:1.6; }
+.edge.order path { stroke-dasharray:6 5; }
+.edge .elab { font-size:11px; fill:var(--muted); paint-order:stroke; stroke:var(--surface); stroke-width:4px;
+  stroke-linejoin:round; }
+.node rect { fill:var(--surface); stroke:var(--line); stroke-width:1.5; }
+.node:hover rect { fill:var(--accent-soft); }
+.node .ntitle { font-size:13px; font-weight:600; fill:var(--ink); }
+.node .nname { font-size:11px; font-family:var(--mono); fill:var(--muted); }
+.node .nstate { font-size:11px; fill:var(--muted); }
+.node.finished rect { stroke:var(--good); stroke-width:2.2; }
+.node.finished .nstate { fill:var(--good); }
+.node.failed rect, .node.refused rect { stroke:var(--bad); stroke-width:2.4; fill:var(--bad-soft); }
+.node.failed .nstate, .node.refused .nstate { fill:var(--bad); }
+.node.not-started rect { stroke:var(--warn); stroke-dasharray:4 3; }
+.node.not-started .nstate { fill:var(--warn); }
+.legend .key { display:inline-block; width:2rem; height:0; margin:0 .4rem .2rem .8rem; vertical-align:middle;
+  border-top:2px solid var(--muted); }
+.legend .key.order { border-top-style:dashed; }
+.legend .key:first-child { margin-left:0; }
+.chain table { width:100%; border-collapse:collapse; background:var(--surface); border:1px solid var(--line);
+  border-radius:9px; font-size:.86rem; }
+.chain th { text-align:left; font:600 .66rem var(--sans); text-transform:uppercase; letter-spacing:.1em;
+  color:var(--muted); padding:.5rem .7rem; border-bottom:1px solid var(--line); }
+.chain td { padding:.5rem .7rem; border-bottom:1px solid var(--line); vertical-align:top; }
+.chain .note { margin:.25rem 0 0; color:var(--warn); font-size:.78rem; white-space:pre-wrap; }
+.chain li { font-size:.86rem; }
+.outcome.finished { color:var(--good); }
+.outcome.failed, .outcome.refused, .outcome.stopped { color:var(--bad); }
+.outcome.not-started { color:var(--warn); }
+.outcome.not-in-this-run { color:var(--muted); }
